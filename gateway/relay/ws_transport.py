@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.session import SessionSource
 from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from gateway.relay.transport import InboundHandler, RelayCredentialsMissing
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +332,28 @@ async def _await_bounded(aw: Awaitable[Any]) -> None:
 REDIAL_HOLD_MAX_S = 60.0
 
 
+# Dial URLs whose connector closed 4401 on an upgrade that carried NO credentials. That
+# answer is definitive (the connector requires a per-gateway secret and this process has
+# none), and the reconnect watcher builds a fresh transport on every pass, so the fact is
+# kept process-wide: until credentials exist, dialing that URL again only produces another
+# 4401, which is how a fleet of agents whose boot provision was refused dialed the
+# connector hundreds of times an hour. A connector that accepts uncredentialed upgrades
+# (dev, test harnesses) never lands here.
+_CREDENTIALS_REQUIRED_URLS: set[str] = set()
+
+
+def _credentials_missing_message() -> str:
+    """Why the relay is not connected, with the connector's last provision refusal when known."""
+    from gateway.relay import relay_provision_problem
+
+    problem = relay_provision_problem()
+    return (
+        "relay not connected: the connector requires per-gateway credentials and none were "
+        "issued; self-provision keeps retrying"
+        + (f" (last refusal: {problem})" if problem else "")
+    )
+
+
 class WebSocketRelayTransport:
     """RelayTransport over a WebSocket connection the gateway dials to the connector."""
 
@@ -433,6 +455,8 @@ class WebSocketRelayTransport:
         # supervisor that is already mid-dial; and it survives non-auth connect
         # failures so a network blip cannot un-mark the real fresh-token dial.
         self._auth_retry_pending = False
+        # Whether the dial in flight carried no upgrade credentials (set per dial).
+        self._dialed_without_credentials = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> bool:
@@ -442,6 +466,10 @@ class WebSocketRelayTransport:
     async def _dial_and_start(self) -> None:
         """Open the socket, start the reader, send hello(s). Used by connect() and
         by the reconnect supervisor / fresh-token retry on a re-dial."""
+        headers = self._upgrade_headers()
+        if not headers and self._url in _CREDENTIALS_REQUIRED_URLS:
+            raise RelayCredentialsMissing(_credentials_missing_message())
+        self._dialed_without_credentials = not headers
         self._descriptor_ready = asyncio.get_running_loop().create_future()
         self._dial_generation += 1
         # Fresh handshake generation: a reconnected connector re-sends one
@@ -457,7 +485,6 @@ class WebSocketRelayTransport:
         # walk over AAAA then A): race IPv6/IPv4 so a blackholed IPv6 route costs
         # 250 ms, not the connect timeout (#114265).
         kwargs: dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60, "happy_eyeballs_delay": 0.25}
-        headers = self._upgrade_headers()
         if headers:
             kwargs["additional_headers"] = headers
         self._ws = await websockets.connect(self._url, **kwargs)  # type: ignore[union-attr]
@@ -485,13 +512,33 @@ class WebSocketRelayTransport:
                     hello["command_manifest"] = build_relay_command_manifest()
                 except Exception:
                     logger.debug("relay command manifest build failed", exc_info=True)
-            await self._send(hello)
+            try:
+                await self._send(hello)
+            except Exception as exc:
+                # The connector may close the uncredentialed socket before the hello lands.
+                if self._mark_if_credentials_required(exc):
+                    raise RelayCredentialsMissing(_credentials_missing_message()) from exc
+                raise
         # The reader that this dial installed may have died while the hellos were
         # in flight (the reader does not arm a dialer while one is live — that is
         # THIS dial's job). Report it as a failed dial so the caller re-dials;
         # returning "connected" here would leave no dialer and a dead transport.
         if self._reader.done():
+            if self._dialed_without_credentials and self._url in _CREDENTIALS_REQUIRED_URLS:
+                raise RelayCredentialsMissing(_credentials_missing_message())
             raise ConnectionError("relay ws closed during hello")
+
+    def _mark_if_credentials_required(self, exc: BaseException) -> bool:
+        """True (and remember the URL) when ``exc`` is the connector's 4401 for an
+        upgrade that carried no credentials: only provisioning changes that answer."""
+        # A connector that already accepted an uncredentialed upgrade from this transport
+        # does not require credentials; its later 4401 is the revocation path's business.
+        if self._handshake_succeeded or not self._dialed_without_credentials:
+            return False
+        if self._close_code_of(exc) != _RELAY_UNAUTHORIZED_CLOSE_CODE:
+            return False
+        _CREDENTIALS_REQUIRED_URLS.add(self._url)
+        return True
 
     def _upgrade_headers(self) -> dict[str, str]:
         """``Authorization: Bearer <signed token>`` for the WS upgrade, or {} when
@@ -735,6 +782,9 @@ class WebSocketRelayTransport:
         # Set when this reader's close was a provisional post-handshake 4401 that
         # earns the one-shot fresh-token re-dial instead of the backoff supervisor.
         auth_retry_scheduled = False
+        # Set when the connector refused this uncredentialed dial: no dialer is armed,
+        # because every re-dial would be refused the same way until provisioning lands.
+        credentials_required = False
         try:
             if ws is None:
                 # Lifecycle bug, not a normal path. Fall through to the finally so
@@ -750,6 +800,13 @@ class WebSocketRelayTransport:
                         if line.strip():
                             await self._handle_frame(line)
             except Exception as exc:
+                if self._mark_if_credentials_required(exc):
+                    # A connector that requires credentials refused an upgrade that
+                    # carried none. Only provisioning can change that, so stop dialing
+                    # this URL until credentials exist (see _CREDENTIALS_REQUIRED_URLS).
+                    credentials_required = True
+                    if not self._closing:
+                        logger.warning("%s", _credentials_missing_message())
                 # A post-handshake 4401 is a revocation ONLY if it also hits a fresh
                 # token: an EXPIRED token gets the same 4401 (a scale-to-zero suspend
                 # mid-dial makes that routine), so the first one is provisional —
@@ -779,7 +836,7 @@ class WebSocketRelayTransport:
                             "re-dialing once with a fresh upgrade token before treating it as "
                             "a revoked credential (the token may simply have expired)"
                         )
-                elif not self._closing:
+                elif not self._closing and not credentials_required:
                     logger.warning("relay ws read loop ended: %s", exc)
             # Socket closed. Exactly ONE dialer may be live at a time: the reader
             # that dies while a dialer is already mid-dial (socket installed,
@@ -789,7 +846,7 @@ class WebSocketRelayTransport:
             # dialer live takes the immediate fresh-token re-dial (no backoff);
             # any other close arms the backoff supervisor unless this was a
             # deliberate disconnect() or a terminal revocation.
-            if self._closing or self._dialer_running():
+            if self._closing or self._dialer_running() or credentials_required:
                 pass
             elif auth_retry_scheduled:
                 self._auth_retry = asyncio.create_task(
@@ -797,6 +854,9 @@ class WebSocketRelayTransport:
                 )
             elif self._reconnect and not self._auth_revoked:
                 self._supervisor = asyncio.create_task(self._reconnect_loop(), name="relay-ws-reconnect")
+            if credentials_required and self._descriptor_ready is not None and not self._descriptor_ready.done():
+                # Fail a handshake() still waiting on this dial now, not at its timeout.
+                self._descriptor_ready.set_exception(RelayCredentialsMissing(_credentials_missing_message()))
         finally:
             # Drop the dead handle (identity-guarded) so every `_ws is None`
             # liveness check reports "not connected" for the whole outage — on
@@ -910,6 +970,10 @@ class WebSocketRelayTransport:
             try:
                 await self._dial_and_start()
                 logger.info("relay ws reconnected")
+                return
+            except RelayCredentialsMissing:
+                # Nothing to dial with until provisioning lands; the gateway's reconnect
+                # watcher rebuilds the transport from the live credentials then.
                 return
             except Exception as exc:
                 if self._latch_if_fresh_token_refused(exc):

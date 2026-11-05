@@ -53,6 +53,17 @@ _PROVISION_REFUSAL_RETRY_S = 600.0
 # self-provision outcomes (``_self_provision``)
 _PROVISIONED, _SKIPPED, _REFUSED, _FAILED = "provisioned", "skipped", "refused", "failed"
 
+# Why the last self-provision attempt left this process without credentials (the
+# connector's refusal or the identity error), for the relay adapter's status while it
+# waits; None once credentials exist. Never holds a token: it is built from the same
+# redacted text the provision warnings log.
+_last_provision_problem: Optional[str] = None
+
+
+def relay_provision_problem() -> Optional[str]:
+    """Why the relay holds no credentials yet, or None when unknown or provisioned."""
+    return _last_provision_problem
+
 
 class ProvisionRefused(RuntimeError):
     """The connector refused ``/relay/provision`` with its own reason (a 4xx JSON
@@ -562,6 +573,7 @@ def relay_provision_pending() -> bool:
 def _self_provision() -> str:
     """``self_provision_relay`` with the outcome kept: provisioned / skipped (nothing to
     do) / refused (the connector said no, with a reason) / failed (anything else)."""
+    global _last_provision_problem
     dial_url = relay_url()
     if not dial_url:
         return _SKIPPED
@@ -575,6 +587,7 @@ def _self_provision() -> str:
         access_token = _resolve_relay_identity_token()
     except Exception as exc:  # health: allow BLE001 -- any resolver failure is a soft boot no-op; retried
         logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
+        _last_provision_problem = f"could not resolve identity token ({exc})"
         return _FAILED
 
     identities = relay_platform_identities()
@@ -588,7 +601,7 @@ def _self_provision() -> str:
     route_keys = relay_route_keys()
     instance_id = relay_instance_id()
     wake_url = relay_wake_url()
-    provisioned, refused, result = _provision_each_platform(
+    provisioned, refused, result, last_error = _provision_each_platform(
         identities, provision_url=_provision_url(dial_url), access_token=access_token,
         gateway_id=gateway_id, gateway_endpoint=endpoint, route_keys=route_keys,
         instance_id=instance_id, wake_url=wake_url, display_name=relay_display_name(),
@@ -600,6 +613,7 @@ def _self_provision() -> str:
             " and retry in the background",
             ",".join(p for p, _ in identities),
         )
+        _last_provision_problem = last_error
         return _REFUSED if refused == len(identities) else _FAILED
 
     if not os.environ.get("GATEWAY_RELAY_SECRET"):
@@ -616,6 +630,7 @@ def _self_provision() -> str:
             "GATEWAY_RELAY_SECRET",
             ",".join(provisioned), gateway_id,
         )
+        _last_provision_problem = f"connector withheld credentials for gateway_id={gateway_id}"
         return _REFUSED
 
     logger.info(
@@ -628,11 +643,15 @@ def _self_provision() -> str:
         instance_id or "unbound",
         "yes" if wake_url else "none",
     )
+    _last_provision_problem = None
     return _PROVISIONED
 
 
-def _provision_each_platform(identities, *, gateway_id: str, **post_kwargs) -> tuple[list[str], int, dict]:
-    """POST ``/relay/provision`` per fronted platform; ``(provisioned, refused_count, last_result)``.
+def _provision_each_platform(
+    identities, *, gateway_id: str, **post_kwargs
+) -> tuple[list[str], int, dict, Optional[str]]:
+    """POST ``/relay/provision`` per fronted platform;
+    ``(provisioned, refused_count, last_result, last_error)``.
 
     Provision EACH fronted platform under the SAME gatewayId + the SAME per-gateway
     secret: the connector's secret record is (gatewayId -> tenant) only, platform/
@@ -643,11 +662,13 @@ def _provision_each_platform(identities, *, gateway_id: str, **post_kwargs) -> t
     provisioned: list[str] = []
     refused = 0
     result: dict = {}
+    last_error: Optional[str] = None
     for platform, bot_id in identities:
         try:
             result = _post_provision(platform=platform, bot_id=bot_id, gateway_id=gateway_id, **post_kwargs)
         except RuntimeError as exc:
             refused += isinstance(exc, ProvisionRefused)
+            last_error = str(exc)
             logger.warning(
                 "relay self-provision failed for platform=%s (%s); continuing with the rest",
                 platform, exc,
@@ -669,7 +690,7 @@ def _provision_each_platform(identities, *, gateway_id: str, **post_kwargs) -> t
             os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
             os.environ["GATEWAY_RELAY_SECRET"] = str(result["secret"])
             os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
-    return provisioned, refused, result
+    return provisioned, refused, result, last_error
 
 
 async def retry_self_provision(

@@ -35,7 +35,7 @@ from gateway.relay.egress import (
     log_decline,
 )
 from gateway.relay.media import RelayMediaClient
-from gateway.relay.transport import RelayTransport
+from gateway.relay.transport import RelayCredentialsMissing, RelayTransport
 from datetime import UTC
 
 logger = logging.getLogger(__name__)
@@ -834,11 +834,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             setter = getattr(self._transport, setter_name, None)
             if callable(setter):
                 setter(handler)
-        if not await self._transport.connect():
-            return False
+        try:
+            if not await self._transport.connect():
+                return False
+        except RelayCredentialsMissing as exc:
+            return self._await_relay_credentials(exc)
         # Adopt the connector-advertised descriptor in place of the placeholder.
         try:
             descriptor = await self._transport.handshake()
+        except RelayCredentialsMissing as exc:
+            return self._await_relay_credentials(exc)
         except Exception as exc:
             logger.warning("relay handshake failed: %s", exc)
             return False
@@ -847,6 +852,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         if hasattr(self._transport, "auth_revoked"):
             self._start_revocation_monitor()
         return True
+
+    def _await_relay_credentials(self, exc: RelayCredentialsMissing) -> bool:
+        """Record why the relay is not connected and report the connect as failed.
+
+        Retryable: the gateway's provision retry obtains credentials and pulls the
+        reconnect watcher forward, which rebuilds this adapter from them. The message
+        (with the connector's last refusal) is what ``hermes status`` and the dashboard
+        show while the relay waits."""
+        self._set_fatal_error("relay_credentials_missing", str(exc), retryable=True)
+        return False
 
     def _start_revocation_monitor(self) -> None:
         """Spawn (once) the task turning a transport auth-revocation into a clean

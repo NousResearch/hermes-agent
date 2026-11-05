@@ -96,6 +96,12 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only install-root
 
+      # Callers reach storage through persistence/ and persistence_assembly.py; only those two
+      # import the SQLite backend (tests excepted).
+      - name: Forbid SQLite backend imports outside the storage layer
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: python scripts/ci/check_backend_imports.py
+
       # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
       # (#92554, regressed repeatedly). All writers go through the hermes_cli.config writer seam.
       - name: Forbid config.yaml writers that bypass the comment-preserving writer

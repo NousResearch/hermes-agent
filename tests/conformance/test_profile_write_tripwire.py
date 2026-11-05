@@ -40,11 +40,12 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
 from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class ProfileTripwire:
@@ -121,12 +122,6 @@ def profile_tripwire(tmp_path, monkeypatch):
        detectable.
     2. ``HERMES_HOME`` (env var AND the context-local override) pointed at
        the testprof home — the exact activation shape ``--profile`` uses.
-    3. ``hermes_state.DEFAULT_DB_PATH`` restored to its import-time snapshot.
-       The suite conftest deliberately re-points that constant at its own
-       fake home, which trips the escape hatch in ``_default_db_path()``
-       (a re-pointed constant wins over everything).  Closing the hatch
-       makes resolution flow through ``get_hermes_home()`` — the production
-       path, and the one #88532 regressed.
 
     Yields a :class:`ProfileTripwire`; teardown re-asserts the invariant so
     a surface test that forgets the explicit check still trips the wire.
@@ -146,11 +141,6 @@ def profile_tripwire(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(profile))
     token = set_hermes_home_override(str(profile))
 
-    # Close the conftest's DEFAULT_DB_PATH escape hatch (see docstring).
-    monkeypatch.setattr(
-        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
-    )
-
     tripwire = ProfileTripwire(root, profile)
     try:
         yield tripwire
@@ -166,16 +156,13 @@ def profile_tripwire(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _exercise_session_db(tripwire: ProfileTripwire) -> None:
-    """SessionDB() argless construction + session + message (#88532)."""
-    db = hermes_state.SessionDB()
-    try:
-        db.create_session("20260823_000000_tripwire", "cli")
-        db.append_message("20260823_000000_tripwire", "user", "hello")
-    finally:
-        db.close()
+    """A storage handle on the current profile + session + message (#88532)."""
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "20260823_000000_tripwire", "cli")
+        seed_messages(store, "20260823_000000_tripwire", {"role": "user", "content": "hello"})
     profile_state_db = tripwire.profile / "state.db"
     assert profile_state_db.exists(), (
-        f"SessionDB() did not write to the active profile home "
+        f"open_persistence(profile_scope()) did not write to the active profile home "
         f"({profile_state_db} missing)"
     )
 

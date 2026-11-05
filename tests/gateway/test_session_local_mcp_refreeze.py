@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 from tests.waiting import async_wait_until
 
@@ -26,16 +26,15 @@ def _local_authority(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('error', [RuntimeStoreError('session_busy'), OSError('editor server crashed')],
+@pytest.mark.parametrize('error', [AuthorityRefusal('session_busy'), OSError('editor server crashed')],
                          ids=['runtime-store-error', 'other-exception'])
 async def test_a_failing_editor_mcp_probe_does_not_stop_the_admission(tmp_path, monkeypatch, error):
-    import hermes_state_local
     from gateway import session_finite, session_local_mcp, session_policy
     db, authority = _local_authority(tmp_path, monkeypatch)
     # An editor session whose borrowed servers the probe re-checks; the probe itself fails.
     data = {'scope': 'editor-session:probe', 'schemas': {}, 'names': {'0': 'editor_probe_0'}}
     authority._local_editor_mcp = {data['scope']: [{'name': 'probe'}]}
-    monkeypatch.setattr(hermes_state_local, 'local_receipt', lambda db, sid: {'policy': 'frozen'})
+    monkeypatch.setattr(authority.persistence.bindings, 'receipt', lambda sid: SimpleNamespace(policy='frozen'))
     monkeypatch.setattr(session_policy, 'restore_policy',
                         lambda saved: SimpleNamespace(editor_mcp_json=json.dumps(data), cwd=str(tmp_path)))
 
@@ -69,7 +68,7 @@ async def test_a_refused_head_triggers_no_editor_mcp_probe(tmp_path, monkeypatch
         await _submit(authority, 'refused')
         # The submitter no longer owns the session's source: check_local_input refuses the head.
         live.source = SimpleNamespace(platform=Platform.LOCAL, user_id='someone-else')
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             await authority._claim_next(REF, live)
         assert probed == []
         live.source = SimpleNamespace(platform=Platform.LOCAL, user_id='human')

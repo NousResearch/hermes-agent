@@ -683,17 +683,17 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
 
 class TestCronSchedulerBashResolution:
-    """cron.scheduler_script must resolve bash via PATH (Git Bash on Windows) and,
-    when no bash exists, return an actionable error instead of a [WinError 2] crash."""
+    """cron.scheduler_script resolves bash through the canonical ``pm.shell.bash()`` resolver
+    and, when no bash exists, returns an actionable error instead of a [WinError 2] crash."""
 
-    def test_sh_script_uses_bash_found_on_path(self, tmp_path, monkeypatch):
+    def test_sh_script_uses_bash_from_canonical_resolver(self, tmp_path, monkeypatch):
+        import pm.shell
         from cron import scheduler_script
 
         script = tmp_path / "job.sh"
         script.write_text("echo hi\n", encoding="utf-8")
         found = str(tmp_path / "git" / "bin" / "bash.exe")
-        monkeypatch.setattr(scheduler_script.shutil, "which",
-                            lambda name: found if name == "bash" else None)
+        monkeypatch.setattr(pm.shell, "bash", lambda: found)
 
         argv, _overlay, error = scheduler_script._script_argv(script)
 
@@ -701,17 +701,16 @@ class TestCronSchedulerBashResolution:
         assert argv == [found, str(script)]
 
     def test_missing_bash_returns_actionable_error(self, tmp_path, monkeypatch):
+        import pm.shell
         from cron import scheduler_script
 
         script = tmp_path / "job.sh"
         script.write_text("echo hi\n", encoding="utf-8")
-        real_isfile = os.path.isfile
-        monkeypatch.setattr(scheduler_script.shutil, "which", lambda name: None)
-        monkeypatch.setattr(scheduler_script.os.path, "isfile",
-                            lambda p: False if p == "/bin/bash" else real_isfile(p))
+        monkeypatch.setattr(pm.shell, "bash", lambda: None)
 
         argv, _overlay, error = scheduler_script._script_argv(script)
 
         assert argv is None
-        assert "bash not found" in error
+        assert "no usable bash" in error
         assert "job.sh" in error
+        assert "Git for Windows" in error

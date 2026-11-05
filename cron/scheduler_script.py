@@ -12,7 +12,6 @@ import contextlib
 import contextvars
 import logging
 import os
-import shutil
 import signal
 import stat
 import subprocess
@@ -401,18 +400,19 @@ def _script_argv(
     path: Path, interpreter: Optional[str] = None,
 ) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
-    shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
+    shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → the
+    canonical shell resolver (``pm.shell.bash()``; bash, ``sh`` fallback on POSIX), else the
+    job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        from pm.shell import bash as resolve_bash
+        _bash = resolve_bash()
         if _bash is None:
             return None, {}, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
-                "On Windows, install Git for Windows (which ships Git Bash) "
-                "or rewrite the script as Python (.py)."
+                f"Cannot run .sh/.bash script {path.name!r}: no usable bash found. "
+                "On Windows, install Git for Windows (which ships Git Bash) or run "
+                "`hermes pm install`; alternatively rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
     if isinstance(interpreter, str) and interpreter.strip():

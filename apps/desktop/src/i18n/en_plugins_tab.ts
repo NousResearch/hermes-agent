@@ -21,7 +21,6 @@ export const enPluginsTab: PluginsTabCopy = {
   fleet: {
     updateEverywhere: (count: number) => `Update everywhere · ${count}`,
     updateHereOnly: (profile: string) => `Only ${profile}`,
-    updateAll: (count: number) => `Update all · ${count}`,
     updateAllTip: (installs: number, plugins: number) =>
       `${plugins === 1 ? '1 plugin' : `${plugins} plugins`} out of date in ${installs === 1 ? '1 profile' : `${installs} profiles`} across your gateways`,
     titleOne: (name: string) => `Update ${name} everywhere`,

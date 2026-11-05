@@ -7,9 +7,8 @@ export const zhPluginsTab: Omit<PluginsTabCopy, 'serverStates'> = {
   desktopHalfRemoteTip:
     '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
   fleet: {
-    updateEverywhere: (count: number) => `全部更新 · ${count}`,
+    updateEverywhere: (count: number) => `在所有位置更新 · ${count}`,
     updateHereOnly: (profile: string) => `仅 ${profile}`,
-    updateAll: (count: number) => `全部更新 · ${count}`,
     updateAllTip: (installs: number, plugins: number) => `${plugins} 个插件在你网关上的 ${installs} 个配置中已过时`,
     titleOne: (name: string) => `在所有位置更新 ${name}`,
     titleAll: '在所有位置更新插件',

@@ -21,7 +21,6 @@ export const dePluginsTab: PluginsTabCopy = {
   fleet: {
     updateEverywhere: (count: number) => `Überall aktualisieren · ${count}`,
     updateHereOnly: (profile: string) => `Nur ${profile}`,
-    updateAll: (count: number) => `Alle aktualisieren · ${count}`,
     updateAllTip: (installs: number, plugins: number) =>
       `${plugins === 1 ? '1 Plugin' : `${plugins} Plugins`} veraltet in ${installs === 1 ? '1 Profil' : `${installs} Profilen`} auf deinen Gateways`,
     titleOne: (name: string) => `${name} überall aktualisieren`,

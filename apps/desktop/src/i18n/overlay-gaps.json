@@ -2117,7 +2117,6 @@
   "skills.plugins.fleet.thisProfile": ["ar","ja","ru","zh-hant"],
   "skills.plugins.fleet.titleAll": ["ar","ja","ru","zh-hant"],
   "skills.plugins.fleet.titleOne": ["ar","ja","ru","zh-hant"],
-  "skills.plugins.fleet.updateAll": ["ar","ja","ru","zh-hant"],
   "skills.plugins.fleet.updateAllTip": ["ar","ja","ru","zh-hant"],
   "skills.plugins.fleet.updateEverywhere": ["ar","ja","ru","zh-hant"],
   "skills.plugins.fleet.updateHereOnly": ["ar","ja","ru","zh-hant"],

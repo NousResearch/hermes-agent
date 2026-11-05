@@ -267,7 +267,7 @@ export function FleetUpdateAllButton() {
         type="button"
         variant="text"
       >
-        {f.updateAll(outdated.length)}
+        {f.updateEverywhere(outdated.length)}
       </Button>
     </Tip>
   )

@@ -21,7 +21,6 @@ export const esPluginsTab: PluginsTabCopy = {
   fleet: {
     updateEverywhere: (count: number) => `Actualizar en todas partes · ${count}`,
     updateHereOnly: (profile: string) => `Solo ${profile}`,
-    updateAll: (count: number) => `Actualizar todo · ${count}`,
     updateAllTip: (installs: number, plugins: number) =>
       `${plugins === 1 ? '1 plugin' : `${plugins} plugins`} desactualizados en ${installs === 1 ? '1 perfil' : `${installs} perfiles`} de tus gateways`,
     titleOne: (name: string) => `Actualizar ${name} en todas partes`,

@@ -1,6 +1,6 @@
 name: tiled-sessions
 repo: https://github.com/strnadchristopher/tiled-sessions
-sha: 4224bea63bcd268874c37a567bc8b76d3ba957b3
+sha: d7837aa20c5d70b992bec5d9daef5dfd4ed108da
 title: Tiled Sessions
 description: "Hyprland for Hermes Desktop: clicking a session opens it in a new tile instead of replacing the chat you were in, and every tile re-lays out in Grid (all tiles the same size), Master, Dwindle or Columns. Ctrl+Alt+arrows move focus and the caret follows, Ctrl+Alt+Enter opens a new chat in its own tile, and every shortcut is editable on the plugin's settings page. Desktop-only (desktop/plugin.js on the plugin SDK); public gateway RPCs only; no agent tools, hooks, middleware, env vars or telemetry."
 maintainer: strnadchristopher
@@ -8,14 +8,14 @@ tier: community
 category: desktop
 version: "0.2.0"
 docs_url: https://github.com/strnadchristopher/tiled-sessions#readme
-image: https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/tiled-sessions.jpg
+image: https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/tiled-sessions.jpg
 screenshots:
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/01-grid.jpg
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/02-master.jpg
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/03-dwindle.jpg
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/04-focused-tile.jpg
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/05-eight-tiles.jpg
-  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/4224bea63bcd268874c37a567bc8b76d3ba957b3/assets/screenshots/06-settings.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/01-grid.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/02-master.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/03-dwindle.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/04-focused-tile.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/05-eight-tiles.jpg
+  - https://raw.githubusercontent.com/strnadchristopher/tiled-sessions/d7837aa20c5d70b992bec5d9daef5dfd4ed108da/assets/screenshots/06-settings.jpg
 platforms: []
 known_issues:
   - Layouts and the shortcut editor need the Desktop layout SDK from NousResearch/hermes-agent#149656. On a Hermes build without it, sessions open as ordinary tabs and the Tiles pane says why.

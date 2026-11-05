@@ -649,8 +649,8 @@ export async function fetchStoredTranscriptAcrossBackends(id: string): Promise<S
 /**
  * One page of messages OLDER than the `offset` newest rows.
  *
- * Backend semantics (`_handle_session_messages` → `SessionDB.get_messages`
- * with `latest=True`): the offset is measured back from the NEWEST message
+ * Backend semantics (`_handle_session_messages` → `messages.read_transcript`
+ * with `TranscriptRead(latest=True)`): the offset is measured back from the NEWEST message
  * and the selected page is returned in chronological order. So after a tail
  * hydration of N rows, `getOlderSessionMessages(id, profile, N)` returns the
  * page immediately preceding it, ready to prepend.

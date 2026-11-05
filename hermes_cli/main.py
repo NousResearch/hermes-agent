@@ -2858,9 +2858,6 @@ def _prepare_agent_startup(args) -> None:
     # See #7994.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-    from hermes_cli.cpu_profile import enable_cpu_profile_from_args
-
-    enable_cpu_profile_from_args(args)  # every parsed launch passes here (fast paths included)
     if args.command in {None, "chat"} and _bypass_chat_launch(args):
         # Bypass launches are frozen by the gateway owner and executed out of process. This
         # client is a transport: no env mutation (it would ride into an authority spawn),
@@ -3005,6 +3002,13 @@ def _run_oneshot_from_args(args) -> None:
     sys.exit(launch_gateway_chat(args))
 
 
+def _enable_cpu_profile(args) -> None:
+    """Honour ``--cpu-profile`` right after a launch path parses argv, before it branches."""
+    from hermes_cli.cpu_profile import enable_cpu_profile_from_args
+
+    enable_cpu_profile_from_args(args)
+
+
 def _light_chat_parser():
     """Top-level + chat parser only (no subcommand tree); chat dispatches to cmd_chat."""
     from hermes_cli._parser import build_top_level_parser
@@ -3098,6 +3102,7 @@ def _try_fast_chat_launch() -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
+    _enable_cpu_profile(args)
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _prepare_agent_startup(args)
@@ -3138,6 +3143,7 @@ def _try_termux_fast_cli_launch() -> bool:
 
     parser = _light_chat_parser()
     args = parser.parse_args(_coalesce_session_name_args(argv))
+    _enable_cpu_profile(args)  # before any branch: the interactive one defers agent startup
 
     if getattr(args, "version", False):
         _print_version_info(check_updates=True)
@@ -3196,9 +3202,7 @@ def _try_termux_fast_tui_launch() -> bool:
     if not _resolve_use_tui(args):
         return False
 
-    from hermes_cli.cpu_profile import enable_cpu_profile_from_args
-
-    enable_cpu_profile_from_args(args)  # this path skips _prepare_agent_startup
+    _enable_cpu_profile(args)
     cmd_chat(args)
     return True
 
@@ -3500,6 +3504,7 @@ def main():
         sys.exit(1)  # unreachable: execvp replaces the process or raises
 
     args = _parse_cli_args(parser, subparsers, sys.argv[1:])
+    _enable_cpu_profile(args)
 
     if args.version:
         cmd_version(args)

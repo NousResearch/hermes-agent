@@ -223,7 +223,7 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
   // it back. With no chip in the composer it opens/closes the paste sections
   // of messages already sent.
   p: ({ actions, state }) =>
-    void (actions.togglePaste(getInputSelection()?.start ?? state.input.length) || togglePasteSections()),
+    void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
   t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
 }
 

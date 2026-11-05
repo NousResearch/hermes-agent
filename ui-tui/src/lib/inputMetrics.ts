@@ -177,14 +177,14 @@ export function inputVisualHeight(value: string, columns: number) {
  */
 export function composerViewport(
   value: string,
-  selection: null | { start: number },
+  selection: null | { cursor: number },
   columns: number,
   capped: boolean,
   pageSize: number
 ) {
   const height = inputVisualHeight(value, columns)
   const rows = capped ? Math.min(height, Math.max(3, Math.floor(pageSize / 2))) : height
-  const line = selection ? cursorLayout(value, selection.start, columns).line : height - 1
+  const line = selection ? cursorLayout(value, selection.cursor, columns).line : height - 1
 
   return { height, rows, scroll: Math.max(0, Math.min(height - rows, line - rows + 1)) }
 }

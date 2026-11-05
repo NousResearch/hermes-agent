@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+from tools.tool_result_signals import billing_blocker_tool_error
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -459,6 +460,61 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert result["final_response"] == "done"
     tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
+
+
+def test_typed_tool_billing_blocker_halts_without_hard_stop_config():
+    agent = _make_agent("web_search", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "same"}), "c-billing")],
+        ),
+        _mock_response(content="should not be used", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch(
+            "model_tools.handle_function_call",
+            return_value=billing_blocker_tool_error("Payment Required", provider="firecrawl"),
+        ) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search once")
+
+    dispatch.assert_called_once()
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "typed_tool_billing_blocker"
+    assert "billing blocker" in result["final_response"]
+
+
+def test_plain_payment_required_error_does_not_halt_the_turn():
+    agent = _make_agent("web_search", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "debug"}), "c-plain")],
+        ),
+        _mock_response(content="done", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch(
+            "model_tools.handle_function_call",
+            return_value=json.dumps({"error": "fixture contains HTTP 402 Payment Required"}),
+        ),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("inspect a fixture")
+
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
+    assert result["final_response"] == "done"
 
 
 

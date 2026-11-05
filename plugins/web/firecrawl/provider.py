@@ -332,6 +332,9 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         entry = {"url": final_url, "title": title, "content": content, "raw_content": content, "metadata": metadata}
         return _with_scrape_status(entry, metadata)
     except Exception as scrape_err:
+        from tools.tool_result_signals import provider_billing_blocker_from_exception
+        if blocker := provider_billing_blocker_from_exception(scrape_err, provider="firecrawl"):
+            raise blocker from scrape_err
         logger.debug("Firecrawl scrape failed for %s: %s", url, scrape_err)
         return _error_entry(url, str(scrape_err), raw=True)
 
@@ -362,6 +365,9 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
             logger.info("Firecrawl: found %d search results", len(web_results))
             return search_ok(web_results)
         except Exception as exc:
+            from tools.tool_result_signals import provider_billing_blocker_from_exception
+            if blocker := provider_billing_blocker_from_exception(exc, provider="firecrawl"):
+                raise blocker from exc
             logger.warning("Firecrawl search error: %s", exc)
             return search_fail(f"Firecrawl search failed: {exc}")
 

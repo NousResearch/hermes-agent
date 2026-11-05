@@ -13,6 +13,7 @@ import requests
 
 from agent.browser_provider import BrowserProvider
 from agent.ssl_verify import requests_verify
+from tools.tool_result_signals import ProviderBillingBlocker
 
 _CLOSE_OK = {200, 201, 204}
 
@@ -96,6 +97,15 @@ class CloudBrowserProvider(BrowserProvider):
             raise RuntimeError(f"{self.label} API connection failed: {exc}") from exc
 
     def _check_created(self, response: requests.Response) -> None:
+        if response.status_code == 402:
+            raise ProviderBillingBlocker(
+                provider=self.provider_id,
+                status_code=402,
+                message=(
+                    f"Failed to create {self.label}{self.create_label_suffix} session: "
+                    "402 Payment Required"
+                ),
+            )
         if not response.ok:
             raise RuntimeError(
                 f"Failed to create {self.label}{self.create_label_suffix} session: "

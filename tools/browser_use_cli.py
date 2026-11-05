@@ -771,6 +771,37 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
+def _route_exec_result(
+    env: dict,
+    session: str,
+    task_id: Optional[str],
+    local: bool,
+    local_sidecar: bool,
+    route_key: str,
+) -> tuple[dict, bool, int, Optional[str]]:
+    """Resolve the browser route and render provider billing blockers as tool results."""
+    from tools.registry import tool_error
+
+    try:
+        routed, route_err, sidecar, generation = _route_exec_current(
+            env, session, task_id, local, local_sidecar, route_key
+        )
+    except Exception as exc:
+        from tools.tool_result_signals import (
+            billing_blocker_tool_error,
+            provider_billing_blocker_from_exception,
+        )
+
+        blocker = provider_billing_blocker_from_exception(exc, provider="browser")
+        if blocker is None:
+            raise
+        result = billing_blocker_tool_error(
+            str(blocker), provider=blocker.provider, status_code=blocker.status_code
+        )
+        return env, local_sidecar, 0, result
+    return routed, sidecar, generation, tool_error(route_err) if route_err else None
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -800,10 +831,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    env, route_err, local_sidecar, generation = _route_exec_current(
-        env, session, task_id, bool(local), local_sidecar, route_key)
-    if route_err:
-        return tool_error(route_err)
+    env, local_sidecar, generation, route_error_result = _route_exec_result(
+        env, session, task_id, bool(local), local_sidecar, route_key
+    )
+    if route_error_result:
+        return route_error_result
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
     fit_default_socket_dir(env)  # BU_NAME is final: a deep HOME's socket would overflow sun_path

@@ -238,6 +238,32 @@ class TestExtractCwdFromOutput:
         assert env.cwd == "/home/user"
         assert marker not in result["output"]
 
+    def test_edge_whitespace_is_part_of_the_directory_name(self):
+        # Remote backends (SSH, Docker, Modal, ...) persist this value and `cd` to it before
+        # every later command, so a mangled name fails each one with exit 126.
+        env = _TestableEnv()
+        marker = env._cwd_marker
+        result = {"output": f"out\n{marker}/srv/ build {marker}\n"}
+        env._extract_cwd_from_output(result)
+
+        assert env.cwd == result["cwd"] == "/srv/ build "
+        assert result["output"] == "out"
+
+    @pytest.mark.platforms("posix")
+    def test_local_cd_into_trailing_space_directory_persists(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            entered = env.execute("mkdir 'build ' && cd 'build ' && touch inside")
+            listed = env.execute("ls")
+        finally:
+            env.cleanup()
+
+        assert entered["returncode"] == 0
+        assert entered.get("cwd", "").endswith("/build ")
+        assert listed["output"].strip() == "inside"
+
 
 
 

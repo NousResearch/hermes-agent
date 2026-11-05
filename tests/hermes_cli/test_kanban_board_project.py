@@ -107,3 +107,10 @@ def test_create_task_explicit_scratch_beats_board(fresh_home, tmp_path):
         assert (default.workspace_kind, default.project_id) == ("worktree", proj_id)
     finally:
         conn.close()
+
+
+def test_create_task_rejects_unanchored_worktree(fresh_home):
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError, match="workspace_path or project"):
+            kb.create_task(conn, title="unanchored", workspace_kind="worktree")
+        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0

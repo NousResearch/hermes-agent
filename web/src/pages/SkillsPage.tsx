@@ -68,6 +68,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 import { installedHubEntry } from "@/lib/skill-hub-installed";
+import { isArchivableSkill } from "@/lib/skill-archivable";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -794,9 +795,7 @@ function SkillRow({
       >
         <Pencil />
       </Button>
-      {/* Delete (archive): local/agent-authored skills only. The backend refuses
-          bundled, hub and external-dir skills too; hub skills uninstall via the Hub tab. */}
-      {skill.provenance === "agent" && onDelete && (
+      {isArchivableSkill(skill) && onDelete && (
         <Button
           ghost
           size="icon"

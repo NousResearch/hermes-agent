@@ -25,7 +25,6 @@ import {
   preserveLocalAssistantErrors,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
-  stripPendingClarifyProjectionForCache,
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
@@ -192,6 +191,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { saveServedTranscriptTail } from './served-tail'
 import { publishWarmSessionRuntime } from './session-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
@@ -1682,6 +1682,8 @@ export function useSessionActions({
               // instead of replacing durable history while the turn is running.
               let acceptedPersistedDisplayTranscript = false
               let reconciledCurrentLiveTurn = false
+              // Did a backend page actually vouch for rows this resume? See served-tail.
+              let persistedRowsBacked = false
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
@@ -1720,6 +1722,7 @@ export function useSessionActions({
                   (persisted.messages.length || !activatedMessages.length)
                 ) {
                   acceptedPersistedDisplayTranscript = Boolean(expectedProvenance)
+                  persistedRowsBacked = persisted.messages.length > 0
 
                   // The REST hydration is a newest-tail page; graft it onto any
                   // older pages the previous view already backfilled so
@@ -1866,19 +1869,17 @@ export function useSessionActions({
               }
 
               hydration.release()
-              // Cache backend transcript truth only. The pending/running bit and
-              // any synthetic clarify row are a live resume projection and must
-              // not survive after the server-side request expires.
-              saveTranscriptTail(
-                storedSessionId,
-                stripPendingClarifyProjectionForCache(
-                  activatedMessages,
+              // A page with no rows has no truth to cache — see served-tail.
+              saveServedTranscriptTail({
+                sessionId: storedSessionId,
+                messages: activatedMessages,
+                clarifyRequestId:
                   pendingClarify?.requestId ??
-                    pendingClarifyState.cleared?.requestId ??
-                    $clarifyRequests.get()[cachedRuntimeId]?.requestId
-                ),
-                sessionRestScope
-              )
+                  pendingClarifyState.cleared?.requestId ??
+                  $clarifyRequests.get()[cachedRuntimeId]?.requestId,
+                restScope: sessionRestScope,
+                served: persistedRowsBacked
+              })
 
               return
             }
@@ -2340,18 +2341,17 @@ export function useSessionActions({
           setMessages(visibleMessagesForView)
         }
 
-        // Refresh the durable tail cache with backend transcript truth only;
-        // the live pending clarify projection expires with the server request.
-        saveTranscriptTail(
-          storedSessionId,
-          stripPendingClarifyProjectionForCache(
-            messagesForView,
+        // Refresh the durable tail cache with backend transcript truth only.
+        saveServedTranscriptTail({
+          sessionId: storedSessionId,
+          messages: messagesForView,
+          clarifyRequestId:
             pendingClarify?.requestId ??
-              pendingClarifyState.cleared?.requestId ??
-              $clarifyRequests.get()[resumed.session_id]?.requestId
-          ),
-          sessionRestScope
-        )
+            pendingClarifyState.cleared?.requestId ??
+            $clarifyRequests.get()[resumed.session_id]?.requestId,
+          restScope: sessionRestScope,
+          served: true
+        })
       } catch (err) {
         if (!isCurrentResume()) {
           return

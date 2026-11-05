@@ -86,6 +86,23 @@ def test_follows_compression_tip_when_parent_retains_messages(db):
 
 
 
+def test_subagent_child_never_hijacks_the_parent(db):
+    # `delegate_task` children carry `source='subagent'` and NO `_delegate_from`
+    # marker, so the marker tests alone miss them: the walk descended into the
+    # newest worker and every read of the parent answered with the worker's
+    # transcript (a one-line `wc -l` turn in place of the whole conversation,
+    # which the desktop then painted and cached as the parent's tail).
+    _make_chain(db, [("parent", None), ("worker", "parent")])
+    db.append_message("parent", role="user", content="the real conversation")
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET source = 'subagent' WHERE id = 'worker'")
+    conn.commit()
+    db.append_message("worker", role="user", content="Run wc -l and report the number only.")
+
+    assert db.resolve_resume_session_id("parent") == "parent"
+
+
 def test_prefers_most_recent_child_when_fork_exists(db):
     # If a session was somehow forked (two children), pick the latest one.
     # In practice, compression only produces single-chain shape, but the helper

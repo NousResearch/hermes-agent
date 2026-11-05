@@ -20,7 +20,8 @@ from functools import partial
 _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', 'watch_disabled'})
 # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
 # with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
-_ALWAYS_NOTED = frozenset({'cron'})
+# So is a gateway notice to a Bot Chat home (``gateway/bot_chat_home.py``).
+_ALWAYS_NOTED = frozenset({'cron', 'gateway_notice'})
 
 
 def _producer(identity):

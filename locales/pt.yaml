@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Falha ao guardar o canal principal: {error}"
     success: "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
+    bot_chat_success: "✅ O Bot Chat agora é o destino principal deste perfil.\nTarefas cron sem origem e avisos do gateway vão para lá em vez dos seus canais principais de mensagens. Execute /sethome em um chat de mensagens para voltar."
+    bot_chat_released: "O Bot Chat não é mais o destino principal deste perfil."
     err_missing_platform: "Plataforma lógica ausente"
     err_relay_unauthenticated: "O relay não autentica este destino de home lógico"
   context:

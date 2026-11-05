@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
-from gateway.config import Platform
+from gateway.config import HOME_BOT_CHAT, Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
@@ -154,11 +154,13 @@ def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Op
 
     Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
     ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
-    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
+    under two bot tokens is two conversations, so those stay keyed per served profile (#118233), as
+    does a Bot Chat home (each profile's own chat).
     """
     from gateway.delivery import looks_like_telegram_private_chat_id
-    if (profile and profile != "default" and platform_value == "telegram"
-            and looks_like_telegram_private_chat_id(chat_id)):
+    if profile and profile != "default" and (
+            (platform_value == "telegram" and looks_like_telegram_private_chat_id(chat_id))
+            or (platform_value == Platform.LOCAL.value and chat_id == HOME_BOT_CHAT)):
         platform_value = f"{profile}:{platform_value}"
     return _notice_target_key(platform_value, chat_id, thread_id)
 
@@ -1093,41 +1095,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
-        # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
-        # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
-        # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit
-        # a fatal path (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
-        profile_adapters = getattr(self, "_profile_adapters", None) or {}
-        for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
-                continue
-            adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
-            if adapter is None:
-                continue
-            if not self._notice_allowed(platform, "home channel", platform_cfg):
-                continue
-            dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
-            if dedup_key in notified:
-                continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
-                if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
-                ):
-                    notified.add(dedup_key)
-            from gateway.warning_notifications import present_notification
-            from gateway.run import _async_profile_runtime_scope
-            # present_notification reads the ACTIVE profile's display settings: bind the served one's.
-            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
-            async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
-                await present_notification(_send_home, platform=platform)
+        from gateway.run_shutdown_home import broadcast_home_shutdown_notice
+        await broadcast_home_shutdown_notice(self, msg, notified)
 
     # Agent finalization / resource cleanup
     @staticmethod

@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Kon nie tuiste-kanaal stoor nie: {error}"
     success: "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."
+    bot_chat_success: "✅ Die Bot Chat is nou hierdie profiel se tuiste.\nKron-take sonder 'n oorsprong en gateway-kennisgewings gaan daarheen in plaas van na jou tuiste-kanale. Voer /sethome in 'n boodskapklets uit om terug te skakel."
+    bot_chat_released: "Die Bot Chat is nie meer hierdie profiel se tuiste nie."
     err_missing_platform: "Logiese platform ontbreek"
     err_relay_unauthenticated: "Relay verifieer nie hierdie logiese tuiste-teiken nie"
   context:

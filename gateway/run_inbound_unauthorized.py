@@ -94,11 +94,14 @@ class UnauthorizedOwnerNotifier:
         return True
 
     async def notify(self, runner, source, hint: str) -> None:
-        """Best-effort post to the source platform's home channel; silent when none is configured."""
+        """Best-effort post to the source platform's home channel (or a Bot Chat home); silent when none
+        is configured."""
+        from gateway.bot_chat_home import is_bot_chat_home, notice_platform
         for platform, _cfg, home, transport in runner._home_channel_transports():
-            if platform != source.platform:
+            bot_chat = is_bot_chat_home(home)
+            if platform != source.platform and not bot_chat:
                 continue
-            if str(home.chat_id) == str(source.chat_id):
+            if not bot_chat and str(home.chat_id) == str(source.chat_id):
                 # The stranger's DM *is* the home channel (misconfiguration); posting there would
                 # answer the unauthorized user, which the ignore behaviour exists to prevent.
                 return
@@ -108,6 +111,6 @@ class UnauthorizedOwnerNotifier:
                 lambda: runner._send_home_channel_message(
                     platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
                 ),
-                platform=platform,
+                platform=notice_platform(platform, home),
             )
             return

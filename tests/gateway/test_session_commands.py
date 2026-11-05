@@ -98,8 +98,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
             assert 'mid-turn' in busy_title['result']['output'], busy_title
             for params, reason in [({'command': 'help', 'profile': 'foreign'}, 'profile_mismatch'),
                                    ({'command': 'help', 'source': 'telegram'}, 'invalid_params'),
-                                   ({'command': 'restart'}, 'unsupported_command'),
-                                   ({'command': 'sethome'}, 'unsupported_command')]:
+                                   ({'command': 'restart'}, 'unsupported_command')]:
                 denied = await command(**params)
                 assert denied['error']['message'] == reason, denied
             # A second dashboard operator shares access but still obeys the busy fence.

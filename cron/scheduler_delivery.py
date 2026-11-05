@@ -618,7 +618,9 @@ def _resolve_single_delivery_target(
                 "thread_id": _origin_delivery_thread(origin),
                 "_resolved_from": "origin",  # provenance for _target_mirror_eligible
             }
-        # No origin (API/script job): fall back to a home channel instead of silently dropping.
+        # No origin (API/script job): fall back to the home instead of silently dropping.
+        if _bot_chat_is_home():
+            return _resolve_bot_chat_target(job, "")
         for platform_name in _iter_home_target_platforms():
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
@@ -805,7 +807,8 @@ def _normalize_deliver_value(deliver) -> str:
 
 
 # Routing tokens resolve at fire time (a job outlives platform wiring). ``all`` = platforms with a
-# configured home chat_id (_expand_routing_tokens); ``bot-chat`` is NOT in ``all`` (costs a turn).
+# configured home chat_id (_expand_routing_tokens); ``bot-chat`` is in ``all`` (it costs a turn) only
+# while it is the profile's home (``gateway.home``).
 _ROUTING_TOKENS = frozenset({"all"})
 
 # Pseudo-platform: deliver output as a real inbound turn into a profile's "Bot Chat" (not a mirror).
@@ -852,12 +855,24 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
+def _bot_chat_is_home() -> bool:
+    """The firing profile's ``gateway.home`` is its Bot Chat (gateway/bot_chat_home.py)."""
+    try:
+        from gateway.bot_chat_home import bot_chat_is_home
+        from gateway.config import load_gateway_config
+        return bot_chat_is_home(load_gateway_config())
+    except Exception:
+        logger.debug("gateway.home lookup failed", exc_info=True)
+        return False
+
+
 def _expand_routing_tokens(part: str) -> list[str]:
-    """Expand ``all`` to every home-target platform with a configured chat_id; non-tokens pass
-    through as a single-element list."""
+    """Expand ``all`` to every home-target platform with a configured chat_id, plus the Bot Chat
+    when it is the home; non-tokens pass through as a single-element list."""
     if part.lower() not in _ROUTING_TOKENS:
         return [part]
-    return [p for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
+    homes = [p for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
+    return [BOT_CHAT_PLATFORM, *homes] if _bot_chat_is_home() else homes
 
 
 def _delivery_lane_value(job: dict, *, for_failure: bool = False):

@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Ana kanal kaydedilemedi: {error}"
     success: "✅ Ana kanal **{name}** (ID: {chat_id}) olarak ayarlandı.\nCron işleri ve platformlar arası mesajlar buraya iletilecek."
+    bot_chat_success: "✅ Bot Chat artık bu profilin ana hedefi.\nKaynağı olmayan cron işleri ve ağ geçidi bildirimleri mesajlaşma ana kanalların yerine oraya gider. Geri dönmek için bir mesajlaşma sohbetinde /sethome çalıştırın."
+    bot_chat_released: "Bot Chat artık bu profilin ana hedefi değil."
     err_missing_platform: "Mantıksal platform eksik"
     err_relay_unauthenticated: "Relay bu mantıksal ana hedefi doğrulamıyor"
   context:

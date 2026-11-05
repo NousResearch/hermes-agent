@@ -463,7 +463,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             notify_path.unlink(missing_ok=True)
 
     def _home_channel_transports(self):
-        """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""
+        """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport;
+        a profile whose home is its Bot Chat has that one alone (``gateway/bot_chat_home.py``)."""
+        from gateway.bot_chat_home import home_entry
+        from hermes_constants import get_routing_process_hermes_home
+        if (bot_chat := home_entry(self.config, get_routing_process_hermes_home())) is not None:
+            yield bot_chat
+            return
         for platform, platform_cfg in self.config.platforms.items():
             home = platform_cfg.home_channel
             if not home or not home.chat_id:
@@ -481,18 +487,28 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         secondary configs are the ones ``_load_secondary_profile_config`` already cached at
         adapter start; ``profile`` is ``None`` for the launch profile.
         """
-        for platform, platform_cfg in self.config.platforms.items():
-            yield None, platform, platform_cfg
-        for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
+        from gateway.bot_chat_home import bot_chat_is_home, home_platform_config
+        from gateway.config import Platform
+        configs = [(None, self.config), *(getattr(self, "_profile_configs", None) or {}).items()]
+        for profile, profile_cfg in configs:
+            if bot_chat_is_home(profile_cfg):
+                yield profile, Platform.LOCAL, home_platform_config()
+                continue
             for platform, platform_cfg in profile_cfg.platforms.items():
                 yield profile, platform, platform_cfg
 
     def _served_home_channel_transports(self):
         """``(profile, platform, platform_cfg, home, transport)`` for every served profile's home
         channel with a live transport — the launch profile's (``profile`` ``None``) first."""
+        from gateway.bot_chat_home import bot_chat_is_home, home_entry
         for platform, platform_cfg, home, transport in self._home_channel_transports():
             yield None, platform, platform_cfg, home, transport
+        served_homes = getattr(self, "_served_profile_homes", None) or {}
         for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
+            if bot_chat_is_home(profile_cfg):
+                if profile in served_homes:
+                    yield profile, *home_entry(profile_cfg, served_homes[profile])
+                continue
             adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile) or {}
             for platform, platform_cfg in profile_cfg.platforms.items():
                 home = platform_cfg.home_channel
@@ -505,8 +521,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
+        from gateway.bot_chat_home import BotChatHomeTransport
         from gateway.run import _non_conversational_metadata
         try:
+            if isinstance(transport, BotChatHomeTransport):
+                return await transport.send(message)
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
                 metadata = dict(metadata or {})
@@ -659,12 +678,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 action = t("gateway.startup.db_then_restart", action=action, profile_arg=profile_arg)
             message = t("gateway.startup.db_unavailable", cause=failure.gloss, action=action)
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
+        from gateway.bot_chat_home import notice_platform
         from gateway.warning_notifications import present_notification
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
             await present_notification(
                 lambda: self._send_home_channel_message(
                     platform, home, transport, message, "state.db warning notification failed for %s:%s: %s"),
-                platform=platform)
+                platform=notice_platform(platform, home))
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.

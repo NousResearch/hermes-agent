@@ -101,6 +101,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
     *_presence("unauthorized_dm_decline_message"),
+    ("home", "home", "nested", None, None),
 )
 
 

@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Home-Kanal konnte nicht gespeichert werden: {error}"
     success: "✅ Home-Kanal auf **{name}** (ID: {chat_id}) gesetzt.\nCron-Jobs und plattformübergreifende Nachrichten werden hierher geliefert."
+    bot_chat_success: "✅ Der Bot Chat ist jetzt das Zuhause dieses Profils.\nCron-Jobs ohne Ursprung und Gateway-Hinweise gehen dorthin statt in deine Home-Kanäle. Führe /sethome in einem Messaging-Chat aus, um zurückzuwechseln."
+    bot_chat_released: "Der Bot Chat ist nicht mehr das Zuhause dieses Profils."
     err_missing_platform: "Logische Plattform fehlt"
     err_relay_unauthenticated: "Das Relay authentifiziert dieses logische Home-Ziel nicht"
   context:

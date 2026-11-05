@@ -897,6 +897,35 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+### The Bot Chat as your home
+
+A home channel is where Hermes sends what nobody addressed to a specific chat: cron results from a job
+with no origin, `deliver=all`, and the gateway's own notices (the online and shutdown pings, storage
+and low-disk warnings, unauthorized-sender hints). If you work in the Desktop app or the
+Webapp and want none of that in a messaging chat, make the profile's Bot Chat (its canonical Bot Mode
+chat) the home instead: type `/sethome` in any Desktop or Webapp chat, or set
+
+```yaml
+gateway:
+  home: bot-chat
+```
+
+While it is set:
+
+- A cron job with no origin delivers into the Bot Chat as a turn, exactly like
+  [`deliver=bot-chat`](../features/cron.md#bot-chat-delivery-bot-chat), and `all` includes the Bot Chat.
+- Gateway notices are written into the Bot Chat's history as notes, which cost no model call. Warning
+  notices follow `display.platforms.tui.suppress_warning_notifications`, like other Bot Chat warnings.
+  The shutdown ping is the exception: the app already shows the gateway going away, and the online
+  note follows a planned restart.
+- The platform home channels no longer receive origin-less results or these notices. `all` still
+  includes every messaging home channel alongside the Bot Chat; use `deliver=bot-chat` for a job that
+  should reach the Bot Chat only. An explicit `deliver=telegram` and a job created in a Telegram chat
+  still go to Telegram.
+
+Each profile has its own setting and its own Bot Chat. Running `/sethome` in a messaging chat makes that
+chat the home again and clears `gateway.home`.
+
 ### Typing indicators
 
 While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:

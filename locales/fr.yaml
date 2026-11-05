@@ -425,6 +425,8 @@ gateway:
   set_home:
     save_failed: "Impossible d'enregistrer le canal principal : {error}"
     success: "✅ Canal principal défini sur **{name}** (ID : {chat_id}).\nLes tâches cron et les messages multi-plateformes seront livrés ici."
+    bot_chat_success: "✅ Le Bot Chat est désormais la destination principale de ce profil.\nLes tâches cron sans origine et les avis de la passerelle y sont envoyés au lieu de vos canaux principaux de messagerie. Lancez /sethome dans une discussion de messagerie pour revenir en arrière."
+    bot_chat_released: "Le Bot Chat n'est plus la destination principale de ce profil."
     err_missing_platform: "Plateforme logique manquante"
     err_relay_unauthenticated: "Le relais n'authentifie pas cette cible de foyer logique"
   context:

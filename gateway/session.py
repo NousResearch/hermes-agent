@@ -175,6 +175,7 @@ class SessionContext:
     connected_platforms: list[Platform]
     home_channels: dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
+    bot_chat_home: bool = False  # gateway.home: the Bot Chat replaces the home channels (gateway/bot_chat_home.py)
     session_key: str = ""
     session_id: str = ""
     created_at: Optional[datetime] = None
@@ -186,6 +187,7 @@ class SessionContext:
             "connected_platforms": [p.value for p in self.connected_platforms],
             "home_channels": {p.value: hc.to_dict() for p, hc in self.home_channels.items()},
             "shared_multi_user_session": self.shared_multi_user_session,
+            "bot_chat_home": self.bot_chat_home,
             "session_key": self.session_key, "session_id": self.session_id,
             "created_at": _iso(self.created_at), "updated_at": _iso(self.updated_at),
         }
@@ -446,8 +448,10 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     ]
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
-    if context.home_channels:
+    if context.home_channels or context.bot_chat_home:
         lines += ["", "**Home Channels (default destinations):**"]
+        if context.bot_chat_home:
+            lines.append("  - bot-chat: the Bot Chat in the Hermes app (primary home; replaces the ones below)")
         for platform, home in context.home_channels.items():
             safe_name = _format_untrusted_prompt_value(home.name)
             safe_id = _format_untrusted_prompt_value(_chat_label(home.chat_id))
@@ -462,6 +466,8 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
     lines.append(f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)")
+    if context.bot_chat_home:
+        lines.append("- `\"bot-chat\"` → The Bot Chat in the Hermes app (primary home)")
     for platform, home in context.home_channels.items():
         home_name = _format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
@@ -1387,6 +1393,7 @@ def build_session_context(
     source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
+    from gateway.bot_chat_home import bot_chat_is_home
     connected = config.get_connected_platforms()
     shared = is_shared_multi_user_session(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
@@ -1395,6 +1402,7 @@ def build_session_context(
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
         home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        bot_chat_home=bot_chat_is_home(config),
     )
     if session_entry:
         context.session_key = session_entry.session_key

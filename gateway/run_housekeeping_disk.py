@@ -120,6 +120,7 @@ def clear_local_auto_prune_notice(runner, source) -> None:
 
 async def _post(runner, profile, home, advice) -> bool:
     """Send to the profile's home channels; True when at least one send was delivered."""
+    from gateway.bot_chat_home import notice_platform
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
     from hermes_cli.prune_advisor import advice_lines
@@ -138,6 +139,6 @@ async def _post(runner, profile, home, advice) -> bool:
                 sent.append(await runner._send_home_channel_message(
                     platform, home_ch, transport, message, "Auto-prune prompt failed for %s:%s: %s"))
 
-            await present_notification(_send, platform=platform)
+            await present_notification(_send, platform=notice_platform(platform, home_ch))
             delivered = delivered or any(sent)
     return delivered

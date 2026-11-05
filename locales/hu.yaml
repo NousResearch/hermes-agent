@@ -388,6 +388,8 @@ gateway:
   set_home:
     save_failed: "Nem sikerült menteni a kezdőcsatornát: {error}"
     success: "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."
+    bot_chat_success: "✅ Mostantól a Bot Chat a profil kezdőhelye.\nAz eredet nélküli cron-feladatok és az átjáró értesítései oda kerülnek az üzenetküldő kezdőcsatornák helyett. A visszaváltáshoz futtasd a /sethome parancsot egy üzenetküldő csevegésben."
+    bot_chat_released: "A Bot Chat már nem a profil kezdőhelye."
     err_missing_platform: "Hiányzik a logikai platform"
     err_relay_unauthenticated: "A relé nem hitelesíti ezt a logikai home célt"
   context:

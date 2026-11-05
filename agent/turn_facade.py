@@ -71,6 +71,7 @@ class TurnFacadeMixin:
             else ""
         )
         relay_lease = relay_turn = lease = None
+        result = None  # bound for the finally even if admission/lease setup raises first
         # Scope tokens start None: early returns leave the try before the set_*() calls and
         # the finally resets each one unconditionally.
         token = affinity_token = acct_token = None
@@ -201,6 +202,13 @@ class TurnFacadeMixin:
                         lease.join_threads()
                         lease.clear_interrupt()  # refresher interrupt between stop and join; AFTER join
                         lease.release()
+                        # Lease is now free, so a transcript mutation is allowed again: drop a
+                        # content-policy-refused turn here (never mid-turn) so the deterministic
+                        # refusal cannot re-trip the filter on every later message and lock the chat.
+                        if isinstance(result, dict) and result.get("failure_reason") == "content_policy_blocked":
+                            from agent.turn_truncation import _drop_refused_turn
+                            with suppress(Exception):
+                                _drop_refused_turn(self)
                     # Always clear mid-turn labels on exit — including interrupted early returns
                     # that skip finalize_turn. Keep ts.
                     with suppress(Exception):

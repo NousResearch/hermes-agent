@@ -138,40 +138,41 @@ _REFUSAL_DETAIL = "I can't help with breaking into someone else's property."
 _NEW_REQUEST = "What is the capital of France?"
 
 
-def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(acp):
+def test_acp_refusal_leaves_no_durable_trace_and_never_poisons_the_next_prompt(acp):
     """Turn 1: HTTP-200 ``content_filter`` refusal. Turn 2: unrelated request.
 
-    Invariant: the durable tail after a failed turn is a Hermes-authored assistant row (never
-    provider text), and the next prompt reaches the provider as its own user row.
+    Invariant: a safety-filter refusal is deterministic for the unchanged conversation (the filter
+    judges the whole thread), so the refused turn is dropped from the durable transcript once the
+    turn lease releases — it leaves no durable row and never rides into the next prompt. Otherwise
+    every later message re-refuses and the chat locks up (the "Hermes Bot stuck sessions" report).
+    The refusal still reaches the client live; transient failures keep their close-and-replay path
+    (the server_error / rate_limit / timeout tests below), which this does not touch.
     """
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
-
     provider, prompt, conversation_rows, db, sid, conn, server = acp
+
+    # An earlier accepted exchange must survive: only the refused turn is dropped, not the session.
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    assert [r[0] for r in conversation_rows()] == ["user", "assistant"]
 
     provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
     prompt(_REFUSED)
 
-    rows = conversation_rows()
-    assert [r[0] for r in rows] == ["user", "assistant"], rows
-    assert rows[1][1] == FAILED_TURN_NOTICE  # no tool ran: no hedging, no provider detail
+    # The refused turn is dropped entirely; the prior accepted exchange is untouched.
+    assert [(r[0], r[1]) for r in conversation_rows()] == [("user", "hello"), ("assistant", "Hello there.")]
     assert db.latest_conversation_role(sid) == "assistant"
-    # Typed, so a renderer or room poller never has to match the English copy to tell the
-    # boundary from a model reply.
-    with sqlite3.connect(db.db_path) as c:
-        kinds = [r[0] for r in c.execute(
-            "SELECT display_kind FROM messages WHERE session_id = ? AND role = 'assistant'", (sid,))]
-    assert kinds == [FAILED_TURN_DISPLAY_KIND]
-    # The refusal reaches the ACP client, but never becomes canonical assistant history.
+    # The refusal still reaches the ACP client live, but never becomes canonical history.
     texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None) for u in conn.updates]
     assert any(_REFUSAL_DETAIL in (t or "") for t in texts)
 
     provider.script = [{"finish_reason": "stop", "content": "Paris."}]
     prompt(_NEW_REQUEST)
 
+    # The next prompt reaches the provider with the prior exchange but WITHOUT the refused request.
     sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
     assert [m["role"] for m in sent] == ["user", "assistant", "user"], sent
-    assert [m["content"] for m in sent if m["role"] == "user"] == [_REFUSED, _NEW_REQUEST]
-    assert sent[1] == {"role": "assistant", "content": FAILED_TURN_NOTICE}  # the type never reaches the wire
+    assert [m["content"] for m in sent if m["role"] == "user"] == ["hello", _NEW_REQUEST]
+    assert _REFUSED not in {m.get("content") for m in sent}
 
     # Turn 3: cancelled mid-turn. The interrupt envelope carries ``final_response=None``
     # (no assistant text yet); ``_finish_turn`` must still report ``cancelled`` — never crash

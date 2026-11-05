@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import shutil
-import sqlite3
 import stat
 import sys
 import tempfile
@@ -21,12 +20,14 @@ from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
     display_hermes_home,
 )
-from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
-from hermes_state_holders import read_only_db_uri
+from persistence.core.admin import AdminUnsupported
+from persistence_assembly import open_store_admin, profile_scope, store_location
+from sqlite_support import RETIRED_GENERATION_DIR_SUFFIX
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli.backup_integrity import verify_sqlite_integrity
+from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -39,6 +40,7 @@ from hermes_cli.backup_restore import (
     _extract_member_atomically,
     _get_config_path_value,
     _import_db_member,
+    _is_store_file,
     _restore_auth_json,
     _restore_destination_epoch,
     _safe_restore_db,
@@ -362,16 +364,13 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
 
 # --- SQLite safe copy ---
 
-def _query_ro_sqlite(path: Path, fn):
-    """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
-    conn = None
-    try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
-        return fn(conn), None
-    except Exception as exc:
-        return None, exc
-    finally:
-        _close_quietly(conn)
+def _snapshot_db(src: Path, dst: Path) -> bool:
+    """WAL-safe snapshot of the database *src* into *dst*: a store file through its store admin, any other database
+    with ``_safe_copy_db``; False, with *dst* removed, when none can be made."""
+    if not _is_store_file(src):
+        return _safe_copy_db(src, dst)
+    admin = open_store_admin(src)
+    return not isinstance(admin, AdminUnsupported) and admin.backup_to(dst)
 
 
 def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = False) -> bool:
@@ -395,68 +394,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
     head = read_header_bytes_preopen(path, length=max(16, probe_bytes), force=force)
     # Empty or all-NUL header => zeroed; a real header (or unreadable) => not.
     return head is not None and not head.startswith(b"SQLite format 3") and not any(head)
-
-
-# --- SQLite integrity verification ---
-
-_SQLITE_HEADER = b"SQLite format 3\0"
-
-# Above this size ``PRAGMA integrity_check`` (walks every b-tree page — minutes of pegged CPU on a
-# 30 GB state.db, reading as a hung ``hermes update``) is replaced by the O(1) header+schema probe.
-# Default ceiling above which ``PRAGMA integrity_check`` is skipped in favour of the (O(1)) header +
-# structural probe. Sessions databases in the tens of GB are normal for heavy users, so the size-unbounded
-# check is never an acceptable default on the update path. See #70553.
-DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
-
-
-def verify_sqlite_integrity(
-    path: Path, *, check_header: bool = True, run_pragma: bool = True,
-    max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
-    """Verify a SQLite database: existence + minimum size, header magic, then a read-only
-    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``)."""
-    def _done(message: str, valid: bool = False, size: Optional[int] = None) -> dict:
-        return {"valid": valid, "message": message, "size": size}
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        return _done(f"not found: {path}")
-    except OSError as exc:
-        return _done(f"cannot stat: {exc}")
-    size = st.st_size
-    if size < 100:  # SQLite minimum viable size (header + 1 page)
-        return _done(f"too small ({size} bytes) to be a valid SQLite database", size=size)
-    if check_header:
-        # Refused when a live connection exists (close() would cancel this process's POSIX locks
-        # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
-        head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
-        if head is None:
-            return _done("cannot read header", size=size)
-        if head != _SQLITE_HEADER:
-            return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
-    if max_bytes > 0 and size > max_bytes:
-        # O(1) probe: the header check caught the zeroed signature; reading sqlite_master + page
-        # geometry catches malformed-schema and truncated-header-page classes without a data walk.
-        _, exc = _query_ro_sqlite(path, lambda c: (
-            c.execute("PRAGMA schema_version").fetchone(),
-            c.execute("SELECT count(*) FROM sqlite_master").fetchone()))
-        if exc is not None:
-            kind = "failed" if isinstance(exc, sqlite3.DatabaseError) else "error"
-            return _done(f"schema probe {kind}: {exc}", size=size)
-        return _done(
-            f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
-            "skipped PRAGMA integrity_check (header + schema probe passed)",
-            valid=True, size=size)
-    if run_pragma:
-        rows, exc = _query_ro_sqlite(
-            path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
-        if exc is not None:
-            kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
-            return _done(f"{kind}: {exc}", size=size)
-        if rows == ["ok"]:
-            return _done("integrity check passed", valid=True, size=size)
-        return _done(f"integrity check failed: {'; '.join(rows[:5])}", size=size)
-    return _done("header check passed", valid=True, size=size)
 
 
 def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
@@ -499,7 +436,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
         tmp_db = Path(tmp.name)
     try:
-        if not _safe_copy_db(abs_path, tmp_db):
+        if not _snapshot_db(abs_path, tmp_db):
             return None
         _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
@@ -1078,8 +1015,8 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
     profile restore must not install a second gateway on the default service name.
     """
     native_default = _get_platform_default_hermes_home()
-    if hermes_root != native_default and any(
-            (native_default / marker).exists() for marker in ("config.yaml", ".env", "state.db")):
+    if hermes_root != native_default and (any((native_default / marker).exists() for marker in ("config.yaml", ".env")) or (
+            (state_db := store_location(profile_scope(home=native_default))) is not None and state_db.exists())):
         print("\nRestored into a non-default home; leaving the gateway service alone to avoid clashing "
               f"with the install at {native_default}.\n"
               "To start a gateway for this home, run:  hermes gateway run")
@@ -1350,7 +1287,7 @@ def _create_quick_snapshot_locked(
                     # board DB with an open WAL (the gateway may hold it at
                     # snapshot time) is captured consistently.
                     if sub.suffix == ".db":
-                        if not _safe_copy_db(sub, dst):
+                        if not _snapshot_db(sub, dst):
                             failed_dbs.append(sub_rel)
                             print(
                                 f"  ⚠ Snapshot: SQLite safe copy FAILED for {sub_rel} "
@@ -1382,7 +1319,7 @@ def _create_quick_snapshot_locked(
 
         try:
             if src.suffix == ".db":
-                if not _safe_copy_db(src, dst):
+                if not _snapshot_db(src, dst):
                     failed_dbs.append(rel)
                     print(
                         f"  ⚠ Snapshot: SQLite safe copy FAILED for {rel} "

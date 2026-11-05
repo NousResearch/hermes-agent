@@ -9,7 +9,6 @@ import contextlib
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import sys
 
@@ -43,30 +42,27 @@ def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:
 _SHORT_RESUME_LEN = 22
 
 
-def _short_resume_id(db, session_id: str) -> str:
+def _short_resume_id(persistence, session_id: str) -> str:
     """The 22-char prefix of a canonical ``local-…`` id when it names only that session (``--resume``
     resolves a unique prefix back); every other id, or an ambiguous prefix, prints whole."""
     if not session_id.startswith("local-") or len(session_id) <= _SHORT_RESUME_LEN:
         return session_id
     short = session_id[:_SHORT_RESUME_LEN]
+    from persistence.core.errors import STORE_FAILURES
     try:
-        return short if db.resolve_session_id(short) == session_id else session_id
-    except sqlite3.Error:  # an unreadable store prints the whole id
+        return short if persistence.sessions.resolve_id(short) == session_id else session_id
+    except STORE_FAILURES:  # an unreadable store prints the whole id
         return session_id
 
 
-def _branch_lineage(db, session: dict) -> list:
+def _branch_lineage(persistence, session) -> list:
     """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
     named the parent and so reported the conversation's tokens; a canonical branch child is named
     itself, and its copied history was billed on the ancestors."""
-    rows, seen = [session], {session.get("id")}
+    rows, seen = [session], {session.session_id}
     while True:
-        try:
-            config = json.loads(rows[-1].get("model_config") or "{}")
-        except (TypeError, ValueError):
-            break
-        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
-        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
+        parent_id = rows[-1].model_config.get("_branched_from")
+        parent = persistence.sessions.get(parent_id) if parent_id and parent_id not in seen else None
         if not parent:
             break
         seen.add(parent_id)
@@ -83,29 +79,25 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     if not target:
         return
 
-    db = None
     try:
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence_reader
         from hermes_cli.config import get_hermes_home
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-        session = db.get_session(target)
-        if not session:
-            return
+        with open_persistence_reader(get_hermes_home()) as persistence:
+            session = persistence.sessions.get(target)
+            if not session:
+                return
 
-        title = db.get_session_title(target)
-        resume_id = _short_resume_id(db, target)
-        message_count = int(session.get("message_count") or 0)
-        if message_count == 0:
-            return  # No real conversation — don't show resume info
-        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
-        for row in _branch_lineage(db, session):
-            for k in tokens:
-                tokens[k] += int(row.get(f"{k}_tokens") or 0)
+            title = persistence.sessions.get_title(target)
+            resume_id = _short_resume_id(persistence, target)
+            message_count = int(session.message_count or 0)
+            if message_count == 0:
+                return  # No real conversation — don't show resume info
+            tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+            for row in _branch_lineage(persistence, session):
+                for k in tokens:
+                    tokens[k] += int(getattr(row, f"{k}_tokens") or 0)
     except Exception:
         return
-    finally:
-        if db is not None:
-            db.close()
 
     # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
     from hermes_cli.profiles import get_active_profile_name
@@ -387,9 +379,10 @@ def _setup_tui_worktree() -> dict:
             _threading.Thread(
                 target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
         from hermes_cli.config import get_hermes_home
+        from persistence_assembly import profile_scope, store_location
         # The session's frozen cwd keeps this checkout; name the store from creation so a
         # launcher killed with its terminal still leaves the tree to its sessions.
-        wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
+        wt_info = _setup_worktree(retain_db=store_location(profile_scope(home=get_hermes_home())))
     except Exception as exc:
         print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
     if not wt_info:
@@ -409,12 +402,13 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
     from hermes_cli.config import get_hermes_home
     from hermes_cli.worktree_exit import _still_in_use
     from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
+    from persistence_assembly import profile_scope, store_location
 
     path = wt_info.get("path")
     if not path or not Path(path).is_dir():
         return False
     try:
-        db_path = str(get_hermes_home() / "state.db")
+        db_path = str(store_location(profile_scope(home=get_hermes_home())))
         if _retained_tree_is_live(db_path, path, pending_only=True):
             return False
         if _still_in_use(path):
@@ -593,8 +587,9 @@ def _launch_tui(
                 # launch's stale prune keeps the tree while the session is resumable.
                 from hermes_cli.config import get_hermes_home
                 from hermes_cli.worktree_ops import _retain_worktree_for_session
+                from persistence_assembly import profile_scope, store_location
                 _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
-                                             get_hermes_home() / "state.db")
+                                             store_location(profile_scope(home=get_hermes_home())))
             print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;

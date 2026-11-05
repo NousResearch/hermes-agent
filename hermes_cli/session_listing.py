@@ -86,6 +86,7 @@ def query_session_listing(
     search_query: str | None = None,
     limit: int = 10,
     exclude_sources: list[str] | None = None,
+    persistence: Any = None,
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces (shared CLI/gateway policy).
 
@@ -93,17 +94,30 @@ def query_session_listing(
     current session hidden unless requested (then marked ``is_current_session``); ``session_key``
     restricts gateway callers to one lane before the DB limit applies. With ``search_query`` rows
     are filtered by title/id in SQL, ordered by recent activity, and unnamed sessions stay visible
-    since an id match may be the only handle.
+    since an id match may be the only handle. Rows are read through ``persistence`` (a storage
+    interface handle) when given, else through ``session_db``.
     """
     search = (search_query or "").strip()
-    rows = session_db.list_sessions_rich(
-        source=None if include_all_sources else source,
-        session_key=session_key,
-        exclude_sources=exclude_sources,
-        limit=max(limit * 4, limit),
-        search_query=search or None,
-        order_by_last_active=bool(search),
-    )
+    if persistence is not None:
+        from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+        scoped = None if include_all_sources else source
+        entries = persistence.sessions.list_sessions(SessionQuery(
+            sources=(scoped,) if scoped else None,
+            session_key=session_key,
+            exclude_sources=tuple(exclude_sources or ()),
+            search_text=search or None,
+            order=SessionOrder.LAST_ACTIVE if search else SessionOrder.STARTED_AT,
+        ), SessionWindow(limit=max(limit * 4, limit)))
+        rows = [entry.as_list_row() for entry in entries]
+    else:
+        rows = session_db.list_sessions_rich(
+            source=None if include_all_sources else source,
+            session_key=session_key,
+            exclude_sources=exclude_sources,
+            limit=max(limit * 4, limit),
+            search_query=search or None,
+            order_by_last_active=bool(search),
+        )
     result: list[dict[str, Any]] = []
     for row in rows:
         is_current = bool(current_session_id and row.get("id") == current_session_id)

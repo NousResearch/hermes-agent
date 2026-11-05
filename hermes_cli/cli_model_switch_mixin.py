@@ -52,17 +52,20 @@ def _resolve_cli_reasoning(cli) -> None:
 def stored_session_route(session_meta, *, current_model, current_provider):
     """The route a resumed session should run on, or ``None`` when the stored one is absent or
     already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
-    canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
+    canonical row reader is ``gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
     stored_model = str((session_meta or {}).get("model") or "").strip()
     if not stored_model:
         return None
-    from hermes_state import SessionDB as _SessionDB
-    runtime = _SessionDB.session_gateway_runtime(session_meta)
-    base_url = runtime.get("base_url") or None
-    api_mode = runtime.get("api_mode") or None
-    stored_provider = runtime.get("provider") or None
+    from persistence.conversation.sessions import parse_model_config
+    from persistence.gateway.routing import gateway_runtime
+    runtime = gateway_runtime(parse_model_config(session_meta.get("model_config")),
+                              billing_provider=str(session_meta.get("billing_provider") or ""),
+                              billing_base_url=str(session_meta.get("billing_base_url") or ""))
+    base_url = runtime.base_url or None
+    api_mode = runtime.api_mode or None
+    stored_provider = runtime.provider or None
     provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
     if provider != stored_provider:
         # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
@@ -235,7 +238,7 @@ def _one_turn_selection_context(cli):
     except Exception:
         logger.debug("one-turn selection context unavailable", exc_info=True)
         return None
-    tokens = persisted_anchor_tokens(db, sid, messages)
+    tokens = persisted_anchor_tokens(db, sid, messages, persistence=getattr(db, "persistence", None))
     if not tokens:
         return None
     return SelectionContext(context_tokens=tokens, current_model=getattr(cli, "model", None) or None)

@@ -200,6 +200,9 @@ def test_explicit_work_home(setup_env, tmp_path, monkeypatch):
     (work / "config.yaml").write_text("{}\n")
     monkeypatch.setattr(sys, "argv", ["hermes", "-p", "work", "gateway", "setup", "telegram", "--quick"])
     monkeypatch.setattr(main, "_explicit_cli_profile", None)
+    # -p resolves profiles under the default root, so drop the fixture's HERMES_HOME (as
+    # test_apply_profile_override does) and let the flag set it.
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     main._apply_profile_override()
     with pytest.raises(SystemExit) as exited:
         gw._cmd_setup(_parse(*sys.argv[3:]))

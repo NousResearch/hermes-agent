@@ -86,7 +86,7 @@ _CHAIN_CAP = 1000
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
 # ``prompt_refresh_epoch`` too: without it a rotated child looks older than any past
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch")
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_vision_payload_evictions_v1")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:
@@ -331,8 +331,10 @@ class SessionCompressionMixin:
         from hermes_state_sessions import _parse_model_config
         # Pin/archive and the conversation keys are compression-lineage state; canonical branch/reset
         # verbs also publish through here, and their child is its own conversation.
-        continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
-        carried = {key: value for key, value in _parse_model_config(parent["model_config"]).items()
+        prior_config = _parse_model_config(parent["model_config"])
+        continuation = not any(k in (model_config or {}) and model_config[k] != prior_config.get(k)
+                               for k in ("_branched_from", "_reset_from"))
+        carried = {key: value for key, value in prior_config.items()
                    if continuation and key in _CONVERSATION_MODEL_CONFIG_KEYS}
         model_config = {**carried, **(model_config or {})}
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)

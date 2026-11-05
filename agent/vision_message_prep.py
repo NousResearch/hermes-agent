@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
+from agent.vision_byte_replay import byte_image_records, persist_byte_image_records, route_fingerprint
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
@@ -77,7 +78,8 @@ def _tool_image_key(message: dict, part: dict) -> tuple[str, bytes]:
 
 def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> bool:
     """Replay only actual 413 evictions on wire copies; fresh tool images remain usable."""
-    stripped = (getattr(agent, "_byte_stripped_tool_images", None) or {}).get(_byte_strip_route_key(agent))
+    state = byte_image_records(agent)
+    stripped = state.get(route_fingerprint(_byte_strip_route_key(agent))) if state else None
     if not stripped:
         return False
     changed = False
@@ -297,7 +299,7 @@ class VisionMessagePrepMixin:
     _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
-        self, api_messages: list, *, remember_model: bool = True, remember_bytes: bool = False
+        self, api_messages: list, *, remember_model: bool = True, remember_bytes: bool = False, retained_messages: list | None = None
     ) -> bool:
         """Downgrade list-type tool messages to text in place; True if any were downgraded.
 
@@ -308,7 +310,7 @@ class VisionMessagePrepMixin:
         ``remember_bytes`` remembers only the image parts actually removed by 413 recovery,
         keyed by endpoint, API mode, provider, model and tool-call ID. Later wire copies keep
         those rejected payloads stripped without disabling fresh vision input (#148146).
-        Canonical history is unchanged and the memory lasts only for this agent instance.
+        Canonical history is unchanged. A session sidecar carries fingerprints across workers.
         """
         if not isinstance(api_messages, list):
             return False
@@ -331,9 +333,8 @@ class VisionMessagePrepMixin:
                 continue
 
             if remember_bytes and _provider_model_key(self)[1]:
-                if not hasattr(self, "_byte_stripped_tool_images"):
-                    self._byte_stripped_tool_images = {}
-                stripped = self._byte_stripped_tool_images.setdefault(_byte_strip_route_key(self), set())
+                state = byte_image_records(self)
+                stripped = state.setdefault(route_fingerprint(_byte_strip_route_key(self)), set())
                 stripped.update(_tool_image_key(msg, part) for part in content if _is_image_part(part))
 
             # Salvage any text parts so the model still sees some signal.
@@ -343,6 +344,12 @@ class VisionMessagePrepMixin:
             )
             changed = True
 
+        if changed and remember_bytes and _provider_model_key(self)[1]:
+            retained_ids = None if retained_messages is None else {
+                str(msg.get("tool_call_id") or "") for msg in retained_messages
+                if isinstance(msg, dict) and msg.get("role") == "tool" and self._content_has_image_parts(msg.get("content"))
+            }
+            persist_byte_image_records(self, retained_ids)
         return changed
 
     def _anthropic_preserve_dots(self) -> bool:

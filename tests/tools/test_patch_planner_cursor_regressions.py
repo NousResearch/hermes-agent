@@ -59,3 +59,36 @@ def test_hint_selects_unique_partial_line():
     result, files = apply(source, '@@ SECRET_A_EDIT @@\n-prefix \n+prefixZ')
     assert result.success, result.error
     assert files.source == source.replace('prefix SECRET_A_EDIT', 'prefixZSECRET_A_EDIT')
+
+
+def test_one_hint_with_two_sites_does_not_choose_first():
+    source = '# marker\nvalue = old\nvalue = old\nfooter = old\n'
+    result, files = apply(source, '@@ marker @@\n-value = old\n+value = new\n@@\n-footer = old\n+footer = new')
+    assert not result.success
+    assert not files.writes
+    assert files.source == source
+
+
+def test_normalized_consumed_source_is_not_suppressed():
+    source = 'keep = hostish_d\nhost  = "a"\nhost = "b"\n'
+    result, files = apply(source, '@@\n-host = "a"\n+host = "c"\n@@\n-host = "a"\n+keep = hostish_d')
+    assert not result.success
+    assert not files.writes
+    assert files.source == source
+
+
+def test_ambiguous_partial_hint_fails_atomically_without_exposing_hint():
+    source = 'prefix AAA_UNRELATED\n' + 'x' * 100 + '\nprefix SECRET_A_EDIT\n'
+    result, files = apply(source, '@@ SECRET_A_EDIT @@\n-prefix \n+prefixZ')
+    assert not result.success
+    assert not files.writes
+    assert files.source == source
+    assert result.error and 'SECRET_A_EDIT' not in result.error
+
+
+def test_partial_hint_with_footer_keeps_the_hinted_site():
+    source = 'prefix AAA_UNRELATED\n' + 'x' * 3000 + '\nprefix SECRET_A_EDIT\nfooter = old\n'
+    body = '@@ SECRET_A_EDIT @@\n-prefix \n+prefixZ\n@@\n-footer = old\n+footer = new'
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == source.replace('prefix SECRET_A_EDIT', 'prefixZSECRET_A_EDIT').replace('footer = old', 'footer = new')

@@ -1,6 +1,12 @@
+import sys
+
 import pytest
 
-from hermes_cli.secret_prompt import _collect_masked_input, masked_secret_prompt
+from hermes_cli.secret_prompt import (
+    _collect_masked_input,
+    _masked_secret_prompt_posix,
+    masked_secret_prompt,
+)
 
 
 def _run_collect(chars: str):
@@ -54,3 +60,12 @@ def test_masked_secret_prompt_falls_back_to_getpass_for_non_tty(monkeypatch):
     monkeypatch.setattr("getpass.getpass", lambda prompt: f"value from {prompt}")
 
     assert masked_secret_prompt("API key: ") == "value from API key: "
+
+
+def test_posix_prompt_falls_back_to_getpass_without_termios(monkeypatch):
+    # An interpreter without raw terminal control (termios/tty unimportable).
+    monkeypatch.setitem(sys.modules, "termios", None)
+    monkeypatch.setitem(sys.modules, "tty", None)
+    monkeypatch.setattr("getpass.getpass", lambda prompt: f"value from {prompt}")
+
+    assert _masked_secret_prompt_posix("API key: ", mask="*") == "value from API key: "

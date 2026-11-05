@@ -1,0 +1,23 @@
+name: contract-hunter
+repo: https://github.com/NathanOyewole/hermes-contract-hunter
+sha: 2c96552e94d11b7f33d2d8d6149ec7372d3d186d
+version: "1.0.0"
+description: "Scout-powered EVM contract vulnerability hunter. Radar → surface → prove → report pipeline for bounty programs. Auto-monitors Immunefi for new targets."
+author: NathanOyewole
+tags:
+  - security
+  - bounty-hunting
+  - contracts
+  - web3
+provides_tools:
+  - scout_radar
+  - scout_surface
+  - scout_prove
+  - scout_report
+  - scout_status
+provides_hooks:
+  - on_session_start
+provides_commands:
+  - hunt
+requires_env:
+  - SCOUT_PATH

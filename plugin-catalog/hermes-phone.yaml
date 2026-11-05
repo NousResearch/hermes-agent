@@ -1,6 +1,6 @@
 name: hermes-phone
 repo: https://github.com/winchxyz/hermes-phone
-sha: ff47afba2bb905eb344934da961ff0a4cdcdeb12
+sha: 0ef88344b16a19db160df84e6857eb329c2dd7f4
 description: >-
   Let your Hermes agent place real phone calls for you with explicit approval.
   It shows a brief card and dials only after you reply "call" (or tap Call),
@@ -13,7 +13,8 @@ description: >-
   reachable at your PUBLIC_BASE_URL, and stores call logs and text transcripts
   in plugin data (SQLite). No audio recording, no telemetry, no self-updater,
   no credential-file reads. Emergency and premium numbers are hard-blocked,
-  dialing is limited to an allowlist you set, card/CVV/OTP are never shared,
+  dialing is limited to an allowlist you set, card, address and ID details are shared
+  only with per-call consent (CVV, passwords and one-time codes never),
   and there are no automatic redials.
 maintainer: winchxyz
 tier: community
@@ -21,7 +22,7 @@ category: voice
 title: Hermes Phone
 docs_url: https://github.com/winchxyz/hermes-phone#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/winchxyz/hermes-phone/ff47afba2bb905eb344934da961ff0a4cdcdeb12/docs/assets/banner.png
+image: https://raw.githubusercontent.com/winchxyz/hermes-phone/0ef88344b16a19db160df84e6857eb329c2dd7f4/docs/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: [phone_prepare, phone_call, phone_status, phone_transcript]

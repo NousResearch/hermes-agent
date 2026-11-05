@@ -18,9 +18,12 @@ def test_recovery_payload_memory_does_not_scale_with_backlog(
             "sess", {"role": "user", "content": content, "timestamp": seq},
         )
 
+    class Messages:
+        def append(self, session_id: str, message) -> None:
+            assert message.content == content
+
     class Sink:
-        def append_message(self, **kwargs: object) -> None:
-            assert kwargs["content"] == content
+        messages = Messages()
 
     tracemalloc.start()
     try:
@@ -48,7 +51,7 @@ def test_same_second_shutdown_slot_precedes_overflow(
     assert shutdown_flush.flush_overflow_to_file({"session": [
         {"text": "B", "session_id": "sess"}, {"text": "C", "session_id": "sess"},
     ]}) == 2
-    db = MagicMock()
-    assert shutdown_flush.recover_pending_to_db(db) == 3
-    assert [call.kwargs["content"] for call in db.append_message.call_args_list] == ["A", "B", "C"]
+    store = MagicMock()
+    assert shutdown_flush.recover_pending_to_db(store) == 3
+    assert [call.args[1].content for call in store.messages.append.call_args_list] == ["A", "B", "C"]
     assert not list(tmp_path.glob("*.json"))

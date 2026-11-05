@@ -15,6 +15,14 @@ from tools import mcp_tool_sampling as _sampling
 
 logger = logging.getLogger("tools.mcp_tool")
 
+# A keepalive probe is one round trip over whatever network the host happens to have. One Wi-Fi
+# roam, sleep/wake or NAT rebind times it out while the server is perfectly healthy, and tearing
+# the session down on that single probe reported a working remote server as "failed" to every
+# status reader (the desktop MCP health toast among them). Two probes, seconds apart, still fail
+# on a real outage; the reconnect path and its park budget are unchanged.
+_KEEPALIVE_PROBE_ATTEMPTS = 2
+_KEEPALIVE_PROBE_RETRY_DELAY = 3.0
+
 
 @dataclass
 class _RetryBudget:
@@ -131,11 +139,8 @@ class MCPServerRunMixin:
                 if self.session:
                     if self._rpc_lock.locked() or any(not t.done() for t in self._inflight_tasks):
                         continue
-                    try:
-                        async with self._rpc_lock:
-                            await self._keepalive_probe()
-                    except Exception as exc:
-                        root = _errors._unwrap_exception_group(exc)
+                    root = await self._probe_keepalive_with_retry()
+                    if root is not None:
                         logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
                                        "degraded): %s: %s", self.name, type(root).__name__, root)
                         self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
@@ -154,6 +159,38 @@ class MCPServerRunMixin:
         self._fail_inflight_calls("reconnect")
         self._reconnect_event.clear()
         return "reconnect"
+
+    async def _probe_keepalive_with_retry(self):
+        """Probe the session, tolerating one flaky probe.
+
+        Returns the root failure when every attempt failed (the caller reconnects), else ``None``:
+        healthy, or a live RPC / lifecycle event settled it without another probe. A single timed
+        out probe over a flapping network is not evidence of a dead server (#133155 family), so it
+        must not tear down a working session or surface as a failure to status readers.
+        """
+        for attempt in range(1, _KEEPALIVE_PROBE_ATTEMPTS + 1):
+            try:
+                async with self._rpc_lock:
+                    await self._keepalive_probe()
+                return None
+            # A probe surfaces whatever the transport raises: timeout, closed stream, JSON-RPC error.
+            except Exception as exc:  # health: allow BLE001 -- the retry decides, the caller reconnects
+                root = _errors._unwrap_exception_group(exc)
+                if attempt >= _KEEPALIVE_PROBE_ATTEMPTS:
+                    return root
+                logger.info("MCP server '%s': keepalive probe failed (%s: %s); probing once more in "
+                            "%.0fs before declaring the session dead", self.name,
+                            type(root).__name__, root, _KEEPALIVE_PROBE_RETRY_DELAY)
+            # An in-flight RPC or a lifecycle event settles the question without a second probe: a
+            # busy server is a live server, and a shutdown/reconnect request outranks the retry.
+            if self._shutdown_event.is_set() or self._reconnect_event.is_set():
+                return None
+            await asyncio.sleep(_KEEPALIVE_PROBE_RETRY_DELAY)
+            if self._shutdown_event.is_set() or self._reconnect_event.is_set():
+                return None
+            if self._rpc_lock.locked() or any(not t.done() for t in self._inflight_tasks):
+                return None
+        return None
 
     async def _wait_for_reconnect_or_shutdown(self, timeout: Optional[float] = None) -> str:
         """Parked wait: ``"shutdown"``, ``"reconnect"`` (explicit request; event cleared first) or

@@ -465,15 +465,15 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 # --- Core actions -------------------------------------------------------------
 
-def _with_origin(content: str, origin: str | None) -> str:
-    """Fill an absent ``origin:`` frontmatter line with the caller's one-clause reason.
+def _with_why(content: str, why: str | None) -> str:
+    """Fill an absent ``why:`` frontmatter line with the caller's one-clause reason.
 
     The date a skill was created is already tracked in .usage.json, but WHY it exists is not: the
     session that wrote it is gone, and a profile's git history is typically one bulk import that
-    records the import date for every skill at once. An author-written ``origin:`` line — date,
+    records the import date for every skill at once. An author-written ``why:`` line — date,
     reason, or both — is never touched.
     """
-    reason = (origin or "").strip()
+    reason = (why or "").strip()
     if not reason or not content.startswith("---"):
         return content
     end_match = _FRONTMATTER_END_RE.search(content[3:])
@@ -482,14 +482,14 @@ def _with_origin(content: str, origin: str | None) -> str:
     body_start = end_match.start() + 4  # first char of the closing '---' line
     with suppress(Exception):
         parsed = yaml.safe_load(content[3:body_start])
-        if isinstance(parsed, dict) and str(parsed.get("origin") or "").strip():
+        if isinstance(parsed, dict) and str(parsed.get("why") or "").strip():
             return content
-    return content[:body_start] + f"origin: {reason}\n" + content[body_start:]
+    return content[:body_start] + f"why: {reason}\n" + content[body_start:]
 
 
 def _create_skill(name: str, content: str, category: str | None = None,
-                  origin: str | None = None) -> dict[str, Any]:
-    content = _with_origin(content, origin)
+                  why: str | None = None) -> dict[str, Any]:
+    content = _with_why(content, why)
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content) or _validate_content_size(content)):
         return _err(err)
@@ -759,7 +759,7 @@ def _act_patch(a):
 # action -> handler(args dict) returning a result dict, or a tool_error JSON string for
 # argument-shape errors. "edit" is a legacy alias for a full rewrite (not in the schema).
 _ACTION_HANDLERS = {
-    "create": lambda a: _create_skill(a["name"], a["content"], a.get("category"), a.get("origin")),
+    "create": lambda a: _create_skill(a["name"], a["content"], a.get("category"), a.get("why")),
     "edit": lambda a: _edit_skill(a["name"], a["content"]),
     "patch": _act_patch,
     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
@@ -922,10 +922,10 @@ SKILL_MANAGE_SCHEMA = {
                                     "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
                         "category": {"type": "string",
                                      "description": "Optional category subdir (e.g. 'devops')."},
-                        "origin": {"type": "string",
-                                   "description": "Optional: why this skill exists, one clause (the problem "
-                                                  "it was written for). Recorded as an 'origin:' frontmatter "
-                                                  "line; creation date alone is already tracked elsewhere."},
+                        "why": {"type": "string",
+                                "description": "Optional: why this skill exists, one clause (the problem it "
+                                               "was written for). Recorded as a 'why:' frontmatter line; "
+                                               "creation date and provenance are tracked elsewhere."},
                     }, ("content",)),
                     _op_schema("patch", {
                         "old_string": _OLD_STRING, "new_string": _NEW_STRING,

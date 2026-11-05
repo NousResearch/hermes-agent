@@ -5,7 +5,7 @@ is ssh / daytona / vercel (any backend that reports its ``_remote_home``), the a
 on another filesystem, so the tag was silently dropped. This module pulls the file through the
 active environment's ``fetch_file`` into the document cache (already an allowlisted delivery root)
 and hands back the host copy. Backends without a known remote home (docker outside its mounts,
-modal, singularity) still get the conservative any-component denylist, so a ``/root/...`` artifact
+modal, plugin sandboxes) still get the conservative any-component denylist, so a ``/root/...`` artifact
 there is not fetched — set ``_remote_home`` on the environment to opt in.
 
 The remote path is screened against the same denylist as local deliveries BEFORE any bytes move,
@@ -30,8 +30,8 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-# Telegram bot uploads cap at 50 MB; the other platforms are in the same range. Mirrors
-# tools.image_source._MAX_INGEST_BYTES.
+# Telegram bot uploads cap at 50 MB; the other platforms are in the same range. Independent of
+# tools.image_source._MAX_HOST_READ_BYTES (250 MiB, local reads): do not sync the two.
 _FETCH_MAX_BYTES = 50 * 1024 * 1024
 
 _DENIED_PREFIXES = tuple(PurePosixPath(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES)

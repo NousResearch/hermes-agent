@@ -20,6 +20,8 @@ export interface PluginRecord {
   status: PluginStatus
   /** One-liner from the plugin's own metadata (what it adds). */
   description?: string
+  /** Sensitive doors the plugin declared (`HermesPlugin.capabilities`). */
+  capabilities?: string[]
   /** Load/registration failure message (status 'error'). */
   error?: string
   /** Absolute plugin.js path (disk plugins) — powers "Reveal in Finder". */

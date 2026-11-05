@@ -188,3 +188,19 @@ def test_combine_batch_files_skips_non_dict_lines(tmp_path):
     assert kept == 1
     out = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
     assert "kept" in out and "42" not in out
+
+
+def test_filter_dataset_by_completed_skips_bad_message_shapes(tmp_path):
+    """A multimodal (list) content or a non-dict conversations entry must not
+    crash --resume filtering; the sibling _entry_prompt_text already guards."""
+    runner = _scan_runner(tmp_path)
+    runner.dataset = [
+        {"conversations": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
+        {"conversations": ["not a dict"]},
+        {"conversations": [{"from": "human", "value": "ok q"}]},
+    ]
+
+    filtered, skipped = runner._filter_dataset_by_completed(set())
+
+    assert skipped == []
+    assert len(filtered) == 3

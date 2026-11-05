@@ -410,9 +410,24 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
+        # cua-driver 0.32+ publishes strict token-only schemas (additionalProperties: false) that
+        # drop `element_index` entirely, so sending both gets the action rejected before it runs
+        # (#132876). Older drivers' schemas keep `element_index` and accept both, so only a schema
+        # that names the token but not the index warrants stripping the index.
+        token_only = (self._session.supports_input_property(name, "element_token")
+                      and not self._session.supports_input_property(name, "element_index"))
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+            if token_only:
+                args.pop("element_index", None)
+        elif isinstance(idx, int) and token_only:
+            # A strict token-only schema never accepts the bare `element_index` either, so an index
+            # without a token (the model reusing an index from an older capture, or a capture that
+            # returned no tokens) cannot succeed — refuse it here with an actionable message instead
+            # of letting the driver echo the same opaque `unknown argument element_index` rejection.
+            return ActionResult(ok=False, action=name, code="stale_element",
+                                message=f"element {idx} has no token from the latest capture — call capture first")
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

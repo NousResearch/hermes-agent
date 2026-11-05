@@ -1,6 +1,7 @@
 """Process startup phases; diagnostics remain in the gateway facade."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -641,19 +642,23 @@ def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restar
 
 
 async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
-    """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
+    """Start platforms without waiting for MCP discovery. Returns the exit verdict when the process must end
     before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
     from gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
                              _shutdown_gateway_health_export, _shutdown_mcp_servers_nonblocking)
-    # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
-    try:
-        # MCP tool discovery — run in an executor so the asyncio event loop stays responsive even when a
-        # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
-        # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
-        # Telegram polling) until it returned. See #16856.
-        await _discover_gateway_mcp_tools(runner.config)
-    except Exception:
-        logger.debug("MCP tool discovery failed (non-fatal)", exc_info=True)
+    # discover_mcp_tools() blocks up to 120s per configured server. Awaiting it here delays
+    # runner.start() — and with it local/dashboard readiness — behind MCP servers that are slow or
+    # unreachable, which is common when optional servers are multiplexed across profiles. Discover in
+    # a tracked background task instead: late tools still register, and shutdown drains the task.
+    async def _discover_mcp_in_background() -> None:
+        try:
+            await _discover_gateway_mcp_tools(runner.config)
+            logger.info("MCP tool discovery finished in background")
+        except Exception:
+            logger.warning("MCP tool discovery failed in background", exc_info=True)
+
+    runner._retain_background_task(
+        asyncio.create_task(_discover_mcp_in_background(), name="gateway-mcp-discovery"))
 
     try:
         success = await runner.start()

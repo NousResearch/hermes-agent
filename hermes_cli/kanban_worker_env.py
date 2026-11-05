@@ -37,6 +37,9 @@ _HOST_NAMES = frozenset({
     "HERMES_PYTHON_SRC_ROOT", "HERMES_DATA_DIR_SUFFIX", "HERMES_HOME_MODE", "HERMES_MANAGED",
     "HERMES_CONTAINER", "HERMES_SKIP_CHMOD", "HERMES_GATEWAY_LOCK_DIR", "HERMES_DISABLE_LAZY_INSTALLS",
     "HERMES_KANBAN_HOME", "HERMES_KANBAN_BUSY_TIMEOUT_MS",
+    # The administrator-managed scope directory (an IT bootstrap override, never in any profile's
+    # ``.env``): without it a cold-started gateway loses the managed overlay stored elsewhere.
+    "HERMES_MANAGED_DIR",
     # The XDG base directories by exact name (state: the host gateway lock; config: the package
     # index). Not the XDG_ prefix: XDG_ACTIVATION_TOKEN and any user-chosen XDG_* name can be a secret.
     "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME",
@@ -51,6 +54,11 @@ def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict
     """*env* reduced to what the worker client for *assignee_home*, and a gateway it starts, may take
     from the host. The launch profile's ``.env`` / source residue goes first: an allowlisted name it
     defines (an ``HTTPS_PROXY`` with credentials in the URL) is that profile's, not the host's."""
+    from hermes_cli.config_backend import deployment_env_names
     from tools.environments.local import strip_launch_profile_env
     host = strip_launch_profile_env(dict(env), assignee_home)
-    return {k: v for k, v in host.items() if k.upper() in _HOST_NAMES or k.upper().startswith(_HOST_PREFIXES)}
+    # The config backend's deployment (which backend, plane and instance) is the instance's, not a
+    # profile's; without it the assignee's gateway reads its config from the file backend. Its
+    # credential is not part of it: the assignee resolves its own and fails closed without it.
+    names = _HOST_NAMES | {name.upper() for name in deployment_env_names()}
+    return {k: v for k, v in host.items() if k.upper() in names or k.upper().startswith(_HOST_PREFIXES)}

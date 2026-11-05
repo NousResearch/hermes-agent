@@ -114,3 +114,22 @@ def test_worker_for_another_profile_can_still_import_hermes(profile_b, tmp_path,
     monkeypatch.setenv("PYTHONPATH", str(repo_root))
     env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
     assert str(repo_root) in env.get("PYTHONPATH", "").split(os.pathsep)
+
+
+
+def test_worker_for_another_profile_keeps_the_instance_config_deployment(profile_b, tmp_path, monkeypatch):
+    """The config backend's deployment usually arrives in the launch profile's ``.env``, which is
+    launch residue for B's worker. It is the instance's, so B's worker (and the gateway it may
+    cold-start for B) keeps it; anything else from that ``.env`` does not reach B. The selected
+    backend names the deployment (``deployment_env_names``); the file backend names none, so a
+    stand-in backend names one here, through the real dispatch path."""
+    from hermes_cli import config_backend
+
+    launch = Path(os.environ["HERMES_HOME"])
+    (launch / ".env").write_text("FIXTURE_CONFIG_PLANE=plane-1\nFIXTURE_PLANE_TOKEN=secret\n", encoding="utf-8")
+    monkeypatch.setenv("FIXTURE_CONFIG_PLANE", "plane-1")
+    monkeypatch.setenv("FIXTURE_PLANE_TOKEN", "secret")
+    monkeypatch.setattr(config_backend, "deployment_env_names", lambda: frozenset({"FIXTURE_CONFIG_PLANE"}))
+    env = _spawn_env_for_profile_b(monkeypatch, tmp_path)
+    assert env.get("FIXTURE_CONFIG_PLANE") == "plane-1", "B's worker lost the instance's config deployment"
+    assert "FIXTURE_PLANE_TOKEN" not in env, "B's worker inherited the launch profile's .env credential"

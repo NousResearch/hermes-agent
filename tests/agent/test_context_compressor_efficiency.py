@@ -1,90 +1,79 @@
-"""Pre-summary efficiency regression tests for #23811 and #21470."""
+"""Pre-summary eligibility and lossless skip regressions for #23811 and #21470."""
 
+from copy import deepcopy
 from unittest.mock import patch
+
+import pytest
 
 from agent.context_compressor import ContextCompressor
 
 
-class TestCompressionSkipsWhenSummaryWouldInflate:
-    """Regression: compression must not replace content with a larger summary.
+@pytest.fixture
+def compressor():
+    c = ContextCompressor(
+        model="test/model",
+        config_context_length=200_000,
+        protect_first_n=2,
+        protect_last_n=3,
+        quiet_mode=True,
+    )
+    c.last_prompt_tokens = c.threshold_tokens + 1
+    return c
 
-    Issue #23811/#22037: the structured summary template has a _MIN_SUMMARY_TOKENS
-    floor of 2000 plus ~500 tokens of overhead.  When the compressible window is
-    tiny, the forced summary can be larger than the raw messages it replaces,
-    causing rapid re-compression cycles.
 
-    Guard (pre-summariser, #21470): bails BEFORE the summariser call when the
-    approximate compressible window is not larger than the summary budget.  This
-    saves an LLM call and prevents the inflation.
+@pytest.fixture
+def prunable_transcript():
+    # The large recent request/reply fill the protected tail; the older tool result
+    # is prunable, while the middle stays below the summary target plus overhead.
+    return [
+        {"role": "user", "content": "initial task"},
+        {"role": "assistant", "content": "initial reply"},
+        {"role": "user", "content": "inspect result"},
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "read-1", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"sample.txt"}'},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "read-1", "content": "x" * 6000},
+        {"role": "assistant", "content": "Result inspected"},
+        {"role": "user", "content": "new request"},
+        {"role": "assistant", "content": "intermediate reply"},
+        {"role": "user", "content": "latest request " + "z" * 24_000},
+        {"role": "assistant", "content": "latest reply " + "y" * 24_000},
+    ]
 
-    Note: PR #25413 added a separate post-hoc guard (saved_estimate <= 0 after
-    assembly) to catch verbose summaries the pre-guard missed.  We did NOT adopt
-    it here because it conflicts with fallback-summary tests that expect
-    compression to proceed on small conversations even when the fallback summary
-    saves no tokens.  The pre-guard covers the common inflation case.
-    """
 
-    def _make_short_messages(self, n):
-        """Return minimal alternating messages (very small token footprint)."""
-        return [
-            {"role": "user", "content": f"u{i}"}
-            if i % 2 == 0
-            else {"role": "assistant", "content": f"a{i}"}
-            for i in range(n)
-        ]
+def test_ineligible_window_preserves_prunable_transcript(compressor, prunable_transcript):
+    """Skipping declines both pruning and summarization, leaving tool output intact."""
+    original = deepcopy(prunable_transcript)
+    pruned, count = compressor._prune_old_tool_results(
+        prunable_transcript, protect_tail_count=compressor.protect_last_n,
+        protect_tail_tokens=compressor.tail_token_budget,
+    )
+    assert count > 0
+    assert pruned[4]["content"] != original[4]["content"]
 
-    def test_pre_guard_bails_when_compressible_not_larger_than_budget(self):
-        """Pre-guard: if compressible window is smaller than summary budget, skip it."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-            c = ContextCompressor(
-                model="test/model",
-                threshold_percent=0.50,  # 100K threshold
-                protect_first_n=2,
-                protect_last_n=3,
-                quiet_mode=True,
-            )
-            _ = c.context_length
+    with patch.object(compressor, "_generate_summary", return_value="Unused summary") as summarize:
+        result = compressor.compress(prunable_transcript)
 
-        # 8 alternating messages: head 2 + middle 3 + tail 3
-        # Each message is ~4 chars -> ~1 token, so middle = ~3 tokens.
-        # But the summary floor is 2000 tokens.  Compression should skip.
-        # Set last_prompt_tokens above threshold to simulate a real session
-        # where the guard fires based on auto-detected tokens.
-        c.last_prompt_tokens = 150_000
-        msgs = self._make_short_messages(8)
-        original = msgs[:]
-        result = c.compress(msgs, current_tokens=160_000)
+    summarize.assert_not_called()
+    assert result == original
+    assert prunable_transcript == original
+    assert compressor.compression_count == 0
 
-        # Must return unchanged (guard short-circuits before any mutation)
-        assert result == original
-        # compression_count must NOT have been incremented
-        assert c.compression_count == 0
 
-    def test_pre_guard_proceeds_when_compressible_is_larger_than_budget(self):
-        """Pre-guard: if compressible window is large enough, compression proceeds normally."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
-            c = ContextCompressor(
-                model="test/model",
-                threshold_percent=0.50,
-                protect_first_n=2,
-                protect_last_n=3,
-                quiet_mode=True,
-            )
-            _ = c.context_length
+@pytest.mark.parametrize("force", [False, True], ids=["eligible-window", "manual-small-window"])
+def test_eligible_or_manual_compression_generates_summary(compressor, prunable_transcript, force):
+    """A large window proceeds; a manual request also proceeds for a small window."""
+    if not force:
+        # Plain conversation text survives tool pruning and makes the middle eligible.
+        prunable_transcript[2]["content"] += " historical detail" * 2000
 
-        # Build 100 messages each large enough that the tail budget (10K)
-        # can only hold a handful, leaving a substantial compressible middle.
-        # With ~2000 tokens/message the tail fits ~5 messages -> middle = ~93
-        # messages = ~186K tokens -> budget = max(2000, 186K*0.20) = 37,200.
-        # Guard: 186000 > 37200 + 500  (compression proceeds)
-        msgs = []
-        for i in range(100):
-            role = "user" if i % 2 == 0 else "assistant"
-            msgs.append({"role": role, "content": f"Message {i}: " + "x" * 8000})
+    with patch.object(compressor, "_generate_summary", return_value="Mock summary") as summarize:
+        result = compressor.compress(prunable_transcript, force=force)
 
-        with patch.object(c, "_generate_summary", return_value="Mock summary"):
-            result = c.compress(msgs, current_tokens=160_000)
-
-        # Should have compressed (messages were dropped)
-        assert len(result) < len(msgs)
-        assert c.compression_count == 1
+    summarize.assert_called_once()
+    assert result != prunable_transcript
+    assert compressor.compression_count == 1

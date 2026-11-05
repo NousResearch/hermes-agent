@@ -100,11 +100,13 @@ class PreLlmSkipMixin:
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
     def _size_efficiency_skip(self, messages: list[dict[str, Any]], force: bool) -> bool:
-        """Skip a small window before pruning; manual compression bypasses this heuristic.
+        """Decline automatic compression before pruning, preserving the original transcript.
 
         Use provider prompt usage rather than caller-overridden current_tokens, matching
-        the original eligibility rule (#21470). The summary budget includes 500 tokens
-        of estimated structural overhead.
+        the original eligibility rule (#21470). Compare the unpruned window with the
+        summary target plus 500 estimated overhead tokens. This is an eligibility
+        heuristic: the target is prompt guidance, not a cap on generated output.
+        Explicit manual compression bypasses it.
         """
         from agent.context_compressor import estimate_messages_tokens_rough
 

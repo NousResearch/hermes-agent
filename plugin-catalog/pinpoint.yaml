@@ -1,6 +1,6 @@
 name: pinpoint
 repo: https://github.com/stupidburgers/pinpoint
-sha: "42268954c0028db72b1b3e0c302251eb2fc8f6fd"
+sha: "e3652bd9098ee1aedb74ecbd620fbd5c3fe9b4c2"
 subdir: ""
 description: "Audit mode and Design mode for the live page in Hermes Desktop's Browser pane. Measure it with in-page audits (WCAG contrast, tap targets, alt/labels, overflow, small text), pin findings on the real elements, point at any element to inspect its live box model, typography, layout and contrast, send a pin or an instruction to the agent, and verify the fix with a same-element re-audit, honest fixed vs gone, a score delta and a pasteable receipt. Disclosure - Pinpoint's desktop half runs its own audit script inside the web page open in Hermes Desktop's Browser pane, only after you allow it for that site (Desktop's per-origin consent dialog; revocable under Capabilities > Plugins); the script reads computed styles, layout and attribute names (not form values or cookies) and draws an overlay. Findings (CSS selectors, short element labels, measured values) are stored in a local SQLite file under the plugin-data folder (pinpoint/data.db, 20 pages max) and are sent to the model only when the agent calls pinpoint_audit/pinpoint_pins or when you click Fix on a pin; element labels originate from the page. The desktop half polls the page every 0.5-1 s while pins are shown (via executeJavaScript) and re-audits automatically after page changes (switch off in the pane). pinpoint_audit blocks up to 90 s waiting for the Desktop (configurable) and returns desktop_unavailable when no Desktop window answers, including under cron. No network calls, no subprocesses, no shell, no credentials, no telemetry, no files written outside plugin-data; it never edits your source (the agent does, under normal approvals)."
 maintainer: stupidburgers
@@ -8,11 +8,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/stupidburgers/pinpoint/42268954c0028db72b1b3e0c302251eb2fc8f6fd/docs/banner.png"
+image: "https://raw.githubusercontent.com/stupidburgers/pinpoint/e3652bd9098ee1aedb74ecbd620fbd5c3fe9b4c2/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/42268954c0028db72b1b3e0c302251eb2fc8f6fd/docs/screenshots/01-pins.png"
-  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/42268954c0028db72b1b3e0c302251eb2fc8f6fd/docs/screenshots/02-pin-card.png"
-  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/42268954c0028db72b1b3e0c302251eb2fc8f6fd/docs/screenshots/03-after-fix.png"
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/e3652bd9098ee1aedb74ecbd620fbd5c3fe9b4c2/docs/screenshots/01-pins.png"
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/e3652bd9098ee1aedb74ecbd620fbd5c3fe9b4c2/docs/screenshots/02-pin-card.png"
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/e3652bd9098ee1aedb74ecbd620fbd5c3fe9b4c2/docs/screenshots/03-after-fix.png"
 readme: true
 platforms: [windows, macos, linux]
 known_issues:

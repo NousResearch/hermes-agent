@@ -70,11 +70,13 @@ _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
 # may hold spaces: -p " work "), each with an optional value that is neither a flag nor the bare word
 # hermes (the search restarts there), so a long run stays linear. After the group only the profile flag
 # can appear (main._scan_profile_flag strips the first -p NAME, --profile NAME or --profile=NAME anywhere
-# before `--`), matched possessively so the path words never nest backtracking loops.
+# before `--`; quotes may sit anywhere in its name), then argparse's `--`; both are matched possessively
+# so the path words never nest backtracking loops.
 _SHELL_WORD = r'(?:[^\s"\']++|"[^"]*+"|\'[^\']*+\')++'
 _HERMES_FLAGS = r'(?:(?=["\']?-)' + _SHELL_WORD + r'(?:\s++(?!["\']?-|hermes\s)' + _SHELL_WORD + r')?\s++)*'
-_HERMES_PROFILE_FLAG = (r'(?:(?:(?=["\']?--profile=)' + _SHELL_WORD + r'|(?=["\']?(?:-p|--profile)["\']?\s)'
-                        + _SHELL_WORD + r'\s++' + _SHELL_WORD + r')\s++)?+')
+_PROFILE_FLAG_NAME = r'["\']*(?:' + r'["\']*'.join("-p") + "|" + r'["\']*'.join("--profile") + r')["\']*'
+_HERMES_PROFILE_FLAG = (r'(?:(?:(?=' + _PROFILE_FLAG_NAME + r'=)' + _SHELL_WORD + r'|(?=' + _PROFILE_FLAG_NAME + r'\s)'
+                        + _SHELL_WORD + r'\s++' + _SHELL_WORD + r')\s++)?+(?:["\']*-["\']*-["\']*\s++)?+')
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'

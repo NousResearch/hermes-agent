@@ -46,6 +46,10 @@ DESC = "install, enable or trust a skill or plugin (code and instructions every 
     'hermes -p " work " skills install foo', "hermes skills '--profile=work' install foo",
     # argparse accepts any unambiguous prefix of --install-deps.
     "hermes plugins validate . --install", "hermes plugins validate --inst .",
+    # argparse's `--` may sit between the path words, and quotes may sit inside the profile flag's name.
+    "hermes skills -- install foo", "hermes skills -p work -- install foo", "hermes skills tap -- add owner/repo",
+    "hermes plugins pack -- install p.yaml", 'hermes skills -"p" work install foo',
+    'hermes skills --"profile"=work install foo', 'hermes skills "--profile"=work install foo',
 ])
 def test_extension_mutation_requires_approval(command):
     assert detect_dangerous_command(command) == (True, DESC, DESC)
@@ -85,7 +89,7 @@ def test_extension_mutation_requires_approval(command):
     "hermes plugins trust-update-url-local x",
     # After the group only the profile flag takes a value, so the next word is the verb.
     "hermes skills --profile=work search install", "hermes skills -p work search install",
-    "hermes plugins validate . --json",
+    "hermes plugins validate . --json", "hermes skills -- list", "hermes skills -- -p work list",
 ])
 def test_read_only_removal_and_longer_verbs_need_no_extension_approval(command):
     assert detect_dangerous_command(command) == (False, None, None)

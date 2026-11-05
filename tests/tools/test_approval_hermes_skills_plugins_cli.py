@@ -41,6 +41,11 @@ DESC = "install, enable or trust a skill or plugin (code and instructions every 
     "hermes skills snapshot -p work import s.json",
     "hermes plugins --profile=work enable x",
     "hermes plugins pack -p work install p.yaml",
+    # A quoted value may hold spaces (the profile scanner strips them).
+    'hermes skills -p " work " install foo', 'hermes skills --profile=" work " install foo',
+    'hermes -p " work " skills install foo', "hermes skills '--profile=work' install foo",
+    # argparse accepts any unambiguous prefix of --install-deps.
+    "hermes plugins validate . --install", "hermes plugins validate --inst .",
 ])
 def test_extension_mutation_requires_approval(command):
     assert detect_dangerous_command(command) == (True, DESC, DESC)
@@ -78,13 +83,16 @@ def test_extension_mutation_requires_approval(command):
     "hermes skills snapshot import-local s.json",
     "hermes plugins pack install-local p.yaml",
     "hermes plugins trust-update-url-local x",
+    # After the group only the profile flag takes a value, so the next word is the verb.
+    "hermes skills --profile=work search install", "hermes skills -p work search install",
+    "hermes plugins validate . --json",
 ])
 def test_read_only_removal_and_longer_verbs_need_no_extension_approval(command):
     assert detect_dangerous_command(command) == (False, None, None)
 
 
 def test_an_older_rule_keeps_its_key_in_a_compound_command():
-    # Approval keys on the first matching rule only, so this row sits last and never masks an older one.
+    # Approval keys on the first matching rule only, so this row sits last and never masks an older pattern rule.
     dangerous, key, _ = detect_dangerous_command("hermes skills install foo --yes; git reset --hard")
     assert dangerous is True
     assert key == "git reset --hard (destroys uncommitted changes)"

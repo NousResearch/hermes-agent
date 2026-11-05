@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import socket
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -60,22 +61,58 @@ def _marker_socket_sandbox(tmp_path, monkeypatch):
     return sandbox
 
 
-def _listen(path):
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(str(path))
-    listener.listen(1)
-    return listener
+class _RfbStub:
+    """A one-shot RFB endpoint that records what the probe sends.
+
+    The distinction matters: Xvnc counts a connect-and-drop as a failed security handshake and
+    blacklists the client after a few of them, so a probe that hangs up before finishing the
+    handshake turns every status call into a step toward a black screen.
+    """
+
+    def __init__(self, path):
+        self.received = []
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(str(path))
+        self._server.listen(1)
+        self._server.settimeout(5)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        try:
+            conn, _ = self._server.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5)
+            try:
+                conn.sendall(b"RFB 003.008\n")
+                self.received.append(conn.recv(12))
+                conn.sendall(b"\x01\x01")            # one security type: None
+                self.received.append(conn.recv(1))
+                conn.sendall(b"\x00\x00\x00\x00")    # SecurityResult: ok
+                self.received.append(conn.recv(1))   # ClientInit
+                conn.sendall(b"\x00" * 24)           # ServerInit; the probe reads it before closing
+            except OSError:
+                pass
+
+    def close(self):
+        self._server.close()
+        self._thread.join(timeout=5)
 
 
 def test_status_reads_running_from_the_socket_the_start_marker_names(tmp_path, monkeypatch):
     """A pane request owns no sandbox environment; the marker plus a live socket is enough."""
     sandbox = _marker_socket_sandbox(tmp_path, monkeypatch)
-    listener = _listen(sandbox / "rfb.sock")
+    stub = _RfbStub(sandbox / "rfb.sock")
     try:
         status = runtime._sandbox_status("default", SimpleNamespace(backend="apptainer"))
     finally:
-        listener.close()
+        stub.close()
     assert status.running is True
+    assert stub.received[:3] == [b"RFB 003.008\n", b"\x01", b"\x01"], (
+        "the probe finished the RFB handshake instead of dropping the connection"
+    )
     assert status.display == ":41"
     assert status.socket == str(sandbox / "rfb.sock")
     assert status.installed is True and status.blocker is None

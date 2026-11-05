@@ -663,15 +663,33 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     if _dir:
         import socket as _socket
         _sock = os.path.join(_dir, "rfb.sock")
+        # Xvnc counts a bare connect/close as a failed security handshake and, after a few of them,
+        # blacklists the client: every later pane connection is then refused and the screen stays
+        # black until the X server is rebuilt. So finish the RFB handshake before closing the probe.
         _live = False
+        _probe = None
         try:
             _probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
             _probe.settimeout(0.5)
             _probe.connect(_sock)
-            _probe.close()
-            _live = True
+            _banner = _probe.recv(12)
+            if _banner.startswith(b"RFB 003."):
+                _probe.sendall(b"RFB 003.008\n")
+                if _probe.recv(64):
+                    _probe.sendall(b"\x01")
+                    if _probe.recv(4) == b"\x00\x00\x00\x00":
+                        _probe.sendall(b"\x01")
+                        # ServerInit: closing before it arrives leaves a failed write behind, the
+                        # same signal the blacklist is built from.
+                        _live = bool(_probe.recv(4096))
         except OSError:
             _live = False
+        finally:
+            if _probe is not None:
+                try:
+                    _probe.close()
+                except OSError:
+                    pass
         if _live:
             return DesktopStatus(
                 profile=profile or _profile_name(),

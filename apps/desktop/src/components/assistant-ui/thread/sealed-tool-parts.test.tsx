@@ -68,6 +68,47 @@ describe('tool parts sealed without a result', () => {
     expect(screen.queryByLabelText('Running')).toBeNull()
   })
 
+  // A rejected batch (placeholder goal, unroutable workload) answers inside
+  // `result` — `isError` stays false. It dispatched nothing, so listing its
+  // requested goals as children painted a second, identical set of cards next
+  // to the retry that actually ran them.
+  it('renders a delegate_task rejected in its result body as the generic row', async () => {
+    $activeSessionId.set('sess-1')
+    const { container } = render(
+      <Harness
+        message={sealedMessage(
+          'delegate_task',
+          { tasks: [{ goal: 'inspect A' }, { goal: 'inspect B' }] },
+          {
+            result: {
+              error:
+                "Task 0 goal contains an unexpanded template marker ('{http_code}'). Substitute the real value before calling delegate_task."
+            }
+          }
+        )}
+      />
+    )
+
+    expect(await screen.findByText('Delegate Task')).toBeTruthy()
+    expect(container.querySelector('[data-delegate-card]')).toBeNull()
+  })
+
+  it('still lists the children of a batch that dispatched', async () => {
+    $activeSessionId.set('sess-1')
+    const { container } = render(
+      <Harness
+        message={sealedMessage(
+          'delegate_task',
+          { tasks: [{ goal: 'inspect A' }, { goal: 'inspect B' }] },
+          { result: { count: 2, goals: ['inspect A', 'inspect B'], mode: 'background', status: 'dispatched' } }
+        )}
+      />
+    )
+
+    expect(await screen.findByText('inspect A')).toBeTruthy()
+    expect(container.querySelector('[data-delegate-card]')).not.toBeNull()
+  })
+
   it('renders a sealed image_generate as the generic row, not a rendering placeholder', async () => {
     const { container } = render(<Harness message={sealedMessage('image_generate', { prompt: 'a cat' })} />)
 

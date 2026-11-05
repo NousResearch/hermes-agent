@@ -11,6 +11,7 @@ import {
   MAX_TOOL_RENDER_CHARS,
   prettyJson,
   type ToolPart,
+  toolCallFailed,
   toolPreviewOutcome
 } from './fallback-model'
 
@@ -574,5 +575,34 @@ describe('buildToolView memory status', () => {
 
     expect(view.status).toBe('warning')
     expect(view.subtitle).toContain('Memory is full')
+  })
+})
+
+// The delegate card asks `toolCallFailed` before it decides to list children,
+// so the shapes the delegate tool answers with have to stay distinct here: a
+// batch it rejected never dispatched, while a dispatched batch or a settled
+// batch with a failed child must keep its card.
+describe('toolCallFailed on delegate_task result shapes', () => {
+  it('reads a whole-call rejection as failed', () => {
+    expect(
+      toolCallFailed({
+        result: {
+          error:
+            "Task 0 goal contains an unexpanded template marker ('{http_code}'). Substitute the real value before calling delegate_task."
+        }
+      })
+    ).toBe(true)
+  })
+
+  it('leaves a dispatched batch and its goals alone', () => {
+    expect(
+      toolCallFailed({
+        result: { count: 2, goals: ['A', 'B'], mode: 'background', status: 'dispatched' }
+      })
+    ).toBe(false)
+  })
+
+  it('leaves a settled batch whose child failed alone', () => {
+    expect(toolCallFailed({ result: { results: [{ status: 'failed', error: 'boom' }] } })).toBe(false)
   })
 })

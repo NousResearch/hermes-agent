@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 import { npmCommand } from '../scripts/build/node-deps.mjs'
@@ -49,6 +50,34 @@ test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_exe
   expect(cli).toBe(join(root, 'lib', directory, 'bin/npm-cli.js'))
   const version = execFileSync(selectedNode, [cli, '--version'], { cwd: tmpdir(), env, encoding: 'utf8' }).trim()
   expect(version).toMatch(/^\d+\.\d+\.\d+/)
+})
+
+test('npm discovery skips a PATH entry that vanishes during resolution', () => {
+  const [, installedCli] = npmCommand()
+  const root = mkdtempSync(join(tmpdir(), 'vanished npm-'))
+  roots.push(root)
+  const missing = join(root, 'bin', 'npm')
+  const originalExists = fs.existsSync
+  const originalRealpath = fs.realpathSync
+  fs.existsSync = path => path === missing || originalExists(path)
+  fs.realpathSync = (path, ...args) => {
+    if (path === missing) {
+      const error = new Error(`ENOENT: no such file or directory, lstat '${missing}'`)
+      error.code = 'ENOENT'
+      throw error
+    }
+    return originalRealpath(path, ...args)
+  }
+  syncBuiltinESMExports()
+  try {
+    const [node, cli] = npmCommand({ env: { PATH: [dirname(missing), process.env.PATH].join(delimiter), npm_execpath: installedCli } })
+    expect(node).toBe(process.execPath)
+    expect(cli).toBe(installedCli)
+  } finally {
+    fs.existsSync = originalExists
+    fs.realpathSync = originalRealpath
+    syncBuiltinESMExports()
+  }
 })
 
 test('read-only dependency preparation reuses complete receipts but refuses missing inputs', async () => {

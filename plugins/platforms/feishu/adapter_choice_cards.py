@@ -54,14 +54,16 @@ class FeishuChoiceCardsMixin:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         from plugins.platforms.feishu.adapter import _card_button
-        from tools.clarify_gateway import get_pending
+        from tools.clarify_gateway import get_pending, mark_awaiting_text
 
         lines = [t("gateway.clarify.option_line", index=i, choice=c) for i, c in enumerate(choices, start=1)]
         body = f"{question}\n\n" + "\n".join(lines)
         entry = get_pending(clarify_id)
         if entry is not None and entry.multi_select:
-            # A tap answers one option; several are typed as numbers.
+            # A tap answers one option; several (or a free-form answer, as the hint says) are typed,
+            # so typed text must be captured as the answer like the base text prompt does.
             body += "\n\n" + t("gateway.clarify.hint_multi")
+            mark_awaiting_text(clarify_id)
         actions = [
             _card_button(str(i), "primary" if i == 1 else "default",
                          {"hermes_clarify_action": str(i - 1), "clarify_id": clarify_id})

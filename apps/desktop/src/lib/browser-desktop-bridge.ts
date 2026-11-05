@@ -11,6 +11,7 @@ import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-no
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
+import { createBrowserThemesBridge } from '@/lib/browser-themes'
 import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUiPreferences } from '@/lib/browser-ui-preferences'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
@@ -104,6 +105,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...createBrowserConnectionBridge({ api, bootstrap }),
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
+    ...createBrowserThemesBridge(api),
     ...uploads,
     api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the

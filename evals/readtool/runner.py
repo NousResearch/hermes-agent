@@ -71,8 +71,7 @@ def _count_metrics(messages: list) -> dict:
     }
 
 
-def run_task(task, model: str, provider: str, timeout_mult: float,
-             toolsets: list[str]) -> dict:
+def run_task(task, model: str, provider: str, toolsets: list[str]) -> dict:
     ws = Path(tempfile.mkdtemp(prefix=f"readtool-{task.task_id}-"))
     hermes_home = Path(tempfile.mkdtemp(prefix="readtool-home-")) / ".hermes"
     hermes_home.mkdir(parents=True)
@@ -159,6 +158,11 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if args.timeout_mult != 1.0:
+        raise SystemExit(
+            "--timeout-mult is not supported by this harness; use 1.0 or omit it"
+        )
+
     if not os.environ.get("OPENROUTER_API_KEY"):
         raise SystemExit(
             "OPENROUTER_API_KEY not in environment. Run: set -a; "
@@ -182,7 +186,7 @@ def main() -> int:
         records = []
         for task in slate:
             print(f"[rep{rep}] {task.task_id} ...", flush=True)
-            rec = run_task(task, args.model, args.provider, args.timeout_mult,
+            rec = run_task(task, args.model, args.provider,
                            [t for t in args.toolsets.split(",") if t])
             print(
                 f"[rep{rep}] {task.task_id}: score={rec['score']:.2f} "

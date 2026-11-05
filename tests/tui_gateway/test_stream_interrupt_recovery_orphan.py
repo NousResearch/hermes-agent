@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import time
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway.session_reaper import _ORPHAN_SWEEP_SOURCES
 
 # One of the four orphan ids from the report.
@@ -23,30 +28,37 @@ IDLE_S = 6 * 3600  # mirror the TUI gateway's default session TTL
 def test_creator_repairs_the_accounting_placeholder_source(tmp_path):
     """The accounting guard's mint is a placeholder, not an identity: the session's own creator
     stamps the real surface on the same id, and a real source is never downgraded."""
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     # First writer wins the INSERT because the row creation lost the race with the SQLite lock.
-    db.update_token_counts(ORPHAN_SID, input_tokens=1200, output_tokens=90, model="grok-4.6")
-    assert db.get_session(ORPHAN_SID)["source"] == "unknown"
+    db.usage.queue_usage(ORPHAN_SID, UsageDelta(tokens=TokenCounts(input_tokens=1200, output_tokens=90),
+                                                route=BillingRoute(model="grok-4.6")))
+    db.usage.flush_usage()
+    assert session_row(db, ORPHAN_SID)["source"] == "unknown"
 
-    db.create_session(ORPHAN_SID, source="desktop")
+    seed_session(db, ORPHAN_SID, "desktop")
 
-    row = db.get_session(ORPHAN_SID)
+    row = session_row(db, ORPHAN_SID)
     assert row["source"] == "desktop"
     assert row["model"] == "grok-4.6"  # nothing else the first writer set is clobbered
-    assert db.list_sessions_rich(source="unknown", limit=50) == []
+    assert db.sessions.list_sessions(SessionQuery(sources=("unknown",)), SessionWindow(limit=50)) == ()
     # Control: a later writer with a different real surface never overwrites the creator's.
-    db.create_session(ORPHAN_SID, source="tui")
-    assert db.get_session(ORPHAN_SID)["source"] == "desktop"
+    seed_session(db, ORPHAN_SID, "tui")
+    assert session_row(db, ORPHAN_SID)["source"] == "desktop"
 
 
 def test_startup_sweep_collects_a_legacy_unknown_phantom(tmp_path):
     """A phantom an older build already left on disk is collected, not left open forever."""
-    db = SessionDB(tmp_path / "state.db")
-    db.update_token_counts(ORPHAN_SID, input_tokens=10, output_tokens=5, model="claude-sonnet-5")
-    db.append_message(ORPHAN_SID, role="assistant", content="review table, cut mid-stream")
+    db = open_persistence(profile_scope(home=tmp_path))
+    db.usage.queue_usage(ORPHAN_SID, UsageDelta(tokens=TokenCounts(input_tokens=10, output_tokens=5),
+                                                route=BillingRoute(model="claude-sonnet-5")))
+    db.usage.flush_usage()
+    seed_messages(db, ORPHAN_SID, {"role": "assistant", "content": "review table, cut mid-stream"})
     stale = time.time() - 8 * 3600
-    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (stale, ORPHAN_SID))
-    db._conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (stale, ORPHAN_SID))
-    db._conn.commit()
 
-    assert db.sweep_orphaned_sessions(max_idle_seconds=IDLE_S, sources=_ORPHAN_SWEEP_SOURCES) == [ORPHAN_SID]
+    def backdate(conn):
+        conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (stale, ORPHAN_SID))
+        conn.execute("UPDATE messages SET timestamp = ? WHERE session_id = ?", (stale, ORPHAN_SID))
+    raw_holder(db)._execute_write(backdate)
+
+    assert db.maintenance.sweep_orphaned_sessions(max_idle_seconds=IDLE_S, sources=_ORPHAN_SWEEP_SOURCES) == (
+        ORPHAN_SID,)

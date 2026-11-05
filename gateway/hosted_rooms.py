@@ -775,15 +775,28 @@ def owe_room_grant_revoke(
                            expires_at=expires_at, now=_now(now))
 
 
+_DUE_OWED_REVOKES = """SELECT room_id, member_id, grant_digest, target_url, grant, attempts
+    FROM hosted_room_owed_revokes WHERE held=0 AND next_attempt_at<=? AND expires_at>?
+    ORDER BY next_attempt_at, created_at LIMIT ?"""
+
+
+def owes_room_grant_revokes(db_path: DbPath) -> bool:
+    """Whether any owed revoke is recorded (read-only)."""
+    with closing(_read_connection(db_path)) as conn:
+        return conn.execute("SELECT 1 FROM hosted_room_owed_revokes LIMIT 1").fetchone() is not None
+
+
 def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = None) -> list[dict[str, Any]]:
-    """Owed revokes due now, oldest first; one whose grant has expired is dropped instead."""
+    """Owed revokes due now, oldest first; one whose grant has expired is dropped instead. Read-only
+    unless an expired row is there to drop, so an idle worker cycle never takes the write lock."""
     timestamp = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (timestamp,))
-        rows = conn.execute(
-            """SELECT room_id, member_id, grant_digest, target_url, grant, attempts FROM hosted_room_owed_revokes
-                WHERE held=0 AND next_attempt_at<=? ORDER BY next_attempt_at, created_at LIMIT ?""",
-            (timestamp, int(limit))).fetchall()
+    with closing(_read_connection(db_path)) as conn:
+        rows = conn.execute(_DUE_OWED_REVOKES, (timestamp, timestamp, int(limit))).fetchall()
+        expired = conn.execute(
+            "SELECT 1 FROM hosted_room_owed_revokes WHERE expires_at<=? LIMIT 1", (timestamp,)).fetchone()
+    if expired is not None:
+        with _transaction(db_path, immediate=True) as conn:
+            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (timestamp,))
     return [dict(row) for row in rows]
 
 

@@ -188,6 +188,9 @@ class HostedRoomService:
             self._load_stored_links()
         except Exception as exc:
             self._link_load_error = str(exc)
+        # Set by anything that can record an owed revoke (a peer route, a grant handed in); a revoke
+        # owed by an earlier process is found once here.
+        self._may_owe_revokes = True
         supplied_clients = dict(peer_clients or {})
         for key, route in dict(peer_routes or {}).items():
             self.peer_routes[key] = route
@@ -329,6 +332,7 @@ class HostedRoomService:
                 # The active worker still polls this client; keep its observed approval identities.
                 client = current
             self.peer_routes[key], self._peer_route_status[key] = route, "ready"
+            self._may_owe_revokes = True
             if client is not None:
                 self.peer_clients[key] = client
 
@@ -361,6 +365,8 @@ class HostedRoomService:
         hosted_rooms.owe_room_grant_revoke(
             self.db_path, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
             expires_at=room_grant_hard_expiry(grant))
+        with self._policy_lock:
+            self._may_owe_revokes = True
         self._keep_revoke_client(grant, client)
         self.runtime.wakeup()
 
@@ -384,7 +390,10 @@ class HostedRoomService:
         """Pay one due owed grant revoke per worker cycle, with backoff timed from when the attempt
         ended; returns how many settled. Only the member gateway's answer that the grant is unknown
         or already revoked settles it (a fault there, a 5xx or no answer keeps it owed); an owed
-        revoke whose grant has expired is dropped. Nothing here names the grant."""
+        revoke whose grant has expired is dropped. Nothing here names the grant. A gateway that
+        never seated a peer member owes nothing, so its cycles do not touch the store."""
+        if not self._may_owe_revokes:
+            return 0
         settled = 0
         for owed in hosted_rooms.due_room_grant_revokes(
                 self.db_path, limit=_OWED_REVOKES_PER_CYCLE, now=self.runtime.clock()):
@@ -406,6 +415,8 @@ class HostedRoomService:
             hosted_rooms.settle_room_grant_revoke(self.db_path, **key)
             self._revoke_clients.pop(key["grant_digest"], None)
             settled += 1
+        with self._policy_lock:  # owe_grant_revoke sets the flag under it after its write
+            self._may_owe_revokes = bool(self.peer_routes) or hosted_rooms.owes_room_grant_revokes(self.db_path)
         return settled
 
     def _resolve_member_transport(self, binding: HostedRoomBinding, task: Mapping[str, Any]):

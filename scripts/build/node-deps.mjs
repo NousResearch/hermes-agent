@@ -18,7 +18,17 @@ export function npmCommand({ env = process.env } = {}) {
     for (const name of names) {
       const bin = join(dir, name)
       if (!existsSync(bin)) continue
-      const prefix = dirname(realpathSync(bin))
+      // An entry can stop resolving between the probe and the resolve: a stale
+      // shim removed mid-scan, or a FUSE-materialized link (NixOS envfs). Skip
+      // it like an entry that was missing at probe time.
+      let resolved
+      try {
+        resolved = realpathSync(bin)
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP'].includes(error.code)) continue
+        throw error
+      }
+      const prefix = dirname(resolved)
       const lib = join(prefix, '../lib')
       candidates.push(
         join(prefix, 'node_modules/npm/bin/npm-cli.js'),
@@ -27,7 +37,7 @@ export function npmCommand({ env = process.env } = {}) {
         // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
         ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
           .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
-        realpathSync(bin),
+        resolved,
       )
     }
   }

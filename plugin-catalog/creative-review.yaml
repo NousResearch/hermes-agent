@@ -1,6 +1,6 @@
 name: creative-review
 repo: https://github.com/peterpeeterspeter/hermes-creative-review
-sha: ea6a4d01faa555185a9105ca25c6be320706efc9
+sha: 4d90dee3589bdba2aabe09625e734da7eb650be4
 description: >-
   An art director's desk for your agent: a native Hermes Desktop workspace to
   visually review AI-generated images — compare a reference against generated
@@ -22,7 +22,7 @@ category: desktop
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/peterpeeterspeter/hermes-creative-review#readme
 version: "1.0.0"
-image: https://raw.githubusercontent.com/peterpeeterspeter/hermes-creative-review/ea6a4d01faa555185a9105ca25c6be320706efc9/docs/banner.png
+image: https://raw.githubusercontent.com/peterpeeterspeter/hermes-creative-review/4d90dee3589bdba2aabe09625e734da7eb650be4/docs/banner.png
 platforms: []
 capabilities:
   provides_tools:

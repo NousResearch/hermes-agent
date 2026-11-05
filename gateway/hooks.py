@@ -52,6 +52,14 @@ def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     events = manifest.get("events", [])
     if not events:
         return _skip(hook_name, "no events declared")
+    # ``events: agent:start`` is a YAML scalar; iterating it would register one handler per
+    # character and the hook would never fire (#11902). Anything else that is not a list of names
+    # must be refused here: registration runs outside the per-hook error guard, so a
+    # non-iterable value or an unhashable entry would abort discovery for every hook.
+    if isinstance(events, str):
+        events = [events]
+    if not isinstance(events, list) or not all(isinstance(event, str) and event for event in events):
+        return _skip(hook_name, "'events' must be an event name or a list of event names")
     # Register in sys.modules BEFORE exec_module so Pydantic/dataclass forward references
     # (``from __future__ import annotations``) resolve; otherwise a handler declaring a
     # BaseModel fails at first dispatch with "TypeAdapter ... is not fully defined".

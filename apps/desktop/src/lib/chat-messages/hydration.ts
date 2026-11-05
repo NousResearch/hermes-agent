@@ -251,6 +251,21 @@ function contentRefusedNotice(metadata: SessionMessage['display_metadata']): str
   return typeof notice === 'string' && notice.trim() ? notice : undefined
 }
 
+// The spreadable contentRefused field for a hydrated row: present only on a
+// retained safety-refused turn, carrying its notice when the backend supplied
+// one. Extracted so toChatMessages keeps its complexity within the ratchet.
+function contentRefusedField(
+  message: SessionMessage
+): { contentRefused: { notice?: string } } | Record<string, never> {
+  if (message.display_kind !== CONTENT_REFUSED_DISPLAY_KIND) {
+    return {}
+  }
+
+  const notice = contentRefusedNotice(message.display_metadata)
+
+  return { contentRefused: notice ? { notice } : {} }
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -675,10 +690,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const reactions = messageReactions(message.display_metadata)
 
-    const contentRefused =
-      message.display_kind === CONTENT_REFUSED_DISPLAY_KIND
-        ? { contentRefused: { ...(contentRefusedNotice(message.display_metadata) ? { notice: contentRefusedNotice(message.display_metadata) } : {}) } }
-        : {}
+    const contentRefused = contentRefusedField(message)
 
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets

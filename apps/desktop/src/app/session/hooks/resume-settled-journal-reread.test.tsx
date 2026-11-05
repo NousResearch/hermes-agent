@@ -23,7 +23,7 @@ import {
   setSessions
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
-import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage, SessionMessagesResponse, SessionResumeResult } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
 import { useSessionActions } from './use-session-actions'
@@ -567,6 +567,101 @@ it("keeps a finished turn's admission off the successor running beside it", asyn
   const lost = { pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 3 }] }
 
   expect(await reopen(lost, settledTurn)).toContain('Grouping')
+})
+
+// A successor the snapshot lists has its frames projected; a send the snapshot predates (another device's, on an
+// owner it reported idle) starts after the owner took it, whether or not the answer has arrived yet.
+const listedSuccessor = {
+  running: true,
+  inflight: { user: 'Now group them.', assistant: 'Grouping ', streaming: true },
+  pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'started' }]
+}
+
+const idleOwner = { running: false, pending: [] }
+
+it.each([
+  ['a successor the snapshot lists', 'before the owner answers', listedSuccessor],
+  ['a send the snapshot predates', 'before the owner answers', idleOwner],
+  ['a send the snapshot predates', 'while the page is re-read', idleOwner]
+] as const)('names %s when its frames land %s on a cold resume', async (_turn, when, owner) => {
+  // The successor's stamped frames land during the resume that retires the finished turn's journal. The session's
+  // admission is what the journal stores for the successor's tail.
+  persistInFlightTurnState({
+    awaitingResponse: false,
+    busy: true,
+    messages: [
+      { ...firstSend, rowId: undefined },
+      { id: 'assistant-stream-1', role: 'assistant', parts: [textPart('Reading the issue ')], pending: true }
+    ],
+    storedSessionId: storedId,
+    streamId: 'assistant-stream-1',
+    turnAdmissionId: 'adm-1',
+    turnStartedAt: 10_000
+  })
+  await vi.advanceTimersByTimeAsync(500)
+
+  let releasePage: (page: SessionMessagesResponse) => void = () => undefined
+
+  vi.mocked(getLatestSessionMessages)
+    .mockResolvedValueOnce({ session_id: storedId, messages: turnSoFar })
+    .mockImplementationOnce(() => new Promise(resolve => (releasePage = resolve)))
+
+  const snapshot = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: settledTurn.length + 1,
+    turn_started_at: 30,
+    ...owner
+  } as SessionResumeResult
+
+  const live = mount(snapshot)
+  let answer: (resumed: SessionResumeResult) => void = () => undefined
+
+  live.requestGateway.mockImplementation((method: string) =>
+    method === 'session.resume' ? new Promise(resolve => (answer = resolve)) : Promise.resolve(snapshot)
+  )
+
+  const stream = () => {
+    for (const event of [
+      { type: 'message.start', payload: {} },
+      { type: 'message.delta', payload: { text: 'Grouping ' } }
+    ]) {
+      act(() =>
+        live.result.current.stream.handleGatewayEvent({
+          session_id: runtimeId,
+          ...execution('adm-2'),
+          ...event
+        } as GatewayEvent)
+      )
+    }
+  }
+
+  let resuming: Promise<void> = Promise.resolve()
+
+  act(() => {
+    resuming = live.result.current.actions.resumeSession(storedId, true)
+  })
+  await vi.waitFor(() => expect(live.requestGateway.mock.calls.map(([method]) => method)).toContain('session.resume'))
+
+  if (when === 'before the owner answers') {
+    stream()
+  }
+
+  answer(snapshot)
+  await vi.waitFor(() => expect(vi.mocked(getLatestSessionMessages)).toHaveBeenCalledTimes(2))
+
+  if (when === 'while the page is re-read') {
+    stream()
+  }
+
+  await act(async () => {
+    releasePage({ session_id: storedId, messages: [...settledTurn, nextPrompt] })
+    await resuming
+  })
+
+  expect(live.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.turnAdmissionId).toBe('adm-2')
 })
 
 it('names the turn a warm activation adopts, not the one this tab last streamed', async () => {

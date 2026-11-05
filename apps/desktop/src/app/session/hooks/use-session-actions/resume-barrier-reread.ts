@@ -100,15 +100,24 @@ export async function rereadPageAfterResumeBarrier(
   return { page: await graftTranscriptPage(page, early.snapshot, storedSessionId, scope), owner }
 }
 
-/** The session fields a resume takes from its in-flight journal recovery. */
+/** The session fields a resume takes from its in-flight journal recovery. `latest` is the session as the resume
+ *  commits; `atStart` holds every session's state from before the resume was requested. */
 export function recoveredTurnFields(
   recovery: InFlightRecoveryResult,
+  resumed: Pick<SessionResumeResult, 'pending' | 'session_id' | 'turn_started_at'>,
   running: boolean,
-  resumedTurnStartedAt: null | number
+  latest: Pick<ClientSessionState, 'turnAdmissionId'>,
+  atStart: ReadonlyMap<string, Pick<ClientSessionState, 'turnAdmissionId'>>
 ) {
+  // The owner reports when the in-flight turn started, so the clock resumes instead of resetting to 0:00.
+  const resumedTurnStartedAt =
+    typeof resumed.turn_started_at === 'number' && resumed.turn_started_at > 0 ? resumed.turn_started_at * 1000 : null
+
+  const answered = recovery.admissionId ?? null
+
   return {
     // The execution a recovered journal still names, or none: the next stamped frame of a live turn names it.
-    turnAdmissionId: recovery.admissionId ?? null,
+    turnAdmissionId: admissionAfterResume(latest, atStart.get(resumed.session_id) ?? {}, answered, resumed.pending),
     ...(recovery.applied
       ? {
           sawAssistantPayload: true,
@@ -123,28 +132,31 @@ export function recoveredTurnFields(
 
 /** The execution a warm activation leaves the session naming. A frame that named one while `session.activate` was
  *  in flight is newer than its snapshot; otherwise the snapshot's running execution replaces the one this tab last
- *  streamed, which may have finished before the session moved on elsewhere. A turn lost in a crash runs no execution
- *  but is still listed (`unknown`), and its journal still needs its admission. */
+ *  streamed, which may have finished before the session moved on elsewhere. */
 export function activatedTurnAdmission(
   latest: Pick<ClientSessionState, 'turnAdmissionId'>,
   atActivateStart: Pick<ClientSessionState, 'turnAdmissionId'>,
   pending: unknown
 ): null | string {
-  const kept = latest.turnAdmissionId
-  const stillListed = kept && ownerPendingTurns(pending)?.admissionIds.has(kept) ? kept : null
-
-  return admissionAfterResume(latest, atActivateStart, runningAdmission(pending) ?? stillListed)
+  return admissionAfterResume(latest, atActivateStart, runningAdmission(pending), pending)
 }
 
-/** A frame that named an execution while a resume was in flight is newer than `answered`, what the resume names. */
+/** A frame that named an execution while a resume was in flight is newer than `answered`, what the resume names.
+ *  Without one, the session keeps the admission it already names while the owner still lists it: a turn lost in a
+ *  crash (`unknown`) runs no execution, but its journal still needs it. */
 function admissionAfterResume(
   latest: Pick<ClientSessionState, 'turnAdmissionId'>,
   atStart: Pick<ClientSessionState, 'turnAdmissionId'>,
-  answered: null | string
+  answered: null | string,
+  pending: unknown
 ): null | string {
   const named = latest.turnAdmissionId ?? null
 
-  return named !== (atStart.turnAdmissionId ?? null) ? named : answered
+  if (named !== (atStart.turnAdmissionId ?? null)) {
+    return named
+  }
+
+  return answered ?? (named && ownerPendingTurns(pending)?.admissionIds.has(named) ? named : null)
 }
 
 const durableRowId = ({ id, row_id }: SessionMessage): number | undefined => {

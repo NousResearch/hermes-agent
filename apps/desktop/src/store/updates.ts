@@ -1011,57 +1011,8 @@ function legacyBackendReachedTarget(
 }
 
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
-// Bumped when the poller stops, the request scope moves, or an apply takes over: a join still
-// asking across any of those never opens (A→B→A included, and a press that finished meanwhile).
-let joinGeneration = 0
-let joinScopeKey: string | undefined
 
-/** The join generation after recording the current request scope: a scope this has not seen yet
- *  is a move, so a lookup asked before it is stale. The join records first, so the scope change
- *  that starts it does not also invalidate it. */
-function joinGenerationForScope(): number {
-  const key = versionScopeKey()
-
-  if (key !== joinScopeKey) {
-    joinScopeKey = key
-    joinGeneration++
-  }
-
-  return joinGeneration
-}
-
-/** One running `hermes-update` action a window joined after it started (a reload, a second tab). */
-type JoinedBackendUpdate = Pick<Awaited<ReturnType<typeof updateHermes>>, 'action_id' | 'name'> & {
-  startedAtMs: number
-  /** Joined from the update's receipt: the status's process and exit code are whatever action this
-   *  dashboard last spawned, which the receipt does not name, so only that run's own evidence counts. */
-  receiptOnly?: boolean
-}
-
-type BackendUpdateStart = Omit<Awaited<ReturnType<typeof updateHermes>>, 'pid'> & JoinedBackendUpdate
-
-/** The exit code this follow can trust. A run the backend reads `interrupted` (its process died)
- *  failed, with no need to wait out the deadline. A receipt-only join takes the status's own exit
- *  code only from a completion naming the joined action; otherwise the marker and receipt decide. */
-function followedExitCode(
-  status: Awaited<ReturnType<typeof getActionStatus>>,
-  started: BackendUpdateStart
-): number | null {
-  const ownRun = !!started.action_id && status.receipt?.action_id === started.action_id
-
-  if (ownRun && status.receipt?.outcome === 'interrupted') {
-    return 1
-  }
-
-  return !started.receiptOnly || status.action_id === started.action_id ? status.exit_code : null
-}
-
-/** Start a new `hermes update` on the backend: what an Update press runs. */
-async function startBackendUpdate(): Promise<BackendUpdateStart> {
-  return { ...(await updateHermes()), startedAtMs: Date.now() }
-}
-
-async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promise<DesktopUpdateApplyResult> {
+async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -1078,8 +1029,8 @@ async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promi
       ? previousStatus.targetSha.slice('backend:'.length)
       : undefined
 
-    const started = await start()
-    const applyStartedAtMs = started.startedAtMs
+    const started = await updateHermes()
+    const applyStartedAtMs = Date.now()
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
@@ -1143,9 +1094,7 @@ async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promi
         continue
       }
 
-      const exitCode = followedExitCode(last, started)
-
-      if (exitCode === 0 || (exitCode === null && completedAfterRestart(last, started.action_id))) {
+      if (last.exit_code === 0 || (last.exit_code === null && completedAfterRestart(last, started.action_id))) {
         return finishBackendApply(true, last.receipt, started.action_id)
       }
 
@@ -1153,11 +1102,11 @@ async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promi
       // receipt to the status. A receipt whose run STARTED after we kicked
       // this update off is authoritative — read its outcome instead of
       // inferring from log markers or timing out across the restart gap.
-      if (exitCode === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
+      if (last.exit_code === null && receiptProvesOutcome(last, applyStartedAtMs, started.action_id)) {
         return finishBackendApply(last.receipt!.outcome === 'success', last.receipt, started.action_id)
       }
 
-      if (!started.action_id && exitCode === null) {
+      if (!started.action_id && last.exit_code === null) {
         try {
           const status = await checkHermesUpdate(true)
 
@@ -1169,7 +1118,7 @@ async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promi
         }
       }
 
-      if (exitCode !== null) {
+      if (last.exit_code !== null) {
         break
       }
     }
@@ -1194,77 +1143,16 @@ async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promi
   }
 }
 
-export function applyBackendUpdate(joined?: JoinedBackendUpdate): Promise<DesktopUpdateApplyResult> {
+export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }
 
-  joinGeneration++
-  // A joined update is already running: follow it instead of starting another.
-  const start = joined ? async () => ({ ok: true, ...joined }) : startBackendUpdate
-  backendUpdateInFlight = runBackendUpdate(start).finally(() => {
+  backendUpdateInFlight = runBackendUpdate().finally(() => {
     backendUpdateInFlight = null
   })
 
   return backendUpdateInFlight
-}
-
-// A current backend reports a killed update's receipt as `interrupted` by process identity. An older
-// one still says `running` until the next update reclaims it: past this age, treat it as dead.
-const JOIN_RUNNING_RECEIPT_MAX_MS = 45 * 60 * 1000
-
-/** The backend's `hermes update` running right now, if any. `running` answers only from the
- *  gateway that spawned it; once the update restarted that gateway, the action's own receipt
- *  (`outcome: running`) is what still says so. */
-function runningBackendUpdate(status: Awaited<ReturnType<typeof getActionStatus>>): JoinedBackendUpdate | null {
-  const receipt = status.receipt
-  const receiptStartedMs = receipt?.started_at ? Date.parse(receipt.started_at) : NaN
-
-  const receiptRunning =
-    receipt?.outcome === 'running' &&
-    Number.isFinite(receiptStartedMs) &&
-    Date.now() - receiptStartedMs < JOIN_RUNNING_RECEIPT_MAX_MS
-
-  if (receiptRunning && receipt.action_id) {
-    return {
-      name: status.name,
-      action_id: receipt.action_id,
-      startedAtMs: receiptStartedMs,
-      receiptOnly: true
-    }
-  }
-
-  // Join time, not start time: with no action id, only the version check can certify this run.
-  return status.running ? { name: status.name, startedAtMs: Date.now() } : null
-}
-
-async function readUpdateActionStatus(): Promise<Awaited<ReturnType<typeof getActionStatus>> | null> {
-  try {
-    return await getActionStatus('hermes-update', 1)
-  } catch {
-    return null
-  }
-}
-
-/** A window that connects while its backend is updating joins that update: the progress overlay
- *  opens and follows the running action to its outcome, as if this window had pressed Update. */
-export async function joinRunningBackendUpdate(): Promise<void> {
-  if (backendUpdateInFlight) {
-    return
-  }
-
-  const generation = joinGenerationForScope()
-  const status = await readUpdateActionStatus()
-  const running = status ? runningBackendUpdate(status) : null
-
-  // The answer belongs to the backend and profile that were asked, while the poller still runs
-  // and nothing else took over: drop it after a scope move, a stop or a new apply.
-  if (!running || backendUpdateInFlight || joinGenerationForScope() !== generation) {
-    return
-  }
-
-  showBackendProgress()
-  void applyBackendUpdate(running)
 }
 
 // ── Update everything: the client + every registered backend in one action ──
@@ -1520,7 +1408,6 @@ export function startUpdatePoller(): void {
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
-      void joinRunningBackendUpdate()
     }
   })
 
@@ -1534,7 +1421,6 @@ export function startUpdatePoller(): void {
     }
 
     lastVersionScopeKey = key
-    joinGenerationForScope()
     void refreshDesktopVersion()
   }
 
@@ -1563,7 +1449,6 @@ export function stopUpdatePoller(): void {
   lastConnectionKey = undefined
   lastVersionScopeKey = undefined
   versionRequestSeq++
-  joinGeneration++
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

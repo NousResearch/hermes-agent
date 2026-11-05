@@ -1,0 +1,53 @@
+# Hermes catalog entry — goes to plugin-catalog/elcaro.yaml in
+# NousResearch/hermes-agent, pinned at the commit that contains it.
+# Open the PR from the repo owner's GitHub account (admission rule 5).
+name: elcaro
+title: Elcaro
+repo: https://github.com/udirobert/elcaro
+sha: c80cc00954a8a3613ac0b1669a53d8664747b65b  # pragma: allowlist secret — git SHA pin, required by catalog rules
+subdir: hermes-plugin
+version: "1.0.0"
+description: >-
+  Runtime prompt-injection defense and tamper-evident flight recorder. Every
+  tool result is scanned before it reaches the model by a deterministic
+  detector taxonomy (sub-10 ms, fully local, vendored — no network by
+  default); quarantined content is replaced in place with a signed
+  [CONTENT QUARANTINED] notice via transform_tool_result, and tool-call
+  arguments (write_file, terminal, memory) are scanned for smuggled payloads
+  via pre_tool_call. Beyond content, a kernel gate: a quarantine taints the
+  session, and while tainted credential-path reads/writes and
+  instruction-file writes are refused, network egress and outside-workspace
+  writes escalate to the approval gate — tool_call, execute_code and
+  process_manage are evaluated as the action they really make, and taint
+  propagates into subagents via subagent_start. A canary-baited decoy
+  credentials file (ELCARO-DECOY-* marker) forces a deterministic 1.0
+  quarantine on exfiltration; canary provenance edges record an injection
+  propagating between scans; every verdict lands in a hash-chained,
+  Ed25519-signed threat log with a Desktop pane (chain-verified badge,
+  honeypot status, propagation rows, signed-receipts drawer), a /elcaro
+  slash command (status / calibrate / verify / explain), and a
+  `hermes elcaro` CLI. Disclosure — no network access by default (httpx is
+  only invoked when the user configures an optional api_url lane); no
+  credentials required; filesystem writes confined to the plugin data dir
+  (threat-log.jsonl, decoy-marker.txt, service-credentials.env — the
+  decoy is honeypot bait, never read by the plugin); Python deps pydantic,
+  cryptography, httpx; no core overrides; the desktop surface imports only
+  @hermes/plugin-sdk and react.
+maintainer: udirobert
+tier: community
+category: general
+requires_hermes: ">=0.22"
+docs_url: https://github.com/udirobert/elcaro/tree/main/hermes-plugin
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools:
+    - elcaro_scan
+    - elcaro_quick_scan
+    - elcaro_explain
+  provides_hooks:
+    - transform_tool_result
+    - pre_tool_call
+    - pre_llm_call
+    - subagent_start
+  provides_middleware: []
+  requires_env: []

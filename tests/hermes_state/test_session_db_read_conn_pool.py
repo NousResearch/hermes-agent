@@ -43,6 +43,8 @@ import threading
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite import _holder
+from persistence.sqlite._holder import StoreHolder
 
 
 def _live_count(path) -> int:
@@ -194,7 +196,7 @@ def test_read_open_failure_backs_off_but_recovers(db):
     """
     import time as _time
 
-    from hermes_state import _READ_OPEN_RETRY_SECONDS
+    from persistence.sqlite._holder import _READ_OPEN_RETRY_SECONDS
 
     baseline = db._get_read_conn()
     assert baseline is not None, "baseline read open should succeed"
@@ -240,7 +242,7 @@ def test_peak_live_connections_bounded_under_simultaneous_burst(db):
     of them have checked out, so the count below IS the simultaneous peak
     rather than a sample of it.
     """
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     n = 64
     assert n > _READ_POOL_MAX, "burst must exceed the ceiling to test anything"
@@ -292,7 +294,7 @@ def test_exhausted_permits_fall_back_to_the_writer_connection(db):
     connection. Blocking instead would convert descriptor exhaustion into a
     stall -- the same outage with a different stack trace.
     """
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     assert all(c is not None for c in held), "the first _READ_POOL_MAX must succeed"
@@ -321,13 +323,12 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
     """
     import sqlite3 as _sqlite3
 
-    import hermes_state as _hs
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     def boom(*a, **kw):
         raise _sqlite3.OperationalError("simulated open failure")
 
-    monkeypatch.setattr(_hs, "_connect_tracked_db", boom)
+    monkeypatch.setattr(_holder, "_connect_tracked_db", boom)
     for _ in range(_READ_POOL_MAX * 3):
         assert db._get_read_conn() is None
         db._read_open_failed_at = 0.0    # defeat the backoff so every call opens
@@ -348,7 +349,7 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
 @pytest.mark.requires_wal
 def test_close_returns_every_permit(db):
     """close() must release the permits its drained connections held."""
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     for c in held:
@@ -380,7 +381,8 @@ def test_close_returns_every_permit(db):
 @pytest.mark.requires_wal
 def test_peak_is_bounded_across_two_SessionDBs_on_one_path(db):
     """Two handles on one file must share one read-connection ceiling."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
 
     second = SessionDB(db_path=db.db_path)
     try:
@@ -437,7 +439,8 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
     SessionDB, a second profile's store -- to the locked writer connection for
     the life of the process. Trading one bug for a quieter one.
     """
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
 
     # Warm every permit into db's IDLE pool.
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
@@ -477,7 +480,8 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 @pytest.mark.requires_wal
 def test_peak_is_bounded_across_many_database_files(tmp_path):
     """Read connections must be capped for the PROCESS, not just per file."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
     from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     n_files = (_READ_POOL_PROCESS_MAX // _READ_POOL_MAX) + 2
@@ -527,7 +531,8 @@ def test_peak_is_bounded_across_many_database_files(tmp_path):
 @pytest.mark.requires_wal
 def test_idle_connections_are_reclaimed_across_database_files(tmp_path):
     """A quiet profile's idle connections must not starve the busy one."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
     from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     quiet = []
@@ -755,7 +760,7 @@ def test_failed_initialization_does_not_register_duplicate_writer_handle(db, mon
         raise sqlite3.OperationalError("injected initialization failure")
 
     monkeypatch.setattr(budget, "register", remember_register)
-    monkeypatch.setattr(SessionDB, "_open_writer", fail_open_writer)
+    monkeypatch.setattr(StoreHolder, "_open_writer", fail_open_writer)
 
     with pytest.raises(sqlite3.OperationalError, match="injected initialization failure"):
         SessionDB(db_path=db.db_path)

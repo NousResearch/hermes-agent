@@ -1726,7 +1726,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     if task_id := getattr(agent, "_current_task_id", None):
                         from agent.conversation_compression import _reset_read_dedup_caches
 
-                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
+                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "", agent=agent)
 
     from agent.reasoning_carriers import carrier_record
     if record := carrier_record(assistant_message):

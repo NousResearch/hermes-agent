@@ -178,6 +178,15 @@ class SubdirectoryHintTracker:
         self._home_is_working_dir = False
         # Fresh anchor, fresh bookkeeping: the new project's directories get their
         # own first-visit hints (startup never loaded context files for it).
+        self.reset_delivered()
+
+    def reset_delivered(self) -> None:
+        """Forget every hint delivered so far; only the working dir stays pre-marked.
+
+        Hints ride in tool results, which a compaction boundary summarises away, so the next
+        visit to each directory must deliver its hint again. The working dir's own hint file
+        is part of the system prompt, which the boundary rebuilds.
+        """
         self._loaded_dirs = {self.working_dir}
         self._loaded_digests = set()
         found = _first_hint_file(self.working_dir)

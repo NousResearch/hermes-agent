@@ -24,15 +24,14 @@ def homes(tmp_path, monkeypatch):
 
 def test_profile_bound_ticket_reads_only_its_own_profile(homes, monkeypatch):
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
     server, launch, bee = homes
-    with SessionDB(launch / 'state.db') as db:
-        db.create_session('launch-sid', 'cli')
-        db.set_session_title('launch-sid', 'LAUNCH_PROFILE_SECRET_TITLE')
-    with SessionDB(bee / 'state.db') as db:
-        db.create_session('bee-sid', 'cli')
-        db.set_session_title('bee-sid', 'BEE_TITLE')
+    with open_persistence(profile_scope(home=launch)) as db:
+        seed_session(db, 'launch-sid', 'cli', title='LAUNCH_PROFILE_SECRET_TITLE')
+    with open_persistence(profile_scope(home=bee)) as db:
+        seed_session(db, 'bee-sid', 'cli', title='BEE_TITLE')
     for sid, home in (('live-launch', None), ('live-bee', str(bee))):
         monkeypatch.setitem(server._sessions, sid, {
             'session_key': sid, 'history': [{'role': 'user', 'content': 'PRIVATE ' + sid}],

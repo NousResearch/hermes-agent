@@ -18,6 +18,7 @@ import pytest
 
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.tui_gateway.test_hosted_room_attachment_routes import (
     _admit,
     _legacy_runtime,
@@ -28,9 +29,18 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import BINDING, PROFILE, 
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from persistence_assembly import open_persistence, profile_scope
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 def _assert_not_available(error: dict, method: str) -> None:
@@ -41,7 +51,6 @@ def _assert_not_available(error: dict, method: str) -> None:
 
 def test_unknown_method_is_named_unavailable_on_both_routes(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
 
     _assert_not_available(srv.handle_request(
         {"jsonrpc": "2.0", "id": 1, "method": "groups.no_such_verb", "params": {}})["error"],
@@ -50,10 +59,10 @@ def test_unknown_method_is_named_unavailable_on_both_routes(tmp_path, monkeypatc
     home = tmp_path / "state"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    with SessionDB(home / "state.db") as db:
-        authority = SimpleNamespace(profile_id=str(home), instance_id="owner", db=db, events={}, sessions={})
-        connection = AuthorityConnection(authority, object(), {"user_id": "reader"})
-        reply = asyncio.run(connection.dispatch({"id": 2, "method": "groups.no_such_verb", "params": {}}))
+    authority = SimpleNamespace(profile_id=str(home), instance_id="owner", persistence=storage_handle(home),
+                                events={}, sessions={})
+    connection = AuthorityConnection(authority, object(), {"user_id": "reader"})
+    reply = asyncio.run(connection.dispatch({"id": 2, "method": "groups.no_such_verb", "params": {}}))
     _assert_not_available(reply["error"], "groups.no_such_verb")
 
 
@@ -103,17 +112,17 @@ def test_tui_route_uploads_sends_and_downloads_a_group_file(home):
 
 
 @pytest.fixture
-def db(tmp_path: Path, monkeypatch) -> Path:
+def db(tmp_path: Path, monkeypatch, store) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "member-home"))
-    path = tmp_path / "rooms.db"
+    path = tmp_path / "shared-state.db"
     hosted_rooms.create_room(
-        path, room_id=ROOM_ID, name="Release room", members=[{"profile": PROFILE, "handle": PROFILE}],
+        store, placement="shared", room_id=ROOM_ID, name="Release room", members=[{"profile": PROFILE, "handle": PROFILE}],
         authority_gateway_id=BINDING.gateway_id, now=time.time())
     return path
 
 
 def _bind(db: Path, uploads: list[tuple[str, str, bytes]]) -> list[dict]:
-    store = HostedRoomAttachmentStore(db)
+    store = HostedRoomAttachmentStore(storage_handle(db.parent), "shared")
     manifest = []
     for index, (name, mime, data) in enumerate(uploads):
         saved = store.put(room_id=ROOM_ID, upload_id=f"upload-{index}", kind="image" if mime.startswith("image/")
@@ -124,14 +133,14 @@ def _bind(db: Path, uploads: list[tuple[str, str, bytes]]) -> list[dict]:
     return [{**item, "event_id": "event-1"} for item in manifest]
 
 
-def test_tui_member_turn_receives_its_document_and_image(db: Path):
-    identity = _admit(db, attachments=_bind(db, [("note.txt", "text/plain", b"exact bytes"),
+def test_tui_member_turn_receives_its_document_and_image(db: Path, store):
+    identity = _admit(store, placement="shared", attachments=_bind(db, [("note.txt", "text/plain", b"exact bytes"),
                                                  ("shot.png", "image/png", _PNG)]))
     server, submits = _server_module()
     server._profile_home = lambda _profile: None
-    runtime = _legacy_runtime(db, HostedRoomServerRPC(server, db_path=db))
+    runtime = _legacy_runtime(store, HostedRoomServerRPC(server, db_path=db), placement="shared")
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     assert task["status"] == "settled", runtime.status()["last_error"]
     submitted, = submits
@@ -141,12 +150,12 @@ def test_tui_member_turn_receives_its_document_and_image(db: Path):
     assert Path(image).read_bytes() == _PNG
 
 
-def test_tui_member_turn_without_a_file_stays_text_only(db: Path):
-    identity = _admit(db)
+def test_tui_member_turn_without_a_file_stays_text_only(db: Path, store):
+    identity = _admit(store, placement="shared")
     server, submits = _server_module()
-    runtime = _legacy_runtime(db, HostedRoomServerRPC(server, db_path=db))
+    runtime = _legacy_runtime(store, HostedRoomServerRPC(server, db_path=db), placement="shared")
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     assert task["status"] == "settled", runtime.status()["last_error"]
     assert submits[0]["text"] == "Read the attached note."

@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from gateway.hosted_room_driver import TaskIdentity
 from tui_gateway.hosted_room_driver import HostedRoomBinding, ROOM_SESSION_SOURCE
 from tui_gateway.hosted_room_peer_transport import (
     FailoverHostedRoomPeerClient,
@@ -15,6 +14,7 @@ from tui_gateway.hosted_room_peer_transport import (
     RoomLinkCandidate,
 )
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
 BINDING = HostedRoomBinding("room-1", "gateway-home", 2)
@@ -136,7 +136,7 @@ def test_peer_transport_dispatches_full_fenced_coordinates_and_exact_stop():
         source=ROOM_SESSION_SOURCE,
     )
     terminal = []
-    task = TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    task = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     result = transport.submit(
         profile="reviewer",
         session_id="group-session",
@@ -186,7 +186,7 @@ def test_peer_transport_refuses_a_submit_for_another_member():
         session_id="group-session",
         prompt="Review this change.",
         source=ROOM_SESSION_SOURCE,
-        task=TaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
+        task=HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1"),
         execution_generation=1,
         on_terminal=lambda _receipt: None,
     )
@@ -211,7 +211,7 @@ def test_peer_transport_carries_each_turns_real_source_event_sequence():
             session_id="group-session",
             prompt=f"Turn {index}",
             source=ROOM_SESSION_SOURCE,
-            task=TaskIdentity("room-1", f"task-{index}", "thread-1", f"turn-{index}"),
+            task=HostedTaskIdentity("room-1", f"task-{index}", "thread-1", f"turn-{index}"),
             execution_generation=1,
             on_terminal=lambda _receipt: None,
         )

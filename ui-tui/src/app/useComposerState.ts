@@ -548,7 +548,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       const revision = composerRevision.current
       const current = inputRef.current
 
-      void attach(current, current.length).then(next => {
+      // Returned so a caller attaching several images can wait for each: an attach that lands after
+      // another one changed the composer is discarded as stale.
+      return attach(current, current.length).then(next => {
         if (next && isCurrentDestination(destination) && revision === composerRevision.current) {
           setInput(next.value)
         }

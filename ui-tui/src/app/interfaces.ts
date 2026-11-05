@@ -412,7 +412,7 @@ export interface ComposerActions {
   /** Pull an image off the system clipboard in as a token. */
   attachClipboardImage: () => void
   /** Attach an image by path in as a token. */
-  attachImagePath: (path: string) => void
+  attachImagePath: (path: string) => Promise<void> | void
   clearIn: () => void
   stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
@@ -579,7 +579,7 @@ export type SlashHandler = (cmd: string, submission?: SlashSubmission, typed?: b
 export interface SlashHandlerContext {
   composer: {
     attachClipboardImage: () => void
-    attachImagePath: (path: string) => void
+    attachImagePath: (path: string) => Promise<void> | void
     enqueue: ComposerActions['enqueue']
     hasSelection: boolean
     openEditor: () => Promise<void>

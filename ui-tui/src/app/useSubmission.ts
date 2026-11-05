@@ -404,7 +404,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       // The user row shows each chip and expands it from these payloads.
-      stagePastes(submissionTokens.filter(token => full.includes(token.label)))
+      stagePastes(full, submission.text, submissionTokens)
 
       const live = getUiState()
 

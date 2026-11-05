@@ -59,7 +59,6 @@ import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRo
 import { applyLiveSessionRoster, requestLiveSessions } from './liveSessions.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
-import { attachPastes } from './pasteStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -589,7 +588,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, attachPastes(msg))),
+    (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
     [setHistoryItems]
   )
 

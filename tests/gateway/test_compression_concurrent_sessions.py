@@ -1,7 +1,7 @@
 """Behavioral tests for concurrent compression across distinct and shared sessions.
 
 Complements ``test_compression_concurrent_fork.py`` (which tests the
-agent-level lock against a real ``SessionDB``) by focusing on gateway-level
+agent-level lock against a real store) by focusing on gateway-level
 isolation guarantees:
 
 1. Five distinct sessions compressing in parallel must not alias each other's
@@ -25,15 +25,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
-    """Construct an AIAgent wired to *db* and pinned to *session_id*.
+def _build_agent_with_db(store, session_id: str):
+    """Construct an AIAgent wired to *store* and pinned to *session_id*.
 
     Mirrors the helper in test_compression_concurrent_fork.py exactly so the
     two test modules can be read side-by-side without cognitive overhead.
@@ -46,7 +47,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=store,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -99,12 +100,12 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     same-session shape most likely to occur in practice: the main-turn agent
     and its background-review fork both hitting the compression threshold.
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = storage_handle(tmp_path)
     shared_sid = "SHARED_SESSION_CONCURRENT"
-    db.create_session(shared_sid, source="discord")
+    seed_session(store, shared_sid, "discord")
 
-    agent_a = _build_agent_with_db(db, shared_sid)
-    agent_b = _build_agent_with_db(db, shared_sid)
+    agent_a = _build_agent_with_db(store, shared_sid)
+    agent_b = _build_agent_with_db(store, shared_sid)
 
     # Force genuine simultaneous lock contention instead of relying on a
     # ``time.sleep`` inside the compressor stub to make the threads overlap.
@@ -116,7 +117,7 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     # contending for the lock at the same instant, which is exactly the
     # condition this test means to assert — with zero timing dependency.
     barrier = threading.Barrier(2, timeout=15)
-    _real_acquire = db.try_acquire_compression_lock
+    _real_acquire = store.coordination.try_acquire_compression_lock
 
     def _barriered_acquire(*args, **kwargs):
         # Rendezvous both callers, then let the real (atomic) acquire decide
@@ -128,7 +129,7 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
             pass
         return _real_acquire(*args, **kwargs)
 
-    db.try_acquire_compression_lock = _barriered_acquire
+    store.coordination.try_acquire_compression_lock = _barriered_acquire
 
     results: dict[str, list | None] = {"a": None, "b": None}
     errors: list[Exception] = []
@@ -149,7 +150,7 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
 
     # Restore the real method so the post-join lock-leak assertion below
     # (and any future call) hits the unwrapped implementation.
-    db.try_acquire_compression_lock = _real_acquire
+    store.coordination.try_acquire_compression_lock = _real_acquire
 
     assert not errors, f"Compression raised exceptions: {errors}"
 
@@ -183,7 +184,7 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     )
 
     # The lock must be released so future compression on the NEW session_id works.
-    assert db.get_compression_lock_holder(shared_sid) is None, (
+    assert store.coordination.get_compression_lock_holder(session_id=shared_sid) is None, (
         "Compression lock leaked: still held on the parent session_id after both "
         "threads joined. Future compression on the child session would deadlock."
     )

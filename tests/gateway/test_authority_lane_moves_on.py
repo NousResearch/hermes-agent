@@ -6,7 +6,7 @@ another one. A Discord chat's conversation A is open in an app; the chat sends `
 message, which runs in its new conversation B. The app's prompt on A runs in A on A's own key, and
 the chat adapter receives nothing from it; B's turns and the chat's replies are untouched. A
 ``/resume`` of A on the chat brings A's replies back to the chat. Real GatewayRunner, DiscordAdapter
-(its ``send`` recorded), SessionAuthority, drain and session resolver over a real SessionDB; the
+(its ``send`` recorded), SessionAuthority, drain and session resolver over a real store; the
 agent run is a stand-in that answers with the session and route it was given.
 """
 import asyncio
@@ -68,16 +68,15 @@ def _app():
 async def _app_turn(authority, ref, text):
     """The app's prompt, settled: ``(status, outcome)`` of its admission."""
     from gateway.session_contract import Submission
-    from hermes_state_runtime import list_session_admissions
     receipt = await authority.submit(_app(), Submission(text, ref, {'text': text}, 'queue'))
 
     def settled():
-        rows = [row for row in list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
-                if row['admission_id'] == receipt.admission_id and row['status'] == 'terminal']
+        rows = [row for row in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)
+                if row.admission_id == receipt.admission_id and row.status == 'terminal']
         return rows and rows[0]
     row = await async_wait_until(settled, timeout=10, what=f'the app turn {text!r}')
     await asyncio.wait_for(authority.sessions[ref.session_id].task, 10)  # its delivery runs after the settlement
-    return row['status'], row['outcome']
+    return row.status, row.outcome
 
 
 @pytest.mark.asyncio
@@ -110,7 +109,7 @@ async def test_the_old_conversation_runs_beside_the_chats_turn_and_resume_brings
     await _chat(adapter, source, sent, 'hello')
     a = runner.session_store.peek_session_id(lane)
     ref_a = authority.register(source)
-    authority.db.set_session_title(a, 'First chat')
+    authority.persistence.sessions.set_title(a, 'First chat')
     await _chat(adapter, source, sent, '/new')
 
     from gateway.platforms.event import MessageEvent

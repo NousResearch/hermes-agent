@@ -10,6 +10,8 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
 from hermes_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, save_heartbeat
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
 
 
 @pytest.mark.asyncio
@@ -40,10 +42,10 @@ async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, bo
             runner.session_store.suspend_session(key)
         elif boundary == "compression":
             child = old + "-child"
-            runner.session_store._db_for_key(key).publish_compression_child(
-                parent_session_id=old, child_session_id=child, source="telegram",
-                require_compression_lease=False, model="offline", model_config={},
-                system_prompt="offline", messages=[{"role": "user", "content": "retained"}],
+            runner.session_store._persistence_for_key(key).lineage.publish_compression_child(
+                old, CompressionChild(session_id=child, source="telegram", model="offline", model_config={},
+                                      system_prompt="offline"),
+                [NewMessage.from_live({"role": "user", "content": "retained"})], require_compression_lease=False,
             )
             assert migrate_heartbeat_to_session(old, child)
             assert runner.session_store.advance_compression_session(key, old, child)

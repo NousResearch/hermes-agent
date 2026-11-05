@@ -33,7 +33,6 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_burst import holds_busy_burst
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42,43')
@@ -85,9 +84,9 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     await asyncio.wait_for(asyncio.gather(*callers), 10)
     assert all(e._gateway_accepted is True for e in sent), [e._gateway_accepted for e in sent]
     owner = runner.session_store.peek_session_id(runner.session_store._generate_session_key(sent[0].source))
-    rows = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    assert [(r['payload']['text'], len(r['payload']['native_text_v1'].get('media', [])))
+    rows = authority.persistence.admissions.list(session_id=owner, pending_only=False)
+    assert [(r.payload['text'], len(r.payload['native_text_v1'].get('media', [])))
             for r in rows[1:]] == expected
     finish.set()
     await async_wait_until(lambda: len(executed) >= 1 + len(expected), timeout=10, what='every merged turn executed')
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(runner.session_store.close_all_db_handles)

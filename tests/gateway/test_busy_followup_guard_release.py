@@ -26,6 +26,7 @@ busy handler resumes.
 
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,7 +36,6 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
 
 
 class _Adapter(BasePlatformAdapter):
@@ -107,6 +107,7 @@ def _stock_interrupt(runner, monkeypatch, held):
     runner._busy_input_mode = "interrupt"
     runner._busy_text_mode = "interrupt"
     runner._session_db = held
+    monkeypatch.setattr(GatewayRunner, "persistence", SimpleNamespace(coordination=held))
 
 
 def _multiplexed_queue_text(runner, monkeypatch, held):
@@ -168,7 +169,6 @@ def _gateway(tmp_path, monkeypatch, route, held):
     runner.session_store = SessionStore(
         sessions_dir=tmp_path / "sessions", config=runner.config
     )
-    runner.session_store._db = SessionDB(db_path=tmp_path / "state.db")
     route(runner, monkeypatch, held)
     runner._wire_adapter_handlers(adapter, message_handler=turns)
     adapter.gateway_runner = runner  # production _create_adapter binds this

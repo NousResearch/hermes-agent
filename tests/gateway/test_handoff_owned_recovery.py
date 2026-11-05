@@ -8,7 +8,9 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 PEER = dict(
     source="qqbot",
@@ -22,34 +24,30 @@ PEER = dict(
 
 @pytest.fixture
 def db(tmp_path):
-    d = SessionDB(db_path=tmp_path / "state.db")
-    yield d
-    d.close()
+    return storage_handle(tmp_path)
 
 
 def _mk_handed_off(db, session_id, *, handoff_state):
-    db.create_session(
-        session_id, PEER["source"], user_id=PEER["user_id"],
+    seed_session(
+        db, session_id, PEER["source"], user_id=PEER["user_id"],
         session_key=PEER["session_key"], chat_id=PEER["chat_id"], chat_type=PEER["chat_type"],
     )
-    for i in range(3):
-        db.append_message(session_id, "user" if i % 2 == 0 else "assistant", f"m{i}")
-    with db._lock:
-        db._conn.execute(
-            "UPDATE sessions SET handoff_state=?, handoff_platform='qqbot', last_activity_at=?, "
-            "ended_at=1000.0, end_reason='cli_close' WHERE id=?",
-            (handoff_state, time.time(), session_id),
-        )
-        db._conn.commit()
+    seed_messages(db, session_id, *({"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+                                   for i in range(3)))
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET handoff_state=?, handoff_platform='qqbot', last_activity_at=?, "
+        "ended_at=1000.0, end_reason='cli_close' WHERE id=?",
+        (handoff_state, time.time(), session_id),
+    ))
 
 
 def test_cli_close_after_completed_handoff_is_recoverable(db):
     """The incident: handoff completed, then the CLI teardown stamps cli_close."""
     _mk_handed_off(db, "handoff-leg", handoff_state="completed")
-    assert db.find_latest_gateway_session_for_peer(**PEER)["id"] == "handoff-leg"
+    assert db.routing.latest_session_for_peer(**PEER).session.session_id == "handoff-leg"
 
 
 def test_failed_handoff_does_not_widen_recovery(db):
     """``handoff_state='failed'`` is not a handoff that owns the row: cli_close stays closed."""
     _mk_handed_off(db, "failed-handoff", handoff_state="failed")
-    assert db.find_latest_gateway_session_for_peer(**PEER) is None
+    assert db.routing.latest_session_for_peer(**PEER) is None

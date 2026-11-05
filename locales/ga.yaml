@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ Cuireadh {count} comhad a scríobh an seal cealaithe ar ais: {files}"
     kept_edits: "↷ Coinníodh d'eagarthóireacht láimhe: {files} (is féidir le /rollback iad a athchóiriú)"
     not_captured: "Níor cuireadh ar ais (gan seicphointe ó roimh an seal): {files}"
+    other_writers: "↷ Níor cuireadh ar ais (scríobh comhrá eile nó seal níos déanaí é freisin): {files}"
     failed: "⚠ Theip ar chur ar ais na gcomhad: {error}"

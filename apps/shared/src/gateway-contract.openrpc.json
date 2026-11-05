@@ -34515,6 +34515,14 @@
             "title": "Skipped User Edits",
             "type": "array"
           },
+          "skipped_other_writers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped Other Writers",
+            "type": "array"
+          },
           "not_captured": {
             "default": [],
             "items": {

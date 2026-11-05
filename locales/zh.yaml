@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ 已还原被撤销轮次写入的 {count} 个文件：{files}"
     kept_edits: "↷ 已保留你的手动修改：{files}（可用 /rollback 恢复）"
     not_captured: "未还原（没有该轮之前的检查点）：{files}"
+    other_writers: "↷ 未还原（另一个对话或之后的轮次也写入了它）：{files}"
     failed: "⚠ 文件还原失败：{error}"

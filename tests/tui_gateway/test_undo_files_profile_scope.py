@@ -26,6 +26,7 @@ def test_sidecar_undo_reverts_files_from_the_sessions_own_profile_store(tmp_path
         mgr.new_turn()
         mgr.begin_turn(100.0, "s1")
         mgr.ensure_checkpoint(str(work), "before write_file")
+        mgr.note_pending_write(str(target))
         target.write_text("print('v2')\n")
         mgr.record_agent_write(str(target))
     finally:

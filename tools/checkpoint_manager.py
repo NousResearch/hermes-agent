@@ -162,6 +162,8 @@ DEFAULT_EXCLUDES = [
 ]
 
 _EMPTY_TREE_PREFIX = "4b825dc642cb"
+# Paths Hermes passes to git are file names: ``a*.txt`` must never also match ``another.txt``.
+_LITERAL_PATHSPECS = {"GIT_LITERAL_PATHSPECS": "1"}
 
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
@@ -271,7 +273,7 @@ def _stage_all_args(base: Path, working_dir) -> list[str]:
 def _exclude_store_args(base: Path, working_dir) -> list[str]:
     """``-- :(exclude)<base> :(exclude)<lock>`` for git commands, or ``[]`` when not needed."""
     paths = _store_pathspecs(base, working_dir)
-    return ["--", *(f":(exclude){p}" for p in paths)] if paths else []
+    return ["--", *(f":(exclude,literal){p}" for p in paths)] if paths else []
 
 
 def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
@@ -287,7 +289,7 @@ def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
     if paths:
         _run_git(
             ["rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch", "--", *paths],
-            store, working_dir, index_file=index_file,
+            store, working_dir, index_file=index_file, extra_env=_LITERAL_PATHSPECS,
         )
 
 
@@ -301,7 +303,7 @@ def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
     paths = [p for p in out.split("\x00") if p] if ok else []
     for i in range(0, len(paths), 200):
         _run_git(["rm", "--cached", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
-                 store, working_dir, index_file=index_file)
+                 store, working_dir, index_file=index_file, extra_env=_LITERAL_PATHSPECS)
 
 
 # Earlier turns' last writes kept per file: the newest writer's entry plus one per older turn,
@@ -315,10 +317,14 @@ def _turn_write_history(previous: Optional[dict], turn: dict) -> list[dict]:
     if not isinstance(previous, dict) or previous.get("turn_ts") is None:
         return []
     history = [h for h in previous.get("history", []) if isinstance(h, dict)]
-    same_turn = (previous.get("turn_ts"), previous.get("session")) == (turn["turn_ts"], turn.get("session") or "")
-    if not same_turn:
-        history.append({k: previous.get(k) for k in ("sha256", "turn_ts", "session")})
+    if not _same_turn(previous, turn):
+        history.append({k: previous[k] for k in ("sha256", "turn_ts", "session", "pre") if k in previous})
     return history[-_LEDGER_TURN_HISTORY:]
+
+
+def _same_turn(previous: Optional[dict], turn: dict) -> bool:
+    return (isinstance(previous, dict)
+            and (previous.get("turn_ts"), previous.get("session")) == (turn["turn_ts"], turn.get("session") or ""))
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -912,6 +918,8 @@ class CheckpointManager:
         # /undo can put back exactly what that turn wrote (tools/checkpoint_turns.py).
         self._turn: Optional[dict] = None
         self._marked_dirs: set[str] = set()
+        # path -> the file as it was right before the write now in flight (note_pending_write).
+        self._pending_pre: dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -920,6 +928,7 @@ class CheckpointManager:
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
+        self._pending_pre.clear()
 
     def begin_turn(self, turn_ts: float, session_id: Optional[str]) -> None:
         """Start a user turn: ``turn_ts`` is its user message's timestamp (the value its transcript
@@ -945,6 +954,25 @@ class CheckpointManager:
     # Public API
     # ------------------------------------------------------------------
 
+    def note_pending_write(self, file_path: str) -> None:
+        """Remember ``file_path`` as it is right before a file tool writes it: whether it existed,
+        its hash and the blob id a snapshot would store. ``record_agent_write`` keeps this on the
+        ledger as the turn's ``pre`` state, the only proof /undo accepts that the turn created a
+        file (delete) or which snapshot blob was its prior content (restore). Never raises."""
+        if not self.enabled or self._turn is None:
+            return
+        try:
+            path = _normalize_path(file_path)
+            existed = path.exists() or path.is_symlink()
+            pre = {"existed": existed, "sha256": _hash_file(path) if existed else None, "oid": None}
+            if pre["sha256"] is not None:
+                from tools.checkpoint_turns import worktree_oid
+                workdir = self.get_working_dir_for_path(str(path))
+                pre["oid"] = worktree_oid(_store_path(), workdir, path.relative_to(workdir).as_posix())
+            self._pending_pre[str(path)] = pre
+        except (OSError, ValueError) as exc:  # unreadable, or outside its working dir: no pre-state, not revertible
+            logger.debug("note_pending_write failed for %s: %s", file_path, exc)
+
     def record_agent_write(self, file_path: str) -> None:
         """Record the content hash of a file Hermes just successfully wrote.
 
@@ -969,9 +997,18 @@ class CheckpointManager:
                 dir_hash = self._ledger_key(str(path))
                 ledger = _load_ledger(store, dir_hash)
                 entry = {"sha256": digest, "ts": time.time()}
+                pre = self._pending_pre.pop(str(path), None)
                 if self._turn is not None:  # the newest writing turn: /undo of it or any earlier one reverts this
+                    previous = ledger.get(str(path))
                     entry.update(self._turn)
-                    entry["history"] = _turn_write_history(ledger.get(str(path)), self._turn)
+                    entry["history"] = _turn_write_history(previous, self._turn)
+                    if _same_turn(previous, self._turn):
+                        # The state before this turn's FIRST write, while nothing else changed the
+                        # file between its writes (otherwise no pre-state is proven: not revertible).
+                        unchanged = pre is None or pre.get("sha256") == previous.get("sha256")
+                        pre = previous.get("pre") if unchanged else None
+                    if pre is not None:
+                        entry["pre"] = pre
                 ledger[str(path)] = entry
                 _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
@@ -1450,7 +1487,7 @@ class CheckpointManager:
                 ok, _stdout, err = _run_git(
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
-                    index_file=index_file,
+                    index_file=index_file, extra_env=_LITERAL_PATHSPECS,  # file names, never globs
                 )
         elif selected_paths is not None:
             # Check out exactly the entries inspected above. Re-evaluating
@@ -1701,10 +1738,7 @@ class CheckpointManager:
             tree = _git_out(["rev-parse", "--verify", tree], store, working_dir) or ""
         if tree:
             from tools.checkpoint_turns import record_turn_mark
-            # Files that exist now but the size cap keeps out of the tree: their absence from it
-            # must never read as "the turn created them".
-            excluded = self._oversize_paths_for_staging(store, working_dir, index_file) if self.max_file_size_mb > 0 else []
-            record_turn_mark(store, working_dir, tree, mark, excluded or ())
+            record_turn_mark(store, working_dir, tree, mark)
             self._marked_dirs.add(str(_normalize_path(working_dir)))
 
     def _exceeds_size_cap(self, path: Path) -> bool:

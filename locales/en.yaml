@@ -4101,4 +4101,5 @@ checkpoints:
     reverted: "↶ Reverted {count} file(s) the undone turn wrote: {files}"
     kept_edits: "↷ Kept your hand edits: {files} (/rollback can restore them)"
     not_captured: "Not reverted (no checkpoint from before the turn): {files}"
+    other_writers: "↷ Not reverted (another conversation or a later turn also wrote it): {files}"
     failed: "⚠ File revert failed: {error}"

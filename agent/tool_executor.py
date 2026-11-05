@@ -101,6 +101,7 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     if not file_path:
         return
     from agent.file_safety import is_nt_namespace_path
+    from agent.tool_dispatch_helpers import _extract_file_mutation_targets
     from tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
 
     if container_backend_for_task(effective_task_id or "default") is not None:
@@ -114,6 +115,10 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     agent._checkpoint_mgr.ensure_checkpoint(
         agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path)), f"before {function_name}",
     )
+    # Each target's state right before the write: /undo deletes or restores only what this proves.
+    for target in _extract_file_mutation_targets(function_name, function_args) or [file_path]:
+        if not is_nt_namespace_path(target):
+            agent._checkpoint_mgr.note_pending_write(str(_resolve_path_for_task(target, effective_task_id or "default")))
 
 
 def _budget_for_agent(agent) -> BudgetConfig:

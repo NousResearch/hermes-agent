@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ Ripristinati {count} file scritti dal turno annullato: {files}"
     kept_edits: "↷ Modifiche manuali mantenute: {files} (/rollback può ripristinarle)"
     not_captured: "Non ripristinati (nessun checkpoint precedente al turno): {files}"
+    other_writers: "↷ Non ripristinati (anche un'altra conversazione o un turno successivo li ha scritti): {files}"
     failed: "⚠ Ripristino dei file non riuscito: {error}"

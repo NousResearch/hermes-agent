@@ -18,6 +18,7 @@ def _turn_write(home, cwd, path, text, turn_ts, sessions):
         mgr = CheckpointManager(enabled=True)
         mgr.begin_turn(turn_ts, sessions)
         mgr.ensure_checkpoint(str(cwd), 'before write_file')
+        mgr.note_pending_write(str(path))
         path.write_text(text)
         mgr.record_agent_write(str(path))
     finally:

@@ -4889,6 +4889,7 @@ export interface RollbackUndoFilesResult {
   lines?: string[]
   reverted?: string[]
   skipped_user_edits?: string[]
+  skipped_other_writers?: string[]
   not_captured?: string[]
   errors?: string[]
 }

@@ -285,6 +285,7 @@ class RollbackUndoFilesResult(Result):
     lines: list[str] = []
     reverted: list[str] = []
     skipped_user_edits: list[str] = []
+    skipped_other_writers: list[str] = []
     not_captured: list[str] = []
     errors: list[str] = []
 

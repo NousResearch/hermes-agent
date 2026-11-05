@@ -33,7 +33,8 @@ With checkpoints on, `/undo [N]` rewinds the last N user turns **and** restores 
 
 - Files Hermes **created** in the undone turns are deleted; files it **edited** get their earlier content back.
 - A file you edited by hand after Hermes wrote it is **kept** (`↷ Kept your hand edits: …`); `/rollback` can still restore it.
-- Another conversation's writes are never touched, and a turn that wrote nothing changes no file.
+- Another conversation's writes are never touched, and a turn that wrote nothing changes no file. A file another conversation (or a later turn) also wrote is left as it is and listed (`↷ Not reverted (another conversation or a later turn also wrote it)`).
+- `/undo` only deletes a file Hermes recorded as new when it wrote it, and only restores one from the undone turn's own checkpoint. Anything it cannot prove is left alone and listed as not reverted; `/rollback` can still restore it.
 - A pre-undo snapshot is taken first, so `/rollback` can undo the undo.
 - `/retry` never touches files. With checkpoints off, `/undo` rewinds the conversation only, as before.
 - `/undo` reverts what Hermes' file tools (`write_file`, `patch`) wrote. A file changed only by a terminal command (`sed -i`, `>`) is not tracked per turn; `/rollback` restores those from the checkpoint taken before the command.

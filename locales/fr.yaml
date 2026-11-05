@@ -4311,4 +4311,5 @@ checkpoints:
     reverted: "↶ {count} fichier(s) écrit(s) par le tour annulé restauré(s) : {files}"
     kept_edits: "↷ Vos modifications manuelles sont conservées : {files} (/rollback peut les restaurer)"
     not_captured: "Non restauré (aucun point de contrôle d'avant le tour) : {files}"
+    other_writers: "↷ Non restauré (une autre conversation ou un tour ultérieur l'a aussi écrit) : {files}"
     failed: "⚠ Échec de la restauration des fichiers : {error}"

@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ {count} lêer(s) wat die ontdane beurt geskryf het, teruggestel: {files}"
     kept_edits: "↷ Jou handwysigings behou: {files} (/rollback kan hulle herstel)"
     not_captured: "Nie teruggestel nie (geen kontrolepunt van voor die beurt nie): {files}"
+    other_writers: "↷ Nie teruggestel nie ('n ander gesprek of 'n latere beurt het dit ook geskryf): {files}"
     failed: "⚠ Lêerterugstelling het misluk: {error}"

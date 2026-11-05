@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ 取り消したターンが書き込んだ {count} 件のファイルを元に戻しました: {files}"
     kept_edits: "↷ 手動の編集は保持しました: {files}（/rollback で復元できます）"
     not_captured: "元に戻していません（ターン前のチェックポイントがありません）: {files}"
+    other_writers: "↷ 元に戻していません（別の会話または後のターンも書き込みました）: {files}"
     failed: "⚠ ファイルの復元に失敗しました: {error}"

@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ 취소된 턴이 작성한 파일 {count}개를 되돌렸습니다: {files}"
     kept_edits: "↷ 직접 수정한 내용은 유지했습니다: {files} (/rollback으로 복원 가능)"
     not_captured: "되돌리지 않음 (턴 이전 체크포인트 없음): {files}"
+    other_writers: "↷ 되돌리지 않음 (다른 대화나 이후 턴도 작성함): {files}"
     failed: "⚠ 파일 되돌리기 실패: {error}"

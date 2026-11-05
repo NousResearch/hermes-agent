@@ -2,7 +2,7 @@
 
 Real CheckpointManager + real git store under a temp HERMES_HOME; the turn boundary is the same
 ``begin_turn(user_ts, session)`` call the agent loop makes, the writes go through the same
-``ensure_checkpoint`` (before the write) and ``record_agent_write`` (after it) the file tools use.
+``ensure_checkpoint`` + ``note_pending_write`` (before the write) and ``record_agent_write`` (after it) the file tools use.
 """
 from pathlib import Path
 
@@ -26,6 +26,7 @@ def project(tmp_path, monkeypatch):
 def _agent_write(mgr, work: Path, name: str, text: str) -> Path:
     mgr.ensure_checkpoint(str(work), "before write_file")
     path = work / name
+    mgr.note_pending_write(str(path))
     path.write_text(text)
     mgr.record_agent_write(str(path))
     return path

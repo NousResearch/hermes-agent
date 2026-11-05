@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ Se revirtieron {count} archivo(s) que escribió el turno deshecho: {files}"
     kept_edits: "↷ Se conservaron tus ediciones manuales: {files} (/rollback puede restaurarlas)"
     not_captured: "Sin revertir (no hay checkpoint de antes del turno): {files}"
+    other_writers: "↷ Sin revertir (otra conversación o un turno posterior también lo escribió): {files}"
     failed: "⚠ Falló la reversión de archivos: {error}"

@@ -3986,4 +3986,5 @@ checkpoints:
     reverted: "↶ Geri alınan turun yazdığı {count} dosya geri döndürüldü: {files}"
     kept_edits: "↷ Elle yaptığın düzenlemeler korundu: {files} (/rollback bunları geri yükleyebilir)"
     not_captured: "Geri döndürülmedi (turdan önceki kontrol noktası yok): {files}"
+    other_writers: "↷ Geri döndürülmedi (başka bir konuşma veya sonraki bir tur da yazdı): {files}"
     failed: "⚠ Dosya geri döndürme başarısız: {error}"

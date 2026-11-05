@@ -58,13 +58,13 @@ class TestStageAllArgs:
     def test_store_inside_workdir_is_excluded_by_pathspec(self, tmp_path):
         args = _stage_all_args(tmp_path / "home" / "checkpoints", tmp_path / "home")
         assert args[:3] == ["add", "-A", "--"]
-        assert ":(exclude)checkpoints" in args
-        assert ":(exclude).checkpoints.lock" in args
+        assert ":(exclude,literal)checkpoints" in args
+        assert ":(exclude,literal).checkpoints.lock" in args
 
     def test_nested_base_uses_relative_posix_path(self, tmp_path):
         args = _stage_all_args(tmp_path / "home" / "state" / "ckpt", tmp_path / "home")
-        assert ":(exclude)state/ckpt" in args
-        assert ":(exclude)state/.ckpt.lock" in args
+        assert ":(exclude,literal)state/ckpt" in args
+        assert ":(exclude,literal)state/.ckpt.lock" in args
 
     def test_base_equal_to_workdir_is_plain_add(self, tmp_path):
         # Degenerate: excluding "." would stage nothing; leave the add alone.

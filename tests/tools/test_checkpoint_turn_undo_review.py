@@ -29,6 +29,7 @@ def _turn(mgr, ts: float, session: str = "s1") -> None:
 def _agent_write(mgr, work: Path, name: str, text: str) -> Path:
     mgr.ensure_checkpoint(str(work), "before write_file")
     path = work / name
+    mgr.note_pending_write(str(path))
     path.write_text(text)
     mgr.record_agent_write(str(path))
     return path

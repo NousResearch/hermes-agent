@@ -406,3 +406,23 @@ def test_a_retried_deferred_peer_turn_gets_its_own_time_limit(tmp_path, monkeypa
     now[0] += 300
     service.runtime._reconcile_indeterminate(binding, lease)
     assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]
+
+
+def test_a_retried_peer_run_is_watched_when_its_first_status_read_fails(tmp_path, monkeypatch):
+    """Retry's admission replay reaches the member and returns its run, then the status read
+    fails. The member now runs that generation: the turn leaves deferred so the worker watches
+    it to its reply, rather than staying deferred with nobody watching."""
+    peer = _RecoveringPeerClient()
+    service, db, identity = _deferred_peer_turn(tmp_path, peer)
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+
+    def lost(**_):
+        raise PeerRunsHTTPError("peer status read was lost", retryable=True)
+    monkeypatch.setattr(peer, "status", lost)
+    monkeypatch.setattr(peer, "history", lambda **_: [])
+
+    service.retry_room_task("room-1", task_id=identity.task_id)
+    watched = driver.get_task(db, identity)
+    assert (watched["status"], watched["execution_generation"]) == ("indeterminate", 1)
+    assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
+

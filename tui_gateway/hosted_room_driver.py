@@ -296,12 +296,19 @@ class HostedRoomRuntime:
         room_id = task["identity"].room_id
         if not self._remote(task):
             return self._requeue(state.requeue_deferred_task, task, lease, room_id)
-        # Resolving the peer transport (inside the inspection) replays this generation under its
-        # own idempotency key and raises, leaving the turn deferred, while the peer is unreachable.
-        # Once it succeeds the peer owns this generation (the replay may have just started it):
-        # settle it from the peer's receipt, or reopen it so the worker watches it to the end.
-        inspection = self._inspect_recovery_session(binding, task)
+        # Resolving the peer transport replays this generation under its own idempotency key and
+        # raises, leaving the turn deferred, while the peer is unreachable. Once it succeeds the
+        # peer owns this generation (the replay may have just started it), so the turn is reopened
+        # before anything else can fail: the worker then watches that run to its end, even when the
+        # status read below fails.
+        self._transport_for(binding, task)
         reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
+        try:
+            inspection = self._inspect_recovery_session(binding, reopened)
+        except (RuntimeError, ValueError, OSError) as exc:
+            self._record_error(f"task {reopened['identity'].task_id} retry is being watched: {exc}")
+            self.wakeup()
+            return reopened
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
         if inspection.status == "cancelled":

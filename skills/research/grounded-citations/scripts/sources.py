@@ -234,6 +234,25 @@ def _normalize_ws(text: str) -> str:
     return " ".join((text or "").split())
 
 
+# Scripts written without inter-word spaces (Japanese, Chinese, Thai, Korean
+# mixed script) make whitespace word counts meaningless: a full sentence reads
+# as one "word".  For text containing them, length is measured in non-space
+# characters instead.
+_NO_SPACE_SCRIPT_RE = re.compile(
+    r"[぀-ヿ㐀-䶿一-鿿豈-﫿฀-๿]"
+)  # hiragana/katakana, CJK ext-A + unified + compat ideographs, Thai
+_NO_SPACE_MIN_CHARS = 10
+
+
+def _long_enough(text: str, *, min_words: int) -> bool:
+    """Whitespace word count, or a character count for scripts without spaces."""
+    if len(_normalize_ws(text).split()) >= min_words:
+        return True
+    if not _NO_SPACE_SCRIPT_RE.search(text or ""):
+        return False
+    return len(re.sub(r"\s+", "", text)) >= _NO_SPACE_MIN_CHARS
+
+
 # Markdown artifacts that retrieval tools inject into otherwise-identical prose.
 # ``web_extract`` returns markdown, so the most citation-worthy sentences are
 # exactly the ones carrying inline links and emphasis around terms:
@@ -269,7 +288,7 @@ def attach_quote(path: Path, source_id: int, quote: str, evidence: str) -> dict[
     a quote the page does not contain is exactly the fabrication this guards
     against."""
     quote = (quote or "").strip()
-    if len(_normalize_ws(quote).split()) < 3:
+    if not _long_enough(quote, min_words=3):
         raise SystemExit("error: quote too short — use at least 3 words of verbatim text")
     if not quote_in_evidence(quote, evidence):
         raise SystemExit(
@@ -391,9 +410,9 @@ def _sentences(prose: str) -> list[str]:
             continue
         if stripped.startswith(">"):
             stripped = stripped.lstrip("> ").strip()
-        for part in re.split(r"(?<=[.!?])\s+", stripped):
+        for part in re.split(r"(?<=[.!?])\s+|(?<=[。！？．])", stripped):
             part = part.strip()
-            if len(part.split()) >= 4:
+            if _long_enough(part, min_words=4):
                 out.append(part)
     return out
 

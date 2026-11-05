@@ -42,6 +42,67 @@ async def _no_call_record(*args, **kwargs):
     return None
 
 
+@pytest.mark.parametrize(
+    "defaults, override, home_channel, expected",
+    [
+        pytest.param({"channel_id": "general"}, {"enabled": False, "channel_id": "private"}, None, None, id="explicit-disable"),
+        pytest.param({"channel_id": "general"}, {"channel_id": "private"}, None, "/teams/team/channels/private/messages", id="explicit-channel"),
+        pytest.param({}, {}, "home", "/teams/team/channels/home/messages", id="home-fallback"),
+        pytest.param({"channel_id": "general"}, {}, "home", "/teams/team/channels/general/messages", id="platform-before-home"),
+        pytest.param({}, {"channel_id": "private"}, "home", "/teams/team/channels/private/messages", id="pipeline-before-home"),
+        pytest.param({}, {"enabled": True}, None, None, id="incomplete-target"),
+        pytest.param({}, {"chat_id": "private-chat"}, None, "/chats/private-chat/messages", id="chat-target"),
+        pytest.param({"channel_id": "general"}, {"mode": " incoming_webhook ", "incoming_webhook_url": "https://pipeline.invalid/hook"}, None, "https://pipeline.invalid/hook", id="mode-override"),
+        pytest.param({"channel_id": "general"}, {"delivery_mode": " INCOMING_WEBHOOK ", "incoming_webhook_url": "https://pipeline.invalid/hook"}, None, "https://pipeline.invalid/hook", id="delivery-mode-override"),
+        pytest.param({"delivery_mode": "incoming_webhook", "incoming_webhook_url": "https://platform.invalid/hook"}, {"mode": "graph", "chat_id": "private-chat"}, None, "/chats/private-chat/messages", id="graph-mode-override"),
+        pytest.param({"delivery_mode": "incoming_webhook", "incoming_webhook_url": "https://platform.invalid/hook"}, {"incoming_webhook_url": "https://pipeline.invalid/hook"}, None, "https://pipeline.invalid/hook", id="webhook-target-override"),
+        pytest.param({"channel_id": "general"}, {"delivery_mode": "graph", "mode": "incoming_webhook"}, None, "/teams/team/channels/general/messages", id="alias-precedence"),
+    ],
+)
+def test_runtime_delivery_respects_effective_target(monkeypatch, tmp_path, defaults, override, home_channel, expected):
+    import httpx
+
+    from gateway.config import HomeChannel
+    from plugins.teams_pipeline import runtime
+    from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    requests = []
+
+    async def send(client, request, **kwargs):
+        requests.append(request)
+        return httpx.Response(200, json={"id": "sent-summary"}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    monkeypatch.setattr(runtime, "build_graph_client", lambda: object())
+    extra = {"delivery_mode": "graph", "team_id": "team", "access_token": "test-token", **defaults,
+             "meeting_pipeline": {"teams_delivery": override}}
+    from copy import deepcopy
+
+    original_extra = deepcopy(extra)
+    platform = PlatformConfig(
+        enabled=True, extra=extra,
+        home_channel=HomeChannel(platform=Platform("teams"), chat_id=home_channel, name="Summaries") if home_channel else None,
+    )
+    pipeline = runtime.build_pipeline_runtime(SimpleNamespace(config=GatewayConfig(platforms={Platform("teams"): platform})))
+    job = pipeline.create_job_from_notification({"id": "notification", "resourceData": {"id": "meeting"}})
+    payload = TeamsMeetingSummaryPayload(meeting_ref=TeamsMeetingRef(meeting_id="meeting"), summary="Private summary")
+
+    asyncio.run(pipeline._write_sinks(job, payload))
+
+    if expected is None:
+        assert requests == []
+        assert pipeline.config.teams_delivery["enabled"] is False
+        assert pipeline.store.get_sink_record("teams:meeting") is None
+    else:
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert str(requests[0].url).endswith(expected)
+        assert b"Private summary" in requests[0].content
+        assert pipeline.store.get_sink_record("teams:meeting")
+    assert platform.extra == original_extra
+
+
 def test_runtime_config_uses_existing_teams_platform_settings():
     from plugins.teams_pipeline.runtime import build_pipeline_runtime_config
 
@@ -69,6 +130,7 @@ def test_runtime_config_uses_existing_teams_platform_settings():
     assert runtime_config["teams_delivery"] == {
         "enabled": True,
         "mode": "graph",
+        "delivery_mode": "graph",
         "team_id": "team-1",
         "channel_id": "channel-1",
     }

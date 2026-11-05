@@ -14,5 +14,4 @@ export default withMDX({
   reactStrictMode: true,
   serverExternalPackages: ['shiki', 'fumadocs-mdx'],
   outputFileTracingRoot: path.resolve(appDir, '../..'),
-  turbopack: { root: path.resolve(appDir, '../..') },
 });

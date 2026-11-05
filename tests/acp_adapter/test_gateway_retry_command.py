@@ -18,6 +18,8 @@ from gateway.session_authority import initialize_session_authority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_unacked_slash import SlashWire
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 IMAGE = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}
 
@@ -53,7 +55,7 @@ async def _editor(tmp_path, monkeypatch, wire_class=SlashWire):
     from gateway import run
     from gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'acp': []}})
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _handle_message=answer, _adapter_for_source=lambda source: None,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **kwargs: ('frozen', {}))
@@ -74,7 +76,7 @@ async def _editor(tmp_path, monkeypatch, wire_class=SlashWire):
     agent._snapshots[sid] = await wire.rpc('session.resume', session_id=sid)
     agent._event_task = asyncio.create_task(agent._events())
     try:
-        yield SimpleNamespace(agent=agent, db=authority.db, sid=sid, wire=wire, updates=updates, executed=executed)
+        yield SimpleNamespace(agent=agent, db=authority.persistence, sid=sid, wire=wire, updates=updates, executed=executed)
     finally:
         agent._event_task.cancel()
         await wire.viewer.close()
@@ -82,26 +84,25 @@ async def _editor(tmp_path, monkeypatch, wire_class=SlashWire):
 
 
 def _users(db, sid):
-    return [m['content'] for m in db.get_messages(sid) if m['role'] == 'user']
+    return [m['content'] for m in transcript_rows(db, sid) if m['role'] == 'user']
 
 
 @pytest.mark.asyncio
 async def test_retry_of_an_image_turn_is_the_commands_reply_and_keeps_history(tmp_path, monkeypatch):
     async with _editor(tmp_path, monkeypatch) as e:
-        e.db.append_message(e.sid, 'user', [{'type': 'text', 'text': 'what is this?'}, IMAGE])
-        e.db.append_message(e.sid, 'assistant', 'a picture')
+        seed_messages(e.db, e.sid, {'role': 'user', 'content': [{'type': 'text', 'text': 'what is this?'}, IMAGE]},
+                      {'role': 'assistant', 'content': 'a picture'})
         response = await asyncio.wait_for(e.agent.prompt([acp.text_block('/retry')], e.sid), 5)
         assert response.stop_reason == 'end_turn'
         assert any(u.startswith('/retry: retry does not support media') for u in e.updates), e.updates
-        assert len(e.db.get_messages(e.sid)) == 2 and not e.executed
+        assert len(transcript_rows(e.db, e.sid)) == 2 and not e.executed
 
 
 @pytest.mark.asyncio
 async def test_retry_after_a_lost_snapshot_refresh_replays_the_same_rewind(tmp_path, monkeypatch):
     async with _editor(tmp_path, monkeypatch, LossyResume) as e:
         for ask, reply in (('first ask', 'first reply'), ('second ask', 'second reply')):
-            e.db.append_message(e.sid, 'user', ask)
-            e.db.append_message(e.sid, 'assistant', reply)
+            seed_messages(e.db, e.sid, {'role': 'user', 'content': ask}, {'role': 'assistant', 'content': reply})
         with pytest.raises(GatewayClientError, match='disconnected'):
             await asyncio.wait_for(e.agent.prompt([acp.text_block('/retry')], e.sid), 5)
         assert _users(e.db, e.sid) == ['first ask']  # the rewind committed before the refresh failed

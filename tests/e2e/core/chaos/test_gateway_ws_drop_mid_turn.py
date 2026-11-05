@@ -36,7 +36,7 @@ import pytest
 from websockets.sync.client import connect
 
 from gateway.control_socket import resolve_client_socket_path
-from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
+from persistence.sqlite.conversation._store.retirement import VIEWER_CLOSE_PREFIX
 from tests.e2e.core.chaos._helpers import (
     hermetic_env, kill_tagged, new_tag, persisted_messages, python_exe, write_chaos_home)
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text

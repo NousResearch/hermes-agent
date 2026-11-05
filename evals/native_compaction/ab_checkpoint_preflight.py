@@ -12,7 +12,7 @@ Scenarios (all deterministic, no network beyond 127.0.0.1):
 1. ``capture``  — turn 1 returns a ``compaction`` output item carrying N chars of
    ciphertext plus real usage below threshold; turn 2 in the SAME agent must reach the
    provider without local compression.
-2. ``restore``  — the turn-1 transcript is written to a real ``SessionDB``, the DB is
+2. ``restore``  — the turn-1 transcript is written to a real session store, the store is
    closed/reopened, a FRESH ``AIAgent`` resumes it; its first turn must reach the provider
    without local compression (idle pass armed too).
 3. ``over_threshold`` (negative) — same as ``capture`` but the provider's real usage after
@@ -191,7 +191,9 @@ def scenario_capture(wire: _FakeResponses, *, usage_after: int, reload_history: 
 
 
 def scenario_restore(wire: _FakeResponses, tmp: Path) -> dict:
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
 
     wire.requests.clear()
     wire.script[:] = [
@@ -201,17 +203,17 @@ def scenario_restore(wire: _FakeResponses, tmp: Path) -> dict:
     sid = "ab-native-restore"
     agent = _make_agent(wire.base_url, session_id=sid)
     r1 = agent.run_conversation("first request")
-    db_path = tmp / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.create_session(sid, source="cli")
+    scope = profile_scope(home=tmp)
+    db = open_persistence(scope, eager=True)
+    db.sessions.create(NewSession(session_id=sid, source="cli"))
     for m in r1["messages"]:
         if m.get("role") not in ("user", "assistant", "tool"):
             continue
         extra = {k: m[k] for k in ("codex_reasoning_items",) if m.get(k)}
-        db.append_message(sid, m["role"], m.get("content") or "", **extra)
+        db.messages.append(sid, NewMessage(role=m["role"], content=m.get("content") or "", **extra))
     db.close()
-    reopened = SessionDB(db_path=db_path)
-    history = reopened.get_messages_as_conversation(sid)
+    reopened = open_persistence(scope, eager=True)
+    history = [m.as_openai_message() for m in reopened.messages.read_conversation(sid)]
     reopened.close()
     restored_carrier = next((m for m in history if m.get("codex_reasoning_items")), None)
     fresh = _make_agent(wire.base_url, session_id=sid)

@@ -1,7 +1,7 @@
 """C4 compaction atomicity: kill -9 a real child process mid-compaction, then prove state.db is intact
 and the session is resumable.
 
-A seeded session is built in-process on a real SessionDB; then a CHILD process (real AIAgent against the
+A seeded session is built in-process on a real store; then a CHILD process (real AIAgent against the
 same state.db and the same fake provider) runs ``/compress``. The parent SIGKILLs it at two points:
 
 * ``summarizer`` — while the summary request is in flight (lease held, nothing written yet);
@@ -48,37 +48,41 @@ import os, sys, time
 from pathlib import Path
 repo, db_path, session_id, base_url, point, sentinel = sys.argv[1:7]
 sys.path.insert(0, repo)
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import compaction_write_seam
+from tests.fixtures.storage_read import conversation
 
 if point == "commit":
     # Park inside archive_and_compact's write transaction (after archive + inserts, before COMMIT).
     in_commit = {"on": False}
-    orig_aac = SessionDB.archive_and_compact
-    orig_insert = SessionDB._insert_message_rows
+    module, compact_name, insert_name = compaction_write_seam()
+    orig_compact = getattr(module, compact_name)
+    orig_insert = getattr(module, insert_name)
 
-    def aac(self, *a, **k):
+    def compact(*a, **k):
         in_commit["on"] = True
-        return orig_aac(self, *a, **k)
+        return orig_compact(*a, **k)
 
-    def insert(self, conn, *a, **k):
-        out = orig_insert(self, conn, *a, **k)
+    def insert(holder, conn, *a, **k):
+        out = orig_insert(holder, conn, *a, **k)
         if in_commit["on"]:
             with open(sentinel, "w") as fh:
                 fh.write(str(os.getpid()))
             time.sleep(3600)
         return out
 
-    SessionDB.archive_and_compact = aac
-    SessionDB._insert_message_rows = insert
+    setattr(module, compact_name, compact)
+    setattr(module, insert_name, insert)
 
 from run_agent import AIAgent
 from agent.conversation_compression_manual import compress_now, parse_compress_args
 
-db = SessionDB(db_path=Path(db_path))
+db = open_persistence(profile_scope(home=Path(db_path).parent))
 agent = AIAgent(provider="custom", base_url=base_url, api_key="sk-fake-e2e", model="fake-model",
-                session_db=db, session_id=session_id, quiet_mode=True, enabled_toolsets=["file"],
+                persistence=db, session_id=session_id, quiet_mode=True, enabled_toolsets=["file"],
                 skip_context_files=True, skip_memory=True)
-history = db.get_messages_as_conversation(session_id)
+with open_persistence(profile_scope(home=Path(db_path).parent)) as store:
+    history = conversation(store, session_id)
 result = compress_now(agent, history, parse_compress_args(""))
 print("CHILD-FINISHED", result.status, flush=True)
 '''

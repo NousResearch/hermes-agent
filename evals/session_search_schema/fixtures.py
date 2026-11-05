@@ -1,6 +1,6 @@
 """Seed the synthetic session DBs for the session_search schema A/B eval.
 
-Creates state.db (main profile) + state_work.db ('work' profile) under a
+Creates state.db (main profile) and work/state.db ('work' profile) under a
 target dir. Sessions are designed so each task in tasks.py has a
 programmatic oracle:
 
@@ -23,22 +23,27 @@ from pathlib import Path
 
 
 def seed(dbdir: Path) -> None:
-    from hermes_state import SessionDB
+    import sqlite3
+
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope, store_location
 
     dbdir.mkdir(parents=True, exist_ok=True)
     now = int(time.time())
 
     def mk(db, sid, title, age_s, msgs, source="cli"):
-        db.create_session(sid, source=source)
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-            (now - age_s, title, sid),
-        )
+        db.sessions.create(NewSession(session_id=sid, source=source))
+        # No store verb backdates a session; the fixture writes its start time and title directly.
+        with sqlite3.connect(store_location(db.scope)) as conn:
+            conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (now - age_s, title, sid),
+            )
         for role, content in msgs:
-            db.append_message(sid, role=role, content=content)
-        db._conn.commit()
+            db.messages.append(sid, NewMessage(role=role, content=content))
 
-    db = SessionDB(dbdir / "state.db")
+    db = open_persistence(profile_scope(home=dbdir), eager=True)
 
     # --- t1: postgres migration (discovery) ---------------------------------
     mk(db, "20260810_091500_aa11bb", "Postgres 16 Migration", 14 * 86400, [
@@ -116,7 +121,8 @@ def seed(dbdir: Path) -> None:
     db.close()
 
     # --- work profile DB (t5) -------------------------------------------------
-    wdb = SessionDB(dbdir / "state_work.db")
+    (dbdir / "work").mkdir()
+    wdb = open_persistence(profile_scope(home=dbdir / "work"), eager=True)
     mk(wdb, "20260815_110000_beef01", "Secrets Management Decision", 11 * 86400, [
         ("user", "We need to pick a secrets management approach for the platform team."),
         ("assistant", "Candidates: AWS Secrets Manager, Vault, SOPS in git."),

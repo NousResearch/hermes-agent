@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from agent.turn_facade_lease import (
     LEASE_TTL_SECONDS,
     DurableTurnLease,
@@ -29,6 +31,36 @@ class _Db:
 
     def release_session_turn_lease(self, session_id, holder):
         self.events.append(("release", session_id, holder))
+
+
+class _Unused:
+    """An owner's legacy store: the owner path must not call it."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"legacy store called on the owner path: {name}")
+
+
+def _handle(db):
+    """A writer's interface handle whose verbs land on ``db``'s fakes."""
+    return SimpleNamespace(
+        read_only=False,
+        coordination=SimpleNamespace(
+            try_acquire_turn_lease=lambda *, session_id, holder, **kw: db.acquire_session_turn_lease(
+                session_id, holder),
+            refresh_turn_lease=lambda *, session_id, holder, **kw: db.refresh_session_turn_lease(
+                session_id, holder, **kw),
+            release_turn_lease=lambda *, session_id, holder: db.release_session_turn_lease(session_id, holder),
+            turn_lease_expires_at=lambda *, session_id, holder: None,
+        ),
+        sessions=SimpleNamespace(get=db.get_session),
+    )
+
+
+def _wired(db, kind, **overrides):
+    """``client``: ``db`` is the agent's client store. ``owner``: ``db`` backs the agent's handle."""
+    if kind == "client":
+        return _agent(db, **overrides)
+    return _agent(_Unused(), persistence=_handle(db), **overrides)
 
 
 def _agent(db, **overrides):
@@ -78,12 +110,13 @@ def test_fresh_row_leases_with_seed_kept_and_persist_disabled_skips(monkeypatch)
     assert admission.lease is None and db.events == []
 
 
-def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch):
+@pytest.mark.parametrize("kind", ["client", "owner"])
+def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch, kind):
     monkeypatch.setattr(
         "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
     )
     db = _Db()
-    agent = _agent(db)
+    agent = _wired(db, kind)
     admission = _admit(agent)
     lease = admission.lease
     assert isinstance(lease, DurableTurnLease)
@@ -103,8 +136,11 @@ def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch):
     assert agent._active_session_turn_lease_ttl_seconds is None
 
 
-def test_timeout_and_interrupt_early_results():
-    agent = _agent(_Db(acquired=False))
+@pytest.mark.parametrize("kind", ["client", "owner"])
+def test_timeout_and_interrupt_early_results(monkeypatch, kind):
+    # The owner's wait loop runs here; a zero wait makes the first miss its timeout.
+    monkeypatch.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", 0.0)
+    agent = _wired(_Db(acquired=False), kind)
     admission = _admit(agent, [{"role": "user", "content": "x"}])
     assert admission.lease is None
     assert admission.early_result["failed"] is True
@@ -114,7 +150,7 @@ def test_timeout_and_interrupt_early_results():
     assert admission.early_result["failure_retryable"] is True
     assert admission.early_result["messages"] == [{"role": "user", "content": "x"}]
 
-    agent = _agent(_Db(acquired=False), _interrupt_requested=True, _interrupt_message="stop")
+    agent = _wired(_Db(acquired=False), kind, _interrupt_requested=True, _interrupt_message="stop")
     agent.clear_interrupt = lambda: None
     admission = _admit(agent)
     assert admission.early_result["interrupted"] is True
@@ -139,23 +175,45 @@ def test_interrupt_before_any_wait_does_not_blame_another_process():
     assert "another Hermes process" in _admit(agent).early_result["final_response"]
 
 
-def _active_lease(db):
-    agent = _agent(db)
+def test_owner_interrupt_before_any_wait_does_not_blame_another_process():
+    agent = _wired(_Db(acquired=False), "owner", _interrupt_requested=True)
+    agent.clear_interrupt = lambda: None
+    reply = _admit(agent).early_result["final_response"]
+    assert "another Hermes process" not in reply and "not processed" in reply
+
+    class _HeldDb(_Db):
+        def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+            agent._interrupt_requested = True  # another holder seen, then the user interrupted the wait
+            return False
+
+    agent = _wired(_HeldDb(), "owner")
+    agent.clear_interrupt = lambda: None
+    assert "another Hermes process" in _admit(agent).early_result["final_response"]
+
+
+def _active_lease(db, kind="client"):
+    agent = _wired(db, kind)
     calls = []
     agent.interrupt = lambda msg, **kw: calls.append(msg)
-    lease = DurableTurnLease(agent, db, "s1", "h")
+    lease = DurableTurnLease(agent, agent._session_db, "s1", "h", persistence=getattr(agent, "persistence", None))
     lease.turn_active = True
     return lease, calls
 
 
-def test_refresh_tick_sqlite_lock_keeps_the_turn():
+@pytest.mark.parametrize("kind", ["client", "owner"])
+def test_refresh_tick_sqlite_lock_keeps_the_turn(kind):
+    from persistence.core.errors import StoreContention
+
     db = _Db()
 
     def locked(session_id, holder, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
+        # The client store raises sqlite3's lock error; the owner's handle raises the contract's.
+        if kind == "client":
+            raise sqlite3.OperationalError("database is locked")
+        raise StoreContention("database is locked")
 
     db.refresh_session_turn_lease = locked
-    lease, calls = _active_lease(db)
+    lease, calls = _active_lease(db, kind)
 
     # False would cancel the refresher; a lock is a missed tick, not a lost lease.
     assert lease.refresh_tick() is None
@@ -179,30 +237,34 @@ class _MovingClock:
 
 
 def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkeypatch):
-    """Real SessionDB + a real second-connection write lock. The local deadline never runs past the
+    """Real store handle + a real second-connection write lock. The local deadline never runs past the
     row's committed expiry (a renewal that waited for the lock), and a renewal blocked near expiry
     gives up and stops the turn BEFORE the row becomes reclaimable, never after a successor could
     take it. Control: the lock clearing lets the delayed renewal succeed with no interrupt."""
-    import hermes_state
-    import hermes_state_compression
     from agent import turn_facade_lease
+    from persistence.sqlite.authority import coordination as sqlite_coordination
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     clock = _MovingClock(1000.0)
     fake_time = SimpleNamespace(time=clock.time, monotonic=time.monotonic, sleep=time.sleep)
     monkeypatch.setattr(turn_facade_lease, "time", fake_time)
-    monkeypatch.setattr(hermes_state_compression, "time", fake_time)
+    monkeypatch.setattr(sqlite_coordination, "time", fake_time)
 
     path = tmp_path / "state.db"
-    db = hermes_state.SessionDB(path)
-    db.create_session("s1", source="test")
-    assert db.try_acquire_session_turn_lease("s1", "h")
+    handle = open_persistence(profile_scope(home=tmp_path))
+    seed_session(handle, "s1", "test")
+    coordination = handle.coordination
+    assert coordination.try_acquire_turn_lease(session_id="s1", holder="h")
     events = []
     agent = SimpleNamespace(session_id="s1", interrupt=lambda msg, **kw: events.append((clock.time(), msg)))
-    lease = DurableTurnLease(agent, db, "s1", "h", expires_at=db.session_turn_lease_expires_at("s1", "h"))
+    lease = DurableTurnLease(agent, _Unused(), "s1", "h",
+                             expires_at=coordination.turn_lease_expires_at(session_id="s1", holder="h"),
+                             persistence=handle)
     lease.turn_active = True
 
     def row_expiry() -> float:
-        committed = db.session_turn_lease_expires_at("s1", "h")
+        committed = coordination.turn_lease_expires_at(session_id="s1", holder="h")
         assert committed is not None, "the turn lost its lease row"
         return committed
 
@@ -218,13 +280,14 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     admitted_expiry = row_expiry()
     blocker = write_lock()
     refused = threading.Event()
-    real_retry_sleep = db._sleep_before_write_retry
+    holder = handle.holder()
+    real_retry_sleep = holder._sleep_before_write_retry
 
     def retry_sleep(deadline, patience_s):
         refused.set()
         return real_retry_sleep(deadline, patience_s)
 
-    monkeypatch.setattr(db, "_sleep_before_write_retry", retry_sleep)
+    monkeypatch.setattr(holder, "_sleep_before_write_retry", retry_sleep)
     worker = threading.Thread(target=lease.refresh_tick)
     worker.start()
     assert refused.wait(10), "renewal never reached the locked write"
@@ -249,7 +312,7 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
         "Session turn lease could not be refreshed; stopping to protect the transcript."
     ]
     assert events[0][0] < row_expiry()
-    db.close()
+    handle.close()
 
 
 def test_interrupt_turn_only_while_active():

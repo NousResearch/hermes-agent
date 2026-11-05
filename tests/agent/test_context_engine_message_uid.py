@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import closing
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from agent.context_engine import ContextEngine
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 UID_LEN = 32
 
@@ -63,7 +65,7 @@ def _make_agent(session_db, session_id):
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=session_db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            persistence=session_db, session_id=session_id, skip_context_files=True, skip_memory=True,
         )
     agent.compression_in_place = True
     agent.context_compressor = _CapturingEngine()
@@ -71,17 +73,18 @@ def _make_agent(session_db, session_id):
 
 
 def _seed(db, sid, n=6):
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     for i in range(n):
-        db.append_message(session_id=sid, role="user" if i % 2 == 0 else "assistant", content=f"seed msg {i}")
-    return [dict(r) for r in db._conn.execute(
-        "SELECT id, content, message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
-        (sid,)).fetchall()]
+        seed_messages(db, sid, {"role": "user" if i % 2 == 0 else "assistant", "content": f"seed msg {i}"})
+    with raw_holder(db)._read_ctx() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, content, message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+            (sid,)).fetchall()]
 
 
 @pytest.fixture()
 def db(tmp_path):
-    with closing(SessionDB(db_path=Path(tmp_path) / "state.db")) as handle:
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
         yield handle
 
 
@@ -91,7 +94,7 @@ def test_compress_input_after_a_cold_restore_carries_every_rows_uid(db):
 
     sid = "20260928_120000_uid"
     stored = _seed(db, sid)
-    restored = db.get_messages_as_conversation(sid, repair_alternation=True)
+    restored = conversation(db, sid, ConversationRequest(repair_alternation=True))
     assert all("_row_id" not in m for m in restored)
     agent = _make_agent(db, sid)
     agent._session_db_created = True
@@ -102,8 +105,9 @@ def test_compress_input_after_a_cold_restore_carries_every_rows_uid(db):
     engine = agent.context_compressor
     assert [m.get("message_uid") for m in engine.compress_input] == [r["message_uid"] for r in stored]
     # The committed generation: the copied tail keeps its uids, the summary got a fresh one.
-    active = [dict(r) for r in db._conn.execute(
-        "SELECT content, message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id", (sid,))]
+    with raw_holder(db)._read_ctx() as conn:
+        active = [dict(r) for r in conn.execute(
+            "SELECT content, message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id", (sid,))]
     assert [r["content"] for r in active] == [
         "[CONTEXT COMPACTION] summary of prior turns", "seed msg 4", "seed msg 5"]
     assert [r["message_uid"] for r in active[1:]] == [stored[4]["message_uid"], stored[5]["message_uid"]]
@@ -126,7 +130,7 @@ def test_an_engine_authored_uid_survives_the_commit(db, in_place):
 
     sid = f"20260928_120050_{'inplace' if in_place else 'rotate'}"
     stored = _seed(db, sid)
-    restored = db.get_messages_as_conversation(sid)
+    restored = conversation(db, sid)
     agent = _make_agent(db, sid)
     agent.context_compressor = _PreStamping()
     agent.compression_in_place = in_place
@@ -138,7 +142,7 @@ def test_an_engine_authored_uid_survives_the_commit(db, in_place):
     committed_sid = agent.session_id
     if not in_place:
         assert committed_sid != sid  # rotation published a child session
-    active = db.get_messages_as_conversation(committed_sid)
+    active = conversation(db, committed_sid)
     assert [m["content"] for m in active][:1] == ["[CONTEXT COMPACTION] summary of prior turns"]
     assert active[0]["message_uid"] == "e" * UID_LEN
     assert [m["message_uid"] for m in active[1:3]] == [stored[4]["message_uid"], stored[5]["message_uid"]]
@@ -149,7 +153,7 @@ def test_turn_flush_stamps_uids_on_the_live_dicts_post_llm_call_hands_over(db):
     """``post_llm_call(conversation_history=list(messages))`` passes the live dicts; after the turn flush
     every one of them carries the durable uid, including the current-turn user row."""
     sid = "20260928_120100_flush"
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
@@ -158,15 +162,16 @@ def test_turn_flush_stamps_uids_on_the_live_dicts_post_llm_call_hands_over(db):
     agent._persist_session(messages, conversation_history=None)
 
     assert all(len(m.get("message_uid", "")) == UID_LEN for m in messages)
-    stored = [r[0] for r in db._conn.execute(
-        "SELECT message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id", (sid,))]
+    with raw_holder(db)._read_ctx() as conn:
+        stored = [r[0] for r in conn.execute(
+            "SELECT message_uid FROM messages WHERE session_id = ? AND active = 1 ORDER BY id", (sid,))]
     assert [m["message_uid"] for m in messages] == stored
 
 
 def test_persist_override_keeps_the_uid(db):
     """The ACP/gateway persist override rewrites the current-turn user CONTENT in place; the id is the row's."""
     sid = "20260928_120200_override"
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     messages = [{"role": "user", "content": "api-only variant with injected context"}]
@@ -179,8 +184,9 @@ def test_persist_override_keeps_the_uid(db):
 
     assert messages[0]["content"] == "what the user typed"
     assert messages[0]["message_uid"] == uid
-    row = db._conn.execute(
-        "SELECT content, message_uid FROM messages WHERE session_id = ? AND active = 1", (sid,)).fetchone()
+    with raw_holder(db)._read_ctx() as conn:
+        row = conn.execute(
+            "SELECT content, message_uid FROM messages WHERE session_id = ? AND active = 1", (sid,)).fetchone()
     assert (row[0], row[1]) == ("what the user typed", uid)
 
 
@@ -205,11 +211,11 @@ def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
     """A dangling user row, a restart, the next prompt merged into it, a turn flush, another restart: the
     restored survivor names the absorbed row by uid instead of leaving the engine to parse ``\\n\\n``."""
     sid = "20260928_120300_witness"
-    db.create_session(sid, "cli", model="test/model")
-    db.append_message(session_id=sid, role="user", content="unanswered before the crash")
-    dangling_uid = db.get_messages_as_conversation(sid)[0]["message_uid"]
+    seed_session(db, sid, "cli", model="test/model")
+    seed_messages(db, sid, {"role": "user", "content": "unanswered before the crash"})
+    dangling_uid = conversation(db, sid)[0]["message_uid"]
     # Restart: the ACP/gateway restore shape, then the next prompt lands and the pre-request repair merges.
-    history = db.get_messages_as_conversation(sid, repair_alternation=True, include_row_ids=True)
+    history = conversation(db, sid, ConversationRequest(repair_alternation=True, include_row_ids=True))
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     prompt = {"role": "user", "content": "next prompt"}
@@ -223,7 +229,7 @@ def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
     messages.append({"role": "assistant", "content": "reply"})
     agent._persist_session(messages, conversation_history=None)
     # Second restart.
-    again = db.get_messages_as_conversation(sid, repair_alternation=True)
+    again = conversation(db, sid, ConversationRequest(repair_alternation=True))
     survivor = next(m for m in again if m["message_uid"] == dangling_uid)
     assert survivor["content"].startswith("unanswered before the crash")
     assert prompt["message_uid"] in survivor["_absorbed_message_uids"]
@@ -232,7 +238,7 @@ def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
 def test_tool_result_flushed_after_its_call_pairs_through_the_live_list(db):
     """Tool round shape: the assistant(tool_calls) row is flushed first, the result in a later flush."""
     sid = "20260928_120400_tool"
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     assistant = {"role": "assistant", "content": "",
@@ -245,8 +251,9 @@ def test_tool_result_flushed_after_its_call_pairs_through_the_live_list(db):
     messages.append(result)
     agent._persist_session(messages, conversation_history=None)
     assert result["_tool_call_uid"] == uid
-    stored = db._conn.execute(
-        "SELECT tool_call_uid FROM messages WHERE session_id = ? AND role = 'tool'", (sid,)).fetchone()[0]
+    with raw_holder(db)._read_ctx() as conn:
+        stored = conn.execute(
+            "SELECT tool_call_uid FROM messages WHERE session_id = ? AND role = 'tool'", (sid,)).fetchone()[0]
     assert stored == uid
 
 
@@ -329,7 +336,7 @@ def test_a_reused_id_merge_survives_rewrite_and_restore(db):
     from session_rules.turns import repair_message_sequence
 
     sid = "20260928_120600_reused"
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     first, second = _reused_call("checking"), _reused_call("")
@@ -344,7 +351,7 @@ def test_a_reused_id_merge_survives_rewrite_and_restore(db):
     assert first["_tool_call_uids"] == {"call_x": occurrences}
     agent._persist_session(messages, conversation_history=None)
 
-    again = db.get_messages_as_conversation(sid, repair_alternation=False)
+    again = conversation(db, sid, ConversationRequest(repair_alternation=False))
     stored = next(m for m in again if m["role"] == "assistant" and m.get("tool_calls"))
     assert stored["_tool_call_uids"] == {"call_x": occurrences}
     assert next(m for m in again if m["role"] == "tool")["_tool_call_uid"] == occurrences[1]
@@ -477,7 +484,7 @@ def test_an_assistant_merge_rewrite_persists_the_unioned_tool_call_uids(db):
     from session_rules.turns import repair_message_sequence
 
     sid = "20260928_120500_union"
-    db.create_session(sid, "cli", model="test/model")
+    seed_session(db, sid, "cli", model="test/model")
     agent = _make_agent(db, sid)
     agent._session_db_created = True
     survivor = {"role": "assistant", "content": "let me check"}
@@ -495,7 +502,7 @@ def test_an_assistant_merge_rewrite_persists_the_unioned_tool_call_uids(db):
     agent._persist_session(messages, conversation_history=None)
 
     assert survivor["_tool_call_uids"] == uids
-    again = db.get_messages_as_conversation(sid, repair_alternation=False)
+    again = conversation(db, sid, ConversationRequest(repair_alternation=False))
     stored = next(m for m in again if m["role"] == "assistant" and m["content"].startswith("let me check"))
     assert [tc["id"] for tc in stored["tool_calls"]] == ["call_2"]
     assert stored["_tool_call_uids"] == uids

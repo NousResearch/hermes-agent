@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home, redactor_turn
+from tests.fixtures.storage_read import conversation, transcript_rows
 
 
 def _agent(server, **kwargs):
@@ -104,30 +105,30 @@ def _assistant_commentary(request: dict) -> list:
 def test_held_commentary_stays_out_of_history_but_in_the_model_context():
     from gateway.session_controls import display_projection
     from hermes_cli import plugins
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer(redactor_turn() + [Text("ok")]) as server:
         redactor_home(home, server.base_url, hold=True)
         plugins._reset_plugin_managers_for_tests()
-        db = SessionDB(db_path=home / "held-history.db")
+        db = open_persistence(profile_scope(home=home))
         try:
-            agent = _agent(server, session_id="held-history", session_db=db)
+            agent = _agent(server, session_id="held-history", persistence=db)
             shown = []
             agent.stream_delta_callback = shown.append
             agent.interim_assistant_callback = lambda text, **_: shown.append(text)
             assert agent.run_conversation("show config")["final_response"] == REWRITE
             assert not [text for text in shown if text]
 
-            displayed = display_projection(db.get_messages("held-history"), home)
+            displayed = display_projection(transcript_rows(db, "held-history"), home)
             assert COMMENTARY not in str(displayed)
             assert [row["text"] for row in displayed if row["role"] == "assistant"] == [REWRITE]
             # The tool card of the hidden row still renders, labelled from its call.
             assert [row["name"] for row in displayed if row["role"] == "tool"] == ["todo_list"]
 
             # Resume: the model gets the commentary exactly as it got it live (prompt-cache prefix).
-            resumed = _agent(server, session_id="held-history", session_db=db)
-            resumed.run_conversation("thanks", conversation_history=db.get_messages_as_conversation("held-history"))
+            resumed = _agent(server, session_id="held-history", persistence=db)
+            resumed.run_conversation("thanks", conversation_history=conversation(db, "held-history"))
             live, replayed = server.main_requests()[1], server.main_requests()[2]
             assert _assistant_commentary(replayed) == _assistant_commentary(live)
             assert _assistant_commentary(live)[0]["content"] == COMMENTARY

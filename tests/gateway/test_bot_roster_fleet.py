@@ -75,9 +75,9 @@ async def fleet(tmp_path, monkeypatch, request):
             with owner_scope(connection.authority):
                 await connection.close()
         from gateway.session_persistence import authority_persistence
-        from persistence_beside import close_beside
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            close_beside(authority_persistence(authority))
+            if (handle := authority_persistence(authority)) is not None:
+                handle.close()
         for _, home in homes:
             process_ownership.release(Path(home))
 

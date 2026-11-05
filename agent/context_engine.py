@@ -106,7 +106,16 @@ def shutdown_memory_and_context(agent: Any, messages: list | None = None) -> Non
             except Exception as e:  # health: allow BLE001 -- moved from AIAgent.shutdown_memory_provider; logged with its traceback
                 logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             _quietly(lambda: agent._memory_manager.shutdown_all())
-        _notify_context_engine_session_end(agent, messages)
+        # A soft release that already shut this engine down (claim "soft_release") owns the teardown
+        # order: an on_session_end landing AFTER engine.shutdown() makes an engine that stopped
+        # ingesting half-kill the plugin, so every hard site that can interleave with an eviction
+        # (gateway shutdown tail, session expiry, close()) skips the notify. shutdown_context_engine's
+        # once-flag below keeps the release itself idempotent either way. (#147087 review finding 3)
+        if getattr(agent, "_context_engine_teardown_claim", None) == "soft_release":
+            logger.debug("Skipping context-engine on_session_end for session %s: a soft release "
+                         "already shut the engine down.", getattr(agent, "session_id", "") or "")
+        else:
+            _notify_context_engine_session_end(agent, messages)
     finally:
         shutdown_context_engine(agent)
 

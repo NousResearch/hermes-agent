@@ -8,6 +8,27 @@ import pytest
 from tests.gateway.test_agent_cache import _make_runner
 
 
+class _OrderingEngine:
+    """Records the context-engine lifecycle order an LCM-style engine depends on.
+
+    ``on_session_end`` may need a live ingest pipeline and anything ingested after ``shutdown()`` is
+    lost, so the pair must happen in that order exactly once. Appends into the same ``events`` list
+    the provider stub writes, so one list pins how the hard and soft teardown paths interleave.
+    """
+
+    name = "lcm"
+    compression_count = 0
+
+    def __init__(self, events, label):
+        self._events, self._label = events, label
+
+    def on_session_end(self, session_id, messages):
+        self._events.append(f"{self._label}:on_session_end")
+
+    def shutdown(self):
+        self._events.append(f"{self._label}:shutdown")
+
+
 class TestAgentCacheMemoryLifecycle:
     @staticmethod
     def _agent_with_writer_provider(session_id, events):
@@ -204,3 +225,82 @@ class TestAgentCacheMemoryLifecycle:
             runner._housekeeping_executor.shutdown(wait=True)
         assert events == ["on_session_end", "shutdown"]
         assert not provider.writer.is_alive()
+
+    @pytest.mark.asyncio
+    async def test_session_end_never_follows_engine_shutdown(self, monkeypatch):
+        """#147087 review finding 3: the session-end claim must pin on_session_end BEFORE the
+        engine's own shutdown() — and never the other way round. Drives the real /new timeout
+        path (worker still inside provider on_session_end when /new gives up and the agent is
+        soft-evicted). The claim taken at the /new site is what makes the eviction defer the
+        engine shutdown; move that claim later (into _cleanup_agent_resources) or delete it and
+        the eviction shuts the engine down first, the guard then skips the notify, and this
+        assertion fails with events == ['engine:shutdown'] — the exact defect the reviewer named."""
+        import gateway.slash_commands_session as session_cmds
+        from tests.waiting import wait_until
+
+        events = []
+        agent, provider = self._agent_with_writer_provider("mem-engine-order-test", events)
+        agent.context_compressor = _OrderingEngine(events, "engine")
+        in_session_end, let_finish = threading.Event(), threading.Event()
+
+        def slow_session_end(messages):
+            in_session_end.set()
+            assert let_finish.wait(10)
+
+        provider.on_session_end = slow_session_end
+        agent._session_messages = [{"role": "user", "content": "remember this"}]
+        key = "agent:main:telegram:dm:1"
+        runner = _make_runner()
+        runner._agent_cache[key] = (agent, "sig")
+        monkeypatch.setattr(session_cmds, "_RESET_CLEANUP_TIMEOUT_S", 0.05)
+        try:
+            await runner._cleanup_old_agent_for_reset(key)
+            assert in_session_end.wait(10)
+            runner._evict_cached_agent(key)
+            assert [e for e in events if e.startswith("engine:")] == [], (
+                "soft eviction shut the engine down before the session-end path ran on_session_end")
+            let_finish.set()
+            wait_until(lambda: getattr(agent, "_context_engine_shutdown", False),
+                       what="the session-end worker to notify and shut the engine down")
+            assert [e for e in events if e.startswith("engine:")] == [
+                "engine:on_session_end", "engine:shutdown"]
+        finally:
+            let_finish.set()
+            runner._housekeeping_executor.shutdown(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_new_timeout_before_job_start_returns_claim(self, monkeypatch):
+        """#147087 review: a saturated housekeeping pool can time out /new's bounded wait BEFORE
+        the queued cleanup job ever starts — the session-end claim must be returned so a later
+        soft release can finish the teardown instead of deferring forever to a job that will
+        never run. Without the return, the eviction below defers (claim 'session_end'), the
+        engine never shuts down here, and the fd waits for garbage collection."""
+        import asyncio
+
+        import gateway.slash_commands_session as session_cmds
+
+        events = []
+        agent, _provider = self._agent_with_writer_provider("mem-claim-return-test", events)
+        agent.context_compressor = _OrderingEngine(events, "engine")
+        key = "agent:main:telegram:dm:1"
+        runner = _make_runner()
+        runner._agent_cache[key] = (agent, "sig")
+        monkeypatch.setattr(session_cmds, "_RESET_CLEANUP_TIMEOUT_S", 0.05)
+
+        def _queued_forever(fn):  # the wrapped callable is never invoked: item queued, then cancelled
+            return asyncio.get_running_loop().create_future()
+
+        monkeypatch.setattr(runner, "_run_housekeeping_in_executor", _queued_forever)
+        try:
+            await runner._cleanup_old_agent_for_reset(key)
+            assert getattr(agent, "_context_engine_teardown_claim", None) is None, (
+                "claim stayed held although the cleanup job never started")
+            agent.release_clients()  # the soft-release entry evictions/_retire_agent share
+            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
+                "soft release did not take over the teardown after the returned claim")
+        finally:
+            agent.close()
+            ex = getattr(runner, "_housekeeping_executor", None)  # bypassed above: may never exist
+            if ex is not None:
+                ex.shutdown(wait=True)
+

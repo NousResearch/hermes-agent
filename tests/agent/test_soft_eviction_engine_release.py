@@ -20,6 +20,13 @@ import threading
 from contextlib import contextmanager, nullcontext
 from unittest.mock import Mock
 
+# Warm the module AIAgent.__init__ imports lazily: agent_init binds ContextCompressor through a
+# module-level ``from agent.context_compressor import`` (agent/agent_init.py:25), so a FIRST import
+# landing inside test_compress_mutation_defers_soft_release bakes that test's patched fake into
+# agent_init's own binding. monkeypatch restores agent.context_compressor afterwards but not that
+# copy, so every AIAgent built later in the process gets the fake (#147087 review round 2).
+import agent.agent_init
+
 from agent.context_engine import (
     begin_engine_request,
     claim_engine_session_end,

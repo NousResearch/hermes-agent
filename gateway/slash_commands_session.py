@@ -155,15 +155,27 @@ class GatewaySessionCommandsMixin:
         with contextlib.suppress(Exception):
             from agent.context_engine import claim_engine_session_end
             claim_engine_session_end(_old_agent)
+        # Did the queued job ever run? The executor is bounded (#147087 review: a saturated
+        # housekeeping pool can leave the work item queued until the wait expires), and cancelling
+        # a NEVER-STARTED item drops it for good — so the session-end claim above would be held by
+        # a job that never executes, and every later soft release would keep yielding to it,
+        # leaving the engine's fd for GC. A job that started (or finished) owns the claim.
+        _started = [False]
+
+        def _hard_cleanup() -> None:
+            _started[0] = True
+            self._cleanup_agent_resources(_old_agent)
+
         try:
             await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
-                timeout=_RESET_CLEANUP_TIMEOUT_S)
+                self._run_housekeeping_in_executor(_hard_cleanup), timeout=_RESET_CLEANUP_TIMEOUT_S)
         except TimeoutError:
             logger.warning(
                 "Agent resource cleanup for session %s exceeded %ss during /new reset; proceeding with "
                 "reset (the worker thread is left to finish on its own). (#35994)",
                 session_key, _RESET_CLEANUP_TIMEOUT_S)
+            if not _started[0]:
+                _old_agent._context_engine_teardown_claim = None
         except Exception as cleanup_exc:
             logger.warning(
                 "Agent resource cleanup for session %s failed during /new reset: %s (#35994)",

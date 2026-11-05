@@ -1,11 +1,11 @@
 import * as sdk from '@hermes/plugin-sdk'
 import { Codicon, Tip } from '@hermes/plugin-sdk'
-import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { ASSIGNMENT_EVENT_KIND, CanonicalGroupAssignmentRow } from './canonical-group-lead'
-import { CanonicalGroupContinuedRow, CanonicalGroupPausedRow, type CanonicalGroupPausedRowProps, CanonicalGroupRoutedRow, CONTINUED_EVENT_KIND, isBoundedActivity, ROUTED_EVENT_KIND } from './canonical-group-routed'
+import { CanonicalGroupContinuedRow, CanonicalGroupPausedRow, type CanonicalGroupPausedRowProps, CanonicalGroupRoutedRow, CONTINUED_EVENT_KIND, isBoundedActivity, pausedDiscussions, ROUTED_EVENT_KIND } from './canonical-group-routed'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-status'
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
@@ -172,6 +172,8 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
 export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
+  const maxContinues = pause?.maxContinues
+  const pauses = useMemo(() => typeof maxContinues === 'number' ? pausedDiscussions(events, maxContinues) : undefined, [events, maxContinues])
   const handoffsAfter = new Map<number, RoomHandoff[]>()
 
   for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
@@ -198,8 +200,8 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
     {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={members} />
       : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={members} />
         : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
-          : pause && typeof pause.maxContinues === 'number' && isBoundedActivity(event)
-            ? <CanonicalGroupPausedRow busy={pause.busy} event={event} events={events} maxContinues={pause.maxContinues} onContinue={pause.onContinue} onStop={pause.onStop} />
+          : pause && pauses && isBoundedActivity(event)
+            ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} />
             : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}

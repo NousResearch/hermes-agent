@@ -34,7 +34,7 @@ vi.mock('./canonical-group-labels', async () => {
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import { CanonicalGroupHistory } from './canonical-group-history'
 import { CanonicalGroupLeadSetting } from './canonical-group-lead'
-import { CanonicalGroupRoutedRow } from './canonical-group-routed'
+import { CanonicalGroupRoutedRow, pausedDiscussions } from './canonical-group-routed'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const members = [
@@ -116,6 +116,18 @@ it('offers no Continue once the discussion used every continue', () => {
 it('an unrelated thread\'s user message does not retire the pause', () => {
   renderHistory([...pausedLog, userMsg(6, 'thread-2')], { maxContinues: 5, onContinue: vi.fn(), onStop: vi.fn() })
   expect(screen.getByTestId('room-continue')).toBeTruthy()
+})
+
+it('reads every pause of a long log in one pass with the same answers per row', () => {
+  const other = (seq: number) => ev(seq, 'room.activity', { status: 'bounded', thread_id: 'thread-2', discussion_event_id: 'evt-2' })
+  const log = [...pausedLog, continued(6), memberMsg(7), bounded(8), userMsg(9, 'thread-2'), memberMsg(10, 'evt-2'), other(11), continued(12, 2), bounded(13)]
+  const reads = new Map(pausedDiscussions(log, 5))
+  expect([...reads.entries()]).toEqual([
+    [5, { count: 2, actionable: false }], [8, { count: 3, actionable: false }],
+    [11, { count: 1, actionable: true }], [13, { count: 3, actionable: true }]])
+  // Shuffled input (a merged page) reads the same; a spent Continue budget retires the live pause.
+  expect(new Map(pausedDiscussions([...log].reverse(), 5))).toEqual(reads)
+  expect(pausedDiscussions(log, 2).get(13)).toEqual({ count: 3, actionable: false })
 })
 
 it('offers automatic routing only when the runtime lists it, and saves it with no lead', () => {

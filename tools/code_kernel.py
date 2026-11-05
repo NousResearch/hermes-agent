@@ -392,6 +392,10 @@ def _resolve_owner(task_id: str) -> str:
     except Exception:
         session_key = ""
     owner = session_key or (task_id or "")
+    from tools.environments.sandbox_scope import current_sandbox_key
+    if sandbox := current_sandbox_key():
+        # Session keys are not unique across hosted agents; a kernel belongs to one agent's sandbox.
+        owner = f"{sandbox}:{owner}"
     try:
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():

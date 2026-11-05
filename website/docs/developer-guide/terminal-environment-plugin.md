@@ -276,3 +276,66 @@ to), set `session_isolated_when_nonpersistent = True`. With
 sandbox identity instead of sharing one — without this, two independent
 ephemeral runs could attach one live VM and delete it out from under each
 other.
+
+## Hosted scopes
+
+A hosted deployment runs many tenants' agents in one Hermes process, and each
+agent's commands, code, background processes and files live in that agent's
+own remote sandbox. A backend that provides those sandboxes sets
+`serves_hosted_scopes = True`. With a hosted `hermes_scope.Scope` bound
+(a tenant other than `local`), Hermes refuses every backend without it, the
+built-ins included, so nothing a hosted agent runs ever runs on the Hermes host.
+
+**Identity.** The sandbox is the agent's, not the task's or the session's:
+`SandboxIdentity(scope.tenant, scope.agent)` from
+`tools/environments/sandbox_scope.py`, never a tool argument, task id or
+profile path. All of an agent's sessions share one sandbox; two agents never
+do, even with the same agent name in different tenants. `create_environment`
+additionally receives `scope=` (the bound scope) and `sandbox=` (the
+identity), and `task_id` is `sandbox.key`. Create or resume the sandbox that
+`sandbox` names and nothing else.
+
+**The guard.** Hermes wraps the environment you return in
+`ScopedEnvironment`. Every call made through it first checks that the bound
+scope names the same agent, and raises `CrossAgentHandleRefused` otherwise
+(including when no scope is bound; only `cleanup` and `stop_idle` run
+unscoped, for the idle reaper). Your environment's `execute`, `fetch_file` and
+`fetch_realpath` receive the bound scope as `scope=` when they declare that
+parameter, so the backend can check it too.
+
+**Tools.** In a hosted scope the terminal, `execute_code` (always the remote
+kernel, never the host's), background processes and the file tools (read,
+write, patch, search) all go through your environment. The file tools never
+take a host fast path and never open, write or list the requested path on the
+host (the credential denylist still normalises the path string, which can
+`lstat` its components). Background processes are stamped with the agent's
+sandbox key, and another agent's process is indistinguishable from a missing one.
+
+**Long-lived processes.** A hosted environment also implements:
+
+```python
+def start_process(self, name, argv, *, child_env=None, scope): ...  # -> ProcessStream
+def attach_process(self, name, *, scope): ...                        # -> ProcessStream | None
+def stop_process(self, name, *, scope): ...                          # -> bool
+```
+
+`ProcessStream` (from `sandbox_scope`) holds byte pipes `stdin` and `stdout`
+and a `poll()` that returns the exit status or `None`. A later call in the same
+session attaches with the `ProcessRef` from the first stream; a reference that
+names another agent's sandbox is refused before your method runs. The built-in
+backends implement these too (`tools/environments/base_processes.py`: the
+local backend on this host, docker/ssh and `supports_streams` plugins through
+their exec prefix). Suspending a sandbox once its processes are idle-stopped,
+and network isolation between sandboxes, are yours.
+
+**Credentials** reach a hosted sandbox as broker references
+(`sandbox_scope.CredentialRef`), never as values from the secret store. No
+broker exists yet, so Hermes passes none.
+
+**Conformance.** `tools/environments/sandbox_conformance.py` holds the
+isolation checks Hermes runs against its recording stub backend
+(`tests/tools/test_sandbox_scope_conformance.py`): A's tools only address A's
+sandbox; a handle naming another agent is refused; no file tool touches the
+host filesystem (checked with a planted host file and an audit hook); a
+background process started by A is invisible to B. Run the same checks
+against your provider.

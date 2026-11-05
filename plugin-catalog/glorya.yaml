@@ -1,0 +1,19 @@
+name: glorya
+title: Glorya
+repo: https://github.com/Glorya-AI/hermes-plugin
+sha: acff18d10d2e51e546167c7b7883245248c615ec
+version: "0.1.0"
+description: "Ask Hermes for an ad and get the finished file back in your chat. Glorya makes on-brand image ads, video ads, landing pages and websites, and launches ad campaigns on Meta, Google Ads and TikTok. The plugin follows each job in the background: one progress message that updates, Glorya's questions asked in the chat (answer in words or with /glorya answer buttons), and the finished videos and images sent back as attachments. Also /glorya commands that run without the model, weekly image and video ad blueprints, and a Glorya Studio tab in Hermes Desktop. Disclosure — needs a Glorya account with an active plan and uses its credits; campaigns spend real money from your ad account and launch without a confirmation unless you ask to review. Tool calls go to platform.glorya.ai through Hermes' own MCP client (mcp_servers.glorya, auth: oauth; Hermes holds the token and signing in runs Hermes' manage_connections flow), and the plugin calls that server with ctx.call_mcp (mcp_allowlist). Finished files are downloaded over https from the links Glorya returns into plugin-data/glorya, which also stores job ids, titles and chat session keys (pruned after 30 days). With allow_gateway_injection it starts one agent turn per finished job to attach the files. One background thread per followed job, at most 8. hermes glorya setup runs only hermes plugins enable and hermes config set, each after a yes. Reads gateway.session_context.get_session_env and tools.mcp_tool_discovery.mcp_servers_not_connected. No telemetry."
+maintainer: Glorya
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Glorya-AI/hermes-plugin#readme
+image: https://raw.githubusercontent.com/Glorya-AI/hermes-plugin/acff18d10d2e51e546167c7b7883245248c615ec/assets/glorya-hermes.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: [glorya_attach, glorya_jobs]
+  provides_hooks: [transform_tool_result, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

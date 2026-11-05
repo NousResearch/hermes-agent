@@ -10,6 +10,8 @@ import asyncio
 
 import pytest
 
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages
 from tests.waiting import async_wait_until
 
 
@@ -17,13 +19,12 @@ async def _owner(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    db = SessionDB(tmp_path / "state.db")
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner", db=db)
+    db = open_persistence(profile_scope(home=tmp_path))
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner", persistence=db)
     return runner, authority, db
 
 
@@ -60,7 +61,7 @@ async def test_closed_local_session_leaves_memory_and_resumes_with_its_source(tm
         await _close(authority, ref)
         await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
                                what="the closed session to leave memory")
-        assert db.get_session(ref.session_id)["end_reason"] == "tui_shutdown"
+        assert session_row(db, ref.session_id)["end_reason"] == "tui_shutdown"
         # Resume: the next viewer gets it back with the very source its background work holds,
         # and its next prompt runs.
         await authority.attach(_viewer(), ref)
@@ -80,7 +81,6 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
     ``rescan`` and start claiming, before the lifecycle returns): the turn runs and the session
     stays, whichever point of the claim the lifecycle returns at."""
     from gateway.session_contract import Submission
-    from hermes_state_runtime import list_session_admissions
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     claim_started, release_claim = asyncio.Event(), asyncio.Event()
@@ -117,8 +117,8 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
         release_claim.set()
         await async_wait_until(lambda: replies == ["racing"], timeout=10, what="the racing turn")
         await async_wait_until(
-            lambda: all(row["status"] == "terminal" for row in list_session_admissions(
-                db, session_id=ref.session_id, pending_only=False)), timeout=10, what="its settlement")
+            lambda: all(row.status == "terminal" for row in db.admissions.list(
+                session_id=ref.session_id, pending_only=False)), timeout=10, what="its settlement")
         # The turn reopened the row, so the conversation is no longer the closed one: it stays.
         assert ref.session_id in authority.sessions
     finally:
@@ -207,7 +207,7 @@ async def _branching_owner(tmp_path, monkeypatch):
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None,
                              _set_session_reasoning_override=lambda route, value: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -247,7 +247,7 @@ async def test_closed_branch_keeps_its_parents_launch_key_after_the_parent_is_de
         assert launch_key(owner, local.policies[branch.session_id]) == 'launch-parent'
     finally:
         await connection.close()
-        owner.db.close()
+        owner.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -267,7 +267,7 @@ async def test_retired_conversation_a_rename_brings_back_retires_again(tmp_path,
         await mutate_session(authority, _viewer(), ref, dict(
             session_id=ref.session_id, request_id='rename1', operation='rename', payload={'title': 'Renamed'},
             expected_revision=handle.revision, expected_generation=handle.execution_generation))
-        assert db.get_session(ref.session_id)['title'] == 'Renamed'
+        assert session_row(db, ref.session_id)['title'] == 'Renamed'
 
         async def poll_listing():  # Desktop/TUI poll session.active_list the whole time
             from gateway.session_live_listing import live_entries
@@ -348,7 +348,7 @@ async def test_restored_conversation_retire_timer_firing_mid_close_keeps_the_clo
         await async_wait_until(lambda: live.retire_timer is not armed, timeout=10, what="the re-retire timer to fire")
         release.set()
         await asyncio.wait_for(detach, 10)
-        assert db.get_session(ref.session_id)["end_reason"] == "tui_shutdown"
+        assert session_row(db, ref.session_id)["end_reason"] == "tui_shutdown"
         await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
                                what="the closed conversation to retire")
     finally:
@@ -379,7 +379,7 @@ async def test_conversation_closed_during_a_refine_review_retires_once_the_revie
     monkeypatch.setattr(session_tui_side, '_spawn', spawn)
     try:
         ref = _create(authority)
-        db.append_message(ref.session_id, 'user', 'hello')
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': 'hello'})
         live = authority.sessions[ref.session_id]
         reply = await session_refine.refine_local_session(authority.runner, live.source, None)
         assert threads, reply

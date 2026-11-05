@@ -271,6 +271,6 @@ class SessionPruneRewriteMixin:
         self._ensure_display_order(session_id)  # every row holds its stored slot before one is carried over
         # _execute_transcript_write restores each dict's row state (id/digest/timestamp) on rollback, so a
         # failed or retried commit never leaves the replacements stamped with an uncommitted digest.
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
             return self._execute_transcript_write(
                 _do, [replacement for _, replacement in changes])

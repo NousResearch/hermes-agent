@@ -451,7 +451,7 @@ class SessionPortabilityMixin:
             validate_members(self, donor_db, record)
             authority = ownership(record, donor_db.db_path, self.db_path)
         with session_lineage_guard(self.db_path, ids, transfer_from=donor_db.db_path,
-                                   adoption=authority) as snapshot:
+                                   adoption=authority, timeout_s=self._WRITE_PATIENCE_S) as snapshot:
             # Reload authority under the complete lock set. Returning releases it before
             # the bounded outer loop discovers/reacquires any expanded membership.
             validate_handles(self, donor_db)
@@ -927,7 +927,7 @@ class SessionPortabilityMixin:
         def _do(conn):
             return self._import_sessions_locked(conn, normalized)
 
-        with session_lineage_guard(self.db_path, session_ids, transfer_from=transfer_from):
+        with session_lineage_guard(self.db_path, session_ids, transfer_from=transfer_from, timeout_s=self._WRITE_PATIENCE_S):
             # Every payload id is guarded, not only the absent ones: an id that was present
             # when ``present_ids`` was computed can be moved to a sibling store before this
             # transaction opens, and re-importing it here would recreate it behind the fence

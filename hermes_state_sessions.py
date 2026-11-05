@@ -380,7 +380,7 @@ class SessionSessionsMixin:
                       transport_profile=transport_profile)
         # Keep the cross-store owner lock through commit: without it two profiles can both
         # observe an absent id, insert it into separate SQLite files, and fork one Bot Chat.
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
             self._execute_write(lambda conn: insert_session_row_in_transaction(self, conn, **params),
                                 patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
@@ -455,7 +455,7 @@ class SessionSessionsMixin:
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
         ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
             self._execute_write(lambda conn: self._end_and_bump(
                 conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id), session_id, end_reason,
@@ -519,7 +519,7 @@ class SessionSessionsMixin:
         after a restart the marked row would otherwise stay active and visible on every
         mount until the next send. Idempotent; returns the number of rows retired.
         """
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
             return self._execute_write(
                 lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
 
@@ -546,7 +546,7 @@ class SessionSessionsMixin:
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
             self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
@@ -564,7 +564,7 @@ class SessionSessionsMixin:
         # /new and policy auto-resets promote rather than end_session, so the
         # generation advances here too — same transaction, only when written.
         try:
-            with session_lineage_guard(self.db_path, session_id):
+            with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
                 return bool(self._execute_write(lambda conn: self._end_and_bump(
                     conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND (ended_at IS NULL "
                     f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
@@ -1027,7 +1027,7 @@ class SessionSessionsMixin:
         # Expand the root/tip set only after releasing the previous ownership guard.
         guarded_ids = {session_id}
         for _attempt in range(3):
-            with session_lineage_guard(self.db_path, guarded_ids):
+            with session_lineage_guard(self.db_path, guarded_ids, timeout_s=self._WRITE_PATIENCE_S):
                 try:
                     row = self.get_session(session_id)
                 except Exception:

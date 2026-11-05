@@ -1011,5 +1011,5 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             from hermes_state_runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    with session_lineage_guard(db.db_path, (session_id, *lineage_ids)):
+    with session_lineage_guard(db.db_path, (session_id, *lineage_ids), timeout_s=db._TRANSCRIPT_WRITE_PATIENCE_S):
         return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)

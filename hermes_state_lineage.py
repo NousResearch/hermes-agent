@@ -166,7 +166,7 @@ def _select_owner(session_id: str, rows: tuple[SessionStoreRow, ...]) -> Session
 
 @contextmanager
 def _advisory_lock_file(path: Path, timeout_s: float) -> Iterator[int]:
-    """Acquire a cross-process advisory lock on *path*, failing closed on unsafe lock files."""
+    """Acquire an advisory lock; every opened descriptor closes on every exit path."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -179,51 +179,50 @@ def _advisory_lock_file(path: Path, timeout_s: float) -> Iterator[int]:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open(path, flags, 0o600)
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode):
-            os.close(fd)
-            raise SessionLineageInventoryError(f"Lineage lock is not a regular file: {path}")
-        if before is not None and not os.path.samestat(before, opened):
-            os.close(fd)
-            raise SessionLineageInventoryError(f"Lineage lock changed while opening: {path}")
-        if os.name == "nt" and opened.st_size == 0:
-            os.write(fd, b"\0")
-            os.lseek(fd, 0, os.SEEK_SET)
-        deadline = time.monotonic() + timeout_s
-        if os.name == "nt":
-            import msvcrt
-
-            while True:
-                try:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError as exc:
-                    if time.monotonic() >= deadline:
-                        raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
-                    time.sleep(0.05)
-            try:
-                yield fd
-            finally:
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                raise SessionLineageInventoryError(f"Lineage lock is not a regular file: {path}")
+            if before is not None and not os.path.samestat(before, opened):
+                raise SessionLineageInventoryError(f"Lineage lock changed while opening: {path}")
+            if os.name == "nt" and opened.st_size == 0:
+                os.write(fd, b"\0")
                 os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                os.close(fd)
-        else:
-            import fcntl
+            deadline = time.monotonic() + timeout_s
+            if os.name == "nt":
+                import msvcrt
 
-            while True:
+                while True:
+                    try:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError as exc:
+                        if time.monotonic() >= deadline:
+                            raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
+                        time.sleep(0.05)
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError as exc:
-                    if time.monotonic() >= deadline:
-                        raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
-                    time.sleep(0.05)
-            try:
-                yield fd
-            finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
+                    yield fd
+                finally:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError as exc:
+                        if time.monotonic() >= deadline:
+                            raise SessionLineageInventoryError("Timed out acquiring session-lineage lock") from exc
+                        time.sleep(0.05)
+                try:
+                    yield fd
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
     except SessionLineageError:
         raise
     except OSError as exc:
@@ -256,6 +255,7 @@ def _lock_file(path: Path, timeout_s: float) -> Iterator[int]:
     A profile transfer holds each session lock across import and donor retirement; the
     nested import guard must reuse the same descriptor rather than block on its own lock.
     """
+    deadline = time.monotonic() + timeout_s
     key = f"{os.getpid()}:{path.resolve(strict=False)}"
     with _PROCESS_LOCKS_GUARD:
         entry = _PROCESS_LOCKS.get(key)
@@ -263,30 +263,27 @@ def _lock_file(path: Path, timeout_s: float) -> Iterator[int]:
             entry = _ProcessLockEntry()
             _PROCESS_LOCKS[key] = entry
         entry.users += 1
-    if not entry.lock.acquire(timeout=timeout_s):
-        _drop_process_lock_reference(key, entry)
-        raise SessionLineageInventoryError("Timed out acquiring session-lineage lock")
-    active = getattr(_THREAD_LOCKS, "active", None)
-    if active is None:
-        active = {}
-        _THREAD_LOCKS.active = active
-    held_fd = active.get(key)
-    if held_fd is not None:
+    try:
+        if not entry.lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise SessionLineageInventoryError("Timed out acquiring session-lineage lock")
         try:
-            yield held_fd
+            active = getattr(_THREAD_LOCKS, "active", None)
+            if active is None:
+                active = {}
+                _THREAD_LOCKS.active = active
+            held_fd = active.get(key)
+            if held_fd is not None:
+                yield held_fd
+                return
+            with _advisory_lock_file(path, max(0.0, deadline - time.monotonic())) as fd:
+                active[key] = fd
+                try:
+                    yield fd
+                finally:
+                    active.pop(key, None)
         finally:
             entry.lock.release()
-            _drop_process_lock_reference(key, entry)
-        return
-    try:
-        with _advisory_lock_file(path, timeout_s) as fd:
-            active[key] = fd
-            try:
-                yield fd
-            finally:
-                active.pop(key, None)
     finally:
-        entry.lock.release()
         _drop_process_lock_reference(key, entry)
 
 
@@ -452,6 +449,17 @@ def _rows_for_ids(path: Path, profile: str, session_ids: tuple[str, ...]) -> dic
         raise SessionLineageInventoryError(f"Cannot read session store {path}: {exc}") from exc
 
 
+# Unreleased ownership-fence protocol: all cooperating writers use this fixed mapping.
+# Collisions serialize writers; owner selection still uses the complete session IDs.
+_LINEAGE_LOCK_STRIPES = 32
+
+
+def _lineage_lock_paths(root: Path, ids: Iterable[str]) -> list[Path]:
+    stripes = {int.from_bytes(hashlib.sha256(sid.encode("utf-8")).digest()[:4], "big")
+               % _LINEAGE_LOCK_STRIPES for sid in ids}
+    return [root / ".session-lineage-locks" / f"stripe-{index:02}.lock" for index in sorted(stripes)]
+
+
 @contextmanager
 def session_lineage_guard(
     db_path: str | Path,
@@ -477,14 +485,16 @@ def session_lineage_guard(
         yield None
         return
     root, current_path = managed
-    lock_dir = root / ".session-lineage-locks"
-    lock_paths = sorted({
-        lock_dir / (hashlib.sha256(session_id.encode("utf-8")).hexdigest() + ".lock")
-        for session_id in ids
-    })
+    lock_paths = _lineage_lock_paths(root, ids)
+    held = {key for key in getattr(_THREAD_LOCKS, "active", ()) if key.startswith(f"{os.getpid()}:")}
+    requested = {f"{os.getpid()}:{path.resolve(strict=False)}" for path in lock_paths}
+    additional = requested - held
+    if held and additional and min(additional) < max(held):
+        raise SessionLineageInventoryError("Nested lineage lock order would invert; acquire the complete ID set first")
+    deadline = time.monotonic() + timeout_s
     with ExitStack() as locks:
         for lock_path in lock_paths:
-            locks.enter_context(_lock_file(lock_path, timeout_s))
+            locks.enter_context(_lock_file(lock_path, max(0.0, deadline - time.monotonic())))
         candidates = _store_candidates(root, current_path)
         rows_by_id: dict[str, list[SessionStoreRow]] = {session_id: [] for session_id in ids}
         for path, profile in candidates:
@@ -507,5 +517,5 @@ def guarded_session_write(
     transfer_from: str | Path | None = None,
 ) -> _WriteResult:
     """Keep the cross-store ownership lock held through the caller's SQLite commit."""
-    with session_lineage_guard(db.db_path, session_ids, transfer_from=transfer_from):
+    with session_lineage_guard(db.db_path, session_ids, transfer_from=transfer_from, timeout_s=db._WRITE_PATIENCE_S):
         return db._execute_write(write)

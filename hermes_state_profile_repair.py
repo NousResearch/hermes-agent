@@ -274,7 +274,7 @@ class SessionProfileRepairMixin:
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
             return "imported"
-        with session_lineage_guard(self.db_path, session_id, transfer_from=transfer_from):
+        with session_lineage_guard(self.db_path, session_id, transfer_from=transfer_from, timeout_s=self._WRITE_PATIENCE_S):
             return self._execute_write(_do)
 
     @staticmethod

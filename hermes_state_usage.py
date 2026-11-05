@@ -423,7 +423,7 @@ class SessionUsageMixin:
                     (own_profile, session_id))
             self._record_model_usage(conn, session_id, task=task, **usage)
         from hermes_state_lineage import session_lineage_guard
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
             self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:

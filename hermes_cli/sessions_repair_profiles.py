@@ -459,9 +459,7 @@ class _MoveBatch:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
         from hermes_state_lineage import session_lineage_guard
-        with contextlib.ExitStack() as locks:
-            for sid in sorted(set(self.ids)):
-                locks.enter_context(session_lineage_guard(src_db.db_path, sid))
+        with session_lineage_guard(src_db.db_path, self.ids, timeout_s=src_db._WRITE_PATIENCE_S):
             return self._run_locked(session, src_db, dst_db)
 
     def _run_locked(self, session: _Session, src_db: Any, dst_db: Any) -> dict[str, dict[str, int]]:

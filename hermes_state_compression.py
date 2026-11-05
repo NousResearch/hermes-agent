@@ -218,7 +218,7 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at = ? AND end_reason = ?",
                 (session_id, row["ended_at"], reason))
             return str(reason)
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=(self._WRITE_PATIENCE_S if patience_s is None else patience_s)):
             reason = self._execute_write(_do, patience_s=patience_s)
         if reason is not None:
             logger.warning(
@@ -323,7 +323,7 @@ class SessionCompressionMixin:
             # rowcount==1 is guaranteed by the parent SELECT in this same txn. A False return added past
             # this point must raise instead: the lease DELETE above commits unless _do raises.
             return updated.rowcount == 1
-        with session_lineage_guard(self.db_path, session_id):
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
             return bool(self._execute_write(_do))
 
     def _publish_child_session_row(self, conn, parent, *, parent_session_id, child_session_id, source,
@@ -395,7 +395,7 @@ class SessionCompressionMixin:
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
-        with session_lineage_guard(self.db_path, (parent_session_id, child_session_id)):
+        with session_lineage_guard(self.db_path, (parent_session_id, child_session_id), timeout_s=self._WRITE_PATIENCE_S):
             self._execute_transcript_write(lambda conn: self._publish_compression_child_on_conn(
                 conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
                 messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,

@@ -1,0 +1,19 @@
+name: adextract
+title: adextract
+repo: https://github.com/ad-vertly/adextract-mcp-server
+sha: 02c08407abe21b4af76b6f066e5edf9490fb231e
+subdir: plugins/adextract
+version: "1.0.0"
+description: "Competitor ad research for your agent through adextract's hosted MCP server (Streamable HTTP at https://mcp.adextract.co/mcp): search the public ad libraries of Meta, Google, LinkedIn and TikTok, open single-ad details, and analyze any ad image or video. Bundles five research skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to mcp.adextract.co with an API key you create, sent as an Authorization header and read from your profile environment. The server records tool name, time, success and credits used per account, not search queries, and may email the account address about the account. Each successful call uses one credit, declared in the package's cost table. All 13 tools are annotated read-only and the server is marked untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Advertly, Inc.
+tier: community
+category: tools
+docs_url: https://adextract.co/documentation
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

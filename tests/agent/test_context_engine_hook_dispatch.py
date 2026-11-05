@@ -1,14 +1,14 @@
-"""Per-turn context-engine hooks are dispatched only to engines that implement them.
+"""Per-turn context-engine hooks reach every engine that may implement them.
 
-``select_context`` runs on every provider request and ``on_turn_complete`` after every turn, so an
-engine that only inherits the ABC no-ops must not be called. Under ``plugins.isolation: host`` each
-call is a round trip to the plugin host, and every method of the proxy looks overridden to an
-identity check.
+``select_context`` and ``on_turn_complete`` are skipped only for an in-process engine that inherits the
+ABC no-ops. A hosted engine (``plugins.isolation: host``) is always dispatched: the plugin host looks the
+method up on the plugin's object at call time, so a hook the engine installs after load (for example
+in ``on_session_start()``) must still run, and the description the host sent at load cannot say so.
 """
 from tests.agent.test_context_engine_compaction_authority import _hosted
 
 
-def _engines():
+def _compress_only():
     from agent.context_engine import ContextEngine
 
     class _CompressOnly(ContextEngine):
@@ -25,24 +25,27 @@ def _engines():
         def compress(self, messages, current_tokens=None, focus_topic=None, force=False, memory_context=""):
             return messages
 
-    class _Observer(_CompressOnly):
-        compacts_outside_compress = False
-
-        def select_context(self, request_messages, **kwargs):
-            return request_messages
-
-        def on_turn_complete(self, messages, usage=None, **kwargs):
-            return None
-
-    return _CompressOnly, _Observer
+    return _CompressOnly
 
 
-def test_per_turn_hooks_follow_what_the_engine_implements(tmp_path):
+def test_a_hook_a_hosted_engine_installs_after_load_is_still_dispatched(tmp_path):
     from agent.conversation_loop import _engine_overrides_hook
 
-    compress_only, observer = _engines()
-    for hook in ("select_context", "on_turn_complete"):
-        assert _engine_overrides_hook(compress_only(), hook) is False
-        assert _engine_overrides_hook(observer(), hook) is True
-        assert _engine_overrides_hook(_hosted(compress_only(), tmp_path), hook) is False
-        assert _engine_overrides_hook(_hosted(observer(), tmp_path), hook) is True
+    plugin_object = _compress_only()()
+    hosted = _hosted(plugin_object, tmp_path)
+    plugin_object.select_context = lambda request_messages, **kwargs: request_messages
+    plugin_object.on_turn_complete = lambda messages, usage=None, **kwargs: None
+
+    assert _engine_overrides_hook(hosted, "select_context") is True
+    assert _engine_overrides_hook(hosted, "on_turn_complete") is True
+
+
+def test_an_in_process_engine_that_only_inherits_the_hooks_is_skipped():
+    from agent.conversation_loop import _engine_overrides_hook
+
+    engine = _compress_only()()
+
+    assert _engine_overrides_hook(engine, "select_context") is False
+    assert _engine_overrides_hook(engine, "on_turn_complete") is False
+    engine.on_turn_complete = lambda messages, usage=None, **kwargs: None
+    assert _engine_overrides_hook(engine, "on_turn_complete") is True

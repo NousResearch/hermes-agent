@@ -1,6 +1,6 @@
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 704adf51fe6d913a33f862266b7ab57958ef3a27
+sha: 25342ff7a529fc3113a6426a798dad0c49b9b84d
 description: >-
   A memory of what the user has seen on screen. Screenshots in the folders the OS
   already writes them to are read locally with Tesseract, deduplicated (SHA-256
@@ -20,13 +20,17 @@ description: >-
   and WebP thumbnails under the profile's plugin-data/peripheral/; runs the local
   tesseract binary as a subprocess with a 25-second timeout and one thread; makes
   no network calls and has no telemetry; redacts API keys, JWTs, bearer headers,
-  private keys and card numbers from stored text before writing (on by default);
-  never captures the screen and never modifies or deletes the user's files.
+  private keys, card numbers and credentials inside connection URLs from stored
+  text and from stored tool-event details before writing (on by default); lists
+  the model-driven Q&A session it ships as a demonstration in a committed
+  transcript; '/peripheral forget' deletes both the row and the thumbnail this
+  plugin wrote; never captures the screen and never modifies or deletes the
+  user's files.
 maintainer: okyssta
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-version: "1.0.0"
+version: "1.0.1"
 docs_url: https://github.com/okyssta/hermes-peripheral#readme
 platforms: []
 capabilities:

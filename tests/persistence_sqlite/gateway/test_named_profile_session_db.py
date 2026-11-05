@@ -6,14 +6,14 @@ that profile's ``state.db`` and hands it to ``_make_agent``. If that open used
 to fail, the build silently fell back to the launch handle (``session_db =
 None`` → ``_make_agent``'s ``_get_db()`` default), so the session's rows and
 messages bled into the wrong profile's store exactly when the profile store
-was briefly unopenable — and opening the named profile looked blank.
+was briefly unopenable, and opening the named profile looked blank.
 
 These tests pin the fail-closed contract: an unopenable profile store raises a
-clear error (no agent turn), and NO path — deferred build or the
-``_init_session`` cwd hydration — touches the launch ``state.db`` instead.
+clear error (no agent turn), and NO path (deferred build or the
+``_init_session`` cwd hydration) touches the launch ``state.db`` instead.
 
 #88532 made SessionStore follow HERMES_HOME; this covers the TUI/agent
-SessionDB handle. Related to #87723 and #89789.
+store handle. Related to #87723 and #89789.
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state
-from hermes_state import SessionDB
+import persistence_assembly
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 
 
 @pytest.fixture
@@ -36,7 +37,6 @@ def homes(tmp_path, monkeypatch):
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     return root, profile
 
 
@@ -54,7 +54,7 @@ def _ids(db_path: Path) -> set[str]:
 
 
 def _make_store_unopenable(profile: Path) -> Path:
-    """A directory named state.db — SessionDB cannot open it. Real, no mocks."""
+    """A directory named state.db: the store cannot open it. Real, no mocks."""
     store = profile / "state.db"
     store.mkdir()
     return store
@@ -66,7 +66,7 @@ def test_open_profile_session_db_returns_profile_handle(homes):
 
     db = server._open_profile_session_db(str(profile))
     try:
-        db.create_session("20260820_tui_worker", "tui", profile_name="worker")
+        db.sessions.create(NewSession(session_id="20260820_tui_worker", source="tui", profile_name="worker"))
     finally:
         db.close()
 
@@ -86,17 +86,17 @@ def test_open_profile_session_db_raises_when_store_unopenable(homes):
 
 
 def test_open_profile_session_db_does_not_fallback_on_open_failure(homes, monkeypatch):
-    """SessionDB constructor failure must raise, not reuse/return launch."""
+    """A failure opening the profile store must raise, not reuse/return launch."""
     root, profile = homes
     from tui_gateway import server
 
     class Boom(Exception):
         pass
 
-    def boom_db(**_kwargs):
+    def boom_open(_scope, **_kwargs):
         raise Boom("profile store unavailable")
 
-    monkeypatch.setattr("hermes_state.SessionDB", boom_db)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", boom_open)
     with pytest.raises(RuntimeError, match="profile session store unavailable") as ei:
         server._open_profile_session_db(str(profile))
     assert isinstance(ei.value.__cause__, Boom)
@@ -104,7 +104,7 @@ def test_open_profile_session_db_does_not_fallback_on_open_failure(homes, monkey
 
 
 def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkeypatch):
-    """_start_agent_build must error out — never build against the launch DB.
+    """_start_agent_build must error out, never build against the launch DB.
 
     Before the fix, the deferred build swallowed the open failure
     (``except Exception: session_db = None``) and _make_agent bound the
@@ -116,7 +116,7 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
     from tui_gateway import server
 
     _make_store_unopenable(profile)
-    launch = SessionDB(db_path=root / "state.db")
+    launch = open_persistence(profile_scope(home=root), eager=True)
     sid = "sid-worker-build"
     make_agent_calls: list[dict] = []
     events: list[tuple[str, str, dict | None]] = []
@@ -149,7 +149,7 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
         assert not thread.is_alive()
         assert session["agent_ready"].is_set()
 
-        # FAIL CLOSED: no agent was built at all — especially not one bound
+        # FAIL CLOSED: no agent was built at all, especially not one bound
         # to the launch handle.
         assert make_agent_calls == []
         assert session.get("agent") is None
@@ -242,7 +242,7 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
     root, profile = homes
     from tui_gateway import server
 
-    launch = SessionDB(db_path=root / "state.db")
+    launch = open_persistence(profile_scope(home=root), eager=True)
     profile_db = server._open_profile_session_db(str(profile))
     homes_seen = _stub_rebuild_env(monkeypatch, server, launch)
     monkeypatch.setattr(server, "_session_cwd", lambda _s: str(root))
@@ -270,7 +270,8 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
         assert new_agent._owns_session_db is True
         assert old_agent._owns_session_db is False
 
-        new_agent._session_db.create_session("20260906_bot", "tui", profile_name="worker")
+        new_agent._session_db.sessions.create(
+            NewSession(session_id="20260906_bot", source="tui", profile_name="worker"))
         assert _ids(profile / "state.db") == {"20260906_bot"}
         assert _ids(root / "state.db") == set()
     finally:
@@ -283,7 +284,7 @@ def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
     root, profile = homes
     from tui_gateway import server
 
-    launch = SessionDB(db_path=root / "state.db")
+    launch = open_persistence(profile_scope(home=root), eager=True)
     profile_db = server._open_profile_session_db(str(profile))
     homes_seen = _stub_rebuild_env(monkeypatch, server, launch)
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
@@ -313,7 +314,8 @@ def test_reset_session_agent_stays_on_the_profile_store(homes, monkeypatch):
         assert new_agent._owns_session_db is True
         assert old_agent._owns_session_db is False
 
-        new_agent._session_db.create_session("20260906_reset", "tui", profile_name="worker")
+        new_agent._session_db.sessions.create(
+            NewSession(session_id="20260906_reset", source="tui", profile_name="worker"))
         assert _ids(profile / "state.db") == {"20260906_reset"}
         assert _ids(root / "state.db") == set()
     finally:

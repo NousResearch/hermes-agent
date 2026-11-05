@@ -1,6 +1,6 @@
 name: basekit
 repo: https://github.com/D0xedDevi0/hermes-basekit
-sha: 3e16a9a70dba22fa6b6e2855a064832ba1084511
+sha: b7b7bf36a32720b389f984ccdc793284175b0249
 description: >-
   Read-only live Base (chain 8453) intelligence — gas and real USD cost estimates,
   wallet portfolios, decoded transaction receipts, token facts with proxy detection, and

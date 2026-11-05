@@ -34,8 +34,13 @@ import pytest
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.agent_runtime_helpers import sanitize_api_messages
 from agent.tool_executor import execute_tool_calls_segmented
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView, Watermark
+from persistence_assembly import open_persistence_reader
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture(autouse=True)
@@ -86,10 +91,10 @@ def _make_agent():
     return agent
 
 
-def _attach_real_session_db(agent, db_path: Path, session_id: str) -> SessionDB:
-    db = SessionDB(db_path=db_path)
-    db.create_session(session_id=session_id, source="tui", model="test/model")
-    agent._session_db = db
+def _attach_real_session_db(agent, db_path: Path, session_id: str):
+    db = storage_handle(db_path.parent)
+    seed_session(db, session_id, "tui", model="test/model")
+    agent._session_db = agent.persistence = db
     agent._session_db_created = True
     agent.session_id = session_id
     agent._last_flushed_db_idx = 0
@@ -100,11 +105,8 @@ def _attach_real_session_db(agent, db_path: Path, session_id: str) -> SessionDB:
 
 
 def _durable_messages(db_path: Path, session_id: str) -> list[dict]:
-    restarted_db = SessionDB(db_path=db_path)
-    try:
-        return restarted_db.get_messages_as_conversation(session_id)
-    finally:
-        restarted_db.close()
+    with open_persistence_reader(db_path) as restarted_db:
+        return conversation(restarted_db, session_id)
 
 
 def _durable_roles(db_path: Path, session_id: str) -> list[str]:
@@ -816,7 +818,7 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
         other.execute("UPDATE messages SET content = ? WHERE id = ?", ("winner", durable_ids[2]))
     other.close()
     # A same-process metadata write (reaction) changes the user row's digest but not its content.
-    assert db.set_message_reaction(session_id, durable_ids[0], "\U0001F44D")
+    assert db.messages.set_reaction(session_id, durable_ids[0], "\U0001F44D", author="user")
     # ...followed by a real in-place live edit: the row is still ours, so the edit must win and be persisted.
     messages[0]["content"][0]["text"] += " EDITED"
     # A resumed / cloned dict carries ``_row_id`` without a digest (legacy path) over a filled assistant row.
@@ -828,7 +830,7 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
 
     assert agent._flush_messages_to_session_db(messages) is True
 
-    rows = db.get_messages(session_id, include_inactive=True)
+    rows = transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.ALL))
     assert [row["id"] for row in rows] == durable_ids
     assert [message["_row_id"] for message in messages] == durable_ids
     assert rows[0]["content"].startswith("hi \ufffd there")
@@ -879,16 +881,16 @@ def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tm
     durable_ids = {message["role"]: message["_row_id"] for message in messages}
     durable_timestamps = {message["role"]: message["timestamp"] for message in messages}
 
-    db.archive_and_compact(
+    db.messages.compact(
         session_id,
-        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+        [NewMessage.from_live({"role": "user", "content": "prior turns summarized"})],
     )
     assert _sanitize_messages_surrogates(messages) is True
     agent._db_flush_scan_prefix = None
 
     assert agent._flush_messages_to_session_db(messages) is True
 
-    all_rows = db.get_messages(session_id, include_inactive=True)
+    all_rows = transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.ALL))
     for role, expected_content in (("user", "prompt \ufffd tail"), ("tool", "result \ufffd tail")):
         matching = [row for row in all_rows if row.get("role") == role and row.get("content") == expected_content]
         assert len(matching) == 1
@@ -928,10 +930,10 @@ def test_flush_archived_same_session_row_id_fills_active_clone(tmp_path):
     assert isinstance(stale_id, int)
     assert stale_id > user_id
 
-    db.archive_and_compact(
+    db.messages.compact(
         session_id,
-        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
-        watermark=user_id,
+        [NewMessage.from_live({"role": "user", "content": "prior turns summarized"})],
+        watermark=Watermark(user_id),
     )
 
     finalize_turn(
@@ -959,7 +961,7 @@ def test_flush_archived_same_session_row_id_fills_active_clone(tmp_path):
     assert not any(
         not (m.get("content") or "").strip() for m in active_assistants
     )
-    inactive = db.get_messages(session_id, include_inactive=True)
+    inactive = transcript_rows(db, session_id, TranscriptRead(view=TranscriptView.ALL))
     archived = next(m for m in inactive if m.get("id") == stale_id)
     assert archived.get("active") in (0, False)
     assert messages[-1].get("_row_id") != stale_id
@@ -972,7 +974,7 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     failure during the batch insert must roll back the assistant update and stamp
     no in-memory markers.
     """
-    from hermes_state import SessionDB
+    from persistence.sqlite.conversation._store import messages as store_messages
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"
@@ -994,15 +996,15 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     messages.append(new_tool_msg)
 
     # Force a failure inside the batch write transaction on the second message
-    orig_insert = SessionDB._insert_message_rows
+    orig_insert = store_messages._insert_message_rows
 
-    def _failing_insert(self_db, conn, sid, msgs):
+    def _failing_insert(holder, conn, sid, msgs, **kwargs):
         for msg in msgs:
             if msg.get("role") == "tool":
                 raise RuntimeError("Simulated mid-batch persistence crash")
-        return orig_insert(self_db, conn, sid, msgs)
+        return orig_insert(holder, conn, sid, msgs, **kwargs)
 
-    monkeypatch.setattr(SessionDB, "_insert_message_rows", _failing_insert)
+    monkeypatch.setattr(store_messages, "_insert_message_rows", _failing_insert)
 
     success = agent._flush_messages_to_session_db(messages)
     assert success is False or getattr(agent, "_incremental_persistence_failed", False) is True
@@ -1037,10 +1039,10 @@ def test_flush_concurrent_nonblank_winner_adopts_canonical_content(tmp_path):
     def _concurrent_write(conn):
         conn.execute(
             "UPDATE messages SET content = ? WHERE id = ?",
-            (db._encode_content("Canonical winner answer from sibling"), row_id),
+            ("Canonical winner answer from sibling", row_id),
         )
 
-    db._execute_write(_concurrent_write)
+    raw_holder(db)._execute_write(_concurrent_write)
 
     # Live agent attempts to flush divergent content
     messages[-1]["content"] = "Divergent live agent answer"

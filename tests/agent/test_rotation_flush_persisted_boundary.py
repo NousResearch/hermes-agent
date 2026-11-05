@@ -27,10 +27,13 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
+def _build_agent_with_db(db, session_id: str):
     """Build an AIAgent wired to ``db`` and pinned to ``session_id``.
 
     Mirrors the helper in ``test_compression_concurrent_fork.py``: stub the
@@ -46,7 +49,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -81,18 +84,18 @@ def _contents(rows):
 def test_rotation_flush_does_not_duplicate_persisted_prefix(tmp_path: Path) -> None:
     """Cold-resume + rotating preflight compression keeps the parent transcript
     at (persisted prefix + one new turn) — no second copy of the durable rows."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
 
     parent_sid = "COLD_RESUME_PARENT"
-    db.create_session(parent_sid, source="desktop")
+    seed_session(db, parent_sid, "desktop")
 
     # Two durable rows already in the parent.
-    db.append_message(parent_sid, "user", "persisted question")
-    db.append_message(parent_sid, "assistant", "persisted answer")
+    seed_messages(db, parent_sid, {"role": "user", "content": "persisted question"},
+                  {"role": "assistant", "content": "persisted answer"})
 
     # Cold resume: the stored rows come back as plain dicts, unstamped, and the
     # live turn appends one new user message on top.
-    loaded = db.get_messages_as_conversation(parent_sid)
+    loaded = conversation(db, parent_sid)
     assert _contents(loaded) == ["persisted question", "persisted answer"]
     messages = [*loaded, {"role": "user", "content": "new turn"}]
 
@@ -106,7 +109,7 @@ def test_rotation_flush_does_not_duplicate_persisted_prefix(tmp_path: Path) -> N
     # The flush at the rotation boundary lands on the OLD (parent) session,
     # which is then ended. Read it back verbatim (include_inactive to be robust
     # to the end_session bookkeeping).
-    parent_rows = db.get_messages_as_conversation(parent_sid, include_inactive=True)
+    parent_rows = conversation(db, parent_sid, ConversationRequest(view=TranscriptView.ALL))
     contents = _contents(parent_rows)
 
     assert contents.count("persisted question") == 1, (

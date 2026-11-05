@@ -99,14 +99,33 @@ def test_converter_keeps_secrets_when_redact_disabled():
 
 
 def test_load_session_messages_closes_database_on_failure(monkeypatch):
-    db = MagicMock()
-    db.resolve_session_id.side_effect = RuntimeError("read failed")
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: db)
+    persistence = MagicMock()
+    persistence.sessions.resolve_id.side_effect = RuntimeError("read failed")
+    monkeypatch.setattr("persistence_assembly.open_persistence", lambda scope: persistence)
 
     with pytest.raises(RuntimeError, match="read failed"):
         load_session_messages("s1")
 
-    db.close.assert_called_once()
+    persistence.close.assert_called_once()
+
+
+def test_load_session_messages_reads_the_conversation_and_model(tmp_path):
+    """A session prefix resolves; the replay projection and the session's model come from the store the path names."""
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+
+    path = tmp_path / "state.db"
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "trace-s1", "cli", model="claude-x")
+        seed_messages(db, "trace-s1", {"role": "user", "content": "list files"},
+                      {"role": "assistant", "content": "Two files."})
+        expected = conversation(db, "trace-s1")
+
+    messages, meta = load_session_messages("trace-s", db_path=path)
+
+    assert messages == expected
+    assert meta == {"model": "claude-x"}
 
 
 

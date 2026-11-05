@@ -224,14 +224,14 @@ def test_every_rotation_in_one_turn_is_marked_on_that_turn(relay, tmp_path, monk
     no Relay scope while the turn that rotated into it is still running. A second rotation in that turn (a
     multi-pass preflight) must still be marked on the live turn, not dropped."""
     from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     fake, runtime, coordinator = relay
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="rotating-session",
+        persistence=open_persistence(profile_scope(home=tmp_path)), session_id="rotating-session",
         skip_context_files=True, skip_memory=True,
     )
     agent.compression_in_place = False
@@ -269,14 +269,14 @@ def test_a_post_turn_micro_compaction_in_a_rotated_child_is_marked_on_the_turn(r
 
     from agent.agent_runtime_helpers import note_turn_persisted, note_turn_start
     from agent.turn_finalizer import _micro_compact_after_turn
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     fake, runtime, coordinator = relay
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="rotating-session",
+        persistence=open_persistence(profile_scope(home=tmp_path)), session_id="rotating-session",
         skip_context_files=True, skip_memory=True,
     )
     agent.compression_in_place = False

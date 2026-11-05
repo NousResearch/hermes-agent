@@ -4047,7 +4047,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._trim_mentioned_threads()
 
     async def _bot_authored_thread_root(
-        self, channel_id: str, thread_ts: str, team_id: str = "") -> bool:
+        self, channel_id: str, thread_ts: str, team_id: str = "", chat_type: str = "") -> bool:
         """True when this bot authored the thread root — catches roots posted via direct
         chat.postMessage (not in _bot_message_ts) and survives restarts. Cache first, then a
         TTL-bounded fetch on a miss.
@@ -4072,8 +4072,8 @@ class SlackAdapter(BasePlatformAdapter):
                     return bool(
                         cached_entry.parent_user_id and cached_entry.parent_user_id == bot_uid)
             if attempt == 0:
-                await self._fetch_thread_context(
-                    channel_id=channel_id, thread_ts=thread_ts, current_ts="", team_id=team_id)
+                await self._fetch_thread_context(channel_id=channel_id, thread_ts=thread_ts,
+                                                 current_ts="", team_id=team_id, chat_type=chat_type)
         return False
 
     async def _should_wake_on_unmentioned_message(
@@ -4103,7 +4103,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_type=chat_type):
             return True
         if is_thread_reply and await self._bot_authored_thread_root(
-            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id):
+            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id, chat_type=chat_type):
             return True
         # Thread PARENT @-mentioned the bot before this process (restart): a bare "run" is for us.
         # 5th check (#24848): the thread PARENT @-mentioned the bot, but the mention event predates this
@@ -4345,7 +4345,7 @@ class SlackAdapter(BasePlatformAdapter):
             nonlocal channel_context
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id, thread_ts=event_thread_ts, current_ts=ts, team_id=team_id,
-                **kw)
+                chat_type="dm" if is_dm else "group", **kw)
             if thread_context:
                 channel_context = thread_context
 
@@ -5781,10 +5781,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str, team_id: str = "", limit: int = 30,
-        after_ts: str = "", force_refresh: bool = False) -> str:
+        after_ts: str = "", force_refresh: bool = False, chat_type: str = "") -> str:
         """Prior thread messages as formatted context ("" on failure/empty). Cold-start only
         (session history holds them afterwards); ``after_ts`` = session watermark returns only
         unseen messages; ``force_refresh`` bypasses the _THREAD_CACHE_TTL cache (Tier 3 API).
+        ``chat_type`` is the inbound message's (``dm`` for IM/MPIM, else ``group``; a missing one
+        is inferred from the id) so senders are tagged against the allowlist that message uses.
 
         mentioned mid-thread for the first time, or when an explicit @mention on an active thread requests a
         context refresh (#23918).
@@ -5793,8 +5795,8 @@ class SlackAdapter(BasePlatformAdapter):
         now = time.monotonic()
         cached = None if force_refresh else self._thread_context_cache.get(cache_key)
         _fmt = functools.partial(
-            self._format_thread_context, thread_ts=thread_ts, current_ts=current_ts,
-            team_id=team_id, channel_id=channel_id)
+            self._format_thread_context, thread_ts=thread_ts, current_ts=current_ts, team_id=team_id,
+            channel_id=channel_id, chat_type=chat_type or ("dm" if channel_id.startswith("D") else "group"))
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
             if not after_ts:
                 return cached.content
@@ -5869,7 +5871,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _format_thread_context(
         self, messages: list[dict[str, Any]], *, thread_ts: str, current_ts: str, team_id: str,
-        channel_id: str, after_ts: str = "") -> tuple[str, str]:
+        channel_id: str, after_ts: str = "", chat_type: str = "group") -> tuple[str, str]:
         """Format Slack replies into an injected thread-context block.
         With ``after_ts``, only messages strictly newer than the watermark are included (delta
         refresh); parent text is still captured. Returns ``(content, parent_text)``.
@@ -5903,7 +5905,8 @@ class SlackAdapter(BasePlatformAdapter):
             if reactions:
                 msg_text = f"{msg_text} {reactions}"
             context_parts.append(
-                await self._thread_context_line(msg, msg_text, is_parent, team_id, channel_id))
+                await self._thread_context_line(
+                    msg, msg_text, is_parent, team_id, channel_id, chat_type=chat_type, thread_ts=thread_ts))
         content = ""
         if context_parts:
             has_unverified = any("[unverified] " in part for part in context_parts)
@@ -5922,12 +5925,15 @@ class SlackAdapter(BasePlatformAdapter):
         return content, parent_text
 
     async def _thread_context_line(
-        self, msg: dict, msg_text: str, is_parent: bool, team_id: str, channel_id: str) -> str:
+        self, msg: dict, msg_text: str, is_parent: bool, team_id: str, channel_id: str, *,
+        chat_type: str = "group", thread_ts: str = "") -> str:
         """One ``[prefix][trust] name: text`` context line. Own prior replies are kept as
         ``[assistant]`` (no name lookup) so the agent can reconstruct its turns on cold start.
         Non-allowlisted humans are tagged ``[unverified]`` so the LLM treats them as background,
-        not instructions (bots bypass the check). Name and text are attacker-controlled — an
-        embedded newline could forge a "## SYSTEM" heading — so both collapse to one inert line."""
+        not instructions (bots bypass the check). Senders are checked with the inbound message's
+        ``chat_type`` + ``thread_id``: ``"thread"`` reads as a DM in authz, which skipped
+        ``group_allow_from``. Name and text are attacker-controlled — an embedded newline could
+        forge a "## SYSTEM" heading — so both collapse to one inert line."""
         # Local import: don't force gateway.session at module load.
         from gateway.session import neutralize_untrusted_inline_text
         is_bot = self._event_declares_bot_sender(msg)
@@ -5946,7 +5952,7 @@ class SlackAdapter(BasePlatformAdapter):
         trust_tag = ""
         if not is_bot and msg_user:
             is_authorized = self._is_sender_authorized(
-                msg_user, chat_type="thread", chat_id=channel_id)
+                msg_user, chat_type=chat_type, chat_id=channel_id, thread_id=thread_ts or None)
             if is_authorized is False:
                 trust_tag = "[unverified] "
         name = await self._resolve_user_name(display_user, chat_id=channel_id, team_id=team_id)

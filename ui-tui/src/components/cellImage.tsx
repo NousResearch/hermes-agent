@@ -2,9 +2,9 @@ import { Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 // A cell is [tr,tg,tb,ta, br,bg,bb,ba] — the top + bottom pixel of one
-// half-block, as produced by the `pet.cells` gateway RPC.
-export type PetCell = number[]
-export type PetGrid = PetCell[][]
+// half-block, as produced by the `pet.cells` and `image.render` gateway RPCs.
+export type HalfBlockCell = number[]
+export type CellGrid = HalfBlockCell[][]
 
 const UPPER_HALF = '▀'
 const LOWER_HALF = '▄'
@@ -19,11 +19,12 @@ const hex = (r: number, g: number, b: number) =>
     .join('')}`
 
 /**
- * Renders one petdex frame as truecolor half-blocks using native Ink color
- * props (no raw ANSI, so width measurement stays correct). The engine
- * (`agent/pet/render.py`) does the decode + downscale; this is a thin painter.
+ * Renders a cell grid (a petdex frame, an inline image) as truecolor
+ * half-blocks using native Ink color props (no raw ANSI, so width measurement
+ * stays correct). The engine (`agent/terminal_image.py`) does the decode +
+ * downscale; this is a thin painter.
  */
-export const PetSprite = memo(function PetSprite({ grid }: { grid: PetGrid }) {
+export const HalfBlockImage = memo(function HalfBlockImage({ grid }: { grid: CellGrid }) {
   if (!grid.length) {
     return null
   }
@@ -76,7 +77,7 @@ export const PetSprite = memo(function PetSprite({ grid }: { grid: PetGrid }) {
  * cells. Truecolor-only — the color must reach the terminal verbatim for the
  * id to decode, which Ghostty/kitty support.
  */
-export const PetKitty = memo(function PetKitty({ color, placeholder }: { color: string; placeholder: string[] }) {
+export const KittyImage = memo(function KittyImage({ color, placeholder }: { color: string; placeholder: string[] }) {
   if (!placeholder.length) {
     return null
   }

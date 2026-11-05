@@ -911,6 +911,23 @@ export interface ImageGenerateResult {
   image_data?: string | null
   error?: string | null
 }
+export interface ImageRenderParams {
+  path: string
+  cols: number
+  rows: number
+  graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
+}
+/** ``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``) as half-blocks. ``off``: inline images are disabled or the file is not a readable image. */
+export interface ImageRenderResult {
+  mode: 'kitty' | 'unicode' | 'off'
+  cols?: number | null
+  rows?: number | null
+  color?: string | null
+  transmit?: string | null
+  placeholder?: string[] | null
+  cells?: number[][][] | null
+}
 export interface SessionControlReadParams {
   profile?: string | null
   session_id: string
@@ -1644,6 +1661,8 @@ export interface RoomDriverStatus {
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
   max_rounds?: number | null
+  max_continues?: number | null
+  routing_modes?: string[] | null
   peer_routes: PeerRouteStatus[]
 }
 /** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
@@ -1665,7 +1684,7 @@ export interface PeerRouteStatus {
 export interface RoomContext {
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead'
+  routing?: 'everyone' | 'lead' | 'auto'
   lead_member_id?: string
 }
 export interface GroupsSendParams {
@@ -1695,7 +1714,7 @@ export interface GroupsContextParams {
   event_id: string
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead' | null
+  routing?: 'everyone' | 'lead' | 'auto' | null
   lead_member_id?: string | null
 }
 export interface GroupsContextResult {
@@ -1743,6 +1762,15 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+}
+export interface GroupsContinueParams {
+  profile?: string | null
+  room_id: string
+  discussion_event_id: string
+}
+export interface GroupsContinueResult {
+  continued?: boolean
+  event: RoomEvent
 }
 export interface GroupsApproveParams {
   profile?: string | null
@@ -2703,6 +2731,7 @@ export interface PetCellsParams {
   state?: string | null
   cols?: number | null
   graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
 }
 /** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
 export interface PetCellsResult {
@@ -5287,6 +5316,7 @@ export interface CanonicalConfigGetResult {
   mcp_rev?: string | null
   key?: string | null
   scope?: string | null
+  options?: ('normal' | 'fast' | 'auto' | 'cold' | 'ultrafast')[] | null
 }
 /** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {
@@ -5862,6 +5892,7 @@ export interface ToolCompletePayload {
   todos?: unknown[] | null
   revision?: number | null
   labels?: ToolLabel[] | null
+  image_path?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {
@@ -6219,6 +6250,8 @@ export interface RpcMethods {
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Set one hosted room's purpose and shared notes; members see them from the next message. */
   'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
+  /** Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued. */
+  'groups.continue': { params: GroupsContinueParams; result: GroupsContinueResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6271,6 +6304,8 @@ export interface RpcMethods {
   'image.detach': { params: ImageDetachParams; result: ImageDetachResult }
   /** Generate an image through the tool's provider dispatcher and hand the renderer a data URL. */
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
+  /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
+  'image.render': { params: ImageRenderParams; result: ImageRenderResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -6676,6 +6711,7 @@ export const RPC_METHODS = [
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.context',
+  'groups.continue',
   'groups.create',
   'groups.demote',
   'groups.disband',
@@ -6702,6 +6738,7 @@ export const RPC_METHODS = [
   'image.attach_bytes',
   'image.detach',
   'image.generate',
+  'image.render',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

@@ -48,6 +48,7 @@ from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
 )
+from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
@@ -2189,10 +2190,9 @@ class ContextCompressor(
         """Resolve and cache the model's context length on first access."""
         if self._resolved_context_length is None:
             self._resolved_context_length = get_model_context_length(
-                self.model, base_url=self.base_url, api_key=self.api_key,
-                config_context_length=self._config_context_length, provider=self.provider,
-                custom_providers=self.custom_providers,
-            )
+                self.model, base_url=self.base_url, api_key=self.api_key, config_context_length=self._config_context_length,
+                provider=self.provider, custom_providers=self.custom_providers)
+            self._context_default = (self.model, self.base_url, last_defaulted_context_length())  # agent.context_pin label
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
             self._emit_init_summary_once()

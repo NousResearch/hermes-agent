@@ -21,7 +21,13 @@ import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomReply { member?: CanonicalRoomMember; name: string; quote: string; thread?: string }
-interface RoomState { room: CanonicalRoom; context?: CanonicalRoomContext | null; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
+interface RoomDriverStatus extends CanonicalDriverActivity {
+  pending_actions?: CanonicalPendingAction[]
+  /** Continues a paused discussion may get; absent on runtimes without `groups.continue`. */
+  max_continues?: number
+  routing_modes?: string[]
+}
+interface RoomState { room: CanonicalRoom; context?: CanonicalRoomContext | null; driver_status?: RoomDriverStatus }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[], thread?: string) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments) &&
@@ -180,6 +186,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     })
   }
 
+  const stop = () => mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))
+
+  const continueDiscussion = (discussionEventId: string) =>
+    mutate(() => canonicalGroupRequest(binding, 'groups.continue', { room_id: binding.roomId, discussion_event_id: discussionEventId }))
+
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => actCanonicalGroup(binding, action, choice))
 
@@ -239,7 +250,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader busy={busy} canStop={!!driver} connectionId={binding.connectionId} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
+        onDisband={end} onRename={rename} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} working={working} />
       {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}
         <Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="xs" variant="ghost">{labels.refresh}</Button></div>}
@@ -248,7 +259,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
-          <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} events={events} members={members} onReply={replyTo} />
+          <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} events={events} members={members} onReply={replyTo}
+            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop }} />
           <CanonicalGroupTyping connectionId={binding.connectionId} labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)
@@ -287,7 +299,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </div>
     </div>
     {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
-      <CanonicalGroupRoomSettings binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refresh} />
+      <CanonicalGroupRoomSettings autoRouting={!!driver?.routing_modes?.includes('auto')} binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refresh} />
     </CanonicalGroupDetails>}
   </section>
 }

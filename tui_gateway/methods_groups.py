@@ -21,7 +21,7 @@ method = _registry.method
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
-    "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
+    "groups.promote", "groups.demote", "groups.stop", "groups.continue", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
     "groups.attachment.download")
 #: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
@@ -467,6 +467,14 @@ def _(rid, params: dict, service) -> dict:
     count = service.stop_room(
         str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or "desktop-stop"))
     return _ok(rid, {"cancelled": count})
+
+
+@_room_method("groups.continue", code=5126, room_code=4128, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Grant a discussion paused at its cap one more budget of rounds and messages."""
+    event = service.continue_room(
+        str(params.get("room_id") or ""), discussion_event_id=str(params.get("discussion_event_id") or ""))
+    return _ok(rid, {"continued": True, "event": event})
 
 
 @_room_method("groups.approve", code=5119, service_code=4115)

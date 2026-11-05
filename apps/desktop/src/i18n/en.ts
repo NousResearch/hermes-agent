@@ -4208,6 +4208,15 @@ export const en: Translations = {
           system_prompt: 'System prompt',
           tool_definitions: 'Tool definitions'
         },
+        compact: {
+          action: 'Compact conversation',
+          busyHint: 'Finish or stop the current reply first',
+          confirm: 'Compact',
+          hint: 'Summarize older context to make room. Continue in this same conversation.',
+          question: 'Compress this chat into a summary?',
+          questionNamed: title => `Compress “${title}” into a summary?`,
+          working: 'Compacting…'
+        },
         empty: 'No context data yet',
         loading: 'Loading breakdown…',
         percentFull: percent => `${percent}% Full`,

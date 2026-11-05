@@ -3047,6 +3047,15 @@ export const jaOverrides = {
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        compact: {
+          action: '会話を圧縮',
+          busyHint: '先に実行中の応答を終了するか停止してください',
+          confirm: '圧縮',
+          hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
+          question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
+          working: '圧縮中…'
+        },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,

@@ -396,9 +396,10 @@ def _release_header_probes_under(root: Path) -> None:
     served. Invariant: a probe is never closed while another descriptor in this process holds its
     inode, because closing any descriptor cancels every POSIX lock the process holds on the file.
     The paths' lifecycle locks, held from the scan to the close, make a registry open in flight
-    finish before the scan and keep a new one from starting. ``offline_file_access`` does the same
-    for tracked connections opened outside the registry. An untracked ``sqlite3.connect`` that
-    opens between the scan and the close is not covered."""
+    finish before the scan and keep a new one from starting. Those locks are keyed by pathname, so
+    the inode is rescanned inside ``offline_file_access``, which blocks tracked opens through any
+    spelling (a hard link too) until the close. An untracked ``sqlite3.connect`` that opens between
+    the scan and the close is not covered."""
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     from hermes_state_dbfile import (
         close_header_probe_if_unchanged, header_probes_under, inodes_with_other_descriptors,
@@ -425,6 +426,9 @@ def _release_header_probes_under(root: Path) -> None:
                 continue
             try:
                 with offline_file_access(path, what="close the header probe of"):
+                    held = inodes_with_other_descriptors({entry[1:]})
+                    if held is None or entry[1:] in held:
+                        continue  # opened after the first scan, maybe through another pathname
                     close_header_probe_if_unchanged(key, entry)
             except LiveConnectionError:
                 continue  # a tracked connection opened after the scan

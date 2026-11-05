@@ -34,6 +34,7 @@ import {
   $imagenAvailable,
   generateAvatarImage,
   type GeneratedImage,
+  IMAGE_GENERATE_TIMEOUT_MS,
   normalizeAvatarImage,
   pickImageFromDevice,
   probeImagen
@@ -97,10 +98,14 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
 
       const img = custom
         ? await (async () => {
-            const res = await host.request<GeneratedImage>('image.generate', {
-              prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
-              aspect_ratio: 'square'
-            })
+            const res = await host.request<GeneratedImage>(
+              'image.generate',
+              {
+                prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
+                aspect_ratio: 'square'
+              },
+              IMAGE_GENERATE_TIMEOUT_MS
+            )
 
             if (!res?.success) {
               throw new Error(res?.error || 'generation failed')

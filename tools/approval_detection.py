@@ -201,6 +201,8 @@ _PIPE_LAUNCHER_VALUE_FLAGS = {
     "timeout": ("sk", ("signal", "kill-after")),
     "stdbuf": ("ioe", ("input", "output", "error")),
     "busybox": ("", ()),
+    "setsid": ("", ()),
+    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid")),
 }
 
 
@@ -229,6 +231,8 @@ _PIPE_LOOKUP_ONLY_RE = re.compile(
 _PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
 _PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
 _PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
+# The widened sink skips `||` (an or-list, not a pipe); main's raw sink keeps the old operator.
+_PIPE_ONLY_OPERATOR_RE = re.compile(r"(?<!\|)\|(?!\|)&?\s*|>\(\s*")
 
 
 # main's original sink (bare or slash-prefixed shell), scanned on the RAW text: a quoted payload handed
@@ -247,14 +251,14 @@ class _PipeRemoteToShellMatcher:
         fetch = _PIPE_FETCH_RE.search(text)
         if fetch is None:
             return None
-        if match := self._scan(text, fetch.end(), _PIPE_BARE_SINK_RE, lookup_guard=False):
+        if match := self._scan(text, fetch.end(), _PIPE_BARE_SINK_RE, _PIPE_OPERATOR_RE, lookup_guard=False):
             return match
         widened = text if _contains_shell_carrier(text) else _mask_quoted_prose(text)
-        return self._scan(widened, fetch.end(), _PIPE_SINK_RE, lookup_guard=True)
+        return self._scan(widened, fetch.end(), _PIPE_SINK_RE, _PIPE_ONLY_OPERATOR_RE, lookup_guard=True)
 
     @staticmethod
-    def _scan(text: str, pos: int, sink: re.Pattern, lookup_guard: bool):
-        while (op := _PIPE_OPERATOR_RE.search(text, pos)) is not None:
+    def _scan(text: str, pos: int, sink: re.Pattern, operator: re.Pattern, lookup_guard: bool):
+        while (op := operator.search(text, pos)) is not None:
             match = sink.match(text, op.start())
             if match and not (lookup_guard and _PIPE_LOOKUP_ONLY_RE.match(text, op.end())):
                 return match

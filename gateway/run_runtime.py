@@ -12,8 +12,10 @@ is parked (logged, left out of ``served_profiles``) instead of aborting every ot
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import logging
 from pathlib import Path
+import threading
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -232,16 +234,43 @@ def _publish_served_set(runner):
     runner.session_ticket_store.profile_ids = registry.profile_ids()
 
 
-def reserve_profile_home(runner, name, home):
+def reserve_profile_home(runner, name, home, cancel=None):
     """Grow the process reservation by one profile (hot-serve): take its ``gateway.lock`` and add it
     to the frozen boot set, so every reader of the reservation — and the next restart's
-    all-or-nothing reserve — sees it. ``OwnershipConflict`` when another gateway owns the home."""
-    from gateway.runtime_ownership import process_ownership
+    all-or-nothing reserve — sees it. Waits out a transient holder within boot's window (blocking:
+    the event loop calls :func:`reserve_profile_home_in_worker`). ``OwnershipConflict`` when another
+    gateway owns the home; *cancel* set ends the wait with nothing reserved."""
+    from gateway.run_bootstrap import _browse_reconcile_reserve_wait_s
+    from gateway.runtime_ownership import process_ownership, reserve_waiting_out_transient_holders
     home = Path(home).resolve()
-    process_ownership.reserve([home])
+    reserve_waiting_out_transient_holders(process_ownership, [home], wait_s=_browse_reconcile_reserve_wait_s(),
+                                          cancel=cancel)
     reserved = getattr(runner.config, '_runtime_profile_homes', None)
     if reserved is not None and all(Path(h).resolve() != home for _n, h in reserved):
         runner.config._runtime_profile_homes = (*reserved, (name, home))
+
+
+async def reserve_profile_home_in_worker(runner, name, home):
+    """:func:`reserve_profile_home` off the event loop, settled on cancellation. A cancelled bare
+    ``to_thread`` await leaves its worker retrying, free to take the flock after the canceller's
+    ownership cleanup with no coroutine left to serve or release it. So a cancel stops the worker,
+    waits for it to finish (each further cancel is absorbed until then), undoes a reservation it
+    completed first, and only then propagates."""
+    from gateway.runtime_ownership import process_ownership
+    home = await asyncio.to_thread(Path(home).resolve)
+    owned_before = process_ownership.owns(home)
+    cancel = threading.Event()
+    worker = asyncio.ensure_future(asyncio.to_thread(reserve_profile_home, runner, name, home, cancel))
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancel.set()
+        while not worker.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({worker})
+        if not worker.cancelled() and worker.exception() is None and not owned_before:
+            release_profile_home(runner, home)
+        raise
 
 
 def release_profile_home(runner, home):
@@ -724,6 +753,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))
+    deadline = asyncio.get_running_loop().time() + wait
     if tasks:
         done, pending = await asyncio.wait(tasks, timeout=wait) if wait > 0 else (set(), set(tasks))
         for task in done:
@@ -735,7 +765,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     from gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
         try:
-            await join_authority_work(authority, 0)
+            await join_authority_work(authority, max(0.0, deadline - asyncio.get_running_loop().time()))
         except TimeoutError:
             logger.warning('Profile %s still has live writers at shutdown; its admissions stay for recovery',
                            getattr(authority, 'profile_id', '?'))

@@ -18,10 +18,10 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { formatCombo } from '@/lib/keybinds/combo'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { confirm } from '@/store/confirm'
 import { bindingsFor } from '@/store/keybinds'
 import { notify, notifyError } from '@/store/notifications'
@@ -362,7 +362,7 @@ function DefaultProjectDirSetting() {
     // The folder on screen belongs to the profile this effect loaded. Drop it
     // on a switch so the next paint and the next save both use the profile
     // that is open now.
-    if (isBrowserHostedDesktop()) {
+    if (hostHas('originScopedPrefs')) {
       setDir(null)
     }
 
@@ -393,7 +393,7 @@ function DefaultProjectDirSetting() {
     try {
       // A browser tab has no native dialog for the server's disk: pick through the server
       // folder browser Projects already use.
-      const picked = isBrowserHostedDesktop()
+      const picked = !hostHas('nativeFolderPicker')
         ? { dir: (await selectDesktopPaths({ defaultPath: dir ?? undefined, directories: true }))[0] ?? null }
         : await settings.pickDefaultProjectDir()
 

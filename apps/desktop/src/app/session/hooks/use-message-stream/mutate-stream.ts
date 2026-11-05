@@ -29,6 +29,9 @@ export function useMutateStream(updateSessionState: UpdateSessionState) {
         // that crosses an interim/settle boundary must attach to the bubble
         // that still owns the call, wherever that bubble now sits.
         eventTarget?: (state: ClientSessionState) => string | null
+        // True when the event is a copy of something already applied, so
+        // the state stays exactly as it is.
+        skip?: (state: ClientSessionState) => boolean
       } = {},
       occurredAt = Date.now() / 1000
     ) => {
@@ -38,7 +41,7 @@ export function useMutateStream(updateSessionState: UpdateSessionState) {
           // cancelled turn so they don't keep growing the (now finalized)
           // assistant bubble or, worse, seed a brand-new bubble that
           // appears to belong to the next user message.
-          if (state.interrupted) {
+          if (state.interrupted || opts.skip?.(state)) {
             return state
           }
 

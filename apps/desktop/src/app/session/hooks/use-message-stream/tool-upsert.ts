@@ -1,6 +1,12 @@
 import { type MutableRefObject, useCallback } from 'react'
 
-import { type GatewayEventPayload, toolCallOwnerMessageId, upsertToolPart } from '@/lib/chat-messages'
+import {
+  type GatewayEventPayload,
+  isRedeliveredToolEvent,
+  queuedPromptAwaitsNextTurn,
+  toolEventOwnerMessageId,
+  upsertToolPart
+} from '@/lib/chat-messages'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
 import { upsertSubagent } from '@/store/subagents'
@@ -71,8 +77,23 @@ export function useToolUpsert(
           // lookup a completion seeds a new bubble with a duplicate row while
           // the sealed one keeps reading "Result unavailable", and a running
           // event for the same id seeds a second live row with its own timer
-          // under the user's message (#113035). Both phases route by id.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
+          // under the user's message (#113035). Both phases route by id, but
+          // a running-phase event only re-arms a sealed-no-result part on a
+          // still-in-flight owner — a settled prior turn's sealed part is
+          // history, so a new turn reusing the id seeds its own row instead
+          // of clobbering the prior turn's command. With no turn live, a start
+          // carrying a sealed row's exact arguments is a late copy of that call.
+          eventTarget: state =>
+            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId),
+          // A copy of a call this turn already finished (re-delivered start or
+          // completion) would otherwise draw that call a second time. A queued
+          // prompt row is passed over only until its own turn starts; from then
+          // on it is that turn's boundary.
+          skip: state =>
+            isRedeliveredToolEvent(state.messages, payload, phase, {
+              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages),
+              turnAnchorId: state.turnAnchorId
+            })
         },
         occurredAt
       )

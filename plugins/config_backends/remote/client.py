@@ -75,16 +75,23 @@ def _retry_after(value: Optional[str]) -> Optional[float]:
         return None
 
 
+def bearer(home: Path) -> str:
+    """``home``'s plane bearer, resolved only once the plane destination passed the policy."""
+    checked_url(base_url(), env_name=URL_ENV)
+    return plane_token(home)
+
+
 def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None,
-            body: Optional[dict[str, Any]] = None) -> Response:
-    """One call to ``/v1/config/self?profile=<profile>`` as ``home``'s agent.
+            body: Optional[dict[str, Any]] = None, token: Optional[str] = None) -> Response:
+    """One call to ``/v1/config/self?profile=<profile>`` as ``home``'s agent, with ``token`` (a
+    :func:`bearer` the caller resolved) or a bearer resolved here.
 
     The destination is checked before the bearer is resolved, and the request never follows a
     redirect (:mod:`.destination`): raises its :class:`CredentialDestinationError` instead."""
     plane = checked_url(base_url(), env_name=URL_ENV)
     url = f"{plane}/v1/config/self?{urllib.parse.urlencode({'profile': profile})}"
     headers = {
-        "Authorization": f"Bearer {plane_token(home)}",
+        "Authorization": f"Bearer {token or plane_token(home)}",
         "X-Hermes-Instance-Id": instance_id(),
         "Accept": "application/json",
     }

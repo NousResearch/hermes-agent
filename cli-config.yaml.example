@@ -1316,6 +1316,16 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Routes that are your own machine — host, or host:port, e.g. a home LLM box reached
+  # through a tunnel. A 5xx from one of these is read as that box refusing the request
+  # (its GPU is held by a local app, the engine is parked for an offline batch, or it
+  # never came back from Wake-on-LAN) rather than a transient failure: the retry loop is
+  # skipped and the fallback chain is used at once, instead of burning backoff plus the
+  # host's own startup wait. 429s and 5xx that carry Retry-After are never treated this
+  # way. Empty (default) keeps the retry-then-fallback behaviour for every route.
+  # local_refusal_hosts:
+  #   - 127.0.0.1:11435
+
   # Once api_max_retries AND the fallback chain are spent on a transient outage
   # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
   # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;

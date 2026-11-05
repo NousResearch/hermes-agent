@@ -14,6 +14,10 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+from urllib.parse import urlsplit
+
+from hermes_cli.config import load_config_readonly
+from hermes_cli.config_backend import ConfigBackendUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -876,9 +880,58 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.format_error, retryable=False, should_fallback=True, error_context=ctx)
 
 
+# A self-hosted engine's refusal is deterministic for this context: the GPU is held by a local
+# app, the engine is parked for an offline batch, or the box never came back from Wake-on-LAN.
+# Retrying burns the backoff AND the host's own startup wait (its proxy answers the 503 only after
+# a full wake timeout, ~160 s here), while a configured fallback could answer immediately. Matched
+# by refusal code/phrase, or by a route the user declared as their own machine
+# (`agent.local_refusal_hosts`). 429 and 5xx-with-Retry-After stay out of this path: there, waiting
+# out the server's stated delay on the same model is the right recovery.
+_LOCAL_REFUSAL_CODES = frozenset({
+    "engine_in_use", "engine_paused", "host_asleep", "host_offline",
+})
+_LOCAL_REFUSAL_PATTERNS = (
+    "is busy", "is paused", "wake-on-lan", "wake on lan", "does not accept requests",
+    "no esta en condiciones", "engine unavailable for this request",
+)
+_LOCAL_REFUSAL_STATUSES = (500, 502, 503, 507)
+
+
+def _declared_local_route(c: _Ctx) -> bool:
+    """True when the user declared this route their own machine (`agent.local_refusal_hosts`)."""
+    try:
+        declared = (load_config_readonly().get("agent") or {}).get("local_refusal_hosts") or []
+    except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- a config outage must not change how a failed call reads; the code/phrase stages above already ran
+        logger.debug("agent.local_refusal_hosts unreadable; treating the route as remote",
+                     exc_info=True)
+        return False
+    wanted = {str(w).strip().lower() for w in declared if str(w).strip()}
+    if not wanted:
+        return False
+    route = urlsplit(c.base_url)
+    host = (route.hostname or "").lower()
+    if not host:
+        return False
+    try:
+        forms = {host, f"{host}:{route.port}"}
+    except ValueError:  # a base_url whose port is not a number: match on the host alone
+        forms = {host}
+    return bool(wanted & forms)
+
+
+def _local_engine_refusal(c: _Ctx) -> bool:
+    if c.status_code not in _LOCAL_REFUSAL_STATUSES:
+        return False
+    if c.code in _LOCAL_REFUSAL_CODES or any(p in c.msg for p in _LOCAL_REFUSAL_PATTERNS):
+        return True
+    return _declared_local_route(c)
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
+    if _local_engine_refusal(c):
+        return _v(_R.overloaded, **_ABORT_FALLBACK)
     # Deterministic for this context: another provider would receive the same connector result.
     if c.code == "data_policy_denied":
         return _v(_R.data_policy_denied, retryable=False, should_fallback=False)

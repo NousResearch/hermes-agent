@@ -91,14 +91,6 @@ def _rollback_kept(result: dict) -> None:
         print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
 
 
-def _rollback_undoes_chat(history: list, taken) -> bool:
-    """Main's whole-tree ``/rollback`` also undoes the newest chat turn, but only one that made or followed the
-    checkpoint taken at ``taken``: after ``/undo`` removed that turn, the turns the user kept stay."""
-    from hermes_cli.cli_session_mixin import _user_turn_indices
-    from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
-    return bool(history) and rollback_rewinds_newest_turn(history, _user_turn_indices(history), taken)
-
-
 def _probe(module: str, name: str, default, *args):
     """``<module>.<name>(*args)`` or ``default`` when the import or the call fails (optional
     subsystems: browser backends, async delegations, wake word, ...)."""
@@ -112,6 +104,21 @@ class CLICommandsSessionToolsMixin:
     """``/stop``, ``/agents``, ``/journey``, ``/paste``, ``/copy``, ``/image``, ``/tools``,
     ``/profile`` handlers (moved from ``CLICommandsMixin``)."""
 
+    # ---- /rollback chat undo --------------------------------------------------------------
+    @staticmethod
+    def _checkpoint_epoch(cwd, commit):
+        from tools.checkpoint_undo_hint import checkpoint_epoch
+        return checkpoint_epoch(cwd, commit)
+
+    def _rollback_chat_turn(self, taken) -> None:
+        """Main's whole-tree ``/rollback`` also undoes the newest chat turn, but only one that made or followed
+        the checkpoint taken at ``taken``: after ``/undo`` removed that turn, the turns the user kept stay."""
+        from hermes_cli.cli_session_mixin import _user_turn_indices
+        from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+        history = self.conversation_history
+        if history and rollback_rewinds_newest_turn(history, _user_turn_indices(history), taken):
+            self.undo_last(prefill=False)
+            print(f"  {_t('rollback.chat_turn_undone')}")
 
     # ---- /stop, /agents -------------------------------------------------------------------
     def _handle_stop_command(self):

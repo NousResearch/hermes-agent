@@ -20,7 +20,8 @@ import tempfile
 import threading
 from hermes_dir_acl import make_user_dir
 
-from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+from persistence.authority.vocabulary import ADMITTED_REQUEST_CONFLICT
+from persistence.core.errors import AuthorityRefusal
 from utils import fsync_directory
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,15 @@ _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
 _leases = Counter()
 _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
+# One set per release running through a storage interface handle: the paths a capture published,
+# reused or ended a lease on since that release began. Its held set is read in a write that ends
+# before its unlinks, so an admission committed in between is only seen through its lease.
+_releases = {}
+
+
+def _touch(path):
+    for touched in _releases.values():
+        touched.add(path)
 
 
 class _CaptureScope(list):
@@ -73,6 +83,7 @@ def drop_capture_lease(paths=None, *, scope=None):
     with _lease_lock:
         for path in [path for path in held if paths is None or path in paths]:
             held.remove(path)
+            _touch(path)
             _leases[path] -= 1
             if _leases[path] <= 0:
                 del _leases[path]
@@ -95,7 +106,8 @@ async def release_abandoned_capture(scope):
     references = [{'path': path, 'sha256': Path(path).parent.name} for path in set(scope.all_paths)]
     if references:
         import asyncio
-        await asyncio.to_thread(release_unheld_media, scope.authority.db, references)
+        from gateway.session_persistence import authority_persistence
+        await asyncio.to_thread(release_unheld_media, authority_persistence(scope.authority), references)
 
 
 def native_inputs_store():
@@ -148,26 +160,26 @@ def admit_attachments(attachments, *, admitted=None):
             or any(not isinstance(item, dict) or set(item) != {'path', 'mime'}
                    or not isinstance(item['path'], str) or item['mime'] not in _ATTACHMENT_MIMES
                    for item in attachments)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from gateway.platforms.base import get_image_cache_dir
     staging = get_image_cache_dir().resolve()
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     mimes = [item['mime'] for item in attachments]
     row = admitted() if admitted is not None else None
     committed = row['payload'].get('attachments_v1') if row is not None else None
     try:
         hashes = _attachment_hashes(paths)
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
     if None in hashes:
         if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
                 or committed['media_types'] != mimes):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if any(digest is not None and digest != reference['sha256']
                for digest, reference in zip(hashes, committed['media'])):
-            raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
+            raise AuthorityRefusal('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
         retry = True
     else:
         # Retry identity is the committed bytes, not the disposable staging name.
@@ -175,7 +187,7 @@ def admit_attachments(attachments, *, admitted=None):
                  and [r['sha256'] for r in committed['media']] == hashes)
     if retry:
         # A live row still executes these bytes, so they must verify; a terminal row is
-        # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
+        # exact-retry evidence by digest only. ``admissions.admit`` still checks the digest.
         if row['status'] != 'terminal':
             restore_native_media(committed['media'])
         return {'attachments_v1': committed}
@@ -199,7 +211,7 @@ def ingress_fingerprint(payload, raw=None):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
+def reconcile_native_retry(store, *, principal_id, session_id, request_id, payload, raw=None):
     """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
     under a fresh disposable staging name, so its captured path differs from the committed one.
     Retry identity is the committed bytes, not that name: when this exact identity already holds
@@ -208,12 +220,10 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     changed bytes or any other changed field still conflict. A delivery committed in
     ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
     the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
-    committed before fingerprints, is compared exactly as above."""
+    committed before fingerprints, is compared exactly as above. *store* is a storage interface handle."""
     fresh = payload.get('native_text_v1', {}).get('media') or []
-    with db._read_ctx() as conn:
-        row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
-                           'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
-    retained = json.loads(row[1]) if row is not None else {}
+    row = store.admissions.find(principal_id=principal_id, session_id=session_id, request_id=request_id)
+    retained = row.payload if row is not None else {}
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained
@@ -224,14 +234,14 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
             return payload
         resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
     committed = resolved['native_text_v1'].get('media', [])
-    if committed and row[0] != 'terminal':
+    if committed and row.status != 'terminal':
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).
         restore_native_media(committed)
     kept = {reference['path'] for reference in committed}
     unowned = [reference for reference in fresh if reference['path'] not in kept]
     if unowned:
         drop_capture_lease({reference['path'] for reference in unowned})
-        release_unheld_media(db, unowned, retain_history=False)
+        release_unheld_media(store, unowned, retain_history=False)
     return resolved
 
 def _attachment_hashes(paths):
@@ -240,7 +250,7 @@ def _attachment_hashes(paths):
         try:
             # Staging must not provide a second name for a file outside it.
             if path.lstat().st_nlink != 1:
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             hashes.append(_sha256(path))
         except FileNotFoundError:
             # One pruned file cannot skip validation of the remaining batch.
@@ -289,13 +299,14 @@ def capture_native_media(paths):
             target = Path(reference['path'])
             root = target.parent.parent
             if target.parent.resolve() != target.parent:
-                raise RuntimeStoreError('invalid_params')
+                raise AuthorityRefusal('invalid_params')
             make_user_dir(native_inputs_store() / target.parent.name, mode=0o700, exist_ok=True)
             with _lease_lock:
                 scope = _lease_scope.get()
                 if scope is not None:
                     scope.append(str(target))
                     _leases[str(target)] += 1
+                _touch(str(target))
                 if target.exists() or target.is_symlink():
                     restore_native_media([reference])
                     os.utime(target)  # a fresh capture restarts the retention age (sweep_settled_media)
@@ -314,11 +325,11 @@ def _capture_file(path, limit, total, references, staged):
     try:
         source = _open_regular(path)
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
     with source:
         root = _media_root()
         if root.resolve() != root:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         make_user_dir(native_inputs_store(), mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
         temporary = Path(name)
@@ -330,14 +341,14 @@ def _capture_file(path, limit, total, references, staged):
                 try:
                     validate_inbound_media_size(total + size, max_bytes=limit)
                 except ValueError as exc:
-                    raise RuntimeStoreError('invalid_params') from exc
+                    raise AuthorityRefusal('invalid_params') from exc
                 digest.update(chunk)
                 output.write(chunk)
             output.flush()
             os.fsync(output.fileno())
         target = root / digest.hexdigest() / path.name
         if target.parent.resolve() != target.parent:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
         if target.exists() or target.is_symlink():
             restore_native_media([reference])
@@ -350,7 +361,7 @@ def validate_media_batch_size(sizes):
     try:
         validate_inbound_media_size(sum(sizes), max_bytes=max(0, get_inbound_media_max_bytes()))
     except ValueError as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise AuthorityRefusal('invalid_params') from exc
 
 
 # A hosted room's non-image document is retained under ``native-inputs/<sha256>/<name>`` like any
@@ -426,7 +437,7 @@ def _held_file_identities(paths, root):
     return identities
 
 
-def release_admission_media(db, admission_id):
+def release_admission_media(store, admission_id):
     """Delete eligible terminal native bytes unless another retained input holds them.
 
     Terminal rows are exact-retry evidence by digest only; their bytes are not
@@ -436,58 +447,55 @@ def release_admission_media(db, admission_id):
     and are holders only (see ``collect_unheld_api_images``). Different regular
     files can collect independently; physical aliases and uncertain stat results
     retain conservatively. A shared hardlink can consequently retain an extra old alias.
+    *store* is a storage interface handle.
     """
-    from hermes_state_runtime import get_session_admission
-    row = get_session_admission(db, admission_id=admission_id)
-    if row is None or row['status'] != 'terminal':
+    row = store.admissions.get(admission_id=admission_id)
+    if row is None or row.status != 'terminal':
         return 0
-    api_turn = row['payload'].get('api_turn_v1', {})
+    api_turn = row.payload.get('api_turn_v1', {})
     if api_turn.get('media') or isinstance(api_turn.get('history'), list):
         # Settled: inline base64 of committed images and the client history are redundant row weight.
         from gateway.session_api_media import compact_settled_api_payloads
-        compact_settled_api_payloads(db, admission_id)
+        compact_settled_api_payloads(store, admission_id)
     # Native and hosted inputs are named in the prompt the transcript keeps ("It is saved at: <path>"),
     # so they are history context like an API image: they go once no live row and no transcript row
     # names them, never while a follow-up turn can still be told to read them. Session deletion
     # collects them through ``retire_media``; ``sweep_settled_media`` bounds the rest at main's 24 h.
-    released = release_unheld_media(db, admission_media_references(row['payload']))
-    released += release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']))
-    return released + sweep_settled_media(db)
+    released = release_unheld_media(store, admission_media_references(row.payload))
+    released += release_unheld_media(store, hosted_document_references(row.request_id, row.payload))
+    return released + sweep_settled_media(store)
 
 
 _SWEEP_INTERVAL_S = 3600
 _last_sweep = {}
 
 
-def sweep_settled_media(db, *, now=None):
+def sweep_settled_media(store, *, now=None):
     """At most hourly per store: collect settled native/attachment inputs older than
     ``MEDIA_CACHE_MAX_AGE_HOURS`` whatever the transcript says, as main's age-based document cache
     cleanup did for the staging copy the note used to name. A live admission or an in-flight capture
     still holds its bytes; API images and hosted documents keep their own owners."""
     import time
     from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
+    from persistence_assembly import store_location
     now = time.time() if now is None else now
-    if now - _last_sweep.get(db.db_path, 0) < _SWEEP_INTERVAL_S:
+    key = store_location(store.scope)
+    if now - _last_sweep.get(key, 0) < _SWEEP_INTERVAL_S:
         return 0
-    _last_sweep[db.db_path] = now
-    with db._read_ctx() as conn:
-        rows = conn.execute("""SELECT json_extract(payload_json, '$.attachments_v1.media', '$.native_text_v1.media')
-            FROM session_admissions WHERE status='terminal' AND (json_type(payload_json, '$.attachments_v1.media')
-            IS NOT NULL OR json_type(payload_json, '$.native_text_v1.media') IS NOT NULL)""").fetchall()
+    _last_sweep[key] = now
     cutoff = now - MEDIA_CACHE_MAX_AGE_HOURS * 3600
     stale = {}
-    for (encoded,) in rows:
-        attachments, native = json.loads(encoded)
-        for reference in (attachments or []) + (native or []):
+    for media in store.admissions.settled_media():
+        for reference in media:
             try:
                 if Path(reference['path']).stat(follow_symlinks=False).st_mtime < cutoff:
                     stale[reference['path']] = reference
             except OSError:
                 continue
-    return release_unheld_media(db, list(stale.values()), retain_history=False) if stale else 0
+    return release_unheld_media(store, list(stale.values()), retain_history=False) if stale else 0
 
 
-def collect_unheld_api_images(db):
+def collect_unheld_api_images(db, *, persistence=None):
     """Collect retained API images no admission holds any more: deleting a chat retires its
     admissions and erases their references, so those bytes have no owner left. Only the exact
     name ``commit_api_images`` gives (``api_<sha256[:32]><ext>`` under its own digest) is a
@@ -495,18 +503,26 @@ def collect_unheld_api_images(db):
 
     Candidates are enumerated from the ACTIVE home's media root while ownership is decided by
     ``db``: a sweep whose database belongs to another profile would see every image here as
-    unowned, so it collects nothing."""
+    unowned, so it collects nothing. *db* is a SessionDB or a storage interface handle (*persistence*,
+    when given, is used instead)."""
     from hermes_constants import get_hermes_home
-    if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
+    from persistence.core.errors import STORE_FAILURES
+    store = persistence if persistence is not None else (db if hasattr(db, 'admissions') else None)
+    if store is not None:
+        from persistence_assembly import store_location
+        home, label = store.scope.profile_dir, store_location(store.scope)
+    else:
+        home, label = Path(db.db_path).resolve().parent, db.db_path
+    if home != get_hermes_home().resolve():
         logger.warning(
-            'Skipped retained API image collection: %s is not the active profile store', db.db_path)
+            'Skipped retained API image collection: %s is not the active profile store', label)
         return 0
     root = _media_root()
     try:
-        return release_unheld_media(db, [
+        return release_unheld_media(store if store is not None else db, [
             {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
             if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
-    except sqlite3.DatabaseError:
+    except (sqlite3.DatabaseError, *STORE_FAILURES):
         # Callers run after a committed delete or during startup recovery: neither may fail on it.
         # ``DatabaseError`` also covers a corrupt store, not only ``OperationalError`` (locked, limits).
         logger.exception('API image collection failed; files stay for the next sweep')
@@ -542,17 +558,62 @@ def _collectable(references, root):
             and Path(reference['path']).parent.name == reference['sha256'] and Path(reference['path']).exists()]
 
 
-def release_unheld_media(db, references, *, retain_history=True):
+def _unlink_unheld(references, held, identities, touched=()):
+    """Unlink each reference outside *held* that no capture lease, *touched* path or held file
+    identity keeps; the count."""
+    released = 0
+    for reference in references:
+        path = Path(reference['path'])
+        if reference['path'] in held:
+            continue
+        try:
+            with _lease_lock:
+                if (reference['path'] in _leases or reference['path'] in touched
+                        or path.parent.resolve() != path.parent
+                        or _file_identity(path) in identities):
+                    continue
+                path.unlink()
+            released += 1
+            path.parent.rmdir()
+        except (OSError, ValueError):
+            continue
+    return released
+
+
+def release_unheld_media(db, references, *, retain_history=True, persistence=None):
     """Delete unowned references, preserving accepted admission and retained transcript owners.
 
     The history owner check is one read-snapshot pass over messages, outside the write lock; under
     the lock only rows inserted after that snapshot (an indexed id range) are re-checked. A new
     transcript mention of a retained image comes from an admission holding it (re-checked under the
-    lock) or from a copied row (branch/compress insert, caught by the range)."""
+    lock) or from a copied row (branch/compress insert, caught by the range). *db* is a SessionDB or a
+    storage interface handle (*persistence*, when given, is used instead); through a handle the held set
+    is computed under the writer and the unlinks follow its commit, skipping every path a capture
+    published, reused or ended a lease on since the release began: an admission that committed after
+    the held set was read held such a lease until its commit."""
     root = _media_root()
     references = _collectable(references or (), root)
     if not references:
         return 0
+    store = persistence if persistence is not None else (db if hasattr(db, 'admissions') else None)
+    if store is not None:
+        touched = set()
+        with _lease_lock:
+            _releases[id(touched)] = touched
+        try:
+            last_id = 0
+            if retain_history:
+                last_id, seen = store.admissions.history_mentions(references)
+                references = [reference for reference in references if reference['path'] not in seen]
+                if not references:
+                    return 0
+            found = store.admissions.unheld_media(references, after_id=last_id, retain_history=retain_history,
+                                                  media_root=str(root))
+            identities = _held_file_identities(found.held, root)
+            return 0 if identities is None else _unlink_unheld(found.candidates, found.held, identities, touched)
+        finally:
+            with _lease_lock:
+                del _releases[id(touched)]
     seen, last_id = set(), 0
     if retain_history:
         with db._read_ctx() as conn:
@@ -573,22 +634,7 @@ def release_unheld_media(db, references, *, retain_history=True):
             return 0
         if retain_history:
             held |= _history_mentions(conn, references, after_id=last_id)
-        released = 0
-        for reference in references:
-            path = Path(reference['path'])
-            if reference['path'] in held:
-                continue
-            try:
-                with _lease_lock:
-                    if (reference['path'] in _leases or path.parent.resolve() != path.parent
-                            or _file_identity(path) in identities):
-                        continue
-                    path.unlink()
-                released += 1
-                path.parent.rmdir()
-            except (OSError, ValueError):
-                continue
-        return released
+        return _unlink_unheld(references, held, identities)
     return db._execute_write(collect)
 
 
@@ -612,5 +658,5 @@ def restore_native_media(references):
                     raise ValueError('changed media bytes')
             paths.append(str(path))
     except (OSError, ValueError, TypeError, KeyError) as exc:
-        raise RuntimeStoreError('storage_unavailable') from exc
+        raise AuthorityRefusal('storage_unavailable') from exc
     return paths

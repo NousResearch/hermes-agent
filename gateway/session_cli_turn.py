@@ -10,7 +10,7 @@ admission's execution only, never for a later turn.
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 _SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override', 'clarify_batch')
 _API_TEXT_LIMIT = 1_000_000
@@ -29,12 +29,12 @@ def admit_cli_turn(params):
         from agent.turn_author import parse_turn_author
         author = parse_turn_author(params['turn_author'])
         if author is None:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         committed['turn_author'] = author
     api_text = params.get('api_text')
     if api_text is not None:
         if not isinstance(api_text, str) or len(api_text) > _API_TEXT_LIMIT:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if api_text:
             committed['api_text'] = api_text
     override = params.get('model_override')
@@ -45,7 +45,7 @@ def admit_cli_turn(params):
                 or not isinstance(override.get('provider', ''), str)
                 or ('reasoning' in override and (not isinstance(override['reasoning'], str)
                                                  or parse_reasoning_effort(override['reasoning']) is None))):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         # ``reasoning``: ``/model B --once --reasoning X`` runs X for this admission only; the session's
         # reasoning policy (and its ``session_pins``) is never written.
         committed['model_override'] = {'model': override['model'].strip(),
@@ -53,7 +53,7 @@ def admit_cli_turn(params):
                                        **({'reasoning': override['reasoning']} if 'reasoning' in override else {})}
     batch = params.get('clarify_batch')
     if batch is not None and type(batch) is not bool:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if batch:
         # The submitting viewer answers the clarify tool's whole batch in one ``clarify`` server
         # request (main's batch panel: classic CLI, Ink TUI). Viewers that never set it (an ACP
@@ -152,7 +152,7 @@ def classic_cli_turn(turn):
     from gateway.session_policy import policy_for_source
     try:
         policy = policy_for_source(turn._runner, turn._ctx.source)
-    except RuntimeStoreError:  # a route whose frozen policy is not restored: not a CLI viewer turn
+    except AuthorityRefusal:  # a route whose frozen policy is not restored: not a CLI viewer turn
         return False
     return policy is not None and policy.platform == 'cli'
 
@@ -167,7 +167,7 @@ def clarify_batch_turn(turn):
         cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
 
 
-def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None):
+def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None, persistence=None):
     """The receipt-only fields of a classic CLI turn, taken from the agent's raw result.
 
     ``pending_steer`` is REMOVED from ``result``: main's CLI queues a leftover /steer as its own
@@ -183,7 +183,7 @@ def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_
     if aux_before is not None:
         from hermes_cli.oneshot import _attach_auxiliary_usage
         holder = {'session_id': result.get('session_id') or session_id}
-        _attach_auxiliary_usage(holder, session_db, aux_before, fallback_session_id=session_id)
+        _attach_auxiliary_usage(holder, session_db, aux_before, fallback_session_id=session_id, persistence=persistence)
         fields['auxiliary_usage'] = holder.get('auxiliary_usage') or {}
     return fields
 
@@ -214,14 +214,13 @@ def run_classic_cli_turn(turn, run):
     if not classic_cli_turn(turn):
         return run()
     from gateway.session_finite import finite_turn_required
-    aux_before = cli_db = None
+    aux_before = cli_persistence = None
     if finite_turn_required() is True:
         # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.
         from hermes_cli.oneshot import _auxiliary_usage
-        runner_db = turn._runner._session_db
-        cli_db = getattr(runner_db, "_db", runner_db)
-        aux_before = _auxiliary_usage(cli_db, turn._ctx.session_id)
+        cli_persistence = getattr(turn._runner, "persistence", None)
+        aux_before = _auxiliary_usage(cli_persistence, turn._ctx.session_id, persistence=cli_persistence)
     result = run()
     turn._cli_result_fields = take_cli_result_fields(
-        result, aux_before=aux_before, session_db=cli_db, session_id=turn._ctx.session_id)
+        result, aux_before=aux_before, session_id=turn._ctx.session_id, persistence=cli_persistence)
     return result

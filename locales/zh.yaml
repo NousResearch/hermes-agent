@@ -3981,3 +3981,14 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+
+agent:
+  fallback:
+    notice: "⚠️ 模型降级：{old_model}（{old_provider}）不可用（{reason}）；已切换为 {new_model}（{new_provider}）。"
+    reason:
+      rate_limit: "限流"
+      auth: "认证失败"
+      billing: "额度耗尽"
+      timeout: "超时"
+      provider_failure: "供应商故障"
+    cooldown_suffix: " 主模型预计可在约 {seconds} 秒后重试；不保证恢复。"

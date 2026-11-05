@@ -3981,3 +3981,14 @@ plan_usage:
   large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
+
+agent:
+  fallback:
+    notice: "⚠️ Model fallback: {old_model} via {old_provider} unavailable ({reason}); using {new_model} via {new_provider}."
+    reason:
+      rate_limit: "rate limit"
+      auth: "authentication failed"
+      billing: "billing or quota exhausted"
+      timeout: "request timeout"
+      provider_failure: "provider failure"
+    cooldown_suffix: " Primary retry eligible in ~{seconds} s; recovery is not guaranteed."

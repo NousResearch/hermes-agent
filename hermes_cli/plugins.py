@@ -24,7 +24,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
@@ -54,10 +54,12 @@ from hermes_cli.plugins_dispatch import (
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
-    RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
-    is_valid_system_prompt_section_id, resolve_plugin_command_result,
+    RenderedPluginSystemPromptSection, RenderedReviewDestination, ReviewDestination,
+    _EventSubscription, format_system_prompt_sections, is_valid_system_prompt_section_id,
+    resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_prompt_ctx import PluginPromptCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
@@ -227,7 +229,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginPromptCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -956,33 +958,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
         return handle
 
-    def register_system_prompt_section(
-        self, id: str, content: str | Callable[[Mapping[str, Any]], str], *,
-        position: str = "after_memory", max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
-    ) -> PluginRegistration:
-        """Register bounded context frozen into each new session prompt. Callables receive a
-        read-only session-info mapping; the rendered prompt is persisted by core verbatim."""
-        if not is_valid_system_prompt_section_id(id):
-            raise ValueError("system prompt section id must be 1-128 lowercase characters "
-                             "using letters, numbers, '.', '_', or '-'")
-        if not isinstance(content, str) and not callable(content):
-            raise TypeError("system prompt section content must be a string or callable")
-        if position not in SYSTEM_PROMPT_SECTION_POSITIONS:
-            raise ValueError("system prompt section position must be one of: "
-                             + ", ".join(sorted(SYSTEM_PROMPT_SECTION_POSITIONS)))
-        if (isinstance(max_chars, bool) or not isinstance(max_chars, int)
-                or not 0 < max_chars <= MAX_SYSTEM_PROMPT_SECTION_CHARS):
-            raise ValueError(f"system prompt section max_chars must be between 1 and {MAX_SYSTEM_PROMPT_SECTION_CHARS}")
-        existing = self._manager._system_prompt_sections.get(id)
-        if existing is not None:
-            raise ValueError(f"system prompt section {id!r} is already registered by plugin {existing.plugin!r}")
-        section = PluginSystemPromptSection(
-            id=id, content=content, position=position, max_chars=max_chars, plugin=self.plugin_id,
-        )
-        return self._register_entry("system_prompt_section", id, self._manager._system_prompt_sections,
-                                    section, "Plugin %s registered system prompt section: %s", id,
-                                    previous=existing)
-
     def emit(self, event: str, payload: Optional[dict] = None) -> int:
         """Publish bare *event* as ``<plugin_key>:<event>`` (namespace FORCED to this plugin); return
         the subscriber count scheduled. Any ``':'`` in the name (``hermes:x`` is reserved for core,
@@ -1038,12 +1013,19 @@ def _ignore_after_abandoned_load(method):
     return wrapped
 
 
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+def _ignore_registrars_after_abandoned_load(cls: type) -> None:
+    """Guard every mutating entry point plugins reach through ``ctx`` during register(): each
+    ``register_*``, ``subscribe`` and ``on_unload`` that ``cls`` defines or inherits from a mixin.
+    Applied by name over the MRO, so the guard cannot drift from the surface as registrars or
+    mixins are added."""
+    names = {name for klass in cls.__mro__ for name in vars(klass)
+             if name.startswith("register_") or name in {"subscribe", "on_unload"}}
+    for name in sorted(names):
+        if callable(method := getattr(cls, name)):
+            setattr(cls, name, _ignore_after_abandoned_load(method))
+
+
+_ignore_registrars_after_abandoned_load(PluginContext)
 
 
 def _resolve_hook_callback_timeout() -> float:
@@ -1097,9 +1079,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
-        # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
-        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
-        # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
+        # plugins, hooks, middleware, CLI + slash commands, prompt sections, review destinations,
+        # skills (qualified name -> metadata), portable MCP servers, auxiliary tasks, approval
+        # transports, Slack action handlers (matcher, callback, plugin_name), platform handler
+        # factories (lowercase platform -> list).
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
@@ -1110,6 +1093,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
+        self._review_destinations: dict[str, ReviewDestination] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -1820,6 +1804,13 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> list[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+def render_review_destinations(
+    enabled_ids: Iterable[str], scopes: Iterable[str], session_info: Mapping[str, Any],
+    available_tools: Iterable[str],
+) -> list[RenderedReviewDestination]:
+    """Render the background-review destinations the user enabled, after idempotent discovery."""
+    return _ensure_plugins_discovered().render_review_destinations(
+        enabled_ids, scopes, session_info, available_tools)
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> list[Any]:

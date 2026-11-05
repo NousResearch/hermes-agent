@@ -1,5 +1,8 @@
 """/undo with checkpoints on names the files the undone turns changed and points at /rollback (no command to paste);
-/rollback then lists the checkpoints and restoring the right one works, keeping the turn /undo kept."""
+/rollback then lists the checkpoints and restoring the right one works, keeping the turn /undo kept.
+
+The CLI's store is its ``GatewaySessionStore`` on a connection to a real session authority in this process; the
+owner's storage interface handle seeds and reads the rows."""
 
 import time
 from types import SimpleNamespace
@@ -7,7 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.gateway_owner import GatewayOwner
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages
 from tests.hermes_cli.test_cli_init import _make_cli
 from tools.checkpoint_manager import CheckpointManager
 
@@ -21,13 +26,14 @@ def setup(tmp_path, monkeypatch):
     cli = _make_cli()
     monkeypatch.setenv("TERMINAL_CWD", str(project))  # after _make_cli: loading the CLI config sets it
     cli._session_db.close()
-    db = SessionDB(db_path=tmp_path / "state.db")
-    cli._session_db, cli.session_id = db, "20261105_010000_bbbbbb"
-    db.create_session(cli.session_id, source="cli")
+    owner = GatewayOwner(tmp_path, monkeypatch)
+    cli._session_db = owner.client()
+    # The in-process checkpoint manager answers /undo's hint and /rollback: the session is not rewired.
+    cli.session_id = cli._session_db.open_session(cli)
     cli._prefill_input_buffer = MagicMock()
     cli._confirm_destructive_slash = MagicMock(return_value=True)
-    yield cli, db, project
-    db.close()
+    yield cli, owner, project
+    owner.close()
 
 
 def _next_second():
@@ -37,7 +43,7 @@ def _next_second():
         time.sleep(0.02)  # health: allow HX013 -- whole-second git stamps: the next second IS the case
 
 
-def _session(cli, db, project, *, enabled):
+def _session(cli, owner, project, *, enabled):
     """A kept turn that wrote nothing (so took no checkpoint, which is taken only before a write), then two undone
     turns that each take one and write."""
     mgr = CheckpointManager(enabled=enabled)
@@ -45,19 +51,20 @@ def _session(cli, db, project, *, enabled):
     for text, write in (("kept: run the tests", None), ("edit 1", ("app.js", "turn 1\n")),
                         ("edit 2", ("notes.md", "turn 2\n"))):
         _next_second()
-        db.append_message(cli.session_id, "user", text, timestamp=time.time())
+        seed_messages(owner.persistence, cli.session_id, {"role": "user", "content": text, "timestamp": time.time()})
         mgr.new_turn()
         if write:
             mgr.ensure_checkpoint(str(project), f"before {text}")
             (project / write[0]).write_text(write[1])
-        db.append_message(cli.session_id, "assistant", f"did {text}", timestamp=time.time())
-    cli.conversation_history = db.get_messages_as_conversation(cli.session_id)
+        seed_messages(owner.persistence, cli.session_id,
+                      {"role": "assistant", "content": f"did {text}", "timestamp": time.time()})
+    cli.conversation_history = cli._session_db.get_messages_as_conversation(cli.session_id)
     return mgr
 
 
 def test_undo_lists_the_changed_files_then_rollback_restores_and_keeps_the_kept_turn(setup, capsys):
-    cli, db, project = setup
-    mgr = _session(cli, db, project, enabled=True)
+    cli, owner, project = setup
+    mgr = _session(cli, owner, project, enabled=True)
 
     cli._cmd_undo("/undo 2")
     out = capsys.readouterr().out
@@ -75,5 +82,4 @@ def test_undo_lists_the_changed_files_then_rollback_restores_and_keeps_the_kept_
     assert (project / "app.js").read_text() == "hello\n"
     kept = ["kept: run the tests", "did kept: run the tests"]
     assert [m["content"] for m in cli.conversation_history] == kept
-    assert [m["content"] for m in db.get_messages_as_conversation(cli.session_id)] == kept
-
+    assert [m["content"] for m in conversation(owner.persistence, cli.session_id)] == kept

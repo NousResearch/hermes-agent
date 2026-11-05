@@ -13,6 +13,18 @@ import hermes_cli.web_routers.cron as _rt_cron
 import hermes_cli.web_server_cron as _web_server_cron
 
 
+def _as_store(fake):
+    """``fake``'s job-runs listing as a storage handle's ``sessions.list_cron_job_runs`` (rows as the backend's
+    ``CronRunEntry.as_cron_row()`` projects them)."""
+    from types import SimpleNamespace
+
+    def runs(job_id, window):
+        return [SimpleNamespace(as_cron_row=lambda row=row: dict(row))
+                for row in fake.list_cron_job_runs(job_id, limit=window.limit, offset=window.offset)]
+
+    return SimpleNamespace(sessions=SimpleNamespace(list_cron_job_runs=runs), close=fake.close)
+
+
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch):
     """Give profile discovery an isolated default home with one named profile."""
@@ -1089,7 +1101,7 @@ async def test_cron_run_history_resolves_the_jobs_owner_profile(isolated_profile
     monkeypatch.setattr(
         _rt_cron,
         "_open_session_db_for_profile",
-        lambda profile, *, read_only: _FakeRunsDB(profile),
+        lambda profile, *, read_only: _as_store(_FakeRunsDB(profile)),
     )
 
     # Active profile is `default`; the listed job belongs to worker_alpha.
@@ -1252,7 +1264,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _EmptyDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_EmptyDB())
         )
 
     def _write_output_doc(self, monkeypatch, home, job_id, filename, text):
@@ -1359,7 +1371,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_FakeDB())
         )
         monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
         monkeypatch.setattr(
@@ -1443,7 +1455,7 @@ class TestCronRunHistoryFallback:
                 pass
 
         monkeypatch.setattr(
-            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _FakeDB()
+            _rt_cron, "_open_session_db_for_profile", lambda profile, *, read_only: _as_store(_FakeDB())
         )
         monkeypatch.setattr(_rt_cron, "_job_owner_profile", lambda _job_id, _profile: "default")
         monkeypatch.setattr(

@@ -2,22 +2,19 @@
 path differently (Windows: case-insensitive, either separator)."""
 import ntpath
 import os
-import sqlite3
 
 import pytest
 
 from hermes_cli.worktree_ops import _retained_tree_is_live
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _store(tmp_path, cwd):
-    db = tmp_path / 'state.db'
-    conn = sqlite3.connect(db)
-    conn.executescript('CREATE TABLE sessions (id TEXT, cwd TEXT, message_count INTEGER);'
-                       'CREATE TABLE session_admissions (target_session_id TEXT, status TEXT);')
-    conn.execute('INSERT INTO sessions VALUES (?, ?, 3)', ('s1', cwd))
-    conn.commit()
-    conn.close()
-    return str(db)
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
+        seed_session(store, 's1', 'cli', cwd=cwd)
+        seed_messages(store, 's1', *({'role': 'user', 'content': f'turn {n}'} for n in range(3)))
+    return str(tmp_path / 'state.db')
 
 
 @pytest.mark.parametrize('spell, live', [

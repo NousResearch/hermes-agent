@@ -9,10 +9,13 @@ same before-end_session ordering as the title write (#50536).
 
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 from unittest.mock import patch
 
 from cron.scheduler import run_job
-from hermes_state import SessionDB
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 
 _RUNTIME = {
     "api_key": "test-key",
@@ -33,17 +36,17 @@ class _FakeCronAgent:
 
     def run_conversation(self, user_message, conversation_history=None, task_id=None):
         if self.session_db is not None:
-            self.session_db.create_session(self.session_id, source="cron")
+            self.session_db.sessions.create(NewSession(session_id=self.session_id, source="cron"))
         return {"final_response": "ok"}
 
 
 def _run_job_with_real_db(job, db, tmp_path):
     # Agent jobs run in-process only inside the owner's cron execution (gateway/session_cron);
     # outside it run_job admits them to the running gateway. Bind that execution so the scheduler
-    # body that finalizes the cron session row runs here against ``db``.
+    # body that finalizes the cron session row runs here against ``db``, the owner's handle.
     from types import SimpleNamespace
     from gateway import session_cron
-    token = session_cron._execution.set((SimpleNamespace(db=db), f"cron_{job['id']}_owned", job["id"], None))
+    token = session_cron._execution.set((SimpleNamespace(persistence=db), f"cron_{job['id']}_owned", job["id"], None))
     try:
         return _run_job_in_owner(job, db, tmp_path)
     finally:
@@ -55,18 +58,19 @@ def _run_job_in_owner(job, db, tmp_path):
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=db), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
          patch("run_agent.AIAgent", _FakeCronAgent):
         return run_job(job)
 
 
-def _cron_rows(db):
-    return [dict(r) for r in db._read_all("SELECT * FROM sessions WHERE id LIKE 'cron_%'")]
+def _cron_rows(tmp_path):
+    with contextlib.closing(sqlite3.connect(tmp_path / "state.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute("SELECT * FROM sessions WHERE id LIKE 'cron_%'")]
 
 
 def test_run_job_stamps_workdir_on_cron_session_row(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     repo = tmp_path / "repo"
     repo.mkdir()
     job = {"id": "workdir-job", "name": "workdir job", "prompt": "hello", "workdir": str(repo)}
@@ -75,7 +79,7 @@ def test_run_job_stamps_workdir_on_cron_session_row(tmp_path):
         success, _output, _final, error = _run_job_with_real_db(job, db, tmp_path)
 
         assert success is True, error
-        rows = _cron_rows(db)
+        rows = _cron_rows(tmp_path)
         assert len(rows) == 1
         assert rows[0]["cwd"] == str(repo)
     finally:
@@ -83,14 +87,14 @@ def test_run_job_stamps_workdir_on_cron_session_row(tmp_path):
 
 
 def test_run_job_without_workdir_leaves_cron_session_cwd_null(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     job = {"id": "no-workdir-job", "name": "no workdir", "prompt": "hello"}
 
     try:
         success, _output, _final, error = _run_job_with_real_db(job, db, tmp_path)
 
         assert success is True, error
-        rows = _cron_rows(db)
+        rows = _cron_rows(tmp_path)
         assert len(rows) == 1
         assert rows[0]["cwd"] is None
     finally:

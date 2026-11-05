@@ -217,11 +217,15 @@ class HostedRoomRuntime:
                 "last_error": self._last_error, "cycles": self._cycles}
 
     # ------------------------------------------------------------------ public ops
-    def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
+    def cancel(
+        self, identity: state.TaskIdentity, *, cancel_id: str, acknowledge: bool = True
+    ) -> dict[str, Any]:
         """Persist a stop intent, then commit cancellation after acknowledgement.
 
         The worker transitions tasks concurrently, so the status read is only a routing
         hint: a fast-path fence failure re-reads and re-routes instead of surfacing it.
+        Preparation defers acknowledgement to the worker: only durable state and wakeup
+        are safe under its policy lock, which Discard may also hold recursively.
         """
         for _ in range(_CANCEL_ROUTE_RETRIES):
             before = state.get_task(self.db_path, identity)
@@ -230,6 +234,8 @@ class HostedRoomRuntime:
             if before["status"] in state.TERMINAL_STATUSES:
                 raise state.InvalidTaskTransitionError(
                     f"cannot cancel task in state '{before['status']}'")
+            if before["status"] == "stopping":
+                cancel_id = before["cancel_id"]  # join the already persisted stop generation
             direct = before["status"] in {"queued", "deferred"}
             try:
                 result = (state.cancel_task if direct else state.begin_task_cancel)(
@@ -237,7 +243,7 @@ class HostedRoomRuntime:
                     expected_cancel_generation=before["cancel_generation"], clock=self.clock)
             except (state.InvalidTaskTransitionError, state.StaleTaskError):
                 continue  # lost the race with the worker (settled or re-queued); re-route
-            if not direct:
+            if not direct and acknowledge:
                 binding = self._binding_for_room(identity.room_id)
                 try:
                     if binding is not None:

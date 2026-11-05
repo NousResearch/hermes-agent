@@ -730,7 +730,8 @@ class HostedRoomService:
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(
+                        admitted["identity"], cancel_id=f"stop-fence:{fence}", acknowledge=False)
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
             elif decision.status == "route":

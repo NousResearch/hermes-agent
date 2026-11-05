@@ -17,13 +17,14 @@ from tools.computer_use.cua_backend_capture import _CaptureMixin
 
 
 class _StubCapture(_CaptureMixin):
-    """Capture-lane shell: enough state for ``_gws_args``, no driver, no session."""
+    """Capture-lane shell: enough state for ``_gws_args``, with an unstarted session."""
 
     def __init__(self) -> None:
         self._active_pid: Optional[int] = 607
         self._active_window_id: Optional[int] = 382
         self._session_id: Optional[str] = None
         self._last_app = ""
+        self._session = cua_backend._CuaDriverSession(cua_backend._AsyncBridge())
 
     def _resolve_capture_windows(self, mode: str, app: Optional[str], pid: Optional[int],
                                  window_id: Optional[int]) -> list[dict[str, Any]]:

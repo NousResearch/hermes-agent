@@ -183,6 +183,8 @@ describe('the MCP setup card', () => {
     // Bounded, but scrollable: the box may scroll, it never clips.
     expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden|text-ellipsis/)
     expect(line?.className).toMatch(/overflow-y-auto/)
+    // Two spaces inside a quoted arg are two arguments' difference: the box keeps them.
+    expect(line?.className).toMatch(/whitespace-pre-wrap/)
     expect(line?.hasAttribute('title')).toBe(false)
   })
 

@@ -414,7 +414,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       />
       {launch ? (
         <p
-          className="-mt-1 max-h-40 overflow-y-auto break-all pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
+          className="-mt-1 max-h-40 overflow-y-auto break-all whitespace-pre-wrap pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
           data-slot="mcp-launch-target"
         >
           {LAUNCH_LINE[launch.kind](copy, launch.target)}

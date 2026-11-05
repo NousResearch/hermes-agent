@@ -12,7 +12,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-# Kept importable from this module: external callers patch ``hermes_cli.oneshot.get_fallback_chain``.
+# Not used here: re-exported only so ``hermes_cli.oneshot.get_fallback_chain`` stays importable and
+# patchable as on main (external operator scripts set it). The ``-z`` run reads the fallback chain
+# through the gateway from ``hermes_cli.fallback_config``, so patching this name does not change it.
 from hermes_cli.fallback_config import get_fallback_chain
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a

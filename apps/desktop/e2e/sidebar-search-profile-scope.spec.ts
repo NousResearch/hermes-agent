@@ -26,18 +26,19 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..')
 const PROFILE_B = 'ssprobe-b'
 const MARKER = { default: 'alphaonlymarker', [PROFILE_B]: 'bravoonlymarker' } as const
 
-/** Write one session into ``home``'s state.db through the real SessionDB. */
+/** Write one session into ``home``'s state.db through the storage interface. */
 function seedSession(sandbox: Sandbox, home: string, sessionId: string, marker: string): void {
   const script = [
     'import sys',
     'from pathlib import Path',
-    'from hermes_state import SessionDB',
+    'from persistence.conversation.messages import NewMessage',
+    'from persistence.conversation.sessions import NewSession',
+    'from persistence_assembly import open_persistence, profile_scope',
     'home, sid, marker = sys.argv[1:4]',
-    "db = SessionDB(db_path=Path(home) / 'state.db')",
-    "db.create_session(sid, source='cli')",
-    "db.append_message(sid, role='user', content=f'hello {marker}')",
-    "db.append_message(sid, role='assistant', content=f'zebra {marker}')",
-    'db.close()'
+    'with open_persistence(profile_scope(home=Path(home))) as store:',
+    "    store.sessions.create(NewSession(sid, source='cli'))",
+    "    store.messages.append(sid, NewMessage(role='user', content=f'hello {marker}'))",
+    "    store.messages.append(sid, NewMessage(role='assistant', content=f'zebra {marker}'))"
   ].join('\n')
 
   const python = path.join(REPO_ROOT, '.venv', 'bin', 'python')

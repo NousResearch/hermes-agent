@@ -258,8 +258,8 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path,
     )
 
 
-def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(pending_approval, monkeypatch):
-    """An Allow whose live-attempt read raced another window's Stop is ordered with that Stop."""
+def test_allow_paused_before_dispatch_cannot_answer_after_a_concurrent_stop(pending_approval, monkeypatch):
+    """An Allow already validated for dispatch is ordered with another window's Stop."""
     import threading
 
     service, task, _lease = pending_approval
@@ -275,14 +275,12 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
         monkeypatch.setattr(service.runtime, hook, lambda *_args: False)
     read, stop_progress = threading.Event(), threading.Event()
     approver = threading.current_thread()
-    real_list_tasks = driver.list_tasks
+    dispatch = service._dispatch_approval
 
-    def list_tasks(*args, **kwargs):
-        rows = real_list_tasks(*args, **kwargs)
-        if threading.current_thread() is approver and not read.is_set():
-            read.set()
-            assert stop_progress.wait(10), "Stop neither finished nor waited for this Allow"
-        return rows
+    def paused_dispatch(*args, **kwargs):
+        read.set()
+        assert stop_progress.wait(10), "Stop neither finished nor waited for this Allow"
+        return dispatch(*args, **kwargs)
 
     class _SignallingLock:
         """Stop waiting on this lock is as far as it can get while the Allow holds it."""
@@ -299,8 +297,8 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
         def __exit__(self, *exc):
             self._lock.release()
 
-    monkeypatch.setattr(driver, "list_tasks", list_tasks)
-    service._approval_stop_lock = _SignallingLock(threading.RLock())
+    monkeypatch.setattr(service, "_dispatch_approval", paused_dispatch)
+    signalling = service._approval_stop_locks["room"] = _SignallingLock(threading.RLock())
     stopper = threading.Thread(target=lambda: (read.wait(10), service.stop_room("room", cancel_id="stop"),
                                                stop_progress.set()))
     stopper.start()
@@ -316,3 +314,22 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
     assert statuses_at_dispatch in ([], ["running"]), (statuses_at_dispatch, result)
     assert driver.get_task(service.db_path, task["identity"])["status"] == "stopping"
     assert ("room", "ops") not in service._pending_actions
+    # Both sides took the planted room lock (the registry holds it only while referenced).
+    assert service._approval_stop_locks.get("room") is signalling
+
+
+def test_every_spelling_of_a_room_shares_its_stop_lock_and_cached_approvals(pending_approval):
+    """Storage strips room ids, so a padded id names the same room: same lock, same approvals."""
+    import threading
+
+    service, _task, _lease = pending_approval
+    held, done = service._approval_stop_lock("room"), threading.Event()
+    with held:
+        stopper = threading.Thread(target=lambda: (service.stop_room("  room ", cancel_id="stop"), done.set()))
+        stopper.start()
+        assert not done.wait(0.5), "a padded room id took another lock"
+    stopper.join(10)
+    assert done.is_set()
+    assert ("room", "ops") not in service._pending_actions
+    del held
+    assert "room" not in service._approval_stop_locks, "an idle room keeps no lock"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useMemo } from 'react'
 
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
@@ -18,30 +18,12 @@ export interface CanonicalActivityLabels extends RoomStatusLabels {
   memberWorking: string
 }
 
-type BusyStatus = Extract<MemberStatus, { kind: 'stalled' | 'working' }>
-
 export const canonicalMemberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
 const avatarName = (member: CanonicalRoomMember) => member.profile || member.handle || member.member_id
 
-/** Seconds since the epoch, ticking once a second while `live` (elapsed times in the chips). */
-export function useNowSeconds(live: boolean): number {
-  const [now, setNow] = useState(() => Date.now() / 1000)
-
-   
-  useEffect(() => {
-    setNow(Date.now() / 1000)
-
-    if (!live) {return}
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000)
-
-    return () => clearInterval(timer)
-  }, [live])
-
-  return now
-}
-
-/** The coarse phase the roster has always exposed (`data-phase`); outcomes read as idle. */
-const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working', stalled: 'working', queued: 'queued' }
+/** The coarse phase the roster has always exposed (`data-phase`); a stalled member is still working; outcomes
+ *  read as idle. */
+const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working', queued: 'queued' }
 
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
   statuses.get(member.member_id) ?? { kind: 'idle' }
@@ -71,7 +53,7 @@ export function CanonicalGroupTyping({ members = [], labels, statuses }: {
 
     return isBusyStatus(status)
       ? <RoomTypingRow avatar={<RoomBotAvatar name={avatarName(member)} size={ROOM_AVATAR_SIZE} />} key={member.member_id} labels={labels}
-        name={canonicalMemberName(member)} status={status as BusyStatus} />
+        name={canonicalMemberName(member)} status={status} />
       : null
   })}</>
 }
@@ -98,19 +80,20 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
     text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking} working={[]} />
 }
 
-/** Every member's status, the room's cycle and whether it works, from one poll's state + log. Outcomes are
- *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work). */
+/** Every member's status, the room's cycle and whether it works, from one read's state + log. Outcomes are
+ *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work).
+ *  Clock-free and memoised: the room re-derives when its log or state changes, never as time passes (each
+ *  busy chip reads the clock itself). */
 export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverActivity | undefined, members: CanonicalRoomMember[], replyThread?: string) {
   const activity = driver?.member_activity
-  const anyLive = !!activity?.some(row => row.status !== 'queued')
-  const now = useNowSeconds(anyLive)
   const log = events as RoomLogEvent[]
-  const focus = focusThread(log, replyThread)
-  const outcomes = memberOutcomes(log)
+  const focus = useMemo(() => focusThread(log, replyThread), [log, replyThread])
+  const outcomes = useMemo(() => memberOutcomes(log), [log])
+  const cycle = useMemo(() => roomCycle(log, activity, driver?.max_rounds, focus), [log, activity, driver?.max_rounds, focus])
 
-  return {
-    cycle: roomCycle(log, activity, driver?.max_rounds, focus),
-    statuses: new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes, now)])),
-    working: !!driver?.working || !!activity?.length
-  }
+  const statuses = useMemo(
+    () => new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes)])),
+    [members, activity, outcomes])
+
+  return { cycle, statuses, working: !!driver?.working || !!activity?.length }
 }

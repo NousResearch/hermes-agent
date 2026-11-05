@@ -36,7 +36,7 @@ it('names only the running members of the thread whose round the strip shows', (
 
 function strip(events: RoomLogEvent[], activity: { member_id: string; status: string; thread_id: string; round_index: number }[]) {
   const outcomes = memberOutcomes(events)
-  const statuses = new Map(members.map(m => [m.member_id, memberStatus(m.member_id, activity, outcomes, 2)]))
+  const statuses = new Map(members.map(m => [m.member_id, memberStatus(m.member_id, activity, outcomes)]))
 
   const view = render(<CanonicalGroupCycle cycle={roomCycle(events, activity, 3, 'B')} labels={{ ...CANONICAL_GROUP_LOCALES.en } as never}
     members={members} statuses={statuses} />)

@@ -35,6 +35,8 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   let lastSent: DeliveredText | null = null;
   // Plain text recently delivered to the PTY through xterm's onData.
   let lastTerminalData: DeliveredText | null = null;
+  // The previous single onData chunk, for xterm's own double finalize.
+  let lastTerminalChunk: DeliveredText | null = null;
 
   const clearPending = () => {
     pending = null;
@@ -59,8 +61,13 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       if (!data) return;
       // A compositionend trailing terminal data that already carried the
       // commit is a late duplicate, not a new commit — re-sending it
-      // through the fallback duplicates the word in the PTY.
-      if (withinEchoWindow(lastTerminalData) && lastTerminalData.text.endsWith(data)) {
+      // through the fallback duplicates the word in the PTY. When a real
+      // key (SwiftKey's Enter) ends the composition, xterm finalizes it
+      // from the keydown and the key's own bytes ("\r") trail the commit.
+      if (
+        withinEchoWindow(lastTerminalData) &&
+        lastTerminalData.text.replace(/[\r\n]+$/u, "").endsWith(data)
+      ) {
         return;
       }
       // The same IME can fire compositionend twice with identical data;
@@ -108,6 +115,21 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     // Returns the portion still worth forwarding: "" for a full duplicate,
     // the new suffix for a strict extension, the input unchanged otherwise.
     filterTerminalData(data: string): string {
+      // xterm finalizes a composition twice when a real key ends it
+      // (SwiftKey's space): once from the keydown with the composed text,
+      // again from compositionend with the textarea tail, which repeats
+      // that text plus the key's character. Only the tail is new.
+      const previousChunk = lastTerminalChunk;
+      lastTerminalChunk = data.startsWith("\x1b")
+        ? null
+        : { text: data, at: Date.now() };
+      if (
+        withinEchoWindow(previousChunk) &&
+        data.length > previousChunk.text.length &&
+        data.startsWith(previousChunk.text)
+      ) {
+        data = data.slice(previousChunk.text.length);
+      }
       if (!withinEchoWindow(lastSent)) return data;
       if (data === lastSent.text) return "";
       if (data.length > lastSent.text.length && data.startsWith(lastSent.text)) {
@@ -119,6 +141,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       clearPending();
       lastSent = null;
       lastTerminalData = null;
+      lastTerminalChunk = null;
     },
   };
 }

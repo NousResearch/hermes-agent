@@ -638,7 +638,11 @@ _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNO
 # with no ":<token>" after it (a Unity/YAML ``_typelessdata`` blob in a 2 MB PR
 # diff, hex/decimal dumps) retried the greedy ``\d{8,}`` from every digit —
 # quadratic, one core at 100% for hours while holding the GIL.
-_TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
+# The first branch skips AWS ARN account prefixes, which look like bot tokens.
+_TELEGRAM_RE = re.compile(
+    r"(\barn:[\w.-]+:[\w.-]+:[\w.-]*:\d{12}:)"
+    r"|(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})"
+)
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 # A base64-encoded PEM private key: kubeconfig's ``client-key-data`` and the ``*_b64``
@@ -1538,7 +1542,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
-        text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
+        text = _TELEGRAM_RE.sub(lambda m: m.group(1) or f"{m.group(2) or ''}{m.group(3)}:***", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

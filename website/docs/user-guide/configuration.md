@@ -2586,7 +2586,7 @@ stt:
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-The shared language resolver uses the **first nonempty string** in this order:
+The shared language resolver checks `stt.<provider>.language`, then `stt.language`, then `HERMES_LOCAL_STT_LANGUAGE`, and uses the **first nonempty string**:
 
 ```text
 stt.<provider>.language -> stt.language -> HERMES_LOCAL_STT_LANGUAGE -> no language hint

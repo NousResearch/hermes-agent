@@ -7,7 +7,6 @@ import { type Translations, useI18n } from '@/i18n'
 import { cloudOwnsUpdates } from '@/store/cloud-updates'
 import { openCommandPalette } from '@/store/command-palette'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
-import { $connection } from '@/store/session'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -35,8 +34,9 @@ function shellSections(
     onSelect: () => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
   })
 
-  // Hermes Cloud updates its agents itself: no Update row for the target it owns.
-  const updateHidden = cloudOwnsUpdates($connection.get()?.mode === 'remote' ? 'backend' : 'client')
+  // A Webapp served by Hermes Cloud has nothing to update. Desktop connected to Cloud keeps
+  // the row: it updates this machine's app and skips the agent.
+  const updateHidden = cloudOwnsUpdates('client')
 
   const update = updateHidden
     ? null

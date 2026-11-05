@@ -6,37 +6,15 @@
  *   every update target is Cloud's, because the app itself comes from it;
  * - native Desktop CONNECTED to a Cloud agent: only the backend target is;
  *   the Desktop app on this machine still updates itself.
- *
- * A Cloud agent is a `*.agents.nousresearch.com` host (staging:
- * `*.agents.staging-nousresearch.com`), the public URL the portal gives it.
  */
 
+import { isHermesCloudUrl } from '@hermes/shared'
 import { computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import type { UpdateTarget } from '@/lib/update-copy'
 import { $connection } from '@/store/session'
-
-const CLOUD_HOST_SUFFIXES = ['.agents.nousresearch.com', '.agents.staging-nousresearch.com']
-
-export function isHermesCloudUrl(url: null | string | undefined): boolean {
-  if (!url) {
-    return false
-  }
-
-  try {
-    const host = new URL(url).hostname.toLowerCase()
-
-    return CLOUD_HOST_SUFFIXES.some(suffix => host.endsWith(suffix))
-  } catch {
-    return false
-  }
-}
-
-function servedByHermesCloud(): boolean {
-  return typeof window !== 'undefined' && isBrowserHostedDesktop() && isHermesCloudUrl(window.location.origin)
-}
 
 function connectedToHermesCloud(connection: HermesConnection | null): boolean {
   return connection?.mode === 'remote' && (connection.remoteKind === 'cloud' || isHermesCloudUrl(connection.baseUrl))
@@ -45,6 +23,14 @@ function connectedToHermesCloud(connection: HermesConnection | null): boolean {
 /** Whether Hermes Cloud owns updates for `target` under `connection`. */
 export function cloudOwnsUpdates(target: UpdateTarget, connection: HermesConnection | null = $connection.get()): boolean {
   return servedByHermesCloud() || (target === 'backend' && connectedToHermesCloud(connection))
+}
+
+/**
+ * The target a generic "Update Hermes" command acts on: the connected backend
+ * in remote mode, unless Hermes Cloud owns it — then this machine's own app.
+ */
+export function updateTargetFor(connection: HermesConnection | null): UpdateTarget {
+  return connection?.mode === 'remote' && !cloudOwnsUpdates('backend', connection) ? 'backend' : 'client'
 }
 
 /** Per target: true while every update control for it must stay hidden. */

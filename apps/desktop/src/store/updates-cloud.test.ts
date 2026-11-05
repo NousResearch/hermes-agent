@@ -14,7 +14,9 @@ vi.mock('@/hermes', async importOriginal => ({
   getActionStatus: vi.fn(),
   updateHermes: (...args: unknown[]) => updateHermesSpy(...args)
 }))
-vi.mock('@/store/notifications', () => ({ dismissNotification: vi.fn(), notify: vi.fn() }))
+const notifySpy = vi.fn()
+
+vi.mock('@/store/notifications', () => ({ dismissNotification: vi.fn(), notify: (...a: unknown[]) => notifySpy(...a) }))
 
 const updates = await import('./updates')
 const { setConnection } = await import('./session')
@@ -80,5 +82,29 @@ describe('update entry points under Hermes Cloud', () => {
     expect(clientCheck).toHaveBeenCalled()
     updates.openUpdateOverlayFor('client')
     expect(updates.$updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('the generic Update command on Desktop connected to Cloud updates this app and skips the agent', async () => {
+    setConnection(remote('https://lab.agents.nousresearch.com'))
+    updates.$updateStatus.set({ supported: true, behind: 2, targetSha: 'a' })
+
+    updates.startActiveUpdate()
+
+    await vi.waitFor(() => expect(clientApply).toHaveBeenCalled())
+    expect(updates.$updateOverlayTarget.get()).toBe('client')
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+  })
+
+  it('a Cloud-served tab running older code than its agent offers Reload, not an updater', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    const reload = vi.fn()
+    vi.stubGlobal('location', Object.assign(new URL('https://lab--app.agents.nousresearch.com/'), { reload }))
+
+    updates.reportBackendContract(updates.REQUIRED_BACKEND_CONTRACT + 1)
+    const toast = notifySpy.mock.calls.at(-1)?.[0] as { action: { onClick: () => void } }
+    toast.action.onClick()
+
+    expect(reload).toHaveBeenCalled()
+    expect(updates.$updateOverlayOpen.get()).toBe(false)
   })
 })

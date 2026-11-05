@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HermesConnection } from '@/global'
 import { $connection } from '@/store/session'
 
-import { $cloudOwnsUpdates, cloudOwnsUpdates, isHermesCloudUrl } from './cloud-updates'
+import { $cloudOwnsUpdates, cloudOwnsUpdates, updateTargetFor } from './cloud-updates'
 
 const remote = (baseUrl: string, remoteKind?: HermesConnection['remoteKind']): HermesConnection =>
   ({ baseUrl, mode: 'remote', remoteKind }) as HermesConnection
@@ -16,20 +16,19 @@ afterEach(() => {
 })
 
 describe('Hermes Cloud owns updates', () => {
-  it('recognises production and staging agent hosts, nothing else', () => {
-    expect(isHermesCloudUrl('https://ares-3009.agents.nousresearch.com')).toBe(true)
-    expect(isHermesCloudUrl('https://ares--app.agents.staging-nousresearch.com/')).toBe(true)
-    expect(isHermesCloudUrl('https://agents.nousresearch.com.evil.example')).toBe(false)
-    expect(isHermesCloudUrl('https://my-box.tailnet.ts.net')).toBe(false)
-    expect(isHermesCloudUrl('not a url')).toBe(false)
-  })
-
   it('native Desktop connected to a Cloud agent: only the backend is Cloud-owned', () => {
     $connection.set(remote('https://lab.agents.nousresearch.com', 'cloud'))
+    expect($cloudOwnsUpdates.get()).toEqual({ backend: true, client: false })
+    // The generic "Update Hermes" command then updates this machine's app.
+    expect(updateTargetFor($connection.get())).toBe('client')
+
+    // A Cloud agent saved as a plain URL remote is still Cloud's.
+    $connection.set(remote('https://lab.agents.staging-nousresearch.com', 'url'))
     expect($cloudOwnsUpdates.get()).toEqual({ backend: true, client: false })
 
     $connection.set(remote('https://my-box.example.com', 'url'))
     expect($cloudOwnsUpdates.get()).toEqual({ backend: false, client: false })
+    expect(updateTargetFor($connection.get())).toBe('backend')
   })
 
   it('a Webapp tab served by a Cloud agent hides every update target', () => {

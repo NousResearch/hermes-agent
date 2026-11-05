@@ -39,6 +39,19 @@ const GL_README = `https://gitlab.com/grp/proj/-/raw/${SHA}/dir/README.md`;
 
 // ── safeUrl: only http(s), mailto and fragments survive ──────────────────────
 
+test("README links to the retired docs hubs go to the marketplace", async () => {
+  const html = await renderReadme(
+    "[catalog](https://hermes-agent.nousresearch.com/docs/plugins) [zh](https://hermes-agent.nousresearch.com/docs/zh-Hans/plugins/) " +
+      "[skills](https://hermes-agent.nousresearch.com/docs/skills) [page](https://hermes-agent.nousresearch.com/docs/plugins/mem0)",
+    "https://raw.githubusercontent.com/acme/plugin/" + "a".repeat(40) + "/README.md",
+  );
+  assert.ok(html.includes('href="https://hermes-agent.nousresearch.com/marketplace?kind=plugins">catalog'), html);
+  assert.ok(html.includes('href="https://hermes-agent.nousresearch.com/marketplace?kind=plugins">zh'), html);
+  assert.ok(html.includes('href="https://hermes-agent.nousresearch.com/marketplace?kind=skills">skills'), html);
+  // Per-plugin pages still exist under /docs.
+  assert.ok(html.includes('href="https://hermes-agent.nousresearch.com/docs/plugins/mem0">page'), html);
+});
+
 test("safeUrl passes https, http, mailto and bare fragments", () => {
   assert.equal(safeUrl("https://example.com/x"), "https://example.com/x");
   assert.equal(safeUrl("http://example.com/x"), "http://example.com/x");

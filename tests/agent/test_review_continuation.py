@@ -1,7 +1,8 @@
-"""Post-review continuation through run_conversation, with only provider/tool I/O scripted.
+"""Scripted stop-shape and budget regressions through run_conversation.
 
-The reviewer result is fixture data, not a live independent review. The production
-loop must dispatch the next read-only diagnostic before publishing a final answer.
+Phase labels below describe the script, NOT observed action identity or evidence
+consumption. The argument-validated, evidence-driven acceptance case lives in
+``test_review_evidence_chain.py``. These scripts only isolate runtime transitions.
 """
 from copy import deepcopy
 from unittest.mock import patch
@@ -83,7 +84,7 @@ def replay(agent, *, steer: str | None = "carry on with the investigation", fina
     return result, executed, requests
 
 
-def test_review_request_changes_reaches_diagnostic_and_second_review(loop_agent):
+def test_scripted_rounds_preserve_nudge_and_gateway_envelope(loop_agent):
     result, executed, sent = replay(loop_agent)
     assert result["final_response"] == DONE
     assert executed == ["inspect", "tests", "independent_review", "trace_diagnostic", "verification", "second_review"]

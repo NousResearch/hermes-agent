@@ -63,9 +63,13 @@ def _human_text_from_gateway_steer(text: str) -> str:
     return human
 
 
-def states_continuation_blocker(text: str) -> bool:
-    """A stated wait is not an announced action, even with 'Next, I'."""
-    return bool(_BLOCKER.search(text or ""))
+def announces_permission_wait(text: str) -> bool:
+    """Exclude a permission-wait tail, not blockers elsewhere in an action reply."""
+    return bool(re.search(
+        r"(?:^|[.!?\n])\s*(?:Next,?\s+)?I\s+(?:will|need to|am going to)\s+"
+        r"(?:wait for|await)\s+(?:your|user)\s+(?:decision|approval|permission)[.!]?\s*$",
+        text or "", re.IGNORECASE,
+    ))
 
 
 def continuation_request_left_as_suggestion(text: str, messages: list, user_message: Any) -> bool:
@@ -86,7 +90,7 @@ def continuation_request_left_as_suggestion(text: str, messages: list, user_mess
         return False
     if not isinstance(request, str) or not _CONTINUE_REQUEST.fullmatch(request.strip()):
         return False
-    if _STOP_REQUEST.search(request) or states_continuation_blocker(text):
+    if _STOP_REQUEST.search(request) or _BLOCKER.search(text):
         return False
     # Questions and quoted examples are not an action promise. Prefer a missed
     # recovery over interpreting arbitrary prose as permission to keep going.
@@ -95,12 +99,11 @@ def continuation_request_left_as_suggestion(text: str, messages: list, user_mess
     return bool(_NEXT_STEP.search(text.strip()))
 
 
-def choose_final_continuation(agent: Any, *, text: str, messages: list, user_message: Any,
-                              api_call_count: int, retries: int, ack_mode: str,
-                              stall: bool, degenerate: bool) -> str | None:
-    """Reuse the existing two-nudge budget; no new execution authority or scheduler."""
-    if (
-        bool(getattr(agent, "_stall_guards", True))
+def should_reconcile_suggestion(agent: Any, *, text: str, messages: list, user_message: Any,
+                                api_call_count: int, retries: int, ack_mode: str) -> bool:
+    """Only the new suggestion path; existing continuation branches stay with their owner."""
+    return bool(
+        getattr(agent, "_stall_guards", True)
         and ack_mode != "off"
         and agent.valid_tool_names
         and retries < 2
@@ -108,20 +111,4 @@ def choose_final_continuation(agent: Any, *, text: str, messages: list, user_mes
         and api_call_count < agent.max_iterations
         and agent.iteration_budget.remaining > 0
         and continuation_request_left_as_suggestion(text, messages, user_message)
-    ):
-        return "continuation_suggestion"
-    if stall:
-        return "stall"
-    if degenerate:
-        return "degenerate"
-    if (
-        ack_mode != "off"
-        and agent.valid_tool_names
-        and retries < 2
-        and agent._looks_like_codex_intermediate_ack(
-            user_message=user_message, assistant_content=text, messages=messages,
-            require_workspace=(ack_mode == "codex_only"),
-        )
-    ):
-        return "ack"
-    return None
+    )

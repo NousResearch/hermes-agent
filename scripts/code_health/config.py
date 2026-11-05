@@ -129,7 +129,7 @@ RULES: tuple[Rule, ...] = (
          blocking=WARN_UNTIL_REPLAYED, pattern_id="P06"),
     Rule("HX016", "legacy profile setter", "bind a scope:"
          " `agent.runtime_scope.bind_profile_scope(home)` moves home, secrets and terminal policy"
-         " together (`turn=(session_id, turn_id)` for a turn); `bind_state(scope, ...)` for a host"
+         " together (`bind_turn(session_id, turn_id, fence)` inside it for a turn); `bind_state(scope, ...)` for a host"
          " that binds less on purpose. A raw `set_hermes_home_override` / `set_secret_scope` /"
          " `set_terminal_scope` / `install_profile_terminal_scope` call blocks only when it is new: an"
          " existing call stays until someone migrates it", "ast",

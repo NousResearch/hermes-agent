@@ -13,6 +13,7 @@ export const frClarify: Partial<ClarifyCopy> = {
   confirmAndContinueLabel: 'Confirmer et continuer',
   singleSelectHint: 'Choisir une réponse',
   multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
+  recommended: '(Recommandé)',
   oneQuestion: '1 question',
   questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
   notDelivered:

@@ -167,6 +167,23 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
     return agent._get_transport().normalize_response(response)
 
 
+def has_explicit_refusal(response: Any, normalized: Any) -> bool:
+    """True only when the provider flagged the refusal explicitly — ``provider_data.refusal`` /
+    ``provider_data.stop_details``, an OpenAI-style ``message.refusal``, or Anthropic's native
+    ``stop_reason == "refusal"``. OpenAI-compatible proxies may report
+    ``finish_reason=content_filter`` when the upstream stream drops; those carry none of these flags."""
+    provider_data = getattr(normalized, "provider_data", None) or {}
+    if isinstance(provider_data, dict) and (provider_data.get("refusal") or provider_data.get("stop_details")):
+        return True
+    if getattr(response, "stop_reason", None) == "refusal":
+        return True
+    choices = getattr(response, "choices", None)
+    if isinstance(choices, (list, tuple)) and choices:
+        if getattr(getattr(choices[0], "message", None), "refusal", None):
+            return True
+    return False
+
+
 def partial_result(
     messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
@@ -726,7 +743,9 @@ def handle_content_policy_refusal(
 
     _refusal_result = normalize_response_for_agent(agent, response)
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
-    if not _refusal_text:
+    # Only fall back to the reasoning channel when the refusal was flagged explicitly,
+    # so a proxy stream drop mid-reasoning is not surfaced as a safety refusal.
+    if not _refusal_text and has_explicit_refusal(response, _refusal_result):
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
     # Anthropic stop_reason=refusal carries its reason on stop_details (category + optional explanation),
     # not in a content block — without it a classifier halt reads as "(no text)" (#113689).

@@ -154,6 +154,28 @@ def check_api_response(
 
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
+        # OpenAI-compatible translation proxies (e.g. CLIProxyAPI) can emit
+        # finish_reason=content_filter when the upstream stream drops mid-flight.
+        # No visible text AND no explicit refusal metadata = transient stream drop, not a
+        # deterministic safety refusal: retry the SAME model while retries remain; the final
+        # attempt falls through to the refusal/fallback handler below.
+        from agent.turn_truncation import has_explicit_refusal, normalize_response_for_agent
+        try:
+            _cf_norm = normalize_response_for_agent(agent, response)
+            _cf_text = (getattr(_cf_norm, "content", None) or "").strip()
+            _cf_explicit = has_explicit_refusal(response, _cf_norm)
+        except Exception as _cf_exc:  # never let the guard break the upstream refusal path
+            logger.debug("content_filter guard could not inspect response: %s", _cf_exc)
+            _cf_text, _cf_explicit = "", True
+        if not _cf_text and not _cf_explicit and retry_count + 1 < max_retries:
+            retry_count += 1
+            logger.warning(
+                "%sReceived finish_reason=content_filter with no refusal text or content — "
+                "treating as transient proxy stream drop, retrying same model (%d/%d).",
+                agent.log_prefix, retry_count, max_retries,
+            )
+            time.sleep(1)
+            return _verdict("continue")
         _rv = handle_content_policy_refusal(
             agent, response, _retry, thinking_spinner=thinking_spinner, messages=messages,
             api_messages=api_messages, api_kwargs=api_kwargs,

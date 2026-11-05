@@ -10,9 +10,12 @@ from tests.gateway.test_automation_compression_media import _admit_human, _disco
 @pytest.mark.asyncio
 async def test_admitted_completion_survives_a_transient_owner_read_after_compression(tmp_path, monkeypatch):
     from gateway.platforms.event import MessageEvent
+    from gateway.session_authority import admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_ingress import execute_admission
-    from hermes_state_runtime import list_session_admissions
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_messages
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
@@ -21,12 +24,13 @@ async def test_admitted_completion_survives_a_transient_owner_read_after_compres
     sid = receipt.ref.session_id
     event = dict(pending(key, 'ci-exec'), parent_session_id=sid)
     assert await runner._deliver_async_delegation_group([event]) is True
-    row = list_session_admissions(authority.db, session_id=sid, pending_only=False)[-1]
-    db = authority.db
-    db.append_message(sid, 'user', 'human')
+    row = admission_row(authority.persistence.admissions.list(session_id=sid, pending_only=False)[-1])
+    db = authority.persistence
+    seed_messages(db, sid, {'role': 'user', 'content': 'human'})
     child = sid + '-child'  # the owner compresses after admission
-    db.publish_compression_child(parent_session_id=sid, child_session_id=child, source='discord',
-                                 messages=[{'role': 'user', 'content': 'summary'}], require_compression_lease=False)
+    db.lineage.publish_compression_child(sid, CompressionChild(session_id=child, source='discord'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert runner.session_store.advance_compression_session(key, sid, child) is not None
     resolved = []
 

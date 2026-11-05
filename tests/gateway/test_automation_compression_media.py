@@ -31,28 +31,31 @@ async def _admit_human(runner, authority, event):
 @pytest.mark.asyncio
 async def test_completion_after_compression_admits_to_the_logical_root(tmp_path, monkeypatch):
     from gateway.platforms.event import MessageEvent
-    from hermes_state_runtime import list_session_admissions
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_messages
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
     receipt = await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))
     key = runner.session_store._generate_session_key(source)
     root = receipt.ref.session_id
-    db = authority.db
-    db.append_message(root, 'user', 'human')
+    db = authority.persistence
+    seed_messages(db, root, {'role': 'user', 'content': 'human'})
     child = root + '-child'
-    db.publish_compression_child(parent_session_id=root, child_session_id=child, source='discord',
-                                 messages=[{'role': 'user', 'content': 'summary'}], require_compression_lease=False)
+    db.lineage.publish_compression_child(root, CompressionChild(session_id=child, source='discord'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert runner.session_store.advance_compression_session(key, root, child) is not None
     event = dict(pending(key, 'after-compression'), parent_session_id=child)
     assert await runner._deliver_async_delegation_group([event]) is True
-    rows = list_session_admissions(db, session_id=root, pending_only=False)
-    assert next(r['request_id'] for r in rows) == 'human' and len(rows) == 2, rows
-    assert 'after-compression' in rows[-1]['payload']['text']
-    assert list_session_admissions(db, session_id=child, pending_only=False) == []
+    rows = db.admissions.list(session_id=root, pending_only=False)
+    assert next(r.request_id for r in rows) == 'human' and len(rows) == 2, rows
+    assert 'after-compression' in rows[-1].payload['text']
+    assert db.admissions.list(session_id=child, pending_only=False) == []
     # A lost-ACK redelivery is the same admission, found under the root's ledger.
     from gateway.session_automation import completion_admission
-    assert completion_admission(runner, event)['admission_id'] == rows[-1]['admission_id']
+    assert completion_admission(runner, event)['admission_id'] == rows[-1].admission_id
     await asyncio.sleep(0)
 
 
@@ -61,7 +64,7 @@ async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path
     from gateway.platforms.base import get_image_cache_dir
     from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session_ingress_media import release_admission_media
-    from hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
+    from gateway.session_persistence import authority_persistence
     from tests.gateway.test_completion_admission import pending
 
     runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
@@ -71,13 +74,13 @@ async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path
         text='look', source=source, message_id='photo', message_type=MessageType.PHOTO,
         media_urls=[str(photo)], media_types=['image/png']))
     sid = receipt.ref.session_id
-    started = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
-    settle_session_input(authority.db, epoch=authority.epoch, admission_id=started['admission_id'],
-                         generation=started['generation'], outcome='completed')
-    assert release_admission_media(authority.db, started['admission_id']) == 1  # what _drain does
+    started = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=sid)
+    authority.persistence.admissions.settle(epoch=authority.epoch, admission_id=started.admission_id,
+                                            generation=started.generation, outcome='completed')
+    assert release_admission_media(authority_persistence(authority), started.admission_id) == 1  # what _drain does
     key = runner.session_store._generate_session_key(source)
     assert await runner._deliver_async_delegation_group([dict(pending(key, 'after-photo'), parent_session_id=sid)])
-    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-    assert len(rows) == 2 and 'after-photo' in rows[-1]['payload']['text'], rows
-    assert 'media' not in rows[-1]['payload']['native_text_v1']
+    rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert len(rows) == 2 and 'after-photo' in rows[-1].payload['text'], rows
+    assert 'media' not in rows[-1].payload['native_text_v1']
     await asyncio.sleep(0)

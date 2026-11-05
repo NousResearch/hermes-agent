@@ -4,7 +4,6 @@ goes through the real ``AuthorityConnection.dispatch`` (contract parse, handler,
 import pytest
 
 from gateway import run_api
-from hermes_state_runtime import list_session_admissions
 from tests.gateway.test_prompt_queued_controls import _call, _connection
 from tests.gateway.test_session_authority_cancel_settlement import _authority
 
@@ -34,8 +33,8 @@ def voice_owner(tmp_path, monkeypatch):
     return SimpleNamespace(db=db, authority=authority, runner=runner)
 
 
-def _ledger(db):
-    return [row['request_id'] for row in list_session_admissions(db, session_id='s', pending_only=False)]
+def _ledger(store):
+    return [row.request_id for row in store.admissions.list(session_id='s', pending_only=False)]
 
 
 @pytest.mark.asyncio
@@ -46,7 +45,7 @@ async def test_typed_stop_phrase_ends_the_voice_chat_and_admits_nothing(voice_ow
         reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text=typed, submission_id='r1')
     assert reply.get('result') == {'voice_stopped': True}, reply
     assert voice_owner.runner._voice_mode['s'] == 'off'
-    assert _ledger(voice_owner.db) == [], 'the stop phrase must never reach the agent'
+    assert _ledger(voice_owner.authority.persistence) == [], 'the stop phrase must never reach the agent'
 
 
 @pytest.mark.asyncio
@@ -62,7 +61,7 @@ async def test_a_retried_stop_replays_voice_stopped_and_never_starts_a_turn(voic
     assert first.get('result') == {'voice_stopped': True}, first
     assert retry.get('result') == {'voice_stopped': True}, retry
     assert fresh['result']['status'] == 'queued', 'a new stop with voice off is an ordinary turn'
-    assert _ledger(voice_owner.db) == ['r2']
+    assert _ledger(voice_owner.authority.persistence) == ['r2']
 
 
 @pytest.mark.asyncio
@@ -73,7 +72,7 @@ async def test_other_text_or_voice_off_is_admitted_as_a_turn(voice_owner, mode, 
         reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text=text, submission_id='r1')
     assert reply['result']['status'] == 'queued', reply
     assert voice_owner.runner._voice_mode['s'] == mode
-    assert len(list_session_admissions(voice_owner.db, session_id='s', pending_only=False)) == 1
+    assert len(voice_owner.authority.persistence.admissions.list(session_id='s', pending_only=False)) == 1
 
 
 @pytest.mark.asyncio
@@ -98,7 +97,7 @@ async def test_a_messaging_lane_viewer_typing_stop_is_admitted_untouched(voice_o
         reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text='stop', submission_id='r1')
     assert reply.get('result', {}).get('status') == 'queued', reply
     assert voice_owner.runner._voice_mode['s'] == 'voice_only'
-    assert _ledger(voice_owner.db) == ['r1']
+    assert _ledger(voice_owner.authority.persistence) == ['r1']
 
 
 @pytest.mark.asyncio

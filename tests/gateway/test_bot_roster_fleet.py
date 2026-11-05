@@ -14,6 +14,8 @@ import pytest_asyncio
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 from tests.gateway.test_ticket_profile_scope import _Transport
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 LEGACY_ID = '20261006_105832_fa0db9'  # a pre-upgrade CLI session id, kept as chat_id on adoption
@@ -72,8 +74,10 @@ async def fleet(tmp_path, monkeypatch, request):
         for connection in connections:
             with owner_scope(connection.authority):
                 await connection.close()
+        from gateway.session_persistence import authority_persistence
+        from persistence_beside import close_beside
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_beside(authority_persistence(authority))
         for _, home in homes:
             process_ownership.release(Path(home))
 
@@ -84,7 +88,7 @@ class _Fleet:
 
     def db(self, name):
         from gateway.session_authorities import authority_for_home
-        return authority_for_home(self.runner, self.homes[name]).db
+        return authority_for_home(self.runner, self.homes[name]).persistence
 
     async def bot_chats(self):
         """Mint each bot's Bot Chat the way its creator does; return ``{profile: Bot Chat id}``."""
@@ -93,13 +97,12 @@ class _Fleet:
         desktop = self.connect('default', scope='host')
         # default: created by the pre-upgrade CLI, adopted by the Desktop's first open of the bot.
         legacy = self.db('default')
-        legacy.create_session(LEGACY_ID, source='cli', model='fixture')
-        legacy.set_session_title(LEGACY_ID, 'Bot Chat')
-        legacy.append_message(LEGACY_ID, 'assistant', 'kept from before the upgrade')
+        seed_session(legacy, LEGACY_ID, 'cli', model='fixture', title='Bot Chat')
+        seed_messages(legacy, LEGACY_ID, {'role': 'assistant', 'content': 'kept from before the upgrade'})
         found = await self.call(desktop, 'session.list', profile='default', title='Bot Chat',
                                 include_hidden=True, limit=50)
         assert [row['session_id'] for row in found['sessions']] == [LEGACY_ID], found
-        assert legacy.get_session(LEGACY_ID)['chat_id'] == LEGACY_ID  # the reporter's row shape
+        assert session_row(legacy, LEGACY_ID)['chat_id'] == LEGACY_ID  # the reporter's row shape
         # alpha: no Bot Chat until a teammate's first delivery mints it (gateway/session_bot.py).
         relay = self.connect('alpha')
         delivered = await self.call(relay, 'bot_relay.deliver', id='a' * 32, profile='alpha',
@@ -146,7 +149,7 @@ async def test_every_bot_row_resolves_its_own_bot_chat_whichever_bot_is_active(f
             canonical = rows[name].get('canonical_session')
             assert canonical is not None, f'{name} row has no Bot Chat while {active} is active'
             assert canonical['resolved_id'] == chat, (active, name, canonical)
-            stored = fleet.db(name).get_session(chat)
+            stored = session_row(fleet.db(name), chat)
             assert canonical['last_active'] == (stored['last_activity_at'] or stored['started_at']) > 0
             assert (rows[name].get('last_session') or {}).get('id') == recent[name], (active, name, rows[name])
     assert fleet.connections() == routed, 'a roster poll built connections of its own'
@@ -170,15 +173,17 @@ async def test_no_row_shows_a_bot_chat_its_viewer_may_not_read(fleet):
 
 @pytest.mark.asyncio
 async def test_a_sibling_that_cannot_be_read_safely_leaves_only_its_own_row_bare(fleet, monkeypatch, caplog):
-    from hermes_state_errors import StateDbReplacedError
+    from tests.fixtures.storage_holder import raw_holder, state_db_replaced_error
     chats = await fleet.bot_chats()
 
     def replaced(*args, **kwargs):
-        raise StateDbReplacedError('state.db was replaced')
+        raise state_db_replaced_error()('state.db was replaced')
 
-    monkeypatch.setattr(fleet.db('alpha'), '_read_ctx', replaced)
-    # beta's store closes as an unserve would, between the retiring check and the read.
-    fleet.db('beta').close()
+    monkeypatch.setattr(raw_holder(fleet.db('alpha')), '_read_ctx', replaced)
+    # beta's store closes as an unserve releases it (every store handle under its home, the legacy
+    # handle and the storage interface handle beside it), between the retiring check and the read.
+    from persistence_assembly import close_stores_under, live_stores, store_location
+    close_stores_under(fleet.homes['beta'])
     # gamma is being unserved: retirement marks it before its store closes.
     fleet.runner.session_authorities.for_home(fleet.homes['gamma']).retiring = True
     desktop = fleet.connect('default', scope='host')
@@ -187,7 +192,9 @@ async def test_a_sibling_that_cannot_be_read_safely_leaves_only_its_own_row_bare
         assert rows['default']['canonical_session']['resolved_id'] == chats['default']
         for name in ('alpha', 'beta', 'gamma'):
             assert not {'canonical_session', 'last_session'} & set(rows[name]), rows[name]
-    assert fleet.db('beta')._conn is None, 'the roster reopened a store an unserve had closed'
+    with live_stores() as stores:
+        live = {store_location(handle.scope) for handle in stores}
+    assert Path(fleet.homes['beta']).resolve() / 'state.db' not in live, 'the roster reopened a store an unserve had closed'
     warned = [r.getMessage() for r in caplog.records if r.levelname == 'WARNING' and 'metadata-only' in r.getMessage()]
     for name in ('alpha', 'beta'):  # once each across both polls; a retiring sibling is no failure
         profile_id = fleet.runner.session_authorities.for_home(fleet.homes[name]).profile_id
@@ -201,8 +208,7 @@ async def test_a_row_whose_name_routes_elsewhere_carries_no_bot_chat(fleet):
     # Served as ``delta`` from outside ``profiles/``, it is listed as ``default``: a click on that
     # row routes to the launch profile, so the row must not paint delta's Bot Chat.
     linked = fleet.db('delta')
-    linked.create_session('local-delta', source='gui', chat_id='local-delta', user_id='uid:desk')
-    linked.set_session_title('local-delta', 'Bot Chat')
+    seed_session(linked, 'local-delta', 'gui', chat_id='local-delta', user_id='uid:desk', title='Bot Chat')
     result = await fleet.call(fleet.connect('default', scope='host'), 'profiles.list')
     row, = [row for row in result['profiles'] if row['path'] == str(fleet.homes['delta'])]
     assert row['name'] == 'default'

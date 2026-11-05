@@ -9,6 +9,8 @@ must match regardless of host OS (a Linux-hosted Hermes can still drive a
 Windows box over SSH).
 """
 
+import time
+
 import pytest
 
 from tools.approval import detect_dangerous_command
@@ -189,6 +191,18 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r'git commit -m "fix: powershell \"gci | ri\" detection"',
         'echo "gci | ri -r -fo"',
         'echo "use ssh: gci | ri -r"',
+        # A launcher word elsewhere in the command does not run this quoted text.
+        'echo ssh "gci | ri -r"',
+        'pwsh --version && echo "gci | ri -r"',
+        'git commit -m "document: gci | ri -r" -- ssh',
     ])
     def test_read_only_and_lookalike_commands_stay_quiet(self, cmd):
         assert not _is_dangerous(cmd), cmd
+
+
+    @pytest.mark.parametrize("unit", ["wmic shadowcopy ", "ssh -x "])
+    def test_repeated_launcher_words_in_prose_scan_in_linear_time(self, unit):
+        command = 'echo "' + unit * 2000 + 'list"; echo ok'
+        start = time.perf_counter()
+        assert not _is_dangerous(command)
+        assert time.perf_counter() - start < 2, unit

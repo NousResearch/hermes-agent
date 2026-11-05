@@ -64,3 +64,20 @@ def test_pasted_blank_gutter_lines_are_not_a_whitespace_anchor():
     result, count, _strategy, err = fuzzy_find_and_replace(content, "2|\n3|", "2|", replace_all=True)
     assert (count, result) == (0, content) and err
 
+
+@pytest.mark.parametrize("content, old, new, expected", [
+    # One pasted line, indented: recovered as a whole line, gutter-free.
+    (LONG, "42|    subtotal = sum(item.price for item in items)", "42|    subtotal = sum(i.price for i in items)",
+     LONG.replace("item.price for item in", "i.price for i in")),
+    (LONG, "42|    subtotal = sum(item.price for item in items)", "    subtotal = sum(i.price for i in items)",
+     LONG.replace("item.price for item in", "i.price for i in")),
+    # A stripped `4` must not land inside `a = 4`, and no similarity guess may write `N|`.
+    ("a = 4\nb = 5\n", "2|4", "2|9", None),
+    ("value = compute_total(cart, 0.1)\n", "3|value = compute_total(cart, 0.3)", "3|value = compute_total(cart, 0.2)", None),
+])
+def test_single_gutter_line_is_recovered_whole_or_refused(content, old, new, expected):
+    result, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
+    if expected is None:
+        assert (count, result) == (0, content) and err
+    else:
+        assert (err, count, result) == (None, 1, expected)

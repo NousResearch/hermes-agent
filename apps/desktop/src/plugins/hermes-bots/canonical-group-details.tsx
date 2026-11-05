@@ -4,7 +4,7 @@ import { type ReactNode, useLayoutEffect, useRef } from 'react'
 import { canonicalMemberName } from './canonical-group-activity'
 import type { CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import type { MemberStatus } from './group-room-status'
-import { AvatarStack, fill, memberStatusText, type RoomStatusLabels } from './group-room-ui'
+import { AvatarStack, fill, memberStatusText, type RoomStatusLabels, shownDetail, useShownStatus } from './group-room-ui'
 
 /** What an open room last saw, for its row in the Bots list. */
 export interface CanonicalRoomLive { working: boolean; failed: boolean; needsYou: boolean }
@@ -143,20 +143,26 @@ export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, ro
     </div>
     <div className="grid gap-1">
       <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.members} · {room.members.length}</span>
-      {room.members.map(member => {
-        const status = statuses.get(member.member_id) ?? { kind: 'idle' as const }
-        const detail = 'detail' in status ? status.detail : undefined
-
-        return <div className="flex items-center gap-2 py-1" data-member-status={status.kind} key={member.member_id}>
-          {avatarFor(faceName(member), 24)}
-          <div className="min-w-0">
-            <div className="truncate text-xs font-medium text-foreground">{canonicalMemberName(member)} <span className="font-normal text-(--ui-text-quaternary)">@{member.handle}</span></div>
-            <Tip label={detail}><div className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{memberStatusText(status, labels)}</div></Tip>
-          </div>
-        </div>
-      })}
+      {room.members.map(member => <DetailsMember avatar={avatarFor(faceName(member), 24)} key={member.member_id} labels={labels}
+        member={member} status={statuses.get(member.member_id) ?? { kind: 'idle' }} />)}
       <p className="text-[0.6875rem] text-(--ui-text-quaternary)">{labels.membersFixed}</p>
     </div>
     {children}
   </aside>
+}
+
+/** One member row of the details panel; it ticks on its own while that member works. */
+function DetailsMember({ avatar, labels, member, status }: {
+  avatar: ReactNode; labels: RoomStatusLabels; member: CanonicalRoom['members'][number]; status: MemberStatus
+}) {
+  const shown = useShownStatus(status)
+  const detail = shownDetail(shown)
+
+  return <div className="flex items-center gap-2 py-1" data-member-status={shown.kind}>
+    {avatar}
+    <div className="min-w-0">
+      <div className="truncate text-xs font-medium text-foreground">{canonicalMemberName(member)} <span className="font-normal text-(--ui-text-quaternary)">@{member.handle}</span></div>
+      <Tip label={detail}><div className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{memberStatusText(shown, labels)}</div></Tip>
+    </div>
+  </div>
 }

@@ -17,9 +17,9 @@ import {
   relativeTime,
   Tip
 } from '@hermes/plugin-sdk'
-import type { ComponentProps, FormEvent, ReactNode } from 'react'
+import { type ComponentProps, type FormEvent, type ReactNode, useSyncExternalStore } from 'react'
 
-import { formatElapsed, type MemberStatus, type RoomCycle } from './group-room-status'
+import { busyAt, type BusyMember, formatElapsed, isBusyStatus, type MemberStatus, type RoomCycle } from './group-room-status'
 
 /** The Chat Text Size scope the session transcript and composer get from `styles.css`, for the room's
  *  own transcript and input (they sit outside those slots): text scales, surrounding chrome does not. */
@@ -50,7 +50,48 @@ export interface RoomStatusLabels {
   typingTool: string
 }
 
-const STATUS_TONE: Record<MemberStatus['kind'], string> = {
+/** A member's status as shown right now: a busy member resolved against the clock (working or stalled). */
+type ShownStatus = Exclude<MemberStatus, BusyMember> | ReturnType<typeof busyAt>
+type ShownKind = ShownStatus['kind']
+
+// One 1 s clock for every busy chip, typing row and details row: they redraw in the same commit, so a member's
+// chip and its details row never show different seconds, and the room around them never re-renders.
+const clock = { second: 0, listeners: new Set<() => void>(), timer: undefined as ReturnType<typeof setInterval> | undefined }
+
+const subscribeClock = (listener: () => void) => {
+  clock.listeners.add(listener)
+  clock.timer ??= setInterval(() => { clock.second++; clock.listeners.forEach(notify => notify()) }, 1000)
+
+  return () => {
+    clock.listeners.delete(listener)
+
+    if (!clock.listeners.size) {clearInterval(clock.timer); clock.timer = undefined}
+  }
+}
+
+const noClock = () => () => undefined
+
+/** Seconds since the epoch, read on every render; while `live` the shared clock redraws the caller each
+ *  second. A hook, so the time is a reactive value (a bare `Date.now()` at the call site is memoised away). */
+function useClockSeconds(live: boolean): number {
+  useSyncExternalStore(live ? subscribeClock : noClock, () => clock.second)
+
+  return Date.now() / 1000
+}
+
+/** `status` as its chip shows it now. A chip that just turned busy reads the time fresh, never a stale one. */
+export function useShownStatus(status: MemberStatus): ShownStatus {
+  const busy = isBusyStatus(status)
+  const now = useClockSeconds(busy)
+
+  return busy ? busyAt(status, now) : status
+}
+
+const isShownBusy = (status: ShownStatus): status is ReturnType<typeof busyAt> => status.kind === 'working' || status.kind === 'stalled'
+
+export const shownDetail = (status: ShownStatus) => ('detail' in status && status.detail) || undefined
+
+const STATUS_TONE: Record<ShownKind, string> = {
   idle: 'text-(--ui-text-tertiary)',
   queued: 'text-(--ui-text-tertiary)',
   working: 'text-(--ui-accent)',
@@ -62,7 +103,7 @@ const STATUS_TONE: Record<MemberStatus['kind'], string> = {
   unavailable: 'text-destructive'
 }
 
-const STATUS_WORD: Record<MemberStatus['kind'], keyof RoomStatusLabels> = {
+const STATUS_WORD: Record<ShownKind, keyof RoomStatusLabels> = {
   idle: 'statusIdle',
   queued: 'memberQueued',
   working: 'statusWorking',
@@ -76,8 +117,8 @@ const STATUS_WORD: Record<MemberStatus['kind'], keyof RoomStatusLabels> = {
 
 /** One grammar for every member: a status word or the tool, then time.
  *  `terminal · 1m20s`, `working · 12s`, `no progress for 2m05s`, `failed · rate_limited`, `idle`. */
-export function memberStatusText(status: MemberStatus, labels: RoomStatusLabels): string {
-  if (status.kind === 'working' || status.kind === 'stalled') {
+export function memberStatusText(status: ShownStatus, labels: RoomStatusLabels): string {
+  if (isShownBusy(status)) {
     const elapsed = status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined
     const lead = status.kind === 'stalled' ? fill(labels.statusStalled, { time: formatElapsed(status.quietS ?? 0) }) : ''
 
@@ -90,12 +131,12 @@ export function memberStatusText(status: MemberStatus, labels: RoomStatusLabels)
   return reason ? `${word} · ${reason}` : word
 }
 
-export function MemberStatusChip({ avatar, badge, labels, name, phase, status }: {
+export function MemberStatusChip({ avatar, badge, labels, name, phase, status: given }: {
   avatar: ReactNode; badge?: string; labels: RoomStatusLabels; name: string; phase?: string; status: MemberStatus
 }) {
-  const busy = status.kind === 'working' || status.kind === 'stalled'
+  const status = useShownStatus(given)
   const text = memberStatusText(status, labels)
-  const detail = 'detail' in status && status.detail ? status.detail : undefined
+  const detail = shownDetail(status)
 
   return <Tip label={detail ? `${name} · ${detail}` : `${name} · ${text}`}>
     <li className="inline-flex h-6 min-w-0 items-center gap-1.5 rounded-full bg-(--ui-bg-quaternary) pl-0.5 pr-2.5 text-xs"
@@ -104,7 +145,7 @@ export function MemberStatusChip({ avatar, badge, labels, name, phase, status }:
       <span className="shrink-0 font-medium text-foreground">{name}</span>
       {badge && <span className="shrink-0 rounded-sm bg-(--ui-accent)/15 px-1 text-[0.625rem] font-medium text-(--ui-accent)" data-member-badge="">{badge}</span>}
       <span aria-hidden="true" className="text-(--ui-text-quaternary)">·</span>
-      {busy && <span aria-hidden="true" className={STATUS_TONE[status.kind]}><GlyphSpinner /></span>}
+      {isShownBusy(status) && <span aria-hidden="true" className={STATUS_TONE[status.kind]}><GlyphSpinner /></span>}
       <span className={cn('min-w-0 truncate tabular-nums', STATUS_TONE[status.kind])}>{text}</span>
     </li>
   </Tip>
@@ -156,9 +197,10 @@ export function RoomActivityRow({ children, icon = 'arrow-small-right', tone }: 
 
 /** The in-progress message a working member gets at the end of the transcript: its avatar on
  *  the message rows' edge, then typing dots and the chip's own words (`scout · terminal · 7s`). */
-export function RoomTypingRow({ avatar, labels, name, status }: {
-  avatar: ReactNode; labels: RoomStatusLabels; name: string; status: Extract<MemberStatus, { kind: 'stalled' | 'working' }>
+export function RoomTypingRow({ avatar, labels, name, status: given }: {
+  avatar: ReactNode; labels: RoomStatusLabels; name: string; status: BusyMember
 }) {
+  const status = useShownStatus(given) as ReturnType<typeof busyAt>  // a busy member always resolves busy
   const line = status.tool ? fill(labels.typingTool, { name, tool: status.tool }) : fill(labels.typing, { name })
 
   return <div className="flex items-start gap-3 py-2" data-room-typing={status.kind}>

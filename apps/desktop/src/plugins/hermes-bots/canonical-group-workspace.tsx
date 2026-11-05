@@ -1,7 +1,7 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
 import { CanonicalGroupHeader } from './canonical-group-header'
@@ -38,6 +38,8 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
  *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
   current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
+
+const NO_MEMBERS: CanonicalRoomMember[] = []
 
 const canSendNow = (gate: { restored: boolean; busy: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
   gate.restored && !gate.busy && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
@@ -208,7 +210,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
-  const members = state?.room.members ?? []
+  const members = useSameValue(state?.room.members ?? NO_MEMBERS)
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))

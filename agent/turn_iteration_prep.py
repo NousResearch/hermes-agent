@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
@@ -22,6 +23,22 @@ from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
 
 logger = logging.getLogger("agent.conversation_loop")
+
+# The rebuilt-restart cap ends a turn whose whole fallback chain failed. When the failure chain
+# was rate-limit-class, the armed cooldown (``agent._rate_limited_until``) usually reopens the
+# primary within a minute or two: waiting once beats ending the turn with a pending tool-result
+# tail and telling the user to send ``continue`` themselves. Longer cooldowns keep today's
+# instant turn end — the lease must not be held hostage to a multi-hour window.
+_RATE_LIMIT_TAIL_WAIT_CAP_S = 120.0
+
+
+def _wait_rate_limit_cooldown(agent: Any, cooldown_until: float, cap_s: float = _RATE_LIMIT_TAIL_WAIT_CAP_S) -> None:
+    """Sleep out an armed rate-limit cooldown, capped and interrupt-aware (1 s steps)."""
+    wake_at = min(cooldown_until, time.monotonic() + cap_s)
+    while time.monotonic() < wake_at:
+        if getattr(agent, "_interrupt_requested", False):
+            return
+        time.sleep(min(1.0, wake_at - time.monotonic()))
 
 
 def _anchors_current_turn(messages: Any, idx: Any, user_message: Any) -> bool:
@@ -432,6 +449,7 @@ class RetryRestartVerdict:
     api_call_count: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
+    _rate_limit_tail_wait_used: Any = False
 
 
 def apply_retry_restarts(
@@ -440,6 +458,7 @@ def apply_retry_restarts(
     final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
     restart_count: Any, length_continue_retries: Any,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
+    _rate_limit_tail_wait_used: Any = False,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
@@ -462,6 +481,7 @@ def apply_retry_restarts(
             api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
+            _rate_limit_tail_wait_used=_rate_limit_tail_wait_used,
         )
 
     if _retry.restart_with_redirected_messages:
@@ -534,6 +554,36 @@ def apply_retry_restarts(
                 "refunding the iteration budget indefinitely.",
                 max_retries,
             )
+            # One grant per turn: the whole chain failed fast, but a rate-limit cooldown is
+            # armed — the manual remedy is literally "send continue", so the loop can wait out
+            # the window itself, restore the primary, and re-issue once instead of ending the
+            # turn on a pending tool-result tail (#55316-class silent stop).
+            cooldown_until = getattr(agent, "_rate_limited_until", 0) or 0
+            cooldown_s = cooldown_until - time.monotonic()
+            if (
+                not interrupted
+                and not _rate_limit_tail_wait_used
+                and 0 < cooldown_s <= _RATE_LIMIT_TAIL_WAIT_CAP_S
+            ):
+                _rate_limit_tail_wait_used = True
+                logger.info(
+                    "Fallback chain exhausted with a %.0f s rate-limit cooldown armed: waiting it out "
+                    "once (cap %.0f s), restoring the primary, and re-issuing the iteration.",
+                    cooldown_s, _RATE_LIMIT_TAIL_WAIT_CAP_S,
+                )
+                with suppress(Exception):
+                    agent._buffer_diagnostic_status(
+                        f"⏳ All providers rate-limited; retrying in ~{cooldown_s:.0f} s…")
+                _wait_rate_limit_cooldown(agent, cooldown_until)
+                if getattr(agent, "_interrupt_requested", False):
+                    return _verdict("break")
+                with suppress(Exception):
+                    agent._restore_primary_runtime()
+                api_call_count -= 1
+                agent.iteration_budget.refund()
+                _retry.restart_with_rebuilt_messages = False
+                _preflight_compression_blocked = False
+                return _verdict("continue")
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the
         # active fallback provider, refunding budget/count for the stalled attempt.

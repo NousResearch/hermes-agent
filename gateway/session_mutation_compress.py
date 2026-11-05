@@ -111,6 +111,7 @@ async def prepare_compress(authority, live, payload, prepared):
     # with boundary_reason="compression"), as the agent path does after its own commit.
     engine_owner = SimpleNamespace(context_compressor=compressor, platform=_platform(live.source),
                                    _gateway_session_key=live.route,
+                                   _memory_manager=getattr(resident, '_memory_manager', None),
                                    owned=resident is None and not isinstance(compressor, ContextCompressor))
     return dict(prepared, messages=compressed, summary=summary, post_compaction=hook, engine_owner=engine_owner,
                 in_place=is_truthy_value(options.get('in_place'), default=True))

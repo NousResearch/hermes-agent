@@ -1,6 +1,6 @@
 name: hermes-phone
 repo: https://github.com/winchxyz/hermes-phone
-sha: 5c35048c5ed44504019a6c8543239bbb7c263fd6
+sha: ff47afba2bb905eb344934da961ff0a4cdcdeb12
 description: >-
   Let your Hermes agent place real phone calls for you with explicit approval.
   It shows a brief card and dials only after you reply "call" (or tap Call),
@@ -21,7 +21,7 @@ category: voice
 title: Hermes Phone
 docs_url: https://github.com/winchxyz/hermes-phone#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/winchxyz/hermes-phone/5c35048c5ed44504019a6c8543239bbb7c263fd6/docs/assets/banner.png
+image: https://raw.githubusercontent.com/winchxyz/hermes-phone/ff47afba2bb905eb344934da961ff0a4cdcdeb12/docs/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: [phone_prepare, phone_call, phone_status, phone_transcript]

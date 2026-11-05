@@ -78,6 +78,17 @@ run_conversation()
      - If text response: persist session, flush memory if needed, return
 ```
 
+### Terminal policy boundaries
+
+Terminal lifecycle/security denials and pending approvals return a top-level
+`policy_blocked: true` result. The tool controller halts the current turn on
+that marker and refuses subsequent tool calls, including changing tools or
+writing a wrapper. This is independent of optional loop/stall detection.
+Ordinary command errors, timeouts, and quoted log text do not arm this boundary.
+The latch resets at the next user turn; pending approval still requires the
+normal approval flow. Already dispatched parallel work is not retroactively
+cancelled. The original tool result remains in the transcript.
+
 ### Message Format
 
 All messages use OpenAI-compatible format internally:

@@ -346,7 +346,7 @@ _CREDENTIALS_REQUIRED_URLS: set[str] = set()
 
 def forget_credentials_refusal(url: str) -> None:
     """Allow uncredentialed dials to ``url`` again (the relay adapter was re-registered)."""
-    _CREDENTIALS_REQUIRED_URLS.discard(url)
+    _CREDENTIALS_REQUIRED_URLS.discard(_ws_dial_url(url))
 
 
 def _credentials_missing_message() -> str:

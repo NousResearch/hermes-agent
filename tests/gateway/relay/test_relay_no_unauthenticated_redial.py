@@ -163,6 +163,15 @@ async def test_re_registering_the_relay_adapter_tries_an_uncredentialed_dial_aga
     assert connector.ws_auth == ["rejected", "rejected"]
 
 
+@pytest.mark.parametrize("configured", ["https://connector.example", "wss://connector.example/relay/"])
+def test_re_registration_forgets_the_refusal_for_any_supported_url_form(configured):
+    """The refusal is keyed by the normalised dial URL; forgetting must normalise too."""
+    dial_url = ws_transport.WebSocketRelayTransport(configured, "slack", "bot")._url
+    ws_transport._CREDENTIALS_REQUIRED_URLS.add(dial_url)
+    ws_transport.forget_credentials_refusal(configured)
+    assert dial_url not in ws_transport._CREDENTIALS_REQUIRED_URLS
+
+
 @pytest.mark.asyncio
 async def test_a_connector_that_accepts_uncredentialed_upgrades_still_connects(monkeypatch):
     """Dev connectors and harnesses run with no per-gateway secret: nothing changes for them."""

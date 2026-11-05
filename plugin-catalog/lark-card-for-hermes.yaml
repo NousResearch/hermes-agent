@@ -1,12 +1,12 @@
 name: lark-card-for-hermes
 repo: https://github.com/Keithin/lark-card-for-hermes
-sha: fe15759b321769c93f2f9943c5c0e10894db7a0f
+sha: 612f51fcbe5d98c53d939ebbba9c5140ac2b5a96
 description: Render each Hermes reply as one live Feishu/Lark card — tool timeline, reasoning panel, native tables, token footer, streaming body.
 maintainer: Keithin
 tier: community
 category: platform
 requires_hermes: ">=0.22.0"
-version: "1.6.1"
+version: "1.7.0"
 title: Lark Card for Hermes
 readme: true
 capabilities:

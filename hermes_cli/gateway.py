@@ -4549,7 +4549,7 @@ def _respawn_storm_backoff() -> None:
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False,
                 idle_exit: bool = False):
-    """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
+    """Run the gateway in foreground. INFO logs show by default, verbose 2+=DEBUG, quiet disables stderr; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard;
     idle_exit: a client auto-started this unsupervised gateway, so it exits once idle
     (``gateway.unmanaged_idle_exit_seconds``)."""
@@ -4597,7 +4597,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     print()
 
     # Exit 1 if no platform connects so systemd Restart=always retries transient errors.
-    verbosity = None if quiet else verbose
+    verbosity = None if quiet else max(verbose, 1)
 
     import atexit as _atexit
     import traceback as _traceback

@@ -171,6 +171,23 @@ class Facts:
     def get(self, name: str) -> dict | None:
         return self._packages.get(name)
 
+    def variants(self, name: str) -> tuple[dict, ...]:
+        """Selected tool fact followed by still-published facts for other pins."""
+        fact = self.get(name)
+        if not isinstance(fact, dict) or "entry" not in fact:
+            return ()
+        previous = fact.get("previous", [])
+        if not isinstance(previous, list):
+            previous = []
+        return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
+
+    def selected(self, name: str, fact: dict) -> "Facts":
+        """Read-only selection for one install; do not replace the shared selection."""
+        view = Facts.__new__(Facts)
+        view.path = self.path
+        view._packages = {**self._packages, name: {k: v for k, v in fact.items() if k != "previous"}}
+        return view
+
     def refresh_digests(self, store_root: Path) -> int:
         """Publish all tool digests after packaging finishes changing their bytes."""
         from pm.store import tree_digest
@@ -246,6 +263,21 @@ class Facts:
         on_disk = _read(self.path, strict=True)["packages"]
         for key, value in self._packages.items():
             on_disk.setdefault(key, value)
+        if "entry" in fact and isinstance(on_disk.get(name), dict):
+            old = on_disk[name]
+            variants = [old]
+            if isinstance(old.get("previous"), list):
+                variants.extend(old["previous"])
+            # A re-pin to the same entry replaces its old identity; other
+            # published entries remain available to sibling installs.
+            history = {
+                row["entry"]: {k: v for k, v in row.items() if k != "previous"}
+                for row in variants
+                if isinstance(row, dict) and isinstance(row.get("entry"), str)
+                and row["entry"] != fact["entry"]
+            }
+            if history:
+                fact = {**fact, "previous": list(history.values())}
         self._packages = on_disk
         self._packages[name] = fact
         _write(self.path, {"schema": SCHEMA, "packages": self._packages})
@@ -304,7 +336,8 @@ class Facts:
         self.retain(set(packages) - set(names))
 
     def entries_in_use(self) -> set[str]:
-        return {f["entry"] for f in self._packages.values() if "entry" in f}
+        return {fact["entry"] for name in self._packages
+                for fact in self.variants(name)}
 
 
 def _templatize(env: dict, store_root: Path) -> dict:

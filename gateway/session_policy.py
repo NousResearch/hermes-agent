@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,8 @@ def pin_reasoning_effort(config, effort, *, session=False):
 def profile_config(authority):
     """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
     from gateway.run import _load_gateway_config
-    return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+    from gateway.session_persistence import authority_persistence
+    return present_sections(_load_gateway_config(authority_persistence(authority).scope.profile_dir / 'config.yaml'))
 
 
 def unpin_reasoning(config, profile):
@@ -119,9 +120,9 @@ def _refuse(field, detail=None):
 
     ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
     ``detail`` are what tells ~20 different create checks apart, in the client and in the
-    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
+    gateway log, without a second run to find out which one fired (``AuthorityRefusal`` bounds
     and flattens both)."""
-    raise RuntimeStoreError('invalid_params', field=field, detail=detail)
+    raise AuthorityRefusal('invalid_params', field=field, detail=detail)
 
 
 # ``acp_adapter/edit_approval.py``'s AUTO_APPROVE_* values, in main's ACP mode order.
@@ -730,7 +731,7 @@ def _extract_config_secrets(value, private, path=()):
                     or key.lower() in containers or _is_secret_payload_key(key))
         if sensitive and child and child not in ('{}', '[]'):
             if private is None:
-                raise RuntimeStoreError('launch_credentials_unavailable')
+                raise AuthorityRefusal('launch_credentials_unavailable')
             private[child_path] = child
             value[key] = None
         else:
@@ -759,7 +760,7 @@ def render_launch_skills(params, session_id):
     from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
     if not loaded:
-        raise RuntimeStoreError('unknown_skill')
+        raise AuthorityRefusal('unknown_skill')
     if missing:
         import logging
         logging.getLogger(__name__).warning('Skipping %s for session %s; continuing with: %s',
@@ -843,21 +844,21 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     if owners is None:
         owners = authority._local_owner_key_requests = {}
     if owner_key and api_key is not None and old is not None and ref in owners:
-        from hermes_state_local import same_create_retry
+        from session_rules.local_create import same_create_retry
         api_key = old if same_create_retry(owners[ref], policy.request_json, client_request or {}) else api_key
     # Only a key that IS being bound can conflict: binding config secrets alone (a provider
     # change drops the launch key) must not be refused by the key the session already holds.
     if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     configs = getattr(authority, '_local_config_secrets', None)
     if configs is None:
         configs = authority._local_config_secrets = {}
     config_ref = ref
-    if config_secrets and getattr(authority, 'db', None) is not None:
+    if config_secrets and getattr(authority, 'persistence', None) is not None:
         from gateway.session_policy_credentials import config_reference
         config_ref = config_reference(authority, session_id, policy, config_secrets)
     if config_ref in configs and configs[config_ref] != config_secrets:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     if config_secrets:
         configs[config_ref] = dict(config_secrets)
     if api_key is not None and old is None and owner_key:
@@ -891,22 +892,22 @@ def rebind_launch_key(authority, session, api_key):
         _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
-        raise RuntimeStoreError('admission_conflict')
-    from hermes_state_local import local_receipt
-    ref = restore_policy(local_receipt(authority.db, session.session_id)['policy']).credential_ref
+        raise AuthorityRefusal('admission_conflict')
+    from gateway.session_persistence import authority_persistence
+    ref = restore_policy(authority_persistence(authority).bindings.receipt(session.session_id).policy).credential_ref
     if ref is None:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     keys = getattr(authority, '_local_launch_keys', None)
     if keys is None:
         keys = authority._local_launch_keys = {}
     held = keys.get(_key_slot(ref))
     if held is not None:
         if not hmac.compare_digest(held, api_key):
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
         return
     _, _, fingerprint = ref.partition('#')
     if not fingerprint or not hmac.compare_digest(fingerprint, fingerprint_secret_value(api_key) or ''):
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     keys[_key_slot(ref)] = api_key
 
 
@@ -970,7 +971,7 @@ def launch_key(authority, policy):
         return None
     value = getattr(authority, '_local_launch_keys', {}).get(_key_slot(policy.credential_ref))
     if value is None:
-        raise RuntimeStoreError('launch_credentials_unavailable')
+        raise AuthorityRefusal('launch_credentials_unavailable')
     return value
 
 
@@ -1014,7 +1015,7 @@ def restore_policy(data):
             raise ValueError('terminal policy mismatch')
         return replace(policy, toolsets=tuple(policy.toolsets))
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeStoreError('storage_unavailable') from exc
+        raise AuthorityRefusal('storage_unavailable') from exc
 
 
 def _valid_client_env(value, kind: type = str):
@@ -1030,7 +1031,9 @@ def policy_turn_toolsets(authority, policy, config, session_id):
     """A local turn's toolsets: the policy's current set, plus ``onboarding`` for an onboarding chat
     (``agent.onboarding_session.onboarding_chat_toolsets``)."""
     from agent.onboarding_session import onboarding_chat_toolsets
-    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), getattr(authority, 'db', None), session_id)
+    from gateway.session_persistence import authority_persistence
+    store = authority_persistence(authority) if authority is not None else None
+    return onboarding_chat_toolsets(list(policy.current_toolsets(config)), store, session_id, persistence=store)
 
 
 def local_desktop_turn(runner, source, scope):
@@ -1067,7 +1070,7 @@ def policy_for_source(runner, source):
         if policy is None:
             # Cold recovery must restore the frozen policy before executing, not
             # reinterpret a LOCAL route as a default CLI launch.
-            raise RuntimeStoreError('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable')
         return policy
     return None
 
@@ -1116,7 +1119,7 @@ def policy_scope(policy, *, authority=None):
         yield
         return
     if not workspace_ready(policy):
-        raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
+        raise AuthorityRefusal('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)

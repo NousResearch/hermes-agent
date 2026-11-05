@@ -16,7 +16,7 @@ import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
 from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 # The interpreter only imports psutil before it introduces itself; a child silent this long
 # is wedged (loader/stdio stall), not slow.
@@ -53,7 +53,7 @@ def managed_policy(authority, ref):
         return None
     request = json.loads(policy.request_json)
     if policy.platform != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):
-        raise RuntimeStoreError('unsupported_managed_policy')
+        raise AuthorityRefusal('unsupported_managed_policy')
     return policy
 
 
@@ -138,7 +138,7 @@ def worker_turn_scope(frame):
     try:
         surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
         display = restore_display(turn['display_v1']) if 'display_v1' in turn else None
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         raise ValueError('invalid_managed_worker_bootstrap') from exc
     if turn['yolo']:
         from tools.approval import enable_session_yolo
@@ -230,7 +230,7 @@ class ManagedWorker:
 
     def control(self, frame):
         if self.closed.is_set():
-            raise RuntimeStoreError('managed_worker_lost')
+            raise AuthorityRefusal('managed_worker_lost')
         if frame == {'type': 'stop'}:
             if self.stopped_at is None:
                 self.stopped_at = time.monotonic()
@@ -238,7 +238,7 @@ class ManagedWorker:
         try:
             self.commands.put_nowait(frame)
         except queue.Full as exc:
-            raise RuntimeStoreError('worker_control_backpressure') from exc
+            raise AuthorityRefusal('worker_control_backpressure') from exc
 
     def _stop_budget(self, ack):
         """Seconds left of the ``ack`` window that opened at the first Stop. Pure: only
@@ -265,14 +265,14 @@ class ManagedWorker:
             if not self._frames and not self.stop.is_set():
                 await asyncio.wait({arrived, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
                 if not self._frames and not self.stop.is_set():
-                    raise RuntimeStoreError('managed_worker_hello_timeout')
+                    raise AuthorityRefusal('managed_worker_hello_timeout')
             if not self._frames:
                 # Only a latched Stop gets here; its window runs from the first Stop.
                 remaining = self._stop_budget(ack)
                 if remaining > 0:
                     await asyncio.wait({arrived}, timeout=remaining)
             if not self._frames:
-                raise RuntimeStoreError('managed_worker_stopped')
+                raise AuthorityRefusal('managed_worker_stopped')
             return self._take()
         finally:
             stopper.cancel()
@@ -371,21 +371,21 @@ def _prompt_frame(authority, ref, row, worker, frame):
     if kind not in {'approval', 'clarify'}:
         return False
     if len(controls.remote_responders) >= 16:
-        raise RuntimeStoreError('worker_control_backpressure')
+        raise AuthorityRefusal('worker_control_backpressure')
     if kind == 'approval':
         fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
         data = frame.get('data')
         if set(frame) != {'type', 'data'} or not isinstance(data, dict) or set(data) - fields:
-            raise RuntimeStoreError('invalid_worker_frame')
+            raise AuthorityRefusal('invalid_worker_frame')
         prompt_id = data.get('request_id')
     else:
         if (set(frame) != {'type', 'prompt_id', 'question', 'choices', 'multi_select'}
                 or not isinstance(frame['question'], str) or not isinstance(frame['choices'], list)
                 or any(not isinstance(c, str) for c in frame['choices']) or type(frame['multi_select']) is not bool):
-            raise RuntimeStoreError('invalid_worker_frame')
+            raise AuthorityRefusal('invalid_worker_frame')
         prompt_id = frame['prompt_id']
     if not isinstance(prompt_id, str) or not prompt_id or prompt_id in controls.pending:
-        raise RuntimeStoreError('invalid_worker_frame')
+        raise AuthorityRefusal('invalid_worker_frame')
     controls.remote_responders[prompt_id] = worker.respond
     if kind == 'approval':
         authority.register_approval(ref.session_id, row['generation'], live.route, data)
@@ -474,54 +474,48 @@ def _with_stop_cause(accepted, worker):
 
 def _settled_session_usage(authority, session_id, accepted, execution_id=None):
     """A managed turn's ``message.complete.usage``: the worker exits with its turn, so the session-cumulative counters come from the rows its usage writes committed. A worker that compresses mid-turn ends on a child of this reservation's session; the owner's execution row records that tip (compression moves it in the same transaction), so the path from the tip back to the reservation plus the reservation's own compression ancestors is summed, and stale siblings or the conversation a branch came from never count."""
-    import sqlite3
-    db = authority.db
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import STORE_FAILURES
+    store = authority_persistence(authority)
     try:
-        tip = _execution_tip(db, execution_id)
-        path = _continuation_path(db, session_id, tip) if tip and tip != session_id else None
-        ids = list(dict.fromkeys([*_compression_ancestors(db, session_id), *(path or [session_id])]))
-        rows = [db.get_session(sid) or {} for sid in ids]
-    except sqlite3.Error:  # usage is display-only; settlement never waits on it
+        tip = store.worker_executions.execution_session(execution_id=execution_id) if execution_id else None
+        path = _continuation_path(store, session_id, tip) if tip and tip != session_id else None
+        ids = list(dict.fromkeys([*_compression_ancestors(store, session_id), *(path or [session_id])]))
+        rows = [store.sessions.get(sid) for sid in ids]
+    except STORE_FAILURES:  # usage is display-only; settlement never waits on it
         return {}
-    counts = {key: sum(int(row.get(key) or 0) for row in rows) for key in (
+    counts = {key: sum(int(getattr(row, key, None) or 0) for row in rows) for key in (
         'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens')}
     prompt = counts['input_tokens'] + counts['cache_read_tokens'] + counts['cache_write_tokens']
     return {'session_usage': {**counts, 'prompt_tokens': prompt, 'completion_tokens': counts['output_tokens'],
                               'total_tokens': prompt + counts['output_tokens'],
-                              'api_calls': sum(int(row.get('api_call_count') or 0) for row in rows),
-                              'model': str(accepted.get('model') or rows[-1].get('model') or '')}}
+                              'api_calls': sum(int(getattr(row, 'api_call_count', None) or 0) for row in rows),
+                              'model': str(accepted.get('model') or getattr(rows[-1], 'model', None) or '')}}
 
 
-def _execution_tip(db, execution_id):
-    """The session this worker execution last wrote to, as the owner's ledger records it."""
-    if not execution_id:
-        return None
-    with db._read_ctx() as conn:
-        row = conn.execute('SELECT session_id FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone()
-    return row[0] if row else None
 
 
-def _continuation_path(db, start, tip):
+def _continuation_path(store, start, tip):
     """Ids from *start* to *tip* when *tip* reaches *start* through compression continuations only, else None."""
     path, current = [tip], tip
     while current != start and len(path) <= 200:
-        row = db.get_session(current)
-        if not row or not db._is_compression_child_row(row):
+        row = store.sessions.get(current)
+        if not row or not store.lineage.is_compression_child(row):
             return None
-        current = row['parent_session_id']
+        current = row.parent_session_id
         path.append(current)
     return path[::-1] if current == start else None
 
 
-def _compression_ancestors(db, session_id):
+def _compression_ancestors(store, session_id):
     """Root-first ids of the sessions *session_id* continues by compression, excluding itself."""
-    ancestors, current = [], db.get_session(session_id)
-    while current and db._is_compression_child_row(current) and len(ancestors) < 200:
-        parent = current['parent_session_id']
+    ancestors, current = [], store.sessions.get(session_id)
+    while current and store.lineage.is_compression_child(current) and len(ancestors) < 200:
+        parent = current.parent_session_id
         if parent in ancestors or parent == session_id:
             break
         ancestors.append(parent)
-        current = db.get_session(parent)
+        current = store.sessions.get(parent)
     return ancestors[::-1]
 
 
@@ -660,7 +654,7 @@ async def execute_managed(authority, ref, row, policy):
         hello = await worker.next_frame(HELLO_SECONDS, ack=0)
         if worker.stop.is_set():
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
-            raise RuntimeStoreError('managed_worker_stopped')
+            raise AuthorityRefusal('managed_worker_stopped')
         # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
         from gateway.session_runtime_workers import tracked_write
         scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
@@ -676,12 +670,12 @@ async def execute_managed(authority, ref, row, policy):
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
             # The claim's execution stamp, not a ledger read per frame (publish_execution fences the same way).
             if authority.executing.get(ref.session_id) != row['generation']:
-                raise RuntimeStoreError('stale_generation')
+                raise AuthorityRefusal('stale_generation')
             with authority.sessions[ref.session_id].event_stream.lock:
                 if _prompt_frame(authority, ref, row, worker, frame):
                     continue
             if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
-                raise RuntimeStoreError('managed_worker_failed')
+                raise AuthorityRefusal('managed_worker_failed')
             kind = frame.get('type')
             if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
                 continue
@@ -694,7 +688,7 @@ async def execute_managed(authority, ref, row, policy):
                 try:
                     accepted, usage = accept_result(frame['result'])
                 except ValueError as exc:
-                    raise RuntimeStoreError('invalid_worker_result') from exc
+                    raise AuthorityRefusal('invalid_worker_result') from exc
                 authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
@@ -709,14 +703,15 @@ async def execute_managed(authority, ref, row, policy):
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,
                     **await asyncio.to_thread(_settled_session_usage, authority, scope['session_id'], accepted, scope['execution_id'])}
                 return accepted['final_response']
-            raise RuntimeStoreError('invalid_worker_frame')
+            raise AuthorityRefusal('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:
         import logging
-        reason = exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__
+        from storage_user_copy import error_type_name
+        reason = exc.reason if isinstance(exc, AuthorityRefusal) else error_type_name(exc)
         logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
         if scope is None:
             if isinstance(exc, asyncio.CancelledError) or (
-                    isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
+                    isinstance(exc, AuthorityRefusal) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
                 return _interrupted_before_bootstrap(authority, row, worker.stop_cause)

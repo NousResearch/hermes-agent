@@ -8,9 +8,9 @@ from pathlib import Path
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
-from hermes_state_keys import local_identity
-from hermes_state_local import POLICY_PREFIX, local_receipt
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.authority.bindings import local_session_id
+from persistence.core.errors import AuthorityRefusal
 
 
 def local_adapter_map(authority):
@@ -56,18 +56,29 @@ def _refused_check(exc):
     that failed into a bare ``storage_unavailable``)."""
     import traceback
     frames = traceback.extract_tb(exc.__traceback__)
-    cause = exc.reason if isinstance(exc, RuntimeStoreError) else f'{type(exc).__name__}: {exc}'
+    cause = exc.reason if isinstance(exc, AuthorityRefusal) else f'{type(exc).__name__}: {exc}'
     where = f' at {frames[-1].name}:{frames[-1].lineno}' if frames else ''
     chained = f', caused by {_refused_check(exc.__cause__)}' if exc.__cause__ is not None else ''
     return f'{cause}{where}{chained}'
 
 
-class _ReceiptRefused(RuntimeStoreError):
+class _ReceiptRefused(AuthorityRefusal):
     """A refused receipt ``restore_local_session`` already logged with its failing check."""
 
 
-class _CatchUpPending(RuntimeStoreError):
+class _CatchUpPending(AuthorityRefusal):
     """The receipt's compression catch-up is committing in a worker; this restore is refused."""
+
+
+def _stored_receipt(authority, sid):
+    """*sid*'s stored creation receipt as a dict (``legacy_session_id`` only on an adopted legacy row)."""
+    binding = authority_persistence(authority).bindings.receipt(sid)
+    receipt = {'profile_id': binding.profile_id, 'principal_id': binding.principal_id, 'request_id': binding.request_id,
+               'session_id': binding.session_id, 'route': binding.route, 'entry': binding.entry,
+               'policy': binding.policy, 'lineage': list(binding.lineage)}
+    if binding.legacy_session_id is not None:
+        receipt['legacy_session_id'] = binding.legacy_session_id
+    return receipt
 
 
 def _with_untracked_compression(authority, sid, receipt):
@@ -78,16 +89,14 @@ def _with_untracked_compression(authority, sid, receipt):
     (``session_local_adoption``); a sync restore on the loop that still finds it hands it to a tracked
     worker, which publishes the session once it commits, and refuses this read.
     """
-    from hermes_state_local_lineage import adopt_untracked_compression, adoptable_compression
-    with authority.db._read_ctx() as conn:
-        if adoptable_compression(conn, receipt) is None:
-            return receipt
-    from gateway.session_local_adoption import on_owner_loop, schedule_adoption
+    from gateway.session_local_adoption import _adopt, _binding, on_owner_loop, schedule_adoption
+    if not authority_persistence(authority).bindings.compression_adoptable(_binding(receipt)):
+        return receipt
     if on_owner_loop():
         schedule_adoption(authority, sid, receipt)
         raise _CatchUpPending('storage_unavailable')
-    adopt_untracked_compression(authority.db, epoch=authority.epoch, session_id=sid, expected=receipt)
-    return local_receipt(authority.db, sid)
+    _adopt(authority, sid, receipt)
+    return _stored_receipt(authority, sid)
 
 
 def _checked_entry(authority, receipt, source, route):
@@ -103,34 +112,24 @@ def _checked_entry(authority, receipt, source, route):
     if (entry.session_key != route
             or entry.origin.to_dict() != source.to_dict()):
         raise ValueError('entry mismatch')
-    row = authority.db.get_session(entry.session_id)
-    if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
+    row = authority_persistence(authority).sessions.get(entry.session_id)
+    if row is None or (row.session_key, row.chat_id, row.user_id) != (route, source.chat_id, source.user_id):
         raise ValueError('stored identity mismatch')
     return entry
 
 
 def owned_receipt(authority, sid):
     """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
-    receipt = local_receipt(authority.db, sid)
+    receipt = _stored_receipt(authority, sid)
     if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
-               local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+               local_session_id(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
     if receipt['session_id'] != sid or sid != chat_id:
         raise ValueError('identity mismatch')
     source = local_source(authority, chat_id, receipt['principal_id'])
     route = authority.runner.session_store._generate_session_key(source)
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
-
-
-def unused_session(conn, session_id):
-    """*session_id* holds nothing: no transcript, ledger rows or children (what the SessionStore's
-    stale-route heal, #54878, mints as a route's replacement before any turn runs on it)."""
-    return conn.execute(
-        'SELECT 1 FROM messages WHERE session_id=? UNION ALL SELECT 1 FROM session_admissions '
-        'WHERE target_session_id=? UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? '
-        'UNION ALL SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1',
-        (session_id, session_id, session_id, session_id)).fetchone() is None
 
 
 def _stray_route_target(authority, receipt, session_id):
@@ -141,9 +140,8 @@ def _stray_route_target(authority, receipt, session_id):
     refuses: it is not provably a stray."""
     if not session_id or session_id in receipt.get('lineage', [receipt['session_id']]):
         return False
-    with authority.db._read_ctx() as conn:
-        if not unused_session(conn, session_id):
-            return False
+    if authority_persistence(authority).bindings.target_has_history(session_id):
+        return False
     logging.getLogger(__name__).warning(
         'Local route for %s named an empty replacement %s outside its lineage; restoring the receipt target',
         receipt['session_id'], session_id)
@@ -163,20 +161,19 @@ def restore_local_session(authority, sid):
         if adopted is not receipt:  # re-read after a catch-up: check the copy that will be served
             receipt, entry = adopted, _checked_entry(authority, adopted, source, route)
         target = entry.session_id
-        from hermes_state_local_lineage import validate_local_lineage
-        with authority.db._read_ctx() as conn:
-            validate_local_lineage(conn, receipt)
+        from gateway.session_local_adoption import _binding
+        authority_persistence(authority).bindings.validate_lineage(_binding(receipt))
     except _CatchUpPending:
         raise
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         # The client only sees the bounded code: gateway.log names the check that refused (#140099).
         logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
-        if isinstance(exc, RuntimeStoreError):
+        if isinstance(exc, AuthorityRefusal):
             raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
         raise _ReceiptRefused('storage_unavailable') from exc
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     live = authority.sessions.get(sid)
     from gateway.session_history_mount import is_history_mount
     if live is None or is_history_mount(live):
@@ -186,7 +183,7 @@ def restore_local_session(authority, sid):
             current = store._entries.get(route)
             if current is not None and current.session_id != target:
                 if not _stray_route_target(authority, receipt, current.session_id):
-                    raise RuntimeStoreError('admission_conflict')
+                    raise AuthorityRefusal('admission_conflict')
                 current = None
             # The receipt is the creation copy; a persisted entry for the same target keeps the
             # route's explicit ``/yolo`` toggle (an OFF over a ``--yolo`` launch must survive a
@@ -207,7 +204,7 @@ def restore_local_session(authority, sid):
     elif (not adapter.authorize_source(live.source)
           or live.source.to_dict() != source.to_dict()
           or adapter.policies.get(chat_id) != policy):
-        raise RuntimeStoreError('storage_unavailable')
+        raise AuthorityRefusal('storage_unavailable')
     elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):
         pass  # every claim of a live session lands here: no write, so no wait on the store lock
     else:
@@ -220,7 +217,7 @@ def restore_local_session(authority, sid):
                 store._entries[route] = entry
             elif (current.session_id not in receipt.get('lineage', [sid])
                     and not _stray_route_target(authority, receipt, current.session_id)):
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
             else:
                 current.session_id = target
     return SessionRef(authority.profile_id, sid)
@@ -240,7 +237,7 @@ def transcript_target(authority, ref):
     live = authority.sessions[ref.session_id]
     if live.source is not None and live.source.platform == Platform.LOCAL:
         restore_local_session(authority, ref.session_id)
-        return local_receipt(authority.db, ref.session_id)['entry']['session_id']
+        return authority_persistence(authority).bindings.receipt(ref.session_id).current_target
     return authority.physical_target(ref)
 
 
@@ -251,21 +248,29 @@ def transcript_target(authority, ref):
 RESUME_HISTORY_BYTES = 3 * 1024 * 1024
 
 
-def display_rows(db, target):
+def _live_rows(store, target):
+    """The live transcript of physical *target* as replay dicts, each with its ``_row_id``."""
+    from persistence.conversation.messages import ConversationRequest
+    return [row.as_openai_message() for row in store.messages.read_conversation(
+        target, ConversationRequest(include_row_ids=True))]
+
+
+def display_rows(store, target):
     """``(live row ids, display rows, truncated)`` of physical *target*, the live ids read first
     (``local_history``'s fence). The display rows are the compression lineage as main's resume and the
     REST transcript show it: every live row, and the newest compaction-archived rows that fit what the
     live rows leave of ``RESUME_HISTORY_BYTES`` (``truncated`` when older ones were left out). A lineage
     over the resume cap shows only the live rows."""
-    from hermes_state import SessionResumeTooLargeError
-    live_rows = db.get_messages_as_conversation(target, include_row_ids=True)
+    from persistence.conversation.messages import ConversationRequest, ResumeTooLarge, TranscriptView
+    from storage_limits import resolved_max_resume_messages
+    live_rows = _live_rows(store, target)
     live = {row['_row_id'] for row in live_rows}
     try:
-        db.assert_resume_safe(target)
-    except SessionResumeTooLargeError:
+        store.messages.assert_resume_safe(target, max_messages=resolved_max_resume_messages())
+    except ResumeTooLarge:
         return live, [], False
-    kept, truncated = _fit_archive(live_rows, db.get_messages_as_conversation(
-        target, include_ancestors=True, include_compacted=True, include_row_ids=True))
+    kept, truncated = _fit_archive(live_rows, [row.as_openai_message() for row in store.messages.read_conversation(
+        target, ConversationRequest(view=TranscriptView.DISPLAY, include_lineage=True, include_row_ids=True))])
     return live, kept, truncated
 
 
@@ -287,18 +292,18 @@ def _fit_archive(live_rows, display):
 async def prepare_history(authority, ref):
     """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
     target = transcript_target(authority, ref)
-    return target, await asyncio.to_thread(display_rows, authority.db, target)
+    return target, await asyncio.to_thread(display_rows, authority_persistence(authority), target)
 
 
-def omitted_history_state(db, target):
+def omitted_history_state(store, target):
     """``(todo_state, message_count)`` of a resume that omits its transcript: the physical *target*'s stored
-    count and its todo plan. Skips the display-row lineage read; the todo lookup still walks the lineage's
-    todo rows (removed ones included, so an undone plan stays gone)."""
+    count and its todo plan, read through the storage handle *store*. Skips the display-row lineage read; the
+    todo lookup still walks the lineage's todo rows (removed ones included, so an undone plan stays gone)."""
     from tui_gateway.tool_progress import _todo_state_from_db
-    row = db.get_session(target)
+    row = store.sessions.get(target)
     if row is None:  # deleted since the attach resolved it
-        raise RuntimeStoreError('not_found')
-    return _todo_state_from_db(db, target), int(row.get('message_count') or 0)
+        raise AuthorityRefusal('not_found')
+    return _todo_state_from_db(store, target), int(row.message_count or 0)
 
 
 def _merge_live_in_stored_order(display, live):
@@ -343,15 +348,15 @@ def local_history(authority, ref, prepared=None):
     compaction since then re-reads the lineage here. When the byte budget left older archived rows out
     (``display_rows``), the first row carries ``archived_truncated: true``.
     """
-    db = authority.db
+    store = authority_persistence(authority)
     target = transcript_target(authority, ref)
     read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
-                                     else display_rows(db, target))
-    live = db.get_messages_as_conversation(target, include_row_ids=True)
+                                     else display_rows(store, target))
+    live = _live_rows(store, target)
     live_ids = {row['_row_id'] for row in live}
     if not read_live <= live_ids:
-        read_live, display, truncated = display_rows(db, target)
-        live = db.get_messages_as_conversation(target, include_row_ids=True)
+        read_live, display, truncated = display_rows(store, target)
+        live = _live_rows(store, target)
     elif live_ids - read_live:
         # Rows appended since the prepare count against the archive budget too (no lineage re-read).
         display, cut = _fit_archive(live, display)
@@ -378,37 +383,26 @@ def reopen_local_session(authority, ref):
     live = authority.sessions.get(ref.session_id)
     if live is None or live.source is None or live.source.platform != Platform.LOCAL:
         return
-    target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
-    row = authority.db.get_session(target)
-    if row is not None and row.get('end_reason') is not None:
-        authority.db.reopen_session(target)
+    store = authority_persistence(authority)
+    target = store.bindings.receipt(ref.session_id).current_target
+    row = store.sessions.get(target)
+    if row is not None and row.end_reason is not None:
+        store.sessions.reopen(target)
 
 
 def reset_local_session(store, old_entry, session_id, now, display_name):
-    from hermes_state_local_lineage import reset_local_target
+    from persistence_assembly import store_location
     entry = SessionEntry(old_entry.session_key, session_id, now, now,
         origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
         display_name=display_name if display_name is not None else old_entry.display_name,
         is_fresh_reset=True)
-    db = store._db_for_key(old_entry.session_key)
+    handle = store._persistence_for_key(old_entry.session_key)
     epochs = getattr(store, '_local_authority_epochs', None) or {}
-    epoch = epochs.get(Path(db.db_path).resolve(), store._local_authority_epoch) if db is not None else store._local_authority_epoch
-    reset_local_target(db, epoch=epoch,
-                       parent_session_id=old_entry.session_id, entry=entry.to_dict())
+    epoch = (epochs.get(Path(store_location(handle.scope)).resolve(), store._local_authority_epoch) if handle is not None
+             else store._local_authority_epoch)
+    handle.bindings.reset_target(epoch=epoch, parent_session_id=old_entry.session_id, entry=entry.to_dict())
     store._entries[old_entry.session_key] = entry
     return entry
-
-
-# The receipts boot restores: an open row (or one compressed away, for its catch-up), unsettled input
-# or a stored close. An ended session keeps its receipt and stays resumable; ``authorize`` restores it
-# on first touch, so the live registry no longer grows with every session ever opened (#143547 LC-36).
-_BOOT_RECEIPTS_SQL = (
-    "SELECT m.key FROM state_meta m LEFT JOIN sessions s "
-    "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-    "WHERE m.key LIKE ? AND (s.ended_at IS NULL OR s.end_reason = 'compression' "
-    "OR EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(m.key, ?) "
-    "AND a.status IN ('queued','started','unknown')) "
-    "OR EXISTS (SELECT 1 FROM state_meta c WHERE c.key = ? || substr(m.key, ?)))")
 
 
 def restore_completion_route(runner, session_key):
@@ -420,37 +414,37 @@ def restore_completion_route(runner, session_key):
     authority, parsed = active_authority(runner), _parse_session_key(session_key) or {}
     if authority is None or parsed.get('platform') != Platform.LOCAL.value or parsed['chat_id'] in authority.sessions:
         return
-    with contextlib.suppress(RuntimeStoreError):
+    with contextlib.suppress(AuthorityRefusal):
         restore_local_session(authority, parsed['chat_id'])
 
 
-def release_handed_off_receipts(db, *, epoch):
+def _messaging_lanes():
+    """Every source label ``_messaging_platform`` names a messaging lane for: the platform values and the
+    bundled (by directory and manifest name) and registered plugin platforms."""
+    from gateway.platform_registry import platform_registry
+    from gateway.session_route_recovery import _messaging_platform
+    names, aliases = Platform._scan_bundled_plugin_platforms()
+    labels = {platform.value for platform in Platform} | names | set(aliases) | platform_registry.registered_names()
+    return frozenset(label for label in labels if _messaging_platform(label) is not None)
+
+
+def release_handed_off_receipts(store, *, epoch):
     """Boot heal for #143286: an older build's ``/handoff`` (or a platform ``/resume``) moved a local
     session onto a messaging lane but kept its local receipt, so every open, pin or rename refused it
     (``stored identity mismatch``) and its title never resolved. Retire each such receipt, so the row
     restores from its route like any other platform session, and move the rest of its conversation
-    there with it (``hand_off_conversations``). Only receipts whose CURRENT target a messaging lane
-    now holds: any other refused receipt stays as it is, logged when it is touched."""
-    from gateway.session_route_recovery import _messaging_platform
-    from hermes_state_local import hand_off_conversations, moved_receipts
-    from hermes_state_runtime import _epoch
-
-    def write(conn):
-        _epoch(conn, epoch)
-        moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
-                 if _messaging_platform(source) is not None}
-        return hand_off_conversations(conn, moved)
-    for owner, (target, source) in db._execute_write(write).items():
+    there with it. Only receipts whose CURRENT target a messaging lane now holds: any other refused
+    receipt stays as it is, logged when it is touched. *store* is the storage interface handle."""
+    for owner, (target, source) in store.bindings.release_handed_off_receipts(epoch=epoch, lanes=_messaging_lanes()).items():
         logging.getLogger(__name__).info(
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)
 
 
 def local_receipt_ids(authority):
-    from gateway.session_viewer_close import CLOSE_PREFIX
-    start = len(POLICY_PREFIX) + 1
-    with authority.db._read_ctx() as conn:
-        return [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
+    """The receipts boot restores: an open row (or one compressed away, for its catch-up), unsettled input
+    or a stored close. An ended session keeps its receipt and stays resumable; ``authorize`` restores it
+    on first touch, so the live registry no longer grows with every session ever opened (#143547 LC-36)."""
+    return authority_persistence(authority).bindings.boot_session_ids()
 
 
 def recover_local_sessions(authority, *, schedule=False):
@@ -458,15 +452,15 @@ def recover_local_sessions(authority, *, schedule=False):
     for sid in local_receipt_ids(authority):
         try:
             ref = restore_local_session(authority, sid)
-            pending = list_session_admissions(authority.db, session_id=sid)
-            if any(row['status'] == 'unknown' for row in pending):
+            pending = authority_persistence(authority).admissions.list(session_id=sid)
+            if any(row.status == 'unknown' for row in pending):
                 continue  # the drain pauses on it until its user's Discard
             if schedule and pending:
                 authority._schedule(ref)
             orphans.append(sid)
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
@@ -474,7 +468,7 @@ def recover_local_sessions(authority, *, schedule=False):
         from gateway.session_runtime_workers import track_mutation
         for sid in rearm_persisted_closes(authority):
             authority._schedule(SessionRef(authority.profile_id, sid))
-            if any(row['status'] == 'unknown' for row in list_session_admissions(authority.db, session_id=sid)):
+            if any(row.status == 'unknown' for row in authority_persistence(authority).admissions.list(session_id=sid)):
                 # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
                 track_mutation(authority, settle_viewer_close(authority, sid))
         from gateway.session_viewer_close import arm_startup_orphan_closes

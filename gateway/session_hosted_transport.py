@@ -15,14 +15,14 @@ from pathlib import Path
 import threading
 import time
 
-from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import SessionActor
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from gateway.owner_identity import same_owner
-from hermes_state_runtime import RuntimeStoreError, _epoch
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
-_BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',
                          'info', 'interrupt', 'discard', 'approve'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
@@ -38,24 +38,24 @@ def owner_request(home, verb, params, *, timeout=30):
     """Authenticated private socket exchange; no owner-start or storage fallback."""
     home = Path(home)
     if home != home.resolve():
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from hermes_cli.gateway_runtime import discover_gateway_endpoint, control_home_for
     deadline = time.monotonic() + timeout
     discovered = discover_gateway_endpoint(home, timeout=timeout)
     if discovered.state != 'ready' or discovered.endpoint is None:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     from hermes_constants import hermes_home_key
     if hermes_home_key(discovered.endpoint.profile_id) != hermes_home_key(home):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     # Socket identity and logical authority identity are distinct under multiplex.
     params = {**params, 'profile_id': discovered.endpoint.profile_id}
     home = control_home_for(home, discovered.endpoint)
     timeout = deadline - time.monotonic()
     if timeout <= 0:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params}).encode() + b'\n'
     if len(request) > 65536:
-        raise RuntimeStoreError('request_too_large')
+        raise AuthorityRefusal('request_too_large')
     if os.name == 'nt':
         from gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(home, request, timeout)
@@ -69,16 +69,16 @@ def owner_request(home, verb, params, *, timeout=30):
                 return peer.recv(65536)
             raw = _read_response_line(read, deadline)
     if not raw:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     response = json.loads(raw)
     if response.get('ok') is not True:
         reason = str(response.get('error', '')).split(': ')[-1]
         if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
                           'stale_generation', 'admission_conflict', 'response_too_large', 'request_too_large'}:
             reason = 'runtime_draining'
-        raise RuntimeStoreError(reason)
+        raise AuthorityRefusal(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     return response['result']
 
 
@@ -87,14 +87,14 @@ def _attest(binding, operation, params):
         result = owner_request(binding['source_home'], 'hosted-attest', {
             'selector': binding['selector'], 'operation': operation,
             'params': {**params, '_target_home': binding['target_home']}})
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         raise
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('runtime_draining') from exc
+        raise AuthorityRefusal('runtime_draining') from exc
     if not isinstance(result, dict) or not isinstance(result.get('owner'), str) or not result['owner']:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if result.get('target_home') != binding['target_home']:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return result
 
 
@@ -108,14 +108,14 @@ def source_attachment_chunk(service, member, room_id, manifest, params):
     index, offset = params.get('index'), params.get('offset')
     if (type(index) is not int or not 0 <= index < len(manifest)
             or type(offset) is not int or not 0 <= offset < manifest[index]['size']):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     item = manifest[index]
-    saved = HostedRoomAttachmentStore(service.db_path).read_range(room_id=room_id,
+    saved = HostedRoomAttachmentStore(authority_persistence(service.authority)).read_range(room_id=room_id,
         attachment_id=item['attachment_id'], event_id=item['event_id'], recipient_member_id=member,
         offset=offset, length=_CHUNK_BYTES)
     if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return {'data_base64': base64.b64encode(saved.data).decode('ascii'),
             'sha256': saved.attachment['sha256']}
 
@@ -127,13 +127,13 @@ def source_attachment_digests(service, member, room_id, manifest):
     to the attested input and the preflight can verify the durable row without bytes.
     """
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-    store = HostedRoomAttachmentStore(service.db_path)
+    store = HostedRoomAttachmentStore(authority_persistence(service.authority))
     digests = []
     for item in manifest:
         saved = store.describe(room_id=room_id, attachment_id=item['attachment_id'],
                                event_id=item['event_id'], recipient_member_id=member)
         if any(saved[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         digests.append(saved['sha256'])
     return digests
 
@@ -147,7 +147,7 @@ def _attachment_data(binding, attested, params):
     manifest = validate_bound_task_manifest(manifest)
     digests = attested.get('attachment_digests')
     if not isinstance(digests, list) or len(digests) != len(manifest):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     result = []
     for index, (item, digest) in enumerate(zip(manifest, digests)):
         data = bytearray()
@@ -159,10 +159,10 @@ def _attachment_data(binding, attested, params):
             raw = base64.b64decode(chunk['data_base64'], validate=True)
             expected = min(_CHUNK_BYTES, item['size'] - len(data))
             if chunk['owner'] != attested['owner'] or len(raw) != expected or chunk['sha256'] != digest:
-                raise RuntimeStoreError('permission_denied')
+                raise AuthorityRefusal('permission_denied')
             data.extend(raw)
         if hashlib.sha256(data).hexdigest() != digest:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         result.append((item, bytes(data)))
     return result
 
@@ -179,7 +179,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
     """Install profile-selected private routing over the existing authority registry.
 
     The callback must validate current room authority/member and, for submit and
-    execute, exact TaskIdentity, generation and prompt against durable task data.
+    execute, exact HostedTaskIdentity, generation and prompt against durable task data.
     It returns {'owner': durable_room_owner_subject}, never a client actor.
     Every wire envelope names the logical profile_id, not its control socket home.
     Reinstallation for a secondary preserves routing to all other served owners.
@@ -189,27 +189,27 @@ def install_hosted_transport(server, authority, loop, *, attest):
         params = dict(envelope)
         profile_id = params.pop('profile_id', None)
         if not isinstance(profile_id, str) or not Path(profile_id).is_absolute():
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         home = Path(profile_id)
         if home != home.resolve():
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
         selected = registry.for_home(home) if registry is not None else authority
         if selected is None or selected.profile_id != profile_id:
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         assert_named_profile_home_live(home)
         return selected, params
 
     def source(envelope, peer):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)
         if callback is None:
-            raise RuntimeStoreError('runtime_draining')
+            raise AuthorityRefusal('runtime_draining')
         with owner_scope(selected):
             return callback(params['selector'], params['operation'], params['params'])
 
@@ -220,15 +220,15 @@ def install_hosted_transport(server, authority, loop, *, attest):
 
     def produce(authority, envelope):
         if set(envelope) != {'source_home', 'selector', 'operation', 'params'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         operation, params = envelope['operation'], dict(envelope['params'])
         selector = envelope['selector']
         if operation not in _OPERATIONS or set(selector) != {'room_id', 'member_id', 'profile'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         from gateway.session_authorities import served_profile_name
         profile = served_profile_name(Path(authority.profile_id))
         if selector['profile'] != profile:
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         binding = {'source_home': envelope['source_home'], 'selector': selector,
                    'target_home': authority.profile_id}
         attested = _attest(binding, operation, params)
@@ -240,22 +240,15 @@ def install_hosted_transport(server, authority, loop, *, attest):
         # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
                                     authorize=lambda *args: True)
-        key = _BINDING + rpc.ref.session_id
-        encoded = json.dumps(binding, sort_keys=True)
-        def persist(conn):
-            _epoch(conn, authority.epoch)
-            old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-            if old is not None and old[0] != encoded:
-                raise RuntimeStoreError('permission_denied')
-            conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
-        authority.db._execute_write(persist)
+        authority_persistence(authority).hosted_rooms.bind_transport(
+            epoch=authority.epoch, session_id=rpc.ref.session_id, binding=json.dumps(binding, sort_keys=True))
         if operation == 'submit':
             rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
             # Only the source's durable, attested text may become the admitted input.
             params.pop('prompt_sha256', None)
             params['prompt'] = attested['prompt']
             params['attachments'] = attested['attachments'] or None
-            params['task'] = TaskIdentity(**params['task'])
+            params['task'] = HostedTaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None
         result = rpc._call(operation, **params)
         return result
@@ -275,13 +268,11 @@ def check_remote_hosted_admission(authority, ref, row):
 
 
 def _check_remote_hosted_admission(authority, ref, row):
-    with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                              (_BINDING + ref.session_id,)).fetchone()
+    stored = authority_persistence(authority).hosted_rooms.transport_binding(ref.session_id)
     if stored is None:
         return False
     try:
-        binding = json.loads(stored[0])
+        binding = json.loads(stored)
         identity, generation = json.loads(row['request_id'][7:])
         if (not row['request_id'].startswith('hosted:')
                 or not same_owner(row['principal_id'], _principal(authority, binding).subject)
@@ -299,7 +290,7 @@ def _check_remote_hosted_admission(authority, ref, row):
                 attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
-        raise RuntimeStoreError('permission_denied') from exc
+        raise AuthorityRefusal('permission_denied') from exc
     # Outside the permission_denied fold: a corrupted or missing retained document is a
     # storage fault of this destination, not a revoked source binding.
     verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
@@ -322,7 +313,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
         if operation == 'submit':
             # The private control request is 64 KiB, smaller than a legal room prompt.
             params['prompt_sha256'] = hashlib.sha256(params.pop('prompt').encode('utf-8')).hexdigest()
-        if isinstance(params.get('task'), TaskIdentity):
+        if isinstance(params.get('task'), HostedTaskIdentity):
             params['task'] = asdict(params['task'])
         result = owner_request(self.home, 'hosted-producer', {
             **self.binding, 'operation': operation, 'params': params})
@@ -345,7 +336,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
         degrades to the bounded receipt rows (all the driver matches on) instead of failing."""
         try:
             return super().history(profile=profile, session_id=session_id, source=source)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             if exc.reason != 'response_too_large':
                 raise
         return [{**receipt, 'role': 'assistant', 'content': receipt['text']}
@@ -369,7 +360,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
                 self.results(profile=self.binding['selector']['profile'],
                              session_id=session_id, source='bot_room', admission_ids=pending)
                 time.sleep(0.25)
-        except (OSError, ValueError, RuntimeStoreError):
+        except (OSError, ValueError, AuthorityRefusal):
             # Retain callbacks/input for normal driver history recovery; no retry
             # admission and no assertion that a timed-out request was unaccepted.
             return

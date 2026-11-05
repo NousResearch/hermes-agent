@@ -176,10 +176,10 @@ def recover_detached_sessions(authority, pending):
     from gateway.session_contract import SessionRef
     from gateway.session_route_recovery import restore_routed_session
     scheduled = []
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_persistence import authority_persistence
     for session_id in sorted(pending):
         if session_id in authority.sessions or not any(  # a lost (unknown) turn waits for /discard
-                row['status'] == 'queued' for row in list_session_admissions(authority.db, session_id=session_id)):
+                row.status == 'queued' for row in authority_persistence(authority).admissions.list(session_id=session_id)):
             continue
         if restore_routed_session(authority, session_id) is None:
             continue
@@ -230,8 +230,9 @@ async def follow_detached_pin(runner, evt):
     session_id = authority.logical_owner(target) if verdict == 'deliver' else None
     if session_id is None or session_id == authority.logical_owner(entry.session_id):
         return evt
-    row = authority.db.get_session(target)
-    if row is None or row.get('ended_at'):
+    from gateway.session_persistence import authority_persistence
+    row = authority_persistence(authority).sessions.get(target)
+    if row is None or row.ended_at:
         return evt
     live = _mounted(authority, session_id)
     if live is None or live.route != detached_key(key, session_id):
@@ -255,11 +256,11 @@ def _mounted(authority, session_id):
     if session_id not in authority.sessions:
         from gateway.session_authorities import owner_scope
         from gateway.session_route_recovery import restore_routed_session
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         try:
             with owner_scope(authority):
                 restore_routed_session(authority, session_id)
-        except RuntimeStoreError:  # draining: the drain retries it
+        except AuthorityRefusal:  # draining: the drain retries it
             return None
     return authority.sessions.get(session_id)
 
@@ -289,15 +290,15 @@ def detached_entry(store, source):
     from gateway.session import SessionEntry
     key = source.detached_route
     session_id = str(detached_session_id(key))
-    db = store._db_for_key(key)
-    row = db.get_session(session_id) if db is not None else None
-    tip = (db.get_compression_tip(session_id) if db is not None else None) or session_id
+    persistence = store._persistence_for_key(key)
+    row = persistence.sessions.get(session_id) if persistence is not None else None
+    tip = (persistence.lineage.tip(session_id) if persistence is not None else None) or session_id
     # No route names it, so its by-id reads and writes (history, transcript, compression) find their
     # profile's store through the key; ``forget_detached`` drops these.
     hints = store._lazy('_session_owner_hints', dict)
     hints[session_id] = hints[tip] = key
     now = datetime.now()
     # Never a new conversation (that would fire session:start and first-contact notes).
-    started = datetime.fromtimestamp(row['started_at']) if row and row.get('started_at') else now - timedelta(seconds=1)
+    started = datetime.fromtimestamp(row.started_at) if row and row.started_at else now - timedelta(seconds=1)
     return SessionEntry(session_key=key, session_id=tip, created_at=started, updated_at=now, origin=source,
                         platform=source.platform, chat_type=source.chat_type)

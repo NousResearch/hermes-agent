@@ -349,22 +349,15 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> list[d
 def _build_from_sessions_db(platform_name: str) -> list[dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     def _origins() -> Iterable[tuple[dict[str, Any], Any]]:
-        from hermes_state_registry import acquire, release_or_close
-        db = acquire()
-        try:
-            lister = getattr(db, "list_gateway_sessions", None)
-            if not callable(lister):
-                return
-            rows = lister(platform=platform_name, active_only=False)
-        finally:
-            release_or_close(db)
-        for row in rows:
-            origin = None
-            with contextlib.suppress(TypeError, ValueError):
-                origin = json.loads(row["origin_json"]) if row.get("origin_json") else None
-            if not isinstance(origin, dict) or not origin:
-                origin = {"chat_id": row.get("chat_id"), "thread_id": row.get("thread_id"), "chat_name": row.get("display_name")}
-            yield origin, row.get("chat_type") or "dm"
+        from persistence_assembly import open_persistence, profile_scope
+        with open_persistence(profile_scope()) as store:
+            entries = store.sessions.list_gateway_sessions(platform=platform_name, active_only=False)
+        for entry in entries:
+            session = entry.session
+            origin = session.origin
+            if not origin:
+                origin = {"chat_id": session.chat_id, "thread_id": session.thread_id, "chat_name": session.display_name}
+            yield origin, session.chat_type or "dm"
     return _entries_from_origins(platform_name, "state.db session read failed", _origins)
 
 

@@ -13,7 +13,6 @@ import json
 import logging
 from dataclasses import asdict, replace
 from functools import partial
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,7 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     names into the returned toolsets. An editor-MCP session keeps its frozen servers."""
     from gateway.session_policy import _extract_config_secrets, _resolve_toolsets
     from hermes_cli.tools_config import enabled_mcp_server_names
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if policy.editor_mcp_json is not None:
         return toolsets
     request = json.loads(policy.request_json)
@@ -114,7 +113,7 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     try:
         selected = _resolve_toolsets({} if pick is None else {'toolsets': pick},
                                      json.loads(json.dumps(live)), policy.source, policy.safe_mode, policy.coding_posture)
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         return toolsets  # the rest of the launch pick no longer validates against the profile: keep the frozen servers
     # A picked server config removed keeps a disabled stub in the stored section, so every later refresh
     # (after an owner restart too) still knows that name as one of the pick's servers, not an unknown toolset.
@@ -139,19 +138,19 @@ def _prepare(authority, session_id, mcp_only=False, adopt_only=False):
     it was derived at. None when the session takes no refresh or nothing moved. *adopt_only*: the adoption
     of a frozen Bot Chat alone, without the config-derived settings (a later open on the same attachment)."""
     from gateway.run import _load_gateway_config
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import SURFACES, restore_policy
-    from hermes_state_local import local_receipt
-    from hermes_state_mutation_prepared import policy_picks
     from tools.terminal_scope import build_profile_terminal_scope
-    generation = authority.db.get_session(session_id)['runtime_generation']
-    stored = local_receipt(authority.db, session_id)['policy']
+    store = authority_persistence(authority)
+    generation = store.sessions.get(session_id).runtime_generation
+    stored = store.bindings.receipt(session_id).policy
     old = restore_policy(stored)
     # A bypass launch never reads the profile; cron, Kanban and room routes are not resumed CLI sessions.
     if old.ignore_user_config or old.source not in SURFACES:
         return None
-    home = Path(authority.db.db_path).resolve().parent
+    home = store.scope.profile_dir
     terminal = {} if mcp_only or adopt_only else build_profile_terminal_scope(home)
-    live, picked = _load_gateway_config(home / 'config.yaml'), policy_picks(authority.db, session_id)
+    live, picked = _load_gateway_config(home / 'config.yaml'), store.runtime.policy_picks(session_id)
     base = old
     if not mcp_only:
         # Opening a Bot Chat an earlier build froze adopts it: it follows its profile from now on.
@@ -217,8 +216,8 @@ async def commit_refresh(authority, ref, *, mcp_only=False, adopt_only=False):
 
 
 async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
+    from gateway.session_persistence import authority_persistence
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_mutation_prepared import commit_refreshed_policy
     prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
     # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
     # leaves a pending one for the next open.
@@ -234,9 +233,9 @@ async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
     # Compare-and-swap against the receipt as stored (JSON lists), not its restored tuple form. The
     # publication is the commit's own shielded follow-up: a caller cancelled mid-commit cannot leave the
     # stored policy ahead of the live one (restore_local_session refuses that pair).
-    await tracked_write(authority, partial(commit_refreshed_policy, authority.db, epoch=authority.epoch,
-                                           session_id=ref.session_id, old=stored, new=asdict(policy),
-                                           generation=generation),
+    await tracked_write(authority, partial(authority_persistence(authority).runtime.commit_refreshed_policy,
+                                           authority.epoch, session_id=ref.session_id, old=stored,
+                                           new=asdict(policy), generation=generation),
                         then=lambda _generation: _publish(authority, ref, moved))
     pending.discard(ref.session_id)
     return True
@@ -254,7 +253,9 @@ async def refresh_resumed_policy(authority, ref, *, attached=False):
     try:
         await (commit_refresh(authority, ref, adopt_only=True) if attached else commit_refresh(authority, ref))
     except Exception as exc:  # health: allow BLE001 -- a refresh is best-effort; the resume itself must proceed
-        reason = getattr(exc, 'reason', None) or type(exc).__name__
+        from persistence.core.errors import TransientStoreError
+        from storage_user_copy import error_type_name
+        reason = (None if isinstance(exc, TransientStoreError) else getattr(exc, 'reason', None)) or error_type_name(exc)
         busy = reason in {'session_busy', 'unknown_execution', 'revision_conflict'}
         logger.log(logging.INFO if busy else logging.WARNING, 'Session %s keeps its stored policy on resume: %s',
                    ref.session_id, reason)
@@ -265,10 +266,10 @@ def drop_session_terminal(authority, ref):
     isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
     Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
     from gateway.session_authorities import owner_scope
-    from hermes_state_local import local_receipt
+    from gateway.session_persistence import authority_persistence
     from tools.terminal_tool import _qualify_task_key, clear_session_cwd
     from tools.terminal_tool_lifecycle import cleanup_vm
-    ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
+    ids = {ref.session_id, authority_persistence(authority).bindings.receipt(ref.session_id).current_target}
     route = authority.sessions[ref.session_id].route
     from gateway.session_policy import unbind_turn_workspace
     with owner_scope(authority):

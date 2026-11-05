@@ -23,6 +23,7 @@ from gateway import hosted_rooms_common as common
 from gateway.hosted_room_context import scheduled_post_kind, validate_context
 from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
 MAX_DISCUSSION_MEMBERS = 6
@@ -130,7 +131,7 @@ class DiscussionRoom:
 @dataclass(frozen=True)
 class DiscussionTaskPlan:
     """One deterministic member turn compatible with the driver schema."""
-    identity: driver.TaskIdentity
+    identity: HostedTaskIdentity
     payload: Mapping[str, Any]
     discussion_event_id: str
     member: DiscussionMember
@@ -666,7 +667,7 @@ def _make_task_plan(
         **({"input_context": input_context} if input_context is not None else {}),
         **({"attachments": attachments} if attachments else {}),
         **({"lead_routing": True} if lead_routing else {})})
-    identity = driver.TaskIdentity(
+    identity = HostedTaskIdentity(
         room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
         thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
     payload = {
@@ -875,7 +876,7 @@ def reconstruct_task_plan(
     room = validate_room(room_value, local_profiles=local_profiles)
     validated = _validated_events(events, room=room)
     identity, payload = task.get("identity"), task.get("payload")
-    if not isinstance(identity, driver.TaskIdentity) or not isinstance(payload, Mapping):
+    if not isinstance(identity, HostedTaskIdentity) or not isinstance(payload, Mapping):
         raise DiscussionReconstructionError("driver task has no valid identity or payload")
     fields = frozenset(payload)
     if not driver._TASK_PAYLOAD_REQUIRED_FIELDS <= fields <= (

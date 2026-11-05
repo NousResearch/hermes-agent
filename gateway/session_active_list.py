@@ -9,7 +9,7 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def _status(live, handle, pending) -> str:
@@ -22,11 +22,11 @@ def _status(live, handle, pending) -> str:
 
 async def active_list(connection, ref, params):
     if set(params) - {'profile', 'current_session_id'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if 'session:read' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     from gateway.session_live_listing import live_entries
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
     current = str(params.get('current_session_id') or '')
     rows = []
     for entry in await live_entries(connection.authority, connection.actor):

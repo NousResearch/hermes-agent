@@ -11,16 +11,17 @@ import uuid
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
+from gateway.session_persistence import authority_persistence
 from hermes_constants import profile_name_for_home
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, PersistenceError
 
 logger = logging.getLogger(__name__)
 
 
 # A refusal names the check that fired: the client prints ``field``/``detail`` beside the reason
 # code, and this log line is what a report can quote when the client's copy is not enough.
-def _refusal_data(exc: RuntimeStoreError) -> dict:
-    """The ``error.data`` for one ``RuntimeStoreError``: always the reason, plus the field and the
+def _refusal_data(exc: AuthorityRefusal) -> dict:
+    """The ``error.data`` for one ``AuthorityRefusal``: always the reason, plus the field and the
     detail when the raiser named them."""
     data = {'reason': exc.reason}
     for key in ('field', 'detail'):
@@ -46,7 +47,7 @@ def _profile_label(profile_id) -> str:
     return profile_name_for_home(text) or 'default'
 
 
-def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
+def _log_refusal(profile, method, exc: AuthorityRefusal) -> None:
     """One line per refusal, at the level its audience deserves.
 
     A refusal that names the check that fired is a launch diagnostic (warning). A bare reason code is
@@ -74,7 +75,7 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
 _STORAGE_TRACEBACKS = set()
 
 
-def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> None:
+def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error | PersistenceError) -> None:
     """Keep SQLite's diagnostic at the gateway while its wire error stays retryable.
 
     Clients retry on ``storage_unavailable``, so, like ``_log_refusal``, a retrying client must not
@@ -129,7 +130,7 @@ async def _resume_transcript(authority, ref, snapshot, history, omit):
     from gateway.session_local_recovery import omitted_history_state
     # A delete committed since the attach is ``not_found``, as one during the attach is.
     todo_state, count = await asyncio.to_thread(authority.unless_deleted, ref, partial(
-        omitted_history_state, authority.db, snapshot.transcript_target))
+        omitted_history_state, authority_persistence(authority), snapshot.transcript_target))
     return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
 
 
@@ -179,7 +180,7 @@ class AuthorityConnection:
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
         if not self.host_scoped:
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
@@ -195,8 +196,8 @@ class AuthorityConnection:
             # Hot-serve is still building it: retryable, not the final verdict for an unserved profile.
             # A shared socket holds such a frame until the start ends (``awaits_profile_start``); this
             # answers one whose wait ran out.
-            raise RuntimeStoreError('runtime_draining', field='profile', detail='the profile is still starting')
-        raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('runtime_draining', field='profile', detail='the profile is still starting')
+        raise AuthorityRefusal('profile_mismatch')
 
     def awaits_profile_start(self, request, held=()):
         """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
@@ -298,7 +299,7 @@ class AuthorityConnection:
         if self._operator is True and ws_method_refused_while_draining(getattr(self.authority, 'runner', None), method):
             # An interactive socket reaches a draining owner only in a restart's after-turn wait:
             # it may answer the parked turn and queue input, never change this owner's state.
-            exc = RuntimeStoreError('runtime_draining')
+            exc = AuthorityRefusal('runtime_draining')
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
@@ -306,7 +307,7 @@ class AuthorityConnection:
         if isinstance(profile, str) and profile:
             try:
                 routed = self._sibling_for(profile)
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {
                     'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
@@ -364,13 +365,13 @@ class AuthorityConnection:
             check_params_accepted(contract, original_params)
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             # A connector refusal keeps the legacy handlers' code and message (gateway/session_connections.py).
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': getattr(exc, 'wire_code', 4001), 'message': getattr(exc, 'wire_message', exc.reason),
                 'data': _refusal_data(exc)}}
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, *STORE_FAILURES) as exc:
             _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
                                  params.get('session_id'), exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
@@ -482,17 +483,17 @@ class AuthorityConnection:
             return await self._create(params, title)
 
     async def _create(self, params, title):
-        from gateway.session_local import stage_local_session, staged_creation_follows
+        from gateway.session_local import commit_local_session, stage_local_session, staged_creation_follows
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_local_title import resolve_titled_session, title_new_session
         from gateway.session_policy import BYPASS_FIELDS
         from gateway.session_runtime_workers import tracked_write
-        from hermes_state_local import commit_local_session
+        store = authority_persistence(self.authority)
         # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
         # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
-            raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
+            raise AuthorityRefusal('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if (not ref and title == 'Bot Chat'
                 and not any(params.get(name) is True for name in BYPASS_FIELDS)
@@ -506,11 +507,11 @@ class AuthorityConnection:
             if 'skills' in params:
                 # Skill files are read off the owner loop, once per NEW session (a retried
                 # request_id resumes the frozen policy and never re-renders).
-                from gateway.session_local_recovery import local_identity
+                from persistence.authority.bindings import local_session_id
                 from gateway.session_policy import render_launch_skills
                 params.setdefault('request_id', uuid.uuid4().hex)
-                sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
-                if self.authority.db.get_session(sid) is None:
+                sid = local_session_id(self.authority.profile_id, self.actor.subject, params['request_id'])
+                if store.sessions.get(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
@@ -521,25 +522,24 @@ class AuthorityConnection:
                 # every session behind one new chat (N50).
                 receipt = ref
                 await tracked_write(self.authority, partial(
-                    commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
+                    commit_local_session, store, epoch=self.authority.epoch, receipt=receipt))
                 ref = restore_local_session(self.authority, receipt['session_id'])
             # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy
-                from hermes_state_local import local_receipt
-                policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
+                policy = restore_policy(store.bindings.receipt(ref.session_id).policy)
                 await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
             if hidden:
-                await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
+                await tracked_write(self.authority, partial(store.sessions.set_hidden, ref.session_id, True))
         return await self.resume(ref, {})
 
     async def ping(self, ref, params):
         if not self.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         if params:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return {'pong': True}
 
     async def describe(self, ref, params):
@@ -558,18 +558,18 @@ class AuthorityConnection:
     async def info(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
         if set(params) != {'session_id'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         await self.authority.resolve(self.actor, ref)
         return await snapshot_info(self.authority, ref)
 
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         limit = params.get('limit', 200)
         if set(params) - {'limit', 'title', 'include_hidden', 'scope'} or type(limit) is not int or not 1 <= limit <= 200:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if params.get('scope', 'live') not in {'live', 'stored'} or ('title' in params and 'scope' in params):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if params.get('scope') == 'stored':
             from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
@@ -582,17 +582,19 @@ class AuthorityConnection:
             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
             if found is None:
                 return {'sessions': [], 'scope': 'stored'}
-            row = self.authority.db.get_session(found.session_id) or {}
-            root = self.authority.db.get_session(
-                self.authority.db.resolve_session_by_title(params['title']) or found.session_id) or row
-            return {'sessions': [{'session_id': found.session_id, 'id': root.get('id') or found.session_id,
-                                  'resolved_id': found.session_id, 'title': row.get('title') or '',
-                                  'root_title': root.get('title') or '', 'source': row.get('source'),
-                                  'started_at': row.get('started_at'),
-                                  'message_count': row.get('message_count', 0),
+            store = authority_persistence(self.authority)
+            row = store.sessions.get(found.session_id)
+            root = store.sessions.get(store.sessions.resolve_by_title(params['title']) or found.session_id) or row
+            return {'sessions': [{'session_id': found.session_id,
+                                  'id': (root.session_id if root is not None else None) or found.session_id,
+                                  'resolved_id': found.session_id, 'title': (row.title if row is not None else None) or '',
+                                  'root_title': (root.title if root is not None else None) or '',
+                                  'source': row.source if row is not None else None,
+                                  'started_at': row.started_at if row is not None else None,
+                                  'message_count': row.message_count if row is not None else 0,
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
-        from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
         from gateway.session_live_listing import live_entries
         sessions = []
         for entry in await live_entries(self.authority, self.actor):
@@ -628,22 +630,22 @@ class AuthorityConnection:
             # the same durable local route as its full ID; ambiguous and missing prefixes retain
             # the normal not_found result.
             if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
-                resolved_id = self.authority.db.resolve_session_id(ref.session_id)
+                resolved_id = authority_persistence(self.authority).sessions.resolve_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
             from gateway.session_local_migration import adopts_client_history, resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
-            from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+            from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
-            row = self.authority.db.get_session(ref.session_id)
+            store = authority_persistence(self.authority)
+            row = store.sessions.get(ref.session_id)
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+            if row and (row.source in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
                         or adopts_client_history(self.authority, self.actor, row)):
-                ref = resolve_local_target(self.authority, self.actor,
-                    self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
+                ref = resolve_local_target(self.authority, self.actor, store.lineage.tip(ref.session_id))
             elif row:
                 # A messaging compression continuation attaches to its lineage root, the session
                 # its lane's turns stream to; the reply names that root.
@@ -717,7 +719,7 @@ class AuthorityConnection:
 
     async def detach(self, ref, params):
         if set(params) - {'end_reason'} != {'session_id', 'subscription_id'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         session_id = params['session_id']
         subscription_id = params['subscription_id']
         # ``end_reason``: this viewer is CLOSING the conversation (main's classic CLI stamped its row
@@ -728,7 +730,7 @@ class AuthorityConnection:
                 or not isinstance(subscription_id, str) or not subscription_id
                 or (end_reason is not None
                     and not (isinstance(end_reason, str) and _END_REASON.fullmatch(end_reason)))):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         result = {'session_id': session_id, 'subscription_id': subscription_id,
                   'detached': False}
         if self.subscriptions.get(session_id) != subscription_id:
@@ -745,7 +747,7 @@ class AuthorityConnection:
         sequence = params.get('last_sequence', params.get('last_seen', 0))
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         from gateway.session_server_requests import open_requests
         stream = self.authority.sessions[ref.session_id].event_stream
         replay = stream.since(epoch, sequence)
@@ -817,15 +819,15 @@ class AuthorityConnection:
     def submission(self, ref, params):
         """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
                                    'turn_author', 'api_text', 'model_override', 'clarify_batch'}
         if forbidden:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         from gateway.session_finite import admit_finite
         from gateway.session_display import submit_display_fields
         from gateway.session_surface import submit_surface_fields
@@ -838,19 +840,19 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
+        from persistence.core.errors import MUTATION_GUARD_REFUSALS, busy_refusal
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
             raise busy_refusal(exc) from exc
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.
-                row = await asyncio.to_thread(self.authority.db.get_session, ref.session_id)
+                row = await asyncio.to_thread(authority_persistence(self.authority).sessions.get, ref.session_id)
                 if row is not None:
-                    exc.revision, exc.execution_generation = row['runtime_revision'], row['runtime_generation']
+                    exc.revision, exc.execution_generation = row.runtime_revision, row.runtime_generation
             raise
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
@@ -867,7 +869,7 @@ class AuthorityConnection:
             # a finite viewer reads its ledger (tokens, cost, model, exit reason) from here, the same
             # dict the in-process one-shot wrote from `run_conversation`.
             from gateway.session_results import admission_result
-            saved = admission_result(self.authority.db, receipt.admission_id)
+            saved = admission_result(authority_persistence(self.authority), receipt.admission_id)
             if saved is not None:
                 out['result'] = saved['result']
                 out['usage'] = saved.get('usage') or {}
@@ -876,16 +878,15 @@ class AuthorityConnection:
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
         receipt = await self.authority.receipt(self.actor, ref, admission_id)
-        from hermes_state_runtime import get_session_admission
         # A transferred steer also reads started (as its receiving claim): only its own claim is stopped here;
         # the transfer is refused below and settles with that claim.
-        if receipt.status == 'started' and get_session_admission(
-                self.authority.db, admission_id=admission_id)['status'] == 'started':
+        if receipt.status == 'started' and authority_persistence(self.authority).admissions.get(
+                admission_id=admission_id).status == 'started':
             # Stopped in this RPC: an editor that exits right after its cancel never sends a follow-up
             # interrupt. A stale generation means the turn already settled.
             try:
                 await self.interrupt(ref, {'execution_generation': receipt.execution_generation})
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 if exc.reason != 'stale_generation':
                     raise
             return asdict(await self.authority.receipt(self.actor, ref, admission_id))
@@ -900,7 +901,7 @@ class AuthorityConnection:
 
     async def resolve_unknown(self, ref, params):
         if set(params) != {'session_id', 'admission_id', 'execution_generation'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return asdict(await self.authority.resolve_unknown(
             self.actor, ref, params['admission_id'], params['execution_generation']))
 
@@ -928,13 +929,13 @@ class AuthorityConnection:
 
     async def respond(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:
-            raise RuntimeStoreError("invalid_params")
+            raise AuthorityRefusal("invalid_params")
         return await self.authority.respond(self.actor, ref, params["execution_generation"],
                                             params["prompt_id"], {"choice": params["choice"]})
 
     async def respond_clarify(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "answer"}:
-            raise RuntimeStoreError("invalid_params")
+            raise AuthorityRefusal("invalid_params")
         return await self.authority.respond(self.actor, ref, params["execution_generation"],
             params["prompt_id"], {"answer": params["answer"]}, kind="clarify")
 

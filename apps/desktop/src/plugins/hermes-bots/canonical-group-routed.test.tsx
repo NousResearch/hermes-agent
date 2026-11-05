@@ -89,6 +89,15 @@ it('counts only this discussion\'s member messages before the pause and offers C
   expect(onStop).toHaveBeenCalledTimes(1)
 })
 
+it('keeps the paused row\'s Stop usable while a Continue is in flight, and both idle while a Stop is', () => {
+  const { rerender } = renderHistory(pausedLog, { busy: true, maxContinues: 5, onContinue: vi.fn(), onStop: vi.fn() })
+  expect((screen.getByTestId('room-continue') as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByTestId('room-paused-stop') as HTMLButtonElement).disabled).toBe(false)
+  rerender(<CanonicalGroupHistory binding={binding} events={pausedLog} members={members} pause={{ maxContinues: 5, onContinue: vi.fn(), onStop: vi.fn(), stopping: true }} />)
+  expect((screen.getByTestId('room-continue') as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByTestId('room-paused-stop') as HTMLButtonElement).disabled).toBe(true)
+})
+
 it.each([
   ['after it was continued', [...pausedLog, continued(6)]],
   ['after a stop', [...pausedLog, ev(6, 'room.stop_requested')]],

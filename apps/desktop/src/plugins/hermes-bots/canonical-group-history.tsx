@@ -34,7 +34,7 @@ interface CanonicalGroupHistoryProps {
   /** A member's face; the workspace passes the Bot Mode avatar. */
   avatarFor?: (name: string, size: number) => ReactNode
   /** Continue/Stop for a paused discussion; absent `maxContinues` (older runtime) keeps the plain limit notice. */
-  pause?: Pick<CanonicalGroupPausedRowProps, 'busy' | 'onContinue' | 'onStop'> & { maxContinues?: number }
+  pause?: Pick<CanonicalGroupPausedRowProps, 'busy' | 'stopping' | 'onContinue' | 'onStop'> & { maxContinues?: number }
 }
 
 /** The server stamps every `groups.send` from this Desktop as this principal, so it has no name of its own. */
@@ -200,7 +200,7 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
       : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={members} />
         : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
           : pause && pauses && isBoundedActivity(event)
-            ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} />
+            ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} stopping={pause.stopping} />
             : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled || !downloads} event={event} notices={notices} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}

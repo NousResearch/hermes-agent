@@ -9,10 +9,9 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+                     UndoRollbackHint, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
-from .tools_commands import UndoRollbackHint
 
 
 # ── shared live-session snapshot ──────────────────────────────────────────────────────────────

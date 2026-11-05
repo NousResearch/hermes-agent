@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
+from .common import UndoRollbackHint
 from .registry import canonical_method, method
 
 
@@ -376,17 +377,6 @@ class RollbackCheckpoint(Result):
     hash: str = ""
     timestamp: str = ""
     message: str = ""
-
-
-class UndoRollbackHint(Result):
-    """``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,
-    so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;
-    ``text`` is the rendered line in the backend's language."""
-
-    number: int | None = None
-    files: list[str] = Field(default_factory=list)
-    more: int = 0
-    text: str
 
 
 class RollbackListResult(Result):

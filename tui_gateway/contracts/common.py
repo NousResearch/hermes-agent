@@ -308,3 +308,14 @@ __all__ = [
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]
+
+
+class UndoRollbackHint(Result):
+    """``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,
+    so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;
+    ``text`` is the rendered line in the backend's language."""
+
+    number: int | None = None
+    files: list[str] = Field(default_factory=list)
+    more: int = 0
+    text: str

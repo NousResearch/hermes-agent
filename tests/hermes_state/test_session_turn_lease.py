@@ -280,6 +280,27 @@ def test_turn_lease_refresh_and_release_are_owner_fenced(tmp_path):
     )
 
 
+def test_turn_lease_refresh_does_not_queue_behind_local_writer_lock(tmp_path):
+    """Renewal uses its own connection while this handle is flushing another write."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+    holder = f"pid={os.getpid()}:turn=current"
+    assert db.try_acquire_session_turn_lease("shared", holder, ttl_seconds=5)
+
+    refreshed = threading.Event()
+
+    def refresh():
+        assert db.refresh_session_turn_lease("shared", holder, ttl_seconds=5)
+        refreshed.set()
+
+    with db._lock:
+        thread = threading.Thread(target=refresh, daemon=True)
+        thread.start()
+        assert refreshed.wait(1), "renewal queued behind this handle's writer lock"
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+
+
 def test_expired_turn_lease_is_reclaimed(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")

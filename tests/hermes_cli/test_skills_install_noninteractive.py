@@ -13,11 +13,12 @@ from tools import skills_hub as hub
 from tools.skills_hub_models import SkillBundle
 
 
-@pytest.mark.parametrize("answer, expected_status, hint", [
-    (EOFError, 1, True),
-    ("n", 0, False),
+@pytest.mark.parametrize("answer, tty, expected_status, hint", [
+    (EOFError, False, 1, True),
+    (EOFError, True, 0, False),  # Ctrl-D at a real terminal is a plain "no"
+    ("n", False, 0, False),
 ])
-def test_install_cancellation_exit_status(monkeypatch, tmp_path, answer, expected_status, hint):
+def test_install_cancellation_exit_status(monkeypatch, tmp_path, answer, tty, expected_status, hint):
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     hub_dir = home / "skills" / ".hub"
@@ -46,6 +47,7 @@ def test_install_cancellation_exit_status(monkeypatch, tmp_path, answer, expecte
         return answer
 
     monkeypatch.setattr("builtins.input", respond)
+    monkeypatch.setattr(cli_hub.sys, "stdin", SimpleNamespace(isatty=lambda: tty))
     parser = ArgumentParser()
     build_skills_parser(parser.add_subparsers(), cmd_skills=cli_hub.skills_command)
     args = parser.parse_args(["skills", "install", bundle.identifier])
@@ -53,7 +55,7 @@ def test_install_cancellation_exit_status(monkeypatch, tmp_path, answer, expecte
 
     assert status == expected_status
     assert "Installation cancelled." in sink.getvalue()
-    assert ("No terminal to answer on: re-run with --yes to confirm (the security scan still runs)."
+    assert ("No terminal to answer on: confirm with `hermes skills install org/repo/confirmation-fixture --yes`"
             in sink.getvalue()) is hint
     assert not (home / "skills" / bundle.name).exists()
     assert hub.HubLockFile().list_installed() == []

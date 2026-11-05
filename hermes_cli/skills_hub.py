@@ -93,11 +93,11 @@ def _sources():
 
 
 def _confirm() -> Optional[bool]:
-    """Prompt `Confirm [y/N]:`; EOF means no terminal, Ctrl-C counts as no."""
+    """Prompt `Confirm [y/N]:`; None when stdin is not a terminal (EOF), and Ctrl-C or Ctrl-D counts as no."""
     try:
         return input("Confirm [y/N]: ").strip().lower() in {"y", "yes"}
     except EOFError:
-        return None
+        return False if sys.stdin.isatty() else None
     except KeyboardInterrupt:
         return False
 
@@ -109,8 +109,6 @@ def _confirm_or_cancel(c: Console, *lines: str, cancel: str = "[dim]Cancelled.[/
     answer = _confirm()
     if answer:
         return True
-    if answer is None:
-        c.print("No terminal to answer on: re-run with --yes to confirm (the security scan still runs).", soft_wrap=True)
     c.print(cancel)
     return answer
 
@@ -722,8 +720,12 @@ def _confirm_install(c: Console, bundle, category: str) -> Optional[bool]:
     body, title, style = _INSTALL_PANELS["official" if bundle.source == "official" else "external"]
     c.print()
     c.print(Panel(body + files_at, title=title, border_style=style))
-    return _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
-                              cancel="[dim]Installation cancelled.[/]\n")
+    answer = _confirm_or_cancel(c, f"[bold]Install '{bundle.name}'?[/]",
+                                cancel="[dim]Installation cancelled.[/]\n")
+    if answer is None:
+        c.print(f"No terminal to answer on: confirm with `hermes skills install {bundle.identifier} --yes` "
+                "(the security scan still runs).", soft_wrap=True)
+    return answer
 
 
 _SKILL_METRIC_SOURCES = {"official": "catalog", "url": "url", "bundled": "bundled"}

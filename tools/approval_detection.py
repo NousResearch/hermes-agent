@@ -488,14 +488,6 @@ DANGEROUS_PATTERNS = [
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
-    # Extension installs and source trust load code or instructions into future sessions.
-    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?(?:'
-     + r'skills["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|trust'
-     + r'|tap["\']?\s+' + _HERMES_FLAGS + r'["\']?add|snapshot["\']?\s+' + _HERMES_FLAGS + r'["\']?import)'
-     + r'|plugins["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|enable|adopt|trust-update-url'
-     + r'|pack["\']?\s+' + _HERMES_FLAGS + r'["\']?install|validate["\']?\s+[^;&|\n]*(?<!\S)["\']?--install-deps)'
-     + r')(?![\w-])',
-     "install, enable or trust a skill or plugin (code and instructions every session loads)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
@@ -602,6 +594,15 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
     (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
+    # Extension installs and source trust load code or instructions into future sessions. Kept LAST: approval
+    # keys on the first matching rule, so a command that also matches an older rule keeps that rule's key.
+    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?(?:'
+     + r'skills["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|trust'
+     + r'|tap["\']?\s+' + _HERMES_FLAGS + r'["\']?add|snapshot["\']?\s+' + _HERMES_FLAGS + r'["\']?import)'
+     + r'|plugins["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|enable|adopt|trust-update-url'
+     + r'|pack["\']?\s+' + _HERMES_FLAGS + r'["\']?install|validate["\']?\s+[^;&|\n]*(?<!\S)["\']?--install-deps)'
+     + r')(?![\w-])',
+     "install, enable or trust a skill or plugin (code and instructions every session loads)"),
 ]
 
 

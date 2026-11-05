@@ -1026,6 +1026,16 @@ def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, strea
     assert (verdict.reason, verdict.retryable, verdict.should_fallback) == (FailoverReason.content_policy_blocked, False, True)
 
 
+def test_prompt_block_surfaces_vertex_block_reason_message(monkeypatch):
+    # Vertex explains the block in promptFeedback.blockReasonMessage; the user sees that, not canned text.
+    from agent.gemini_native_adapter import GeminiAPIError
+
+    payload = {"promptFeedback": {"blockReason": "MODEL_ARMOR", "blockReasonMessage": "Blocked by Model Armor policy X."}}
+    client = _blocking_client(monkeypatch, payload)
+    with pytest.raises(GeminiAPIError, match=r"blockReason=MODEL_ARMOR\): Blocked by Model Armor policy X\."):
+        client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+
+
 def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
     client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
     out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])

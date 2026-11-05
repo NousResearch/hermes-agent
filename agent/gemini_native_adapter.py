@@ -664,15 +664,13 @@ def _part_function_call(part: dict[str, Any]) -> Optional[dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
-# Guidance per ``promptFeedback.blockReason`` (Google's BlockedReason enum). A prompt-level block is an
-# HTTP 200 with no candidates; translated as-is it becomes an empty "stop" turn the user sees as silence.
+# Guidance per ``promptFeedback.blockReason`` value with a specific remedy; the rest (OTHER, Vertex's
+# MODEL_ARMOR / JAILBREAK) get the generic text. A prompt-level block is an HTTP 200 with no candidates;
+# translated as-is it becomes an empty "stop" turn the user sees as silence.
 _BLOCK_REASON_GUIDANCE = {
     "BLOCKLIST": "The prompt includes blocked terms. Rephrase and try again.",
     "PROHIBITED_CONTENT": "The prompt may contain prohibited content. Adjust it and try again.",
-    "RECITATION": "The prompt was blocked due to recitation risk. Use more original wording.",
     "SAFETY": "The prompt was blocked by Gemini's safety filters. Adjust it and try again.",
-    "SPII": "The prompt may include sensitive personal information (SPII). Remove it and try again.",
-    "LANGUAGE": "The requested language isn't supported by this model.",
     "IMAGE_SAFETY": "The image was blocked for safety reasons.",
 }
 
@@ -687,7 +685,10 @@ def raise_on_prompt_block(payload: dict[str, Any]) -> None:
     if not reason:
         return
     reason = str(reason).upper()
-    guidance = _BLOCK_REASON_GUIDANCE.get(reason, "The prompt was blocked. Adjust it and try again.")
+    # Vertex explains the block in ``blockReasonMessage``; prefer it over the canned guidance.
+    message = feedback.get("blockReasonMessage")
+    guidance = (message.strip() if isinstance(message, str) and message.strip()
+                else _BLOCK_REASON_GUIDANCE.get(reason, "The prompt was blocked. Adjust it and try again."))
     raise GeminiAPIError(f"Gemini blocked this prompt (blockReason={reason}): {guidance}",
                          code="gemini_prompt_blocked", details={"promptFeedback": feedback})
 

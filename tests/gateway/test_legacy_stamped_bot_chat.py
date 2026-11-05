@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 
@@ -50,10 +53,8 @@ async def _bot_chat_lookup(tmp_path, monkeypatch, source, user_id):
             host = AuthorityConnection(authority, _Transport(), identity, operator=True)
         connections.append(host)
         for prof in ('default', 'beta'):
-            db = authority_for_profile_id(runner, ids[prof]).db
-            db.create_session(prof + '-bot-chat', source=source, model='old', cwd=str(root), user_id=user_id)
-            db.set_session_title(prof + '-bot-chat', 'Bot Chat')
-            db.set_session_hidden(prof + '-bot-chat', True)
+            seed_session(authority_for_profile_id(runner, ids[prof]).persistence, prof + '-bot-chat', source,
+                         title='Bot Chat', hidden=True, model='old', cwd=str(root), user_id=user_id)
         for prof in ('default', 'beta'):
             with owner_scope(host.authority):
                 replies[prof] = await host.dispatch({'id': 1, 'method': 'session.list', 'params': {
@@ -63,7 +64,7 @@ async def _bot_chat_lookup(tmp_path, monkeypatch, source, user_id):
             with owner_scope(connection.authority):
                 await connection.close()
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(Path(home))
     return replies
@@ -88,23 +89,21 @@ async def test_bot_chat_stamped_with_another_principal_stays_refused(tmp_path, m
 
 
 def test_legacy_validation_names_the_subject_it_adopts_for(tmp_path):
-    from hermes_state import SessionDB
-    from hermes_state_local_migration import validate_legacy_row
-    from hermes_state_runtime import RuntimeStoreError
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    try:
-        db.create_session('own', source='cli', user_id=_OWN)
-        validate_legacy_row(db, db.get_session('own'), subject=_OWN)
-        with pytest.raises(RuntimeStoreError):  # no subject named: a stamped row is someone's
-            validate_legacy_row(db, db.get_session('own'))
-        with pytest.raises(RuntimeStoreError):
-            validate_legacy_row(db, db.get_session('own'), subject='uid:4242')
+    from persistence.core.errors import AuthorityRefusal
+    from persistence_assembly import open_persistence, profile_scope, store_owner_name
+    from session_rules.legacy_local import validate_legacy_row
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        own = store_owner_name(store.scope.profile_dir)
+        seed_session(store, 'own', 'cli', user_id=_OWN)
+        validate_legacy_row(own, session_row(store, 'own'), subject=_OWN)
+        with pytest.raises(AuthorityRefusal):  # no subject named: a stamped row is someone's
+            validate_legacy_row(own, session_row(store, 'own'))
+        with pytest.raises(AuthorityRefusal):
+            validate_legacy_row(own, session_row(store, 'own'), subject='uid:4242')
         # Composes with the login-stamp rule: a Desktop row a served login stamped adopts for that login
         # only; the native peer's own-subject rule does not reach it.
-        db.create_session('login', source='desktop', user_id='basic:alice')
-        validate_legacy_row(db, db.get_session('login'), subject='auth:v1:["basic","","alice"]')
+        seed_session(store, 'login', 'desktop', user_id='basic:alice')
+        validate_legacy_row(own, session_row(store, 'login'), subject='auth:v1:["basic","","alice"]')
         for other in (_OWN, 'auth:v1:["basic","","bob"]', 'auth:v1:["basic","iss","alice"]'):
-            with pytest.raises(RuntimeStoreError):
-                validate_legacy_row(db, db.get_session('login'), subject=other)
-    finally:
-        db.close()
+            with pytest.raises(AuthorityRefusal):
+                validate_legacy_row(own, session_row(store, 'login'), subject=other)

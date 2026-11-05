@@ -1,0 +1,33 @@
+name: hermes-receipts
+title: Hermes Receipts
+repo: https://github.com/iket72183-collab/hermes-receipts
+sha: a55cb0257cd336691d0ab988300d0166e026c2e4
+version: "0.1.0"
+requires_hermes: ">=0.22.4"
+maintainer: iket72183-collab
+tier: community
+category: tools
+platforms: [linux, macos]
+readme: true
+docs_url: https://github.com/iket72183-collab/hermes-receipts#readme
+description: >-
+  Deterministic evidence for explicit file, native test-result, and website checks.
+  Preserves immutable as-of receipts with failed, verified, or unverified outcomes.
+  Disclosure: reads selected workspace files, GETs explicitly scoped URLs, observes
+  and stores armed matching native terminal command/output evidence, and writes
+  local profile-scoped state and exports. Receipt handlers never execute commands
+  or bypass approvals. No credentials, telemetry, model calls, paid service, or
+  runtime core overrides. Standalone opt-in offline acceptance/demo scripts use
+  real Hermes dispatch internals and run synthetic native test commands; they are
+  not imported by the production plugin. Not a sandbox or signed attestation.
+capabilities:
+  provides_tools:
+    - receipts_begin
+    - receipts_check
+    - receipts_get
+    - receipts_export
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

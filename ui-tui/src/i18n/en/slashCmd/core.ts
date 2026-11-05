@@ -171,6 +171,8 @@ export const slashCmdCoreEn = {
     },
     rewind: {
       nothing: 'nothing to rewind to',
+      noPrevious: 'No previous message to edit.',
+      cancelled: '↺ Rewind cancelled; nothing was removed.',
       unsupported: '/rewind needs the shared gateway (hermes serve)',
       done: (turn: string, count: string) => `rewound to prompt ${turn} (${count} messages removed)`,
       forked: (turn: string) => `forked from before prompt ${turn} — edit the prompt and press Enter to send`

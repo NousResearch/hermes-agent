@@ -306,7 +306,7 @@ export interface OverlayState {
   sudo: null | SudoReq
 }
 
-/** One earlier user prompt the rewind picker can return to (`row_id` is its durable message row). */
+/** One earlier user prompt backtrack browsing can return to (`row_id` is its durable message row). */
 export interface RewindTarget {
   rowId: number
   text: string
@@ -318,8 +318,15 @@ export interface RewindTarget {
 export interface RewindOverlay {
   /** Oldest first, as stored. */
   targets: RewindTarget[]
+  /** The session's transcript rows (the `--tui-native` pager draws these). */
+  messages?: Msg[]
+  /** ↵: put the prompt in the composer and arm a pending edit (nothing is cut yet). */
+  onEdit: (target: RewindTarget) => void
   onFork: (target: RewindTarget) => void
+  /** Cut back to just before `target` and send `text` (the armed edit's send). */
   onSubmit: (target: RewindTarget, text: string) => void
+  /** A printable key that is not a browse key: browsing closes and the key is typed into the composer. */
+  onType: (text: string) => void
 }
 
 export interface PagerState {
@@ -471,6 +478,8 @@ export interface InputHandlerActions {
   cancelClarify: () => void
   die: () => void
   dispatchSubmission: (full: string | QueueItem) => void
+  /** Open backtrack browsing (the `/rewind` command, not echoed or counted as typed). */
+  openBacktrack: () => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void

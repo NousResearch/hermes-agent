@@ -186,29 +186,28 @@ def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bo
 
 
 def _profile_create(args):
-    from hermes_cli.profiles import (
-        _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_profile,
-        create_wrapper_script, get_active_profile_name, seed_profile_skills,
-    )
+    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path, get_active_profile_name
     name = args.profile_name
     clone = getattr(args, "clone", False)
     clone_all = getattr(args, "clone_all", False)
     no_alias = getattr(args, "no_alias", False)
-    no_skills = getattr(args, "no_skills", False)
     clone_from = getattr(args, "clone_from", None)
     clone_channels = getattr(args, "clone_channels", False)
     sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
     source_label = clone_from or get_active_profile_name()
+    request = ProfileCreateRequest(
+        name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+        no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
+        clone_channels=clone_channels, sync_imports=sync_imports,
+        alias=not no_alias, quiet=False, clone_honcho=cloned)
     try:
-        profile_dir = create_profile(
-            name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
-            no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
-            clone_channels=clone_channels, sync_imports=sync_imports,
-        )
+        result = provision_profile(request)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
+    profile_dir = result.path
     print(f"\nProfile '{name}' created at {profile_dir}")
     if cloned:
         if clone_all:
@@ -227,43 +226,32 @@ def _profile_create(args):
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
-        # Auto-clone Honcho config for the new profile (only with clone operations)
-        try:
-            from plugins.memory import import_provider_module
-            honcho_cli = import_provider_module("honcho", "cli")
-        except Exception:
-            honcho_cli = None  # Honcho plugin not installed
-        if honcho_cli is not None:
-            try:
-                if honcho_cli.clone_honcho_for_profile(name):
-                    print(f"Honcho config cloned (peer: {name})")
-            except honcho_cli.ConfigWriteRefused as e:
-                print(f"Honcho config not cloned: {e}")
-            except Exception:
-                pass  # Honcho not configured
+        if result.honcho_cloned:
+            print(f"Honcho config cloned (peer: {name})")
+        elif result.honcho_refused:
+            print(f"Honcho config not cloned: {result.honcho_refused}")
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
-        result = seed_profile_skills(profile_dir)
-        if result and result.get("skipped_opt_out"):
+        seeded = result.skills_seeded
+        if seeded and seeded.get("skipped_opt_out"):
             print("No bundled skills seeded (--no-skills). Delete .no-bundled-skills in the profile to opt back in.")
-        elif result:
-            print(f"{len(result.get('copied', []))} bundled skills synced.")
+        elif seeded:
+            print(f"{len(seeded.get('copied', []))} bundled skills synced.")
         else:
             print(f"⚠ Skills could not be seeded. Run `{name} update` to retry.")
     if not no_alias:
-        collision = check_alias_collision(name)
-        if collision:
-            print(f"\n⚠ Cannot create alias '{name}' — {collision}")
+        if result.alias_collision:
+            print(f"\n⚠ Cannot create alias '{name}' — {result.alias_collision}")
             print(f"  Choose a custom alias:  hermes profile alias {name} --name <custom>")
             print(f"  Or access via flag:     hermes -p {name} chat")
-        else:
-            wrapper_path = create_wrapper_script(name)
-            if wrapper_path:
-                print(f"Wrapper created: {wrapper_path}")
-                if not _is_wrapper_dir_in_path():
-                    print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
-                    print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
-                    print('    export PATH="$HOME/.local/bin:$PATH"')
+        elif result.alias_path:
+            print(f"Wrapper created: {result.alias_path}")
+            if not _is_wrapper_dir_in_path():
+                print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
+                print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
+                print('    export PATH="$HOME/.local/bin:$PATH"')
+    for warning in result.warnings:
+        print(f"⚠ {warning}")
     try:
         profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
     except ValueError:

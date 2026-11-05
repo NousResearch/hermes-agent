@@ -73,14 +73,15 @@ class SourceMeter:
                 return getattr(hashlib, name)
         monkeypatch.setattr(transport, 'hashlib', CountingHashlib())
 
-        real_read_blob = HostedRoomAttachmentStore._read_blob
+        from persistence.sqlite.gateway import hosted_room_attachments as backend
+        real_read_blob = backend._read_blob
 
-        def _read_blob(store, **kwargs):
-            data = real_read_blob(store, **kwargs)
+        def _read_blob(blob_root, **kwargs):
+            data = real_read_blob(blob_root, **kwargs)
             meter.read += len(data)
             meter.hashed += len(data)
             return data
-        monkeypatch.setattr(HostedRoomAttachmentStore, '_read_blob', _read_blob)
+        monkeypatch.setattr(backend, '_read_blob', _read_blob)
         if hasattr(HostedRoomAttachmentStore, 'read_range'):
             real_range = HostedRoomAttachmentStore.read_range
 
@@ -139,9 +140,11 @@ def run_case(size_bytes, monkeypatch):
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway.session_authorities import owner_scope
     from gateway.session_hosted_service import CanonicalHostedRoomService
+    from gateway.session_authority import admission_row
+    from gateway.session_persistence import authority_persistence
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
-    from hermes_state_runtime import list_session_admissions
 
     runner, homes, loop, call = _mux(monkeypatch)
     meter = SourceMeter(monkeypatch)
@@ -153,25 +156,25 @@ def run_case(size_bytes, monkeypatch):
     source = runner.session_authorities.require(homes['alpha'])
     target = runner.session_authorities.require(homes['beta'])
     with owner_scope(source):
-        source.hosted_room_service.authorize_room('alice', 'room', create=True)
-        hosted_rooms.create_room(source.db.db_path, room_id='room', name='Room',
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id(),
+        source.hosted_room_service.insert_room(room_id='room', name='Room', owner='alice',
             members=[{'member_id': 'helper', 'profile': 'beta', 'handle': 'helper'}])
     data = os.urandom(size_bytes)
-    store = HostedRoomAttachmentStore(source.db.db_path)
+    store = HostedRoomAttachmentStore(authority_persistence(source))
     saved = store.put(room_id='room', upload_id='upload', kind='file', name='blob.bin',
                       mime='application/octet-stream', data=data)
     manifest = [{k: saved[k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
     store.commit_message(room_id='room', event_id='event', manifest=manifest, recipient_member_ids=['helper'])
     manifest[0]['event_id'] = 'event'
-    identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+    identity = HostedTaskIdentity('room', 'task', 'thread', 'turn')
     payload = {'target_profile': 'beta', 'target_member_id': 'helper', 'source_event_seq': 1,
                'prompt': 'input', 'attachments': manifest}
-    tasks.admit_task(source.db.db_path, identity, payload=payload, clock=time.time)
-    lease = tasks.acquire_lease(source.db.db_path, room_id='room',
+    source_store = authority_persistence(source)
+    tasks.admit_task(source_store, identity, placement='profile', payload=payload, clock=time.time)
+    lease = tasks.acquire_lease(source_store, placement='profile', room_id='room',
         gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1,
         process_generation='bench', ttl_seconds=300, clock=time.time)
-    tasks.start_task(source.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
+    tasks.start_task(source_store, identity, lease, placement='profile', expected_cancel_generation=0,
+                     clock=time.time)
 
     rpc = HostedRoomOwnerRPC(home=homes['beta'], source_home=homes['alpha'],
                             room_id='room', member_id='helper', profile='beta')
@@ -180,7 +183,7 @@ def run_case(size_bytes, monkeypatch):
     _, submit = meter.measure('produce(submit)', lambda: rpc.submit(
         profile='beta', source='bot_room', session_id=sid, prompt='input', task=identity,
         execution_generation=1, attachments=manifest, on_terminal=lambda row: None))
-    rows.extend(list_session_admissions(target.db, session_id=sid, pending_only=False))
+    rows.extend(admission_row(row) for row in authority_persistence(target).admissions.list(session_id=sid, pending_only=False))
     assert len(rows) == 1 and rows[0]['status'] == 'queued'
     # Stop the driver-side history poller so it does not count against the preflight.
     with rpc._lock:
@@ -194,7 +197,7 @@ def run_case(size_bytes, monkeypatch):
         service = getattr(authority, 'hosted_room_service', None)
         if service is not None:
             service.stop(timeout=5)
-        authority.db.close()
+        authority_persistence(authority).close()
     call(runner.session_control_server.stop())
     loop.call_soon_threadsafe(loop.stop)
     return [submit, preflight]

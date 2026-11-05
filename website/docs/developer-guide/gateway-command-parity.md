@@ -103,7 +103,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/resume` | refused | HermesCLI._handle_resume_command | local | picker: session | slash.exec: refused | switches the messaging chat's session; local clients resume by id |
 | `/retry` | refused | HermesCLI._cmd_retry | canonical route | action: retry | session.mutate rewind + resubmit |  |
 | `/review` | control | HermesCLI._handle_review_command | slash.exec | slash.exec | slash.exec |  |
-| `/rewind` | refused | HermesCLI._handle_rewind_command | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
+| `/rewind` | refused | HermesCLI._handle_rewind_command | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/rollback` | refused | HermesCLI._handle_rollback_command | rollback.diff, rollback.list, rollback.restore | action: rollback | slash.exec: refused | restores filesystem checkpoints |
 | `/save` | refused | HermesCLI.save_conversation | canonical route | action: save | slash.exec: refused | the gateway handler writes its file on the gateway host; Desktop saves `session.export` text through its own dialog |
 | `/sessions` | refused | HermesCLI._handle_sessions_command | local | picker: session | slash.exec: refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |

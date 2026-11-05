@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from tests.gateway.test_resume_display_history import _local_session, _resume
+from tests.fixtures.storage_seed import seed_messages
 
 TODOS = [{'id': '1', 'content': 'write the fix', 'status': 'completed'},
          {'id': '2', 'content': 'ship it', 'status': 'in_progress'}]
@@ -18,20 +19,20 @@ TODOS = [{'id': '1', 'content': 'write the fix', 'status': 'completed'},
 def _todo_turn(db, sid, call_id, todos, revision):
     call = {'id': call_id, 'type': 'function',
             'function': {'name': 'todo_list', 'arguments': json.dumps({'todos': todos})}}
-    db.append_message(sid, 'assistant', '', tool_calls=[call])
-    db.append_message(sid, 'tool', json.dumps({'todos': todos, 'revision': revision}), tool_name='todo_list',
-                      tool_call_id=call_id)
+    seed_messages(db, sid, {'role': 'assistant', 'content': '', 'tool_calls': [call]},
+                  {'role': 'tool', 'content': json.dumps({'todos': todos, 'revision': revision}),
+                   'tool_name': 'todo_list', 'tool_call_id': call_id})
 
 
 @pytest.mark.asyncio
 async def test_resume_carries_the_newest_todo_snapshot(tmp_path, monkeypatch):
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     assert (await _resume(authority, actor, ref))['todo_state'] is None  # no plan yet
-    db.append_message(physical, 'user', 'plan it')
+    seed_messages(db, physical, {'role': 'user', 'content': 'plan it'})
     _todo_turn(db, physical, 'call-1', TODOS[:1], 1)
     _todo_turn(db, physical, 'call-2', TODOS, 2)
-    db.append_message(physical, 'assistant', 'planned')
+    seed_messages(db, physical, {'role': 'assistant', 'content': 'planned'})
     assert (await _resume(authority, actor, ref))['todo_state'] == {'todos': TODOS, 'revision': 2}
 
 
@@ -51,7 +52,7 @@ async def test_resume_leaves_the_gateway_processs_stdout_alone(tmp_path, monkeyp
     resume path must not import it: a CLI sharing the process would print to stderr from then on."""
     import tui_gateway
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    _todo_turn(authority.db, physical, 'call-1', TODOS, 2)
+    _todo_turn(authority.persistence, physical, 'call-1', TODOS, 2)
     monkeypatch.delitem(sys.modules, 'tui_gateway.server', raising=False)
     monkeypatch.delattr(tui_gateway, 'server', raising=False)
     monkeypatch.setattr(sys, 'stdout', sys.stdout)  # restored even if the import below swaps it

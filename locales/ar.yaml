@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "لا يمكن استخدام عناصر التحكم هذه إلا لمستخدم Matrix مصرّح له."
       not_requester: "لا يمكن استخدام عناصر التحكم هذه إلا للمستخدم الذي طلب هذا الإجراء."
   feishu:
+    clarify:
+      title: "Hermes يحتاج إلى ردّك"
+      other: "✏️ غير ذلك (اكتب الإجابة)"
+      awaiting_typed: "بانتظار رد مكتوب من {user}…"
+    picker:
+      apply_error: "خطأ في تطبيق الاختيار: {error}"
     approval:
       action_session: "الجلسة"
       action_always: "دائمًا"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ غير ذلك (اكتب الإجابة)"
     prompt_expired: ⌛ لم يعد هذا الطلب ينتظر إجابة. أرسل ردك كرسالة عادية.
 slash:
+  rewind:
+    description: "الإرجاع إلى موجّه سابق لتعديله وإعادة إرساله، أو التفريع من هناك (Esc Esc)"
   approve:
     description: "الموافقة على أمر خطير قيد الانتظار"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "الخروج من واجهة سطر الأوامر (استخدم --delete لحذف سجل الجلسة أيضًا)"
 cli:
+  backtrack:
+    title: "↺ إرجاع — اختر موجّهًا سابقًا"
+    keys_hint: "↑/↓ اختيار · Enter تعديل وإعادة الإرسال · f تفريع من هنا · Esc إغلاق"
+    preview_label: "الموجّه {number} من {total}:"
+    more_lines: "… ({count} سطر إضافي)"
+    editing_hint: "↺ تعديل الموجّه {number} — Enter يُرجع إلى هنا ويرسل · Esc Esc للإلغاء"
+    edit_cancelled: "↺ أُلغي الإرجاع؛ لم يُحذف أي شيء."
+    rewound: "↺ تم الإرجاع إلى الموجّه {number} (أُرشفت {count} رسالة)؛ جارٍ إرسال التعديل."
+    forked: "⑂ تم التفريع قبل الموجّه {number}؛ الجلسة الأصلية {parent} لم تتغير. عدّل الموجّه أدناه واضغط Enter للإرسال."
+    nothing: "(._.) لا توجد موجّهات سابقة للإرجاع إليها."
+    target_changed: "(x_x) تغيّرت الجلسة منذ أن اخترت الموجّه {number}؛ لم يُحذف أي شيء. تعديلك عاد إلى محرر الرسائل."
+    invalid: "(._.) لا يوجد موجّه {value} — اختر من 1 إلى {total}."
+    usage: "الاستخدام: /rewind [N | fork N]"
+    rewind_failed: "(x_x) فشل الإرجاع؛ لم يتغير السجل: {error}"
   modern:
     thought_for: "فكّر لمدة {seconds} ث"
     thought: "فكّر"

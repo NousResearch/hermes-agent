@@ -460,6 +460,13 @@ export const cs = defineLocale({
     authRequired: 'Je vyžadováno ověření',
     authRequiredHint: 'Spusťte tento příkaz pro ověření:',
     updateGit: 'Git pull',
+    updateAll: 'Aktualizovat vše',
+    updatingAll: 'Aktualizují se pluginy…',
+    updateAllDone: (updated, needsReview, failed) =>
+      `Aktualizováno ${updated}, ke kontrole ${needsReview}, selhalo ${failed}`,
+    autoUpdate: 'Automatické aktualizace',
+    autoUpdateDesc: hours =>
+      `Aktualizace pluginů se použijí automaticky při kontrole brány (každých ${hours} h). Aktualizovaný kód se načte v nových relacích.`,
     versionBadge: 'Verze',
     showInSidebar: 'Zobrazit v postranním panelu',
     hideFromSidebar: 'Skrýt z postranního panelu',

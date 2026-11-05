@@ -2558,7 +2558,7 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
-  language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
+  language: "en"               # Global hint; a nonempty provider language wins. Blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   streaming: false             # live partial text while you speak (openai, xai, elevenlabs); see Voice Mode > Live transcription
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
@@ -2566,7 +2566,7 @@ stt:
   # prompt: "Hermes, Teknium, Nous Research, kanban"   # Static vocabulary hint (see below)
   local:
     model: "base"              # tiny, base, small, medium, large-v3, turbo
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
     initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
     vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)
     vad_min_silence_ms: 500    # min silence (ms) that splits speech chunks when vad is on
@@ -2574,19 +2574,50 @@ stt:
     logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
     unload_after_idle_seconds: 0   # 0=never unload (default); e.g. 300 = release the model after 5min idle
   groq:
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
     timeout: 60                # seconds per transcription request; raise for self-hosted model cold starts
     max_retries: 1             # SDK transport retries (connection errors, 408/409/429/5xx); 0 = single attempt
   xai:
     model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0; sent on every request
-    language: ""               # per-provider override of stt.language
+    language: ""               # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
 
-Language resolution is the same for **every** STT provider (local, groq, openai, mistral, xai, elevenlabs, deepinfra, command providers, and plugins): `stt.<provider>.language` → `stt.language` → `HERMES_LOCAL_STT_LANGUAGE` env var → provider auto-detect. **The default is `stt.language: "en"`** — Whisper auto-detection frequently misidentifies short or accented clips, which shows up as voice notes transcribed in the wrong language. Non-English speakers should set `stt.language` to their language code once (e.g. `"es"`, `"zh"`, `"uk"`); set it to `""` to restore auto-detection for multilingual use.
+The shared language resolver checks `stt.<provider>.language`, then `stt.language`, then `HERMES_LOCAL_STT_LANGUAGE`, and uses the **first nonempty string**:
+
+```text
+stt.<provider>.language -> stt.language -> HERMES_LOCAL_STT_LANGUAGE -> no language hint
+```
+
+A blank value means **continue to the next source**, not "force auto-detection". ElevenLabs also accepts `stt.elevenlabs.language_code` as a provider-specific alias. **The global default is `stt.language: "en"`**, so leaving only the provider language blank still resolves to English. To pin another language, set a provider or global language code such as `"zh"`, `"es"`, or `"uk"`.
+
+Without a request-level plugin hook override:
+
+| Provider language | Global language | `HERMES_LOCAL_STT_LANGUAGE` | Resolved hint |
+| --- | --- | --- | --- |
+| `""` | `"en"` | unset | `en` |
+| `"zh"` | `""` | unset | `zh` |
+| `""` | `""` | `en` | `en` |
+| `""` | `""` | unset | none |
+
+For automatic language detection with **local faster-whisper**, use:
+
+```yaml
+stt:
+  provider: local
+  language: ""
+  local:
+    language: ""
+```
+
+Also remove any `HERMES_LOCAL_STT_LANGUAGE` override from the process environment or `.env`. A nonempty provider setting or a `pre_transcription` hook can still select a language.
+
+When no hint is resolved, faster-whisper and the native cloud handlers omit the language argument; plugin providers receive `None`.
+
+Command backends have additional behavior. `local_command` uses `stt.local.language` as its provider setting. Named command providers first use `language` from their command configuration (`stt.providers.<name>`, or the legacy `stt.<name>` block), then fall back through the shared resolver. Both paths use `en` for the `{language}` placeholder if no language is resolved. Custom templates may omit that placeholder or use their own engine's detection option. If `local` falls back to a Whisper CLI because faster-whisper is unavailable, the same blank settings therefore do not currently guarantee auto-detection. See [command providers](features/tts.md#stt-custom-command-providers) for their configuration.
 
 `stt.openai.timeout` and `stt.openai.max_retries` shape the OpenAI-SDK transcription client that the `openai`, `groq` and `deepinfra` providers share (there are no per-provider siblings yet, and the SDK reads no environment variables for these). The defaults are `60` / `1` rather than the previous fixed 30 s / no retries because a self-hosted OpenAI-compatible endpoint can take longer than 30 s to load its model on the first request, which used to lose that voice message outright. The trade-off: an unreachable backend now holds a voice message for up to two attempts × the timeout before Hermes gives up; set `timeout: 30` and `max_retries: 0` for the old shape.
 
@@ -2595,7 +2626,7 @@ Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes
 Provider behavior:
 
 - `local` uses `faster-whisper` running on your machine. Install it separately with `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
-- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
+- `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Set `stt.groq.language` or `stt.language` to pin a hint; `HERMES_LOCAL_STT_LANGUAGE` is used only when both are empty.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
@@ -3150,6 +3181,7 @@ delegation:
   #     provider:
   #       sort: throughput
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
+  prefix_stagger_seconds: 0                 # Prompt-cache warm-up for batches: siblings start when the first child's response starts streaming; N (max 60) only caps that wait, it is not a fixed stagger. 0 = off.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
@@ -3188,6 +3220,8 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 **Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 
 **Child process notifications:** background processes started by subagents route their completion/watch notifications to the parent conversation, but those are **suppressed** there by default — the child's consolidated result is the deliverable. Set `delegation.surface_child_process_notifications: true` to deliver them (with subagent attribution). Delegation results themselves are never suppressed. See [Subagent Delegation → Child background-process notifications](features/delegation.md#child-background-process-notifications).
+
+**Prompt-cache warm-up for batches:** siblings in one `tasks` batch send the same tools and system-prompt scaffold; only the goal differs (and the end of the system prompt, when tasks carry different `context`). Started together, each child's first request misses the provider's prompt cache and pays the full prefix. With `prefix_stagger_seconds: N` the first child starts at once and the siblings on its provider/model wait until its first response starts streaming (by then its request has written the cache), until it finishes, or N seconds, whichever comes first. N is a cap on that one wait, not a spacing between children: siblings normally start about one time-to-first-token after the leader, whatever N is. The cost is roughly one time-to-first-token added to the batch; routes Hermes does not prompt-cache (most non-Anthropic models) and siblings routed to a different model start without waiting. The leader is always the batch's first task: when task 0 is on an uncached or different route, the batch is not gated even if later tasks share a cached route, and a one-task unit (e.g. under `independent_completions`) never waits. Off (`0`) by default.
 
 ## Clarify
 
@@ -3280,9 +3314,9 @@ webapp:
 ```
 
 - `enabled` — the gateway reads it at start; restart the gateway after changing it (`hermes gateway restart`).
-- `host` — `127.0.0.1`, `::1` or `localhost` keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value, another loopback address such as `127.0.0.2` included, keeps the Webapp off.
+- `host` — `127.0.0.1`, `::1` or `localhost` keeps the Webapp on this machine. `0.0.0.0` or `::` makes it reachable from other machines and requires a [dashboard sign-in provider](./features/web-dashboard.md#authentication-gated-mode); without one the gateway serves native clients only and `hermes webapp --status` says why. Restart the gateway after adding the provider. Any other value, another loopback address such as `127.0.0.2` included, keeps the Webapp off. In a container, use `0.0.0.0`: a published port or a proxy in another container cannot reach the container's loopback ([Docker → Running the Webapp](./docker.md#running-the-webapp)).
 - `port` — a standalone profile's gateway needs a port other than the default gateway's. **Settings → Web Access → Start** picks one for a standalone profile that sets none (the first free port above 9120 no other profile uses) and saves it here; it never replaces a port you set. When the port is taken, the gateway likewise serves native clients only and `hermes webapp --status` reports why. It also replaces the Webapp's browser sign-in, since another program may have received it, so open tabs need `hermes webapp` again once the port is free.
-- `public_url` — set it when a reverse proxy or tunnel you run serves the Webapp at its own address (forwarding to `host:port`). It turns on dashboard sign-in even on a loopback `host`, it is the one outside hostname the Webapp accepts requests for, and sign-in callbacks are built on it. Without a sign-in provider the gateway serves native clients only, as for `0.0.0.0`. It must be an `http://` or `https://` address with no credentials, query or fragment; anything else keeps the Webapp off. `dashboard.public_url` is for `hermes dashboard` and never applies to the Webapp.
+- `public_url` — set it when a reverse proxy or tunnel you run serves the Webapp at its own address (forwarding to `host:port`). It turns on dashboard sign-in even on a loopback `host`, where it is also the one outside hostname the Webapp accepts requests for, and sign-in callbacks are built on it. Without a sign-in provider the gateway serves native clients only, as for `0.0.0.0`. It must be an `http://` or `https://` address with no credentials, query or fragment; anything else keeps the Webapp off. `dashboard.public_url` is for `hermes dashboard` and never applies to the Webapp. `dashboard.trusted_proxies` does: the Webapp takes a proxy's `X-Forwarded-*` headers only from loopback and the addresses listed there ([Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy)).
 
 Sign-in turns on when `host` is `0.0.0.0` or `::`, or when `public_url` is set, whatever the host. `hermes webapp` then opens the Webapp's address (`public_url` when set, where sign-in returns) for you to sign in with your dashboard account: its one-use links only open a Webapp that needs no sign-in. Native clients (the CLI, TUI and Desktop app) never sign in: the gateway's listener for them never asks for it, whatever the config says.
 
@@ -3321,7 +3355,7 @@ dashboard:
 - `theme` — dashboard visual theme.
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
-- `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected.
+- `trusted_proxies` — IP addresses or bounded CIDR networks allowed to supply `X-Forwarded-Proto` and `X-Forwarded-For`. Loopback remains trusted automatically. Configure this when the TLS reverse proxy connects from another container or host. Prefer the proxy's exact IP; use a small dedicated network only when its address is dynamic. Wildcards and `/0` networks are rejected. The gateway's [Webapp](#webapp) listener reads the same list.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](./features/web-dashboard.md) for full auth setup.
 - `ws_ping_interval` / `ws_ping_timeout` — WebSocket keepalive tuning for non-loopback binds (loopback connections never ping). Raise these on high-latency links (Tailscale, distant SSH tunnels) where the 20 s defaults can manufacture spurious 1006 disconnects.
 - `ssh_isolated_idle_grace_s` (default `900`) — a Desktop-owned `hermes serve --isolated` backend reached over SSH is detached from the SSH session on purpose, so a laptop that sleeps mid-connection cannot tear it down; each dark-wake reconnect used to leave another backend holding `state.db`. The backend now retires itself once no client WebSocket has been connected for this long and no agent turn is running (a turn keeps it alive; an unreadable turn state keeps it alive too). Set high if you rely on a detached backend finishing long work after the laptop sleeps. Such backends also send a slow WebSocket ping (60 s, 10 min timeout) so a half-open tunnel is noticed. Independently of this grace, a backend retires (between turns) once the Desktop's ownership lock on the remote host names a newer spawn of the same connection, so a reconnect storm cannot stack detached backends; this covers POSIX and native Windows SSH hosts.

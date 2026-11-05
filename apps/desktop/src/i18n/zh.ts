@@ -20,6 +20,7 @@ import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
 import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
+import { zhPluginUpdateAll } from './zh_plugin_update_all'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
@@ -2101,6 +2102,7 @@ export const zhOverrides = {
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
       ...zhPluginUpdate,
+      ...zhPluginUpdateAll,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -4478,6 +4480,10 @@ export const zhOverrides = {
       authorized: server => `已授权 ${server}`,
       failed: server => `${server} 设置失败`,
       toolCount: count => `${count} 个工具`,
+      launchCommand: target => `将运行：${target}`,
+      launchRemote: target => `将连接：${target}`,
+      launchEnv: keys => `环境变量：${keys}`,
+      launchCwd: dir => `工作目录：${dir}`,
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',

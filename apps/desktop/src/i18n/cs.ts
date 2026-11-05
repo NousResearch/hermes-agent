@@ -3113,6 +3113,17 @@ export const csOverrides = {
       legacyBackend:
         'Tento backend je starší než přepínače pluginů podle klíče — aktualizujte Hermes, abyste je zde mohli spravovat.',
       portableBadge: 'přenosný',
+      updateAll: 'Aktualizovat vše',
+      updatingAll: 'Aktualizuje se…',
+      updateAllTip: 'Zkontrolovat všechny nainstalované pluginy a použít aktualizace, které nevyžadují kontrolu',
+      updateAllDone: (updated, review, failed) =>
+        `Aktualizováno ${updated}` + (review ? `, ${review} ke kontrole` : '') + (failed ? `, ${failed} selhalo` : ''),
+      updateAllNone: 'Všechny pluginy jsou aktuální',
+      updateAllFailed: 'Pluginy se nepodařilo aktualizovat',
+      autoUpdate: 'Automatické aktualizace',
+      autoUpdateTip: hours =>
+        `Aktualizace pluginů se použijí automaticky při kontrole brány (každých ${hours} h). Aktualizovaný kód se načte v nových relacích.`,
+      autoUpdateFailed: 'Automatické aktualizace pluginů se nepodařilo změnit',
       serverStates: {
         connected: 'připojeno',
         app_not_running: 'aplikace neběží',
@@ -6247,6 +6258,10 @@ export const csOverrides = {
       authorized: server => `${server} byl autorizován`,
       failed: server => `Nastavení serveru ${server} se nezdařilo`,
       toolCount: count => `${count} ${count === 1 ? 'nástroj' : count >= 2 && count <= 4 ? 'nástroje' : 'nástrojů'}`,
+      launchCommand: target => `Spouští: ${target}`,
+      launchRemote: target => `Připojuje se k: ${target}`,
+      launchEnv: keys => `Env: ${keys}`,
+      launchCwd: dir => `Pracovní adresář: ${dir}`,
       envRequired: 'Nejprve vyplňte požadované údaje',
       sendFailed: 'Nelze odeslat odpověď nastavení MCP',
       reloadFailed: 'Server byl uložen, ale opětovné načtení nástrojů MCP se nezdařilo. Načtou se v příští relaci.',

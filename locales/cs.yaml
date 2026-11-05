@@ -1372,6 +1372,12 @@ platform:
       unauthorized: 'Tyto ovládací prvky může použít jen autorizovaný uživatel Matrixu.'
       not_requester: 'Tyto ovládací prvky může použít jen uživatel, který o tuto akci požádal.'
   feishu:
+    clarify:
+      title: 'Hermes potřebuje vaši odpověď'
+      other: '✏️ Jiné (napište odpověď)'
+      awaiting_typed: 'Čeká se na textovou odpověď od {user}…'
+    picker:
+      apply_error: 'Chyba při aplikaci výběru: {error}'
     approval:
       action_session: 'Relace'
       action_always: 'Vždy'
@@ -1475,6 +1481,8 @@ platform:
     prompt_other: '✏️ Jiné (napište odpověď)'
     prompt_expired: '⌛ Tato výzva již nečeká na odpověď. Pošlete svou odpověď jako běžnou zprávu.'
 slash:
+  rewind:
+    description: 'Vrátit se k dřívějšímu zadání, upravit ho a odeslat znovu, nebo odsud odbočit (Esc Esc)'
   approve:
     description: 'Schválit čekající nebezpečný příkaz'
   bg:
@@ -1702,6 +1710,20 @@ slash:
   quit:
     description: 'Ukončit CLI (pomocí --delete odstraníte i historii relace)'
 cli:
+  backtrack:
+    title: '↺ Zpět — vyberte dřívější zadání'
+    keys_hint: '↑/↓ výběr · Enter upravit a odeslat · f odbočit odsud · Esc zavřít'
+    preview_label: 'Zadání {number} z {total}:'
+    more_lines: '… (dalších {count} řádků)'
+    editing_hint: '↺ Úprava zadání {number} — Enter se vrátí sem a odešle · Esc Esc zruší'
+    edit_cancelled: '↺ Vrácení zrušeno; nic nebylo odstraněno.'
+    rewound: '↺ Vráceno k zadání {number} ({count} zpráv archivováno); odesílám úpravu.'
+    forked: '⑂ Odbočeno před zadáním {number}; původní relace {parent} zůstává beze změny. Upravte zadání níže a stiskněte Enter pro odeslání.'
+    nothing: '(._.) Žádná dřívější zadání k vrácení.'
+    target_changed: '(x_x) Relace se od výběru zadání {number} změnila; nic nebylo odstraněno. Vaše úprava je zpět ve vstupním poli.'
+    invalid: '(._.) Zadání {value} neexistuje — vyberte 1 až {total}.'
+    usage: 'Použití: /rewind [N | fork N]'
+    rewind_failed: '(x_x) Vrácení selhalo; historie nebyla změněna: {error}'
   modern:
     hint_commands: 'příkazy'
     hint_files: 'soubory'

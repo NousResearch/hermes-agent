@@ -11,8 +11,19 @@ import { DEFAULT_THEME } from '../theme.js'
 // Native-scrollback mode: the transcript is the terminal's own scrollback, which the app cannot scroll,
 // so the picker shows the selected prompt and the reply that followed it instead of a silent no-op.
 
+// `messages` is the owner's display projection (`text`, compaction handoffs stripped); `stored_messages`
+// the raw rows the rewind targets come from.
 const snapshot = {
   messages: [
+    { role: 'user', text: 'first', row_id: 11 },
+    { role: 'assistant', text: '', row_id: 12, tool_calls: [{ id: 'c1' }] },
+    { role: 'tool', text: 'tool output', row_id: 13 },
+    { role: 'assistant', text: 'answer one', row_id: 14 },
+    { role: 'user', text: '[image]', row_id: 15 },
+    { role: 'assistant', text: 'media answer', row_id: 16 },
+    { role: 'user', text: 'third', row_id: 17 }
+  ],
+  stored_messages: [
     { role: 'user', content: 'first', row_id: 11 },
     { role: 'assistant', content: '', row_id: 12, tool_calls: [{ id: 'c1' }] },
     { role: 'tool', content: 'tool output', row_id: 13 },
@@ -30,6 +41,37 @@ describe('rewind targets carry the reply that followed', () => {
     expect(targets.map(({ reply, text }) => ({ reply, text }))).toEqual([
       { reply: 'answer one', text: 'first' },
       { reply: undefined, text: 'third' }
+    ])
+  })
+
+  it('ends an exchange at an archived prompt and never shows a compaction summary as the reply', () => {
+    // After a compaction: an archived prompt + answer sit between two live targets, and a handoff
+    // summary row that the display projection dropped sits after the newer live prompt.
+    const compacted = {
+      messages: [
+        { role: 'user', text: 'live one', row_id: 21 },
+        { role: 'assistant', text: 'answer to live one', row_id: 22 },
+        { archived: true, role: 'user', text: 'archived prompt', row_id: 5 },
+        { archived: true, role: 'assistant', text: 'archived answer', row_id: 6 },
+        { role: 'user', text: 'live two', row_id: 23 },
+        { role: 'assistant', text: 'answer to live two', row_id: 25 }
+      ],
+      stored_messages: [
+        { role: 'user', content: 'live one', row_id: 21 },
+        { role: 'assistant', content: 'answer to live one', row_id: 22 },
+        { archived: true, role: 'user', content: 'archived prompt', row_id: 5 },
+        { archived: true, role: 'assistant', content: 'archived answer', row_id: 6 },
+        { role: 'user', content: 'live two', row_id: 23 },
+        { role: 'assistant', content: '[CONTEXT COMPACTION — REFERENCE ONLY] summary', row_id: 24 },
+        { role: 'assistant', content: 'answer to live two', row_id: 25 }
+      ]
+    }
+
+    const targets = withReplies(compacted, rewindTargets(compacted))
+
+    expect(targets.map(({ reply, text }) => ({ reply, text }))).toEqual([
+      { reply: 'answer to live one', text: 'live one' },
+      { reply: 'answer to live two', text: 'live two' }
     ])
   })
 })

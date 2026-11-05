@@ -44,31 +44,33 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
   return targets
 }
 
-/** Plain text of an assistant row's content; non-text parts (tool calls, images) are skipped. */
-const assistantText = (content: unknown) =>
-  (typeof content === 'string' ? [content] : Array.isArray(content) ? content : [])
-    .map(part => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
-    .join('')
-    .trim()
+/** Display kinds of a user row that is still a prompt the user typed (main's `_history_to_messages`). */
+const TYPED_PROMPT_KINDS = new Set(['skill_invocation', 'steer'])
 
 /** Each target with `reply`: the assistant text between its prompt and the next user turn, for the
- * picker's context view (the transcript itself cannot be scrolled in native-scrollback mode). */
+ * picker's context view (the transcript itself cannot be scrolled in native-scrollback mode).
+ *
+ * Read from the DISPLAY rows (`messages`: compaction handoffs stripped, as the transcript showed them),
+ * never the raw stored rows. Every prompt the user typed ends an exchange, rewindable or not: an archived
+ * prompt's answer belongs to that prompt, not to the live target before it. Synthetic user rows (an
+ * auto-continue note, a failed-turn card) are part of the turn they interrupt and end nothing. */
 export function withReplies(
   snapshot: Pick<MutationSnapshot, 'messages' | 'stored_messages'>,
   targets: RewindTarget[]
 ): RewindTarget[] {
+  const wanted = new Set(targets.map(target => target.rowId))
   const byRow = new Map<number, string[]>()
   let open: null | string[] = null
 
-  for (const row of snapshot.stored_messages ?? snapshot.messages ?? []) {
-    if (isUserTurn(row)) {
-      open = targets.some(target => target.rowId === row.row_id) ? [] : null
+  for (const row of snapshot.messages ?? []) {
+    if (row.role === 'user' && (!row.display_kind || TYPED_PROMPT_KINDS.has(String(row.display_kind)))) {
+      open = !row.archived && wanted.has(row.row_id as number) ? [] : null
 
       if (open) {
         byRow.set(row.row_id as number, open)
       }
     } else if (open && row.role === 'assistant') {
-      const text = assistantText(row.content)
+      const text = typeof row.text === 'string' ? row.text.trim() : ''
 
       if (text) {
         open.push(text)

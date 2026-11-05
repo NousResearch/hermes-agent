@@ -419,6 +419,11 @@ class HermesProviderMixin:
         enforce_refresh_token_issuer(self.context)
 
     async def _store_tokens(self, token_response) -> None:
+        from tools.mcp_oauth import jwt_bounded_expires_in
+
+        # Before update_token_expiry: the live expiry, not just the stored one, must honour the
+        # JWT's own ``exp`` or is_token_valid() vouches for a token the server rejects (#149017).
+        token_response.expires_in = jwt_bounded_expires_in(token_response.access_token, token_response.expires_in)
         self.context.current_tokens = token_response
         self.context.update_token_expiry(token_response)
         bind_issuer_from_context(self.context)

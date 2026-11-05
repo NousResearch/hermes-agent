@@ -333,8 +333,16 @@ describe('useSessionTileDelegate resumeTile', () => {
     })
     await refreshing
 
-    expect(states.current.get('runtime-tile')?.messages).toContainEqual(completed.messages[2])
-    expect(states.current.get('runtime-tile')?.messages).toContainEqual(completed.messages[3])
+    const merged = states.current.get('runtime-tile')?.messages
+
+    // Each turn once, in order: the snapshot's rows, then the newer turn as the tile had it.
+    expect(merged?.map(message => message.parts[0]?.text)).toEqual([
+      'old prompt',
+      'old answer',
+      'new prompt',
+      'new completed answer'
+    ])
+    expect(merged?.slice(2)).toEqual(completed.messages.slice(2))
     $sessionTiles.set([])
   })
 

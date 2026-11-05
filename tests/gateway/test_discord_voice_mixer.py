@@ -148,3 +148,104 @@ class TestPlayAckInVoice:
         assert await adapter.play_ack_in_voice(111) is False
 
 
+
+
+class TestVoiceFxNumpyGate:
+    """voice_fx needs numpy (the optional ``audio-io`` extra), but the ``discord`` extra does not
+    install it.  The mixer imports numpy lazily, so the failure lands on discord.py's sender
+    thread *after* ``vc.play()`` succeeded: the stream dies, ``speech_active`` never clears, and
+    every reply burned the full playback timeout in silence.  The adapter must notice up front
+    and use the one-shot path instead."""
+
+    def test_config_disables_mixer_when_numpy_missing(self):
+        from plugins.platforms.discord import adapter as adapter_module
+        adapter = _make_adapter()
+        cfg = {"discord": {"voice_fx": {"enabled": True}}}
+        with patch.object(adapter_module, "_numpy_available", return_value=False), \
+             patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            loaded = adapter._load_voice_fx_config()
+        assert loaded["enabled"] is False
+
+    def test_config_keeps_mixer_when_numpy_present(self):
+        from plugins.platforms.discord import adapter as adapter_module
+        adapter = _make_adapter()
+        cfg = {"discord": {"voice_fx": {"enabled": True}}}
+        with patch.object(adapter_module, "_numpy_available", return_value=True), \
+             patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            loaded = adapter._load_voice_fx_config()
+        assert loaded["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_install_skips_mixer_when_numpy_missing(self):
+        from plugins.platforms.discord import adapter as adapter_module
+        adapter = _make_adapter()
+        adapter._get_ambient_pcm = MagicMock(return_value=None)
+        vc = MagicMock()
+        vc.is_playing.return_value = False
+        with patch.object(adapter_module, "_numpy_available", return_value=False):
+            await adapter._install_voice_mixer(42, vc)
+        vc.play.assert_not_called()
+        assert 42 not in adapter._voice_mixers
+
+    @pytest.mark.asyncio
+    async def test_stream_error_retires_mixer(self):
+        adapter = _make_adapter()
+        adapter._get_ambient_pcm = MagicMock(return_value=None)
+        vc = MagicMock()
+        vc.is_playing.return_value = False
+        await adapter._install_voice_mixer(7, vc)
+        assert 7 in adapter._voice_mixers
+        after = vc.play.call_args.kwargs["after"]
+        after(RuntimeError("No module named 'numpy'"))
+        assert 7 not in adapter._voice_mixers
+
+
+class TestDeadMixerFallsBackToOneShot:
+    @pytest.mark.asyncio
+    async def test_mixer_retired_mid_playback_uses_one_shot(self):
+        from plugins.platforms.discord import adapter as adapter_module
+        adapter = _make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        adapter._voice_clients[3] = vc
+        adapter._reset_voice_timeout = MagicMock()
+
+        class _DeadMixer:
+            """Reports speech forever but is unregistered on first poll — what a stream error looks like."""
+
+            def __init__(self, owner):
+                self._owner = owner
+                self.play_speech = MagicMock()
+
+            @property
+            def speech_active(self):
+                self._owner._voice_mixers.pop(3, None)
+                return True
+
+        adapter._voice_mixers[3] = _DeadMixer(adapter)
+
+        played = {}
+
+        class _FakeSource:
+            def __init__(self, *a, **k):
+                pass
+
+        def _play(source, after=None):
+            played["source"] = source
+            if after:
+                after(None)
+
+        vc.play.side_effect = _play
+
+        async def _timeout(_path):
+            return 5.0
+
+        adapter._playback_timeout_for_audio = _timeout
+        with patch.object(vm, "decode_to_pcm", return_value=b"\x00" * vm.FRAME_SIZE), \
+             patch.object(adapter_module, "resolve_ffmpeg_executable", return_value="/usr/bin/ffmpeg"), \
+             patch.object(adapter_module.discord, "FFmpegPCMAudio", _FakeSource), \
+             patch.object(adapter_module.discord, "PCMVolumeTransformer", lambda s, volume=1.0: s):
+            ok = await adapter.play_in_voice_channel(3, "/tmp/x.mp3")
+        assert ok is True
+        assert "source" in played, "one-shot playback must run once the mixer is retired"

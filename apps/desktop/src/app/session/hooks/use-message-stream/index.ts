@@ -56,7 +56,14 @@ import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-re
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
-import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
+import {
+  completionErrorText,
+  delegateTaskPayloads,
+  isContentPolicyRefusal,
+  MAX_STREAM_FLUSH_GAP_MS,
+  replaceTurnWithContentRefused,
+  STREAM_DELTA_FLUSH_MS
+} from './utils'
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -777,7 +784,8 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      failureReason?: string
     ) => {
       let shouldHydrate = false
 
@@ -799,6 +807,27 @@ export function useMessageStream({
             needsInput: false,
             pendingBranchGroup: null,
             streamId: null,
+            turnStartedAt: null,
+            turnLive: false
+          }
+        }
+
+        // A provider safety-filter refusal replaces the whole turn with the same
+        // greyed content-refused row stored hydration produces — never a normal
+        // error card beside the untouched user bubble. The live frame is enough;
+        // a reload would only rebuild this same row, so skip the extra hydrate.
+        if (isContentPolicyRefusal(failure, failureReason)) {
+          return {
+            ...state,
+            messages: replaceTurnWithContentRefused(state.messages, occurredAt),
+            adoptedRunningTurn: false,
+            heartbeatSettledStreamId: null,
+            streamId: null,
+            pendingBranchGroup: null,
+            awaitingResponse: false,
+            busy: false,
+            needsInput: false,
+            interimBoundaryPending: false,
             turnStartedAt: null,
             turnLive: false
           }

@@ -98,7 +98,12 @@ describe('a refreshed page that holds the live turn whole', () => {
   it('keeps an answer the receipt does not cover when the turn ended without storing it', () => {
     // The final answer failed to store: the partial receipt addresses only rows 17-19, and a later
     // stored turn follows, so the page reaches past the receipt without carrying the answer.
-    const receipt: PersistedTurn = { row_ids: [17, 18, 19], complete: false, user_row_id: 17, submission_id: 'sub-lost' }
+    const receipt: PersistedTurn = {
+      row_ids: [17, 18, 19],
+      complete: false,
+      user_row_id: 17,
+      submission_id: 'sub-lost'
+    }
 
     const window = [
       ...toChatMessages(windowRows),
@@ -235,6 +240,7 @@ describe('a refreshed page that holds the live turn whole', () => {
       ...liveRows,
       answer(20, '')
     ])
+
     const merged = graftRefreshedTailOntoBackfill(page, stopped)
 
     expect(count(texts(merged), 'steered prompt')).toBe(1)

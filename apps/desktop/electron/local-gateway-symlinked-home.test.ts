@@ -14,12 +14,23 @@ test.skipIf(process.platform === 'win32')('a sibling route under a symlinked lau
   const real = path.join(base, 'real')
   fs.mkdirSync(path.join(real, 'profiles', 'work'), { recursive: true })
   fs.symlinkSync(real, path.join(base, 'link'))
-  const endpoint = { profile_id: real, instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none' as const, control_home: null }
+  const endpoint = {
+    profile_id: real,
+    instance_id: 'i',
+    authority_epoch: 1,
+    runtime_protocol: 1,
+    api_origin: 'http://127.0.0.1:1',
+    capabilities: [],
+    supervisor: 'none' as const,
+    control_home: null
+  }
 
   try {
     const routed = routedGatewayEndpoint(endpoint as never, 'work', path.join(base, 'link'))
     expect(routed.profile_id).toBe(path.join(real, 'profiles', 'work'))
     expect(fs.realpathSync(routed.profile_id)).toBe(routed.profile_id)
     expect(routedGatewayEndpoint(endpoint as never, 'default', path.join(base, 'link'))).toBe(endpoint)
-  } finally { fs.rmSync(base, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true })
+  }
 })

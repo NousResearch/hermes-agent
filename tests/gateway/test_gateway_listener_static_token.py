@@ -46,6 +46,7 @@ def gated_gateway(tmp_path_factory):
         'model': {'provider': 'custom', 'default': 'launch-model', 'base_url': 'http://127.0.0.1:1/v1'},
         'auxiliary': {'title_generation': {'enabled': False}},
         'dashboard': {'public_url': 'https://hermes.example.test'},
+        'model_catalog': {'enabled': False},
     }))
     root = Path(__file__).resolve().parents[2]
     env = child_env()

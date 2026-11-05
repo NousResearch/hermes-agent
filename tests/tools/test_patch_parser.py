@@ -1228,7 +1228,8 @@ class TestHunkTargetPrecedence:
         result, fo, final = _apply_body(tmp_path, source, body)
 
         assert result.success is False
-        assert "target" in (result.error or "")
+        assert "hunk 2" in (result.error or "")
+        assert "before the previous hunk" in (result.error or "")
         assert fo.writes == [] and final == source
 
     @pytest.mark.parametrize("later", [

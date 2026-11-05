@@ -314,7 +314,7 @@ def _(rid, params: dict, service) -> dict:
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomNotFoundError, local_authority_gateway_id, room_state)
+        AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError, local_authority_gateway_id, room_state)
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
@@ -371,6 +371,7 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
         trace_id=str(params.get("trace_id") or trace_id), grant=grant)
+    refused = None
     with route_publication_lock(service):
         # The probe took time: publish only while the room is still the one it was checked against.
         try:
@@ -380,12 +381,17 @@ def _(rid, params: dict, service) -> dict:
             live = None
         if live is not None and (live["authority_gateway_id"], live["authority_epoch"]) == (
                 home_room["authority_gateway_id"], home_room["authority_epoch"]):
-            service.register_peer_route(
-                room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
-                catalog=catalog)
+            try:
+                service.register_peer_route(
+                    room_id=room_id, member_id=member_id, route=route, client=client, target_url=target_url,
+                    catalog=catalog)
+            except OwedRevokesFullError as exc:  # the replaced grant's revoke found no room
+                refused = exc
         else:  # ended or moved after the probe, which showed the member this grant
-            owe()
-            raise RoomNotFoundError("hosted room ended or moved during registration")
+            refused = RoomNotFoundError("hosted room ended or moved during registration")
+    if refused is not None:
+        owe()  # outside the lock: with no room left to record it, the grant is revoked now
+        raise refused
     return _ok(rid, {
         "registered": True, "mode": "direct", "transport_security": transport_security,
         "target_install_id": catalog.installation_id, "target_profile": target_profile})

@@ -710,12 +710,17 @@ _OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
 # Owed revokes are bounded however many grants a caller hands in: an expiry is read from the grant's
 # unsigned payload, so it is capped at the longest status horizon a member gateway signs; a member
 # keeps at most a few (its scope revocation covers every grant issued before it, so the longest-lived
-# one is enough); the table has a ceiling; and a revoke that never lands is dropped after its
-# backed-off attempts, about two days at the hourly ceiling (``settle_room_grant_revoke``).
+# one is enough); and the table has a ceiling, where expired rows make room first and a grant that
+# still finds none is revoked by the caller at once (``HostedRoomService.owe_grant_revoke``). A
+# revoke that never lands is dropped after its backed-off attempts (``settle_room_grant_revoke``).
 MAX_OWED_REVOKE_SECONDS = 30 * 24 * 60 * 60
 MAX_OWED_REVOKES_PER_MEMBER = 4
 MAX_OWED_REVOKES = 512
 MAX_OWED_REVOKE_ATTEMPTS = 48
+
+
+class OwedRevokesFullError(HostedRoomError):
+    """No room is left to record an owed revoke, while the grant it names may still pass."""
 
 
 def _owe_revoke_locked(
@@ -735,7 +740,10 @@ def _owe_revoke_locked(
         conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
                      (*member, rows[0]["grant_digest"]))
     elif int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
-        raise HostedRoomError("too many owed room grant revokes")
+        # A grant past its expiry passes nowhere: its row is the one to give up.
+        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (now,))
+        if int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
+            raise OwedRevokesFullError("too many owed room grant revokes")
     conn.execute(_OWE_REVOKE, (
         room_id, member_id, digest, target_url, grant, expires_at, now, now, int(held)))
 

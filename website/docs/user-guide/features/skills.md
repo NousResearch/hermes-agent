@@ -19,7 +19,8 @@ See also:
 
 ## Desktop install links {#install-from-the-website}
 
-Hermes Desktop accepts install links with a URL-encoded, source-qualified skill
+Skill cards on the [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) have an **Install in Hermes**
+button that opens one of these links. Hermes Desktop accepts install links with a URL-encoded, source-qualified skill
 target: `official/...` for optional skills, `clawhub/...` for ClawHub, and an
 explicit repository path for bundled skills rather than an ambiguous bare name.
 Use the same target with `hermes skills install <identifier>`:
@@ -823,7 +824,7 @@ hermes skills tap add myorg/skills-repo
 [skills.sh schema](https://skills.sh/schemas/skills.sh.schema.json). Its
 `groupings` (each with a `title` and a list of skill names) are read at index
 time and become the category labels shown in the
-[Skills Hub](https://hermes-agent.nousresearch.com/docs) page — instead of a
+[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — instead of a
 tag-derived guess. This is generic: any tap that ships the file gets real
 categorization, no Hermes-side changes required.
 

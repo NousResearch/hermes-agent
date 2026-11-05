@@ -14,6 +14,13 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
+Browse it on the **[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)**, with search, categories,
+tier labels (Official / Verified / Community) and an install button or CLI command
+for every entry. Each entry has its own page at `/marketplace/<name>` with the
+description, the pinned commit, optional screenshots, the README from the
+reviewed commit and more plugins by the same maintainer. The Marketplace reads
+the same catalog files, so a merged PR is the only way a listing changes.
+
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
 normal plugin under the hood; the catalog just adds discovery and a review
@@ -256,4 +263,5 @@ code or Desktop UI at runtime.
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
+- [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — browse the catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

@@ -223,8 +223,9 @@ so the Desktop catalog and the docs site never fetch from third-party hosts;
 pin the raw URL to the entry's commit and the picture is as immutable as the
 code.
 
-Catalog clients can display `screenshots` and the README (from `subdir` if set,
-else the repo root) **at the pinned sha**. README rendering supports GitHub and
+Every entry gets a page on the Hermes Marketplace at
+`https://hermes-agent.nousresearch.com/marketplace/<name>`, built from these files. Catalog clients can display `screenshots`
+and the README (from `subdir` if set, else the repo root) **at the pinned sha**. README rendering supports GitHub and
 GitLab repositories, is on by default, and accepts `readme: false` to opt out.
 Raw HTML is dropped, and links and images resolve against the pinned tree, so
 the displayed README is the one the reviewer read.

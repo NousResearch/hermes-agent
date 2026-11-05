@@ -74,7 +74,8 @@ class ContextEngine(ABC):
     # Compaction authority under ``compression.checkpoint_required`` (resolved by
     # engine_compacts_outside_compress). None: undeclared, inferred from overridden hooks.
     # False: compress() is the only lossy authority (on_turn_complete may still observe).
-    # True: compacts outside compress(), refused at init while the gate is armed. Only the
+    # True: rewrites or removes host-transcript messages outside compress() (maintaining the
+    # engine's own store is not that), refused at init while the gate is armed. Only the
     # bool singletons count: plugin engines and test doubles answer getattr truthily.
     compacts_outside_compress: bool | None = None
 

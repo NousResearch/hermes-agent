@@ -36,13 +36,13 @@ import { checkTutorialLifetime } from '@/store/tutorial-lifetime'
 
 import { offerLocalRuntimeUpdateTip } from './local-runtime-update-offer'
 
-const TICK_MS = 30_000
+export const TICK_MS = 30_000
 const UPDATE_TICK_MS = 1_000
 /** Nothing in the first stretch of a launch, however long the cooldown says
  *  it's been: you opened the app to do a thing, and the tip can wait until
  *  you've done it. Jittered so it isn't the same beat every time. */
-const SETTLE_MIN_MS = 5 * 60_000
-const SETTLE_SPREAD_MS = 5 * 60_000
+export const SETTLE_MIN_MS = 5 * 60_000
+export const SETTLE_SPREAD_MS = 5 * 60_000
 /** Typing is the clearest "I'm busy" signal the renderer gets for free. */
 const TYPING_GRACE_MS = 5_000
 
@@ -51,12 +51,13 @@ const TYPING_GRACE_MS = 5_000
 const BLOCKING_SURFACES =
   '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-overlay-surface],.driver-popover'
 
-function appIsQuiet(lastTypedAt: number): boolean {
+/** Nothing streaming, no surface open, the window focused and the user not typing: a tip or offer may show. */
+export function appIsQuiet(lastTypedAt: number): boolean {
   if (document.visibilityState !== 'visible' || !document.hasFocus()) {
     return false
   }
 
-  // The first-run intro is never a quiet moment.
+  // First-run onboarding is never a quiet moment.
   if ($busy.get() || $awaitingResponse.get() || onboardingSurfaceActive()) {
     return false
   }

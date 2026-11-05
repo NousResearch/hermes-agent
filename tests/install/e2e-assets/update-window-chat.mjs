@@ -10,11 +10,11 @@ import { assertBackendOrigin, localBackendProcess, readInstallationCommit } from
  * Electron app. Windows CIM exposes neither cwd nor environment for this
  * module launch. The verified identity and listener ownership prove provenance.
  */
-export function assertUpdateWindowBackendOrigin(backend, identity, root, origin) {
+export function assertUpdateWindowBackendOrigin(backend, identity, root, origin, installedCommit) {
   if (origin === 'source' && fs.realpathSync(identity.hermesRoot) !== fs.realpathSync(root)) {
     throw new Error('OLD update-window chat resolved another source installation');
   }
-  assertBackendOrigin(backend, root, origin, { appReportedRoot: identity.hermesRoot });
+  assertBackendOrigin(backend, root, origin, { appReportedRoot: identity.hermesRoot, installedCommit });
 }
 
 /**
@@ -56,9 +56,10 @@ export async function runUpdateWindowChat(app, page, options) {
     if (connection.mode !== 'local' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) {
       throw new Error('OLD update-window chat did not use the local installed backend');
     }
-    const backend = localBackendProcess(Number(base.port), running.pid);
-    assertUpdateWindowBackendOrigin(backend, identity, options.root, options.origin);
+    // The app's own home names the canonical gateway it dials (`gateway_state.json`).
+    const backend = localBackendProcess(Number(base.port), running.pid, identity.hermesHome);
     const provenanceCommit = readInstallationCommit(options.root, options.origin);
+    assertUpdateWindowBackendOrigin(backend, identity, options.root, options.origin, provenanceCommit);
     if (provenanceCommit !== options.expectCommit) throw new Error('Installed OLD commit differs from the expected commit');
     const chat = await runDesktopChatSmoke(page, { ...options, phase: 'old', provenanceCommit });
     const result = { ...chat, origin: options.origin, root: options.root,

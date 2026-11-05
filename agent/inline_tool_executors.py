@@ -129,7 +129,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
@@ -143,7 +143,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (
-            ("action", "action"), ("target", "target", "memory"), ("content", "content"),
+            ("action", "action"), ("target", "target"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
@@ -185,8 +185,10 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
     result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        turn_id=getattr(agent, "_current_turn_id", None) or None,
         connection_callback=getattr(agent, "connection_callback", None),
         connectors_available=gateway_config.connectors_available,
+        card_surface=getattr(agent, "platform", None) == "desktop",
     )
     _scope_in_connected_mcp_servers(agent, result)
     return result
@@ -224,6 +226,20 @@ def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
     )
 
 
+def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The run record lives on the session row and the card callback on the agent. A card the user wrote
+    # past ends the turn as a new message does: setup_beat runs inline (never parallel), so its result is
+    # kept and the loop stops before the next model call.
+    from agent.interrupt_control import _REASON_NEW_MESSAGE
+    from tools.setup_beat_tool import setup_beat_tool
+
+    return setup_beat_tool(
+        args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
+        tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
+        end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -243,6 +259,8 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
+        ("constraints", "constraints", ""), ("expecting", "expecting", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,
@@ -274,14 +292,11 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
         ("preset", "preset"),
     ),
-    # The session id keys the card facts its /initiate-setup turn recorded.
-    "setup_choose": _tool(
-        "tools.setup_choose_tool", "setup_choose_tool",
-        ("kind", "kind", ""), ("question", "question", ""), ("options", "options"),
-        ("multi_select", "multi_select"),
-        callback=lambda agent, ctx: getattr(agent, "setup_choose_callback", None),
-        session_id=lambda agent, ctx: getattr(agent, "session_id", None),
+    "set_theme": _callback_tool(
+        "tools.set_theme_tool", "set_theme_tool", "theme_callback",
+        ("accent", "accent"), ("mode", "mode"), ("layout", "layout"), ("picker", "picker"),
     ),
+    "setup_beat": _setup_beat,
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
@@ -315,7 +330,10 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
+            function_name, args,
+            caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+        )
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)

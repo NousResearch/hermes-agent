@@ -13,6 +13,7 @@ import type {
   ConnectionTargetAction,
   ConnectionTargetEnvField,
   ConnectionTargetKind,
+  ConnectionTargetLaunch,
   ConnectionTargetState,
   ConnectionUpdatePayload,
   InstallPhase
@@ -24,6 +25,7 @@ import type { SetupField } from '@/components/ui/setup-field-list'
 import { connectorText } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
+import { registerParkedCardAnswer } from './parked-card-answers'
 import { $activeGatewayProfile } from './profile'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import { isSessionOwnerRoute } from './session-request-router'
@@ -96,6 +98,8 @@ export interface ConnectionTarget {
   tools: string[]
   /** Credentials an MCP install is still waiting for; empty on every other target. */
   requiredEnv: SetupField[]
+  /** What an MCP row runs or contacts, already scrubbed by the backend; absent on other kinds and older backends. */
+  launch?: ConnectionTargetLaunch | null
   instructions: string | null
   discoveryError: string | null
   /** Present on `plugin` and `skill` rows only. */
@@ -124,6 +128,12 @@ export interface ConnectionRequest {
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
+  /** A `manage_connections` display card: no targets, the directory with these slugs pinned. */
+  display?: ConnectorDisplay | null
+}
+
+export interface ConnectorDisplay {
+  suggested: string[]
 }
 
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
@@ -259,6 +269,7 @@ export function parseConnectionTarget(entry: ConnectionOperationTarget): Connect
     connectionId: entry.connection_id ?? '',
     alias: entry.alias ?? null,
     requiredEnv: envFields(entry.required_env),
+    launch: entry.launch ?? null,
     instructions: entry.instructions ?? null,
     discoveryError: entry.discovery_error ?? null
   }
@@ -278,12 +289,15 @@ export function normalizeConnectionRequest(
     .map(parseConnectionTarget)
     .filter((target): target is ConnectionTarget => target !== null)
 
-  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
+  const display = payload.display ? { suggested: payload.display.suggested } : null
+
+  if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || (targets.length === 0 && !display)) {
     return null
   }
 
   return {
     deadlineAt: payload.deadline_at,
+    display,
     opId: payload.op_id,
     receivedAt: Date.now() / 1000,
     seq: payload.seq,
@@ -339,6 +353,7 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
     connectionId: live.connection_id ?? target.connectionId,
     alias: live.alias === undefined ? target.alias : live.alias,
     requiredEnv: live.required_env ? envFields(live.required_env) : target.requiredEnv,
+    launch: live.launch ? (sameLaunch(live.launch, target.launch) ? target.launch : live.launch) : target.launch,
     instructions: live.instructions === undefined ? target.instructions : live.instructions,
     discoveryError: live.discovery_error === undefined ? target.discoveryError : live.discovery_error
   }
@@ -346,8 +361,15 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
   return sameTarget(next, target) ? target : next
 }
 
+const sameLaunch = (a: ConnectionTargetLaunch | null | undefined, b: ConnectionTargetLaunch | null | undefined) =>
+  a?.kind === b?.kind &&
+  a?.target === b?.target &&
+  a?.cwd === b?.cwd &&
+  (a?.env ?? []).join('\n') === (b?.env ?? []).join('\n')
+
 const sameTarget = (next: ConnectionTarget, target: ConnectionTarget): boolean =>
   next.catalog === target.catalog &&
+  next.launch === target.launch &&
   next.connectUrl === target.connectUrl &&
   next.connectionId === target.connectionId &&
   next.alias === target.alias &&
@@ -503,6 +525,28 @@ export const skipConnectionTarget = (request: ConnectionRequest, name: string): 
 /** Continue: end the operation now with whatever is unresolved. */
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
   respondToConnectionRequest(request, { settled_by: 'continue' })
+
+/** The composer's words answer an open connector directory card; the tool returns them as `said`. */
+export function answerConnectorDirectory(sessionId: string, text: string): null | Promise<boolean> {
+  const request = $connectionRequests.get()[keyFor(sessionId)]
+
+  if (!request?.display || request.settled || !text.trim()) {
+    return null
+  }
+
+  return respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' })
+}
+
+registerParkedCardAnswer('connector-directory', {
+  onboardingOnly: true,
+  $requests: $connectionRequests,
+  answer: answerConnectorDirectory,
+  waiting: sessionId => {
+    const request = $connectionRequests.get()[keyFor(sessionId)]
+
+    return Boolean(request?.display && !request.settled)
+  }
+})
 
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
 // the blocked tool until the deadline.

@@ -47,6 +47,9 @@ def test_connector_batch_hooks_are_per_entry(agent, monkeypatch, executor):
     wire = []
 
     class Client:
+        def __init__(self, call=None):
+            self.call = call
+
         def execute(self, planned):
             wire.extend(p.name for p in planned)
             return [{"data": f"raw:{p.name}", "error": None} for p in planned]

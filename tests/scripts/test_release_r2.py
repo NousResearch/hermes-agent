@@ -793,11 +793,28 @@ def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2
     monkeypatch.setattr(r2.time, 'sleep', lambda _: None)
     r2.download_object(**args)
     assert request_times == [NOW, refreshed]
+    # A body corrupted in transit (right length, wrong bytes) is fetched again, not failed on the spot.
+    sent = []
+
+    def corrupt_once(handler):
+        sent.append(1)
+        if len(sent) == 1:
+            handler._send(200, payload[:-1] + bytes([payload[-1] ^ 1]))
+        else:
+            original_get(handler)
+
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', corrupt_once)
+    target.write_bytes(b"previous complete file")
+    r2.download_object(**args)
+    assert target.read_bytes() == payload and len(sent) == 2
     monkeypatch.setattr(_R2StubHandler, 'do_GET', original_get)
 
+    # A stored object that really differs from its receipt still fails, after the bounded attempts.
     r2_server.store[key] = (b"corrupt replacement", '"e"')
+    r2_server.requests.clear()
     with pytest.raises(ValueError, match="checksum mismatch"):
         r2.download_object(**args)
+    assert sum(1 for method, _, _ in r2_server.requests if method == "GET") == 3
     assert target.read_bytes() == payload
     assert list(target.parent.iterdir()) == [target]
     del r2_server.store[key]

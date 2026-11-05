@@ -21,24 +21,24 @@ from agent.message_sanitization import (
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
-# Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
-_MAX_AUTH_REFRESH_ATTEMPTS = 2
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
@@ -932,44 +932,9 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     return False
 
 
-def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
-    if _is_entitlement_403(agent, status_code, error_context):
-        _ra().logger.info(
-            "Credential %s — entitlement-shaped 403 from %s; "
-            "skipping pool refresh (account lacks subscription, "
-            "not a transient auth failure).", status_code if status_code is not None else "auth",
-            agent.provider or "provider",
-        )
-        return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
-    if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
-    refreshed_id = getattr(refreshed, "id", None)
-    if refreshed_id is not None:
-        if getattr(agent, "_auth_pool_refresh_counts", None) is None:
-            agent._auth_pool_refresh_counts = {}
-        refresh_counts = agent._auth_pool_refresh_counts
-        refresh_key = (agent.provider, refreshed_id)
-        refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-        if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
-            )
-            return False, has_retried_429
-    _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    if agent._swap_credential(refreshed) is False:
-        return False, has_retried_429
-    return True, has_retried_429
+def _recover_auth_failure(agent, pool, **kwargs):
+    from agent.credential_auth_recovery import recover_auth_failure
+    return recover_auth_failure(agent, pool, **kwargs)
 
 
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
@@ -1053,12 +1018,8 @@ def recover_with_credential_pool(
         # Pass classified semantics, not just the status: a billing 403 and an edge-throttle 403
         # need opposite cooldowns.
         if effective_reason is not None:
-            failure_reason = effective_reason.value
-            if effective_reason == FailoverReason.billing and billing_unverified:
-                # Ambiguous billing body: size the cooldown as transient, not a 1-hour bench.
-                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
-                failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
-            kwargs["failure_reason"] = failure_reason
+            from agent.credential_pool_model_cooldowns import pool_failure_reason
+            kwargs["failure_reason"] = pool_failure_reason(effective_reason, error_context, billing_unverified)
         model = getattr(agent, "model", None)
         if isinstance(model, str) and model.strip():
             kwargs["model"] = model
@@ -1451,10 +1412,9 @@ def restore_primary_runtime(agent) -> bool:
         return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
 
     def _load_primary_pool():
-        """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        """The primary's pool (entry-scoped for a custom entry); None when absent or provider-mismatched."""
+        from agent.custom_entry_pool import load_runtime_pool
+        loaded = load_runtime_pool(primary_provider, primary_runtime_base_url, (rt or {}).get("requested_provider"), rt or {})
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0
@@ -1924,8 +1884,8 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
 
 def _profile_for_base_url(base_url: str) -> Any | None:
     """Registered profile whose own base_url is a prefix of ``base_url`` (provider name did not
-    resolve). Prefix, not equality: the replaced copilot-acp branch keyed on
-    ``startswith("acp://copilot")``, so a path or user override under the same root must resolve."""
+    resolve). Prefix, not equality: an ACP profile's ``acp://<vendor>`` root must also resolve a
+    path or user override under the same root."""
     try:
         from providers import list_providers
         candidates = list_providers()
@@ -1939,21 +1899,21 @@ def _profile_for_base_url(base_url: str) -> Any | None:
     return None
 
 
-def _ensure_copilot_headers(client_kwargs: dict) -> None:
+def _ensure_route_client_headers(client_kwargs: dict, provider: str) -> None:
     """Defense-in-depth: recovery/restore rebuild from a snapshot without re-running header
-    wiring; a missing Copilot-Integration-Id causes model_not_available_for_integrator 400s.
-    Only ADD missing keys, never override."""
-    try:
-        if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-            existing = dict(client_kwargs.get("default_headers") or {})
-            existing_lower = {k.lower() for k in existing}
-            for hk, hv in copilot_default_headers().items():
-                if hk.lower() not in existing_lower:
-                    existing[hk] = hv
-            client_kwargs["default_headers"] = existing
-    except Exception:
-        _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
+    wiring, and a route whose provider requires its client headers (integration ids) 400s
+    without them. Only ADD missing keys, never override."""
+    from agent.provider_route_hooks import route_answer
+    required = route_answer("client_headers", provider=provider, base_url=str(client_kwargs.get("base_url", "")),
+                            api_key=str(client_kwargs.get("api_key", "") or ""))
+    if not required:
+        return
+    existing = dict(client_kwargs.get("default_headers") or {})
+    existing_lower = {k.lower() for k in existing}
+    for hk, hv in required.items():
+        if hk.lower() not in existing_lower:
+            existing[hk] = hv
+    client_kwargs["default_headers"] = existing
 
 
 def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
@@ -2078,7 +2038,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # (init, switch_model, recovery, restore, request-scoped); auxiliary_client builds its own clients and
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
-    _ensure_copilot_headers(client_kwargs)
+    _ensure_route_client_headers(client_kwargs, str(getattr(agent, "provider", "") or ""))
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers
@@ -2380,45 +2340,8 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
         raise
     # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
     # clamp lands before the first compaction on the new window, not after it (#114707).
-    from agent.conversation_compression import revalidate_compression_feasibility
+    from agent.conversation_compression_feasibility import revalidate_compression_feasibility
     revalidate_compression_feasibility(agent)
-
-
-def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
-    """The ``_primary_runtime`` record that persists a switch across turns."""
-    cc = getattr(agent, "context_compressor", None) or None
-    rt = {
-        "model": agent.model,
-        "provider": agent.provider,
-        "requested_provider": agent.requested_provider,
-        "base_url": agent.base_url,
-        "api_mode": agent.api_mode,
-        "api_key": getattr(agent, "api_key", ""),
-        "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
-        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
-        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
-        # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
-        # PRE-switch overrides from the stale init snapshot.
-        # See #75091.
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
-        "compressor_model": getattr(cc, "model", agent.model),
-        "compressor_base_url": getattr(cc, "base_url", agent.base_url),
-        "compressor_api_key": getattr(cc, "api_key", ""),
-        "compressor_provider": getattr(cc, "provider", agent.provider),
-        "compressor_context_length": cc.context_length if cc else 0,
-        "compressor_api_mode": getattr(cc, "api_mode", agent.api_mode),
-        "compressor_threshold_tokens": cc.threshold_tokens if cc else 0,
-    }
-    if api_mode == "anthropic_messages":
-        rt.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
-    return rt
 
 
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
@@ -2679,18 +2602,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
-# ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
-# Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
-# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it via
-# ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0 disables escalation entirely — WARNINGs
-# still fire per window).
+# Escalate repeated heals once per session window, then stay quiet: repeated heals of the same poisoned
+# transcript used to WARNING on every send (#96870). Built-in default threshold; config.yaml's
+# ``agent.sanitizer_heal_escalation_threshold`` tunes it (<= 0 disables escalation; WARNINGs still fire per window).
 _EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
 _empty_heal_log_state: dict[str, dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
-# Sessions already told ONCE (out-of-band, never in conversation context); kept apart from the
-# windowed log state so a new window never re-arms the notice.
+# LRU over the log counters only (they pick WARNING vs ERROR): a forgotten session that heals again opens a fresh
+# window. The notice set and pending notices below are never evicted, so nobody is told twice or loses a notice.
+_EMPTY_HEAL_MAX_SESSIONS = 1024
 # Session keys that already received the one-time user notice. Separate from the windowed log state so a new
 # 10-minute window never re-notifies: the user is told ONCE per session, ever (#96870 — out-of-band,
 # delivery channel only, never injected into conversation context).
@@ -2786,13 +2707,14 @@ def _log_empty_non_final_heal(healed: int) -> None:
     threshold = _heal_escalation_threshold()
     now = time.monotonic()
     with _empty_heal_log_lock:
-        state = _empty_heal_log_state.get(key)
+        state = _empty_heal_log_state.pop(key, None)  # re-inserted last: most recently healed
         if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
             prior = state or {}
-            state = _empty_heal_log_state[key] = {
+            state = {
                 "count": 0, "window_start": now, "escalated": False,
                 "total_events": prior.get("total_events", 0), "total_healed": prior.get("total_healed", 0),
             }
+        publish_lru(_empty_heal_log_state, key, state, _EMPTY_HEAL_MAX_SESSIONS)
         state["count"] += 1
         state["total_events"] = state.get("total_events", 0) + 1
         state["total_healed"] = state.get("total_healed", 0) + healed
@@ -3212,21 +3134,19 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; short-content + no-prior-tools guardrails always apply. A response must then
-    contain either a first-person future acknowledgement with an action marker or a narrowly
-    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
-    conversational replies such as "I'll help you brainstorm" from tripping it."""
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+    requirement; short-content + no-tool-results-this-turn guardrails always apply (every row after this
+    turn's own user row: ``messages`` is the whole session, #69778, and a nudge row starts no new turn).
+    A response then needs a future ack + action marker, or a bounded pronounless clause + transition cue."""
+    from agent.turn_context import reanchor_current_turn_user_idx as turn_user_idx
+    if any(isinstance(m, dict) and m.get("role") == "tool" for m in messages[turn_user_idx(messages, user_message) + 1:]):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
-    # Some tool-using providers narrate the next action in terse log style
-    # rather than with a first-person lead-in: "Brief written. Creating the
-    # session now." Bare gerunds are too ambiguous ("Reading the traceback
-    # explains the failure" is a final answer), so this path also requires an
-    # explicit transition cue such as "now", "via acpx", "actual log", or
-    # "then launching". Completed reports and questions stay final.
+    # Some tool-using providers narrate the next action in terse log style: "Brief written. Creating the
+    # session now." Bare gerunds are too ambiguous ("Reading the traceback explains the failure" is a final
+    # answer), so this path also requires an explicit transition cue such as "now", "on <ACP agent> via acpx",
+    # "actual log", or "then launching". Completed reports and questions stay final.
     action_clause_pattern = re.compile(
         r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
         r"(?:(?P<transition>then)\s+)?"
@@ -3268,13 +3188,14 @@ def looks_like_codex_intermediate_ack(
         r"\s+now\s*[—–-]\s*see\s+https?://\S+"
         r"(?:\s+for\s+progress)?\s*$"
     )
+    from providers import list_providers  # "relaunching it on <an ACP agent: its name, alias or binary>"
+    provider_names = sorted({n.lower() for p in list_providers() if p.auth_type == "external_process"
+                             for n in (p.name, *p.aliases, p.process_command) if n})
     provider_tail_pattern = re.compile(
         r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
-        r"on\s+copilot(?:\s+via\s+acpx)?\s*$"
+        rf"on\s+(?:{'|'.join(map(re.escape, provider_names)) or '(?!)'})(?:\s+via\s+acpx)?\s*$"
     )
-    actual_log_tail_pattern = re.compile(
-        r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
-    )
+    actual_log_tail_pattern = re.compile(r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$")
     health_check_tail_pattern = re.compile(
         r"\s+whether\b.*\b(?:healthy|ready|running|available|reachable|working)\s*$"
     )
@@ -3740,19 +3661,8 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
 
 def _requeue_pending_steer(agent, steer_text: str) -> None:
     """Put drained steer text back so the caller's fallback delivers it as a next-turn user message."""
-    # Under the lock the slot is read directly: an initialized agent always has both attributes, so a
-    # missing ``_pending_steer`` there is a real bug and must fail loud. The lock-less branch only
-    # exists for test stubs built via ``object.__new__`` that skipped ``__init__``.
-    _lock = getattr(agent, "_pending_steer_lock", None)
-    if _lock is not None:
-        with _lock:
-            if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
-            else:
-                agent._pending_steer = steer_text
-    else:
-        existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+    from agent.interrupt_control import requeue_drained_steer
+    requeue_drained_steer(agent, steer_text)
 
 
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:

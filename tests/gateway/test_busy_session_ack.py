@@ -4,7 +4,7 @@ Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -96,6 +96,20 @@ def _make_adapter(platform_val="telegram"):
 
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_is_not_sent_to_a_bot_peer(self):
+        """Regression for #137027: runtime acknowledgements must not restart bot loops."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        event = _make_event()
+        event.source.is_bot = True
+        adapter = _make_adapter()
+
+        await GatewayRunner._send_busy_ack_reply(runner, event, adapter, "⚡ Interrupting current task")
+
+        adapter._send_with_retry.assert_not_awaited()
 
 
     @pytest.mark.asyncio
@@ -256,7 +270,7 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"]
+            "", ["/tmp/follow-up.ogg"], ANY
         )
         agent.steer.assert_called_once()
         injected = agent.steer.call_args.args[0]

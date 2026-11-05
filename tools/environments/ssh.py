@@ -46,19 +46,20 @@ class SSHEnvironment(BaseEnvironment):
     """Run commands on a remote machine over SSH.
 
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
-    Session snapshot preserves env vars across calls; CWD persists via in-band
+    Session snapshot preserves exported env vars across calls (unless
+    ``persistent=False``); CWD persists via in-band
     stdout markers. Uses SSH ControlMaster for connection reuse.
     """
 
     # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
-                 probe_only: bool = False, sync_files: bool = True):
-        super().__init__(cwd=cwd, timeout=timeout)
+                 probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
+        super().__init__(cwd=cwd, timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)

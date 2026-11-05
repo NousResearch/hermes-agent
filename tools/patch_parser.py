@@ -6,10 +6,12 @@
 import contextlib
 import difflib
 import inspect
+import ntpath
+import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
@@ -146,20 +148,59 @@ def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
     return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
+def _overlay_key(path: str, file_ops: Any) -> str:
+    """One validation-overlay key per backend file, however the patch spells it.
+
+    Lexical only (the parser cannot resolve paths on a remote backend): ``x``, ``./x``,
+    ``a//x`` and ``<cwd>/x`` share a key, so a second op on an alias validates against the
+    first op's simulated result instead of the stale on-disk file. Never merge two real files:
+    on POSIX ``..`` is kept, because the kernel resolves it AFTER following symlinks
+    (``sub/link/../f`` is ``real/f`` when ``link`` points into ``real/``); Windows collapses
+    ``..`` lexically and is case-insensitive, so only a Windows backend gets ntpath folding.
+    Keys the path the backend opens: the backend's own ``_expand_path`` (``~`` -> its HOME, a
+    host path under a docker workspace mount -> the container path) runs first. A trailing
+    ``/`` or ``/.`` needs a directory, so it keeps a marker and never shares the file's key.
+    """
+    env = getattr(file_ops, "env", None)
+    cwd = getattr(env, "cwd", None) or getattr(file_ops, "cwd", None)
+    cwd = cwd if isinstance(cwd, str) else ""
+    path = path.strip()
+    expand = getattr(file_ops, "_expand_path", None)
+    expanded = expand(path) if callable(expand) else None
+    path = expanded if isinstance(expanded, str) and expanded else path
+    if _backend_is_windows(env, cwd):
+        tail = "\\" if re.search(r"[\\/]\.?[\\/]*$", path) else ""
+        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, path))) + tail
+    raw = posixpath.join(cwd, path) if cwd.startswith("/") else path
+    segments = [seg for seg in raw.split("/") if seg not in ("", ".")]
+    tail = "/" if segments and raw.split("/")[-1] in ("", ".") else ""
+    return ("/" if raw.startswith("/") else "") + "/".join(segments) + tail
+
+
+def _backend_is_windows(env: Any, cwd: str) -> bool:
+    """A local env on a Windows host, or a backend whose cwd is a drive path. Remote
+    sandboxes (docker, ssh, modal ...) are POSIX shells even when Hermes runs on Windows."""
+    from tools.environments.local import _IS_WINDOWS
+    return bool(_IS_WINDOWS and getattr(env, "is_local", False)) or bool(
+        re.match(r"^[A-Za-z]:[\\/]", cwd))
+
+
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
     from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     errors: list[str] = []
     real_change_count = 0
-    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets).
+    # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
+    # keyed by _overlay_key so path aliases share one entry.
     pending_content: dict = {}
     removed_paths: set = set()
 
     def _read(path: str) -> tuple[Optional[str], Optional[str]]:
-        if path in pending_content:
-            return pending_content[path], None
-        if path in removed_paths:
+        key = _overlay_key(path, file_ops)
+        if key in pending_content:
+            return pending_content[key], None
+        if key in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
         return (None, r.error) if r.error else (r.content, None)
@@ -169,9 +210,10 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
         the path absent (``not_found``) frees it: a read that FAILED (no byte transport, a
         directory, an unreadable file) says nothing about what is there, and taking it as free
         writes over the file the check exists to protect."""
-        if path in pending_content:
+        key = _overlay_key(path, file_ops)
+        if key in pending_content:
             return "exists"
-        if path in removed_paths:
+        if key in removed_paths:
             return None
         r = file_ops.read_file_raw(path)
         if not r.error:
@@ -213,11 +255,12 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
                     f"{op.file_path}: hunk {hunk_index} {label} not found"
                     + (f" — {match_error}" if match_error else "")
                     + _no_match_hint(match_error, search_pattern, simulated))
-        pending_content[op.file_path] = simulated
+        pending_content[_overlay_key(op.file_path, file_ops)] = simulated
 
     def _remove(path: str) -> None:
-        removed_paths.add(path)
-        pending_content.pop(path, None)
+        key = _overlay_key(path, file_ops)
+        removed_paths.add(key)
+        pending_content.pop(key, None)
 
     for op in operations:
         if op.operation == OperationType.UPDATE:
@@ -242,7 +285,7 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             elif dst_taken:
                 errors.append(f"{op.new_path}: {dst_taken}")
             elif not src_err:  # only a cleanly-validated move updates the overlay
-                pending_content[op.new_path] = src_content if src_content is not None else ""
+                pending_content[_overlay_key(op.new_path, file_ops)] = src_content if src_content is not None else ""
                 _remove(op.file_path)
         elif op.operation == OperationType.ADD:
             # An Add must create a NEW file. If the target already exists, write_file
@@ -258,21 +301,28 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
             elif add_taken:
                 errors.append(f"{op.file_path}: {add_taken}")
             else:
-                removed_paths.discard(op.file_path)
-                pending_content[op.file_path] = '\n'.join(
+                removed_paths.discard(_overlay_key(op.file_path, file_ops))
+                pending_content[_overlay_key(op.file_path, file_ops)] = '\n'.join(
                     line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")
     return errors
 
 
-# Every _apply_* returns (success, diff_or_error, lsp_diagnostics, lint_result, write): ``write``
-# is the PatchResult._writes entry of a file write, None for Delete/Move and failures.
-ApplyResult = tuple[bool, str, Optional[str], Optional[dict], Optional[tuple]]
+class ApplyResult(NamedTuple):
+    """Outcome of one ``_apply_*`` handler. ``write`` is the PatchResult._writes entry of a file
+    write (None for Delete/Move and failures); ``notes`` tell the caller how the edit was matched
+    (escape-drift corrections, hunks located approximately)."""
+    ok: bool
+    payload: str  # the diff on success, the error text on failure
+    lsp: Optional[str] = None
+    lint: Optional[dict] = None
+    write: Optional[tuple] = None
+    notes: tuple[str, ...] = ()
 
 
 def _fail(error: str) -> ApplyResult:
-    return False, error, None, None, None
+    return ApplyResult(False, error)
 
 
 def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> ApplyResult:
@@ -281,7 +331,7 @@ def _written(result: Any, diff: str, path: str, read_sha256: Optional[str]) -> A
     if result.error:
         return _fail(result.error)
     write = (path, read_sha256, getattr(result, "_content_sha256", None))
-    return True, diff, getattr(result, "lsp_diagnostics", None), getattr(result, "lint", None), write
+    return ApplyResult(True, diff, getattr(result, "lsp_diagnostics", None), getattr(result, "lint", None), write)
 
 
 def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
@@ -305,6 +355,7 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
             error="Patch validation failed (no files were modified):\n" + _bullets(errors))
     files: dict[str, list[str]] = {"created": [], "deleted": [], "modified": []}
     all_diffs: list[str] = []
+    notes: list[str] = []
     # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
     lsp_blocks: list[str] = []
     lint_results: dict[str, dict] = {}
@@ -312,7 +363,7 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
         try:
-            ok, payload, lsp, lint, write = handler(op, file_ops)
+            ok, payload, lsp, lint, write, op_notes = handler(op, file_ops)
         except Exception as e:
             ok, payload = None, str(e)
         if not ok:
@@ -324,6 +375,7 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
         all_diffs.append(payload)
         if write:
             writes.append(write)
+        notes.extend(op_notes)
         if lsp:
             lsp_blocks.append(lsp)
         if lint:
@@ -335,7 +387,8 @@ def apply_v4a_operations(operations: list[PatchOperation], file_ops: Any) -> Pat
                + _bullets(errors)) if errors else None,
         diff='\n'.join(all_diffs),
         files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
-        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes)
+        lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None, _writes=writes,
+        note="\n".join(dict.fromkeys(notes)) or None)
 
 
 def _write_file_accepts_pre_content(file_ops: Any) -> bool:
@@ -374,7 +427,7 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
         return _fail(f"Cannot delete {op.file_path}: file not found")
     result = file_ops.delete_file(op.file_path)
     diff = _unified_diff(op.file_path, read_result.content, None) or f"# Deleted: {op.file_path}"
-    return _fail(result.error) if result.error else (True, diff, None, None, None)
+    return _fail(result.error) if result.error else ApplyResult(True, diff)
 
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
@@ -386,8 +439,8 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> ApplyResult:
     if not getattr(dst, "not_found", False):
         return _fail(f"{op.new_path}: could not confirm the destination is free — {dst.error}")
     result = file_ops.move_file(op.file_path, op.new_path)
-    return _fail(result.error) if result.error else (
-        True, f"# Moved: {op.file_path} -> {op.new_path}", None, None, None)
+    return _fail(result.error) if result.error else ApplyResult(
+        True, f"# Moved: {op.file_path} -> {op.new_path}")
 
 
 def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tuple[Optional[str], Optional[str]]:
@@ -408,11 +461,13 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tup
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
-    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
+    from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
     current_content = new_content = read_result.content
+    notes: list[str] = []  # escape-drift corrections, appended by fuzzy_find_and_replace
+    strategies: list[str] = []  # the fuzzy strategies that located the hunks
     for hunk in op.hunks:
         search_lines, replace_lines = _split_hunk(hunk)
         if search_lines and search_lines == replace_lines:
@@ -423,18 +478,22 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
             if err:
                 return _fail(err)
             continue
-        new_content, count, _strategy, error = fuzzy_find_and_replace(
-            new_content, search_pattern, replacement, replace_all=False)
+        new_content, count, strategy, error = fuzzy_find_and_replace(
+            new_content, search_pattern, replacement, replace_all=False, correction_notes=notes)
         if not (error and count == 0):
+            if count > 0:
+                strategies.append(strategy)
             continue
         # Retry inside a window around the context hint, if any.
         hint_pos = new_content.find(hunk.context_hint) if hunk.context_hint else -1
         if hint_pos != -1:
             window_start = max(0, hint_pos - 500)
             window_end = min(len(new_content), hint_pos + 2000)
-            window_new, count, _strategy, error = fuzzy_find_and_replace(
-                new_content[window_start:window_end], search_pattern, replacement, replace_all=False)
+            window_new, count, strategy, error = fuzzy_find_and_replace(
+                new_content[window_start:window_end], search_pattern, replacement, replace_all=False,
+                correction_notes=notes)
             if count > 0:
+                strategies.append(strategy)
                 new_content = new_content[:window_start] + window_new + new_content[window_end:]
                 error = None
         if error:
@@ -446,8 +505,14 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     # Pass pre_content to skip a redundant re-read inside write_file when supported.
     extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
     write_result = file_ops.write_file(op.file_path, new_content, **extra)
-    return _written(write_result, _unified_diff(op.file_path, current_content, new_content),
-                    op.file_path, getattr(read_result, "_content_sha256", None))
+    result = _written(write_result, _unified_diff(op.file_path, current_content, new_content),
+                      op.file_path, getattr(read_result, "_content_sha256", None))
+    if not result.ok:
+        return result
+    # A hunk found by a similarity strategy may have landed a line off; say so, per file.
+    if note := boundary_note(strategies, "the hunk's", f" in {op.file_path}"):
+        notes.append(note)
+    return result._replace(notes=tuple(notes))
 
 
 # operation -> (handler, verb for error text, files_* bucket)

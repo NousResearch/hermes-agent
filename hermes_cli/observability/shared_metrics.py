@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from .shared_metrics_contract import (
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
+from .shared_metrics_drift import conform_counter_dimensions, counter_dimensions_shape_is_known
 
 
 _PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v4"
@@ -153,6 +155,25 @@ _SEND_COLUMNS = (
 )
 
 logger = logging.getLogger(__name__)
+
+# Every store in this process that ever deferred a write, the per-profile runtimes' stores and the
+# ones no runtime owns alike (the root profile's host-level active-profiles accumulator, the Desktop
+# store). ``os._exit`` skips each store's atexit drain, so a hard exit drains this set instead.
+_DEFERRING_STORES: list[SharedMetricsStore] = []
+_DEFERRING_STORES_LOCK = threading.Lock()
+
+
+def drain_deferring_stores(deadline: float) -> None:
+    """Write every store's deferred rows before an ``os._exit``, waiting on a busy store no later
+    than ``deadline`` (``time.monotonic``). Each deferred write runs against the store that deferred
+    it, so one profile's rows never land in another's database."""
+    with _DEFERRING_STORES_LOCK:
+        stores = list(_DEFERRING_STORES)
+    for store in stores:
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        store.drain_deferred(busy_timeout_ms=remaining_ms)
 
 
 def _utc_now() -> datetime:
@@ -428,6 +449,8 @@ class SharedMetricsStore:
                 register, self._drain_at_exit = not self._drain_at_exit, True
             if register:
                 atexit.register(self.drain_deferred)
+                with _DEFERRING_STORES_LOCK:
+                    _DEFERRING_STORES.append(self)
             if not busy:
                 raise
 
@@ -441,7 +464,11 @@ class SharedMetricsStore:
             with self._write(busy_timeout_ms=busy_timeout_ms) as connection:
                 for item in pending:
                     item(connection)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc) or "busy" in str(exc)):
+                with self._deferred_lock:  # still contended: keep them for the next write or exit drain
+                    self._deferred = [*pending, *self._deferred][-_DEFERRED_WRITES_MAX:]
+                return
             logger.warning("Unable to write %d deferred shared-metrics updates", len(pending), exc_info=True)
 
     def create_and_export_package_if_due(self) -> list[Path]:
@@ -603,6 +630,10 @@ class SharedMetricsStore:
         period_start = datetime.fromisoformat(str(period_value)).replace(tzinfo=UTC)
         if not client_resource_is_valid(resource):
             raise ValueError("Unsupported shared-metrics client resource")
+        metrics = self._package_metrics(rows)
+        if not metrics:  # every row was a retired value with no bucket: settle them, try the next period
+            self._mark_packaged(connection, rows, period_value, resource_values)
+            return self._create_package_in_transaction(connection, now)
         payload = {
             "schema_version": _PACKAGE_SCHEMA_VERSION,
             "package_id": str(uuid.uuid4()),
@@ -611,7 +642,7 @@ class SharedMetricsStore:
             "period_end": _isoformat(period_start + timedelta(days=1)),
             "generated_at": _isoformat(now),
             "resource": resource,
-            "metrics": [self._package_metric(row) for row in rows],
+            "metrics": metrics,
         }
         connection.execute(
             "INSERT INTO package_outbox( package_id, period_start, period_end, payload_json,"
@@ -629,6 +660,13 @@ class SharedMetricsStore:
             " ON CONFLICT(name) DO UPDATE SET stamp = MAX(stamp, excluded.stamp)",
             (payload["period_end"],),
         )
+        self._mark_packaged(connection, rows, period_value, resource_values)
+        return payload
+
+    @staticmethod
+    def _mark_packaged(
+        connection: sqlite3.Connection, rows: list[sqlite3.Row], period_value: str, resource_values: tuple,
+    ) -> None:
         for row in rows:
             connection.execute(
                 """
@@ -639,16 +677,42 @@ class SharedMetricsStore:
                     """,
                 (period_value, row["metric_name"], *resource_values, row["dimensions_json"]),
             )
-        return payload
+
+    @classmethod
+    def _package_metrics(cls, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Package rows, merging rows a re-bucket folded onto the same dimensions into one metric."""
+        merged: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            metric = cls._package_metric(row)
+            if metric is None:
+                continue
+            key = (metric["name"], _compact_json(metric["dimensions"]))
+            if key in merged:
+                merged[key]["value"] += metric["value"]
+            else:
+                merged[key] = metric
+        return list(merged.values())
 
     @staticmethod
-    def _package_metric(row: sqlite3.Row) -> dict[str, Any]:
+    def _package_metric(row: sqlite3.Row) -> dict[str, Any] | None:
         metric_name = str(row["metric_name"])
         dimensions = json.loads(row["dimensions_json"])
-        if not isinstance(dimensions, dict) or not counter_dimensions_are_valid(
-            metric_name, dimensions
-        ):
+        # An unknown field set is tamper evidence and fails closed (must-not-be-exported). A known
+        # shape whose values fell out of the contract was recorded by an earlier build or catalog
+        # (#133017): re-bucket it inside the closed enum, or leave the row out when its field has no
+        # bucket, rather than abort the whole period's package. Either way no stale value leaves.
+        if not isinstance(dimensions, dict) or not counter_dimensions_shape_is_known(metric_name, dimensions):
             raise ValueError(f"Unsupported dimensions for shared metric: {metric_name}")
+        if not counter_dimensions_are_valid(metric_name, dimensions):
+            conformed = conform_counter_dimensions(metric_name, dimensions)
+            if conformed is None:
+                logger.info("Shared-metric %s row holds a retired value with no bucket; not packaged", metric_name)
+                return None
+            logger.info(
+                "Shared-metric %s row drifted out of the contract since it was recorded; "
+                "packaged with bucketed dimensions %s", metric_name, _compact_json(conformed),
+            )
+            dimensions = conformed
         return {
             "name": metric_name, "type": "counter", "dimensions": dimensions,
             "value": row["value"] - row["packaged_value"],

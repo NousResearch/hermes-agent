@@ -39,6 +39,10 @@ class _ExecuteTransport:
     """Answers every execute with one result per call, each naming the account it ran under."""
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
+        if "call" in json:
+            call = json["call"]
+            return _Response({"result": {"connector": call["connector"], "tool": call["tool"], "data": {"ok": True},
+                                         "account": call["arguments"].get("connector_alias")}})
         results = [{"index": i, "connector": c["connector"], "tool": c["tool"], "data": {"ok": True},
                     "account": c["arguments"].get("connector_alias")} for i, c in enumerate(json["tools"])]
         return _Response({"results": results, "successCount": len(results), "errorCount": 0,
@@ -53,7 +57,7 @@ def test_the_account_a_call_ran_under_reaches_the_model_on_both_dispatch_paths(m
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
     invalidate_check_fn_cache()
-    monkeypatch.setattr(bridge, "_default_client_factory", lambda: ConnectorClient(
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: ConnectorClient(
         transport=_ExecuteTransport(), endpoint_resolver=lambda: "https://gateway.test",
         header_provider=lambda _url: {"Authorization": "Bearer t"}))
     kwargs = dict(enabled_toolsets=["connections"], session_id="s", skip_pre_tool_call_hook=True,
@@ -172,7 +176,7 @@ def test_try_again_on_a_named_account_repairs_the_account_it_minted_not_the_name
     from tools.connectors.contract import Actor, TargetState
 
     gateway = _Gateway()
-    monkeypatch.setattr("tools.connectors.managed.managed_client", lambda: gateway)
+    monkeypatch.setattr("tools.connectors.managed.managed_client", lambda **_: gateway)
     operation = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect", alias="work")], session_key="s1")
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connection_id="ca_work")
     operation.transition("gmail", TargetState.failed, Actor.backend_watcher, detail="expired")

@@ -11,7 +11,7 @@ import pytest
 
 from hermes_cli import anon_auth, anon_challenge
 
-from tests.hermes_cli.anon_portal import PORTAL, install_portal
+from tests.hermes_cli.anon_portal import PORTAL, claimed_trial, install_portal
 
 
 @pytest.fixture
@@ -32,15 +32,24 @@ def _desktop_backend(monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "spawn-token")
 
 
-def _resolve():
+def _resolve(monkeypatch):
+    """A free-model call: only a guest that claimed the welcome trial on the desktop's local backend
+    mints an inference token."""
     from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-    assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+    claimed_trial(monkeypatch)
     return resolve_nous_runtime_credentials()
+
+
+def _connectors_token():
+    """A connectors / managed-tool token read: the one exchange a terminal guest makes."""
+    from hermes_cli.auth import resolve_nous_access_token
+    assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+    return resolve_nous_access_token()
 
 
 class TestWhatTheClientSends:
     def test_the_exchange_reports_surface_version_and_the_browser_capability(self, nas):
-        _resolve()
+        _connectors_token()
         sent = nas.token_requests[-1]
         assert sent["body"]["client"]["capabilities"] == ["browser-v1"]
         assert sent["body"]["client"]["surface"] == "cli"
@@ -56,7 +65,7 @@ class TestRequiredChallenge:
             assert anon_challenge.record_host_outcome(challenge.url, challenge.attempt, "error")
         monkeypatch.setattr(anon_challenge, "present", failed)
         with pytest.raises(anon_auth.AuthError, match="couldn't finish"):
-            _resolve()
+            _resolve(monkeypatch)
         assert [p for _, p in nas.calls].count("/api/anonymous/token") == 2
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") == 1
         # A window that crashed is not a reason to let a boot burst of callers each re-mint and
@@ -66,7 +75,7 @@ class TestRequiredChallenge:
             resolve_nous_runtime_credentials()
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") == 1
 
-    def test_a_poll_the_service_refuses_ends_the_wait_instead_of_running_out_the_clock(self, nas, presented):
+    def test_a_poll_the_service_refuses_ends_the_wait_instead_of_running_out_the_clock(self, nas, presented, monkeypatch):
         """404 ``unknown_token`` / 400 on the status poll: the credential is gone (or the surface is
         off), so no amount of waiting clears it. The wait ends and the re-mint says what happened."""
         nas.challenge_required = True
@@ -81,7 +90,7 @@ class TestRequiredChallenge:
             return original(request)
         nas.handler = refuse_once_pending_is_spent
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") == 2
 
@@ -90,7 +99,7 @@ class TestRequiredChallenge:
         not under a fresh default context that would fail every read and run out the clock."""
         from hermes_cli import auth_nous
         from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        claimed_trial(monkeypatch)
         with _auth_store_lock():
             store = _load_auth_store()
             store["providers"]["nous"]["tls"] = {"insecure": True}
@@ -117,13 +126,13 @@ class TestRequiredChallenge:
                 nas.challenge_required = False
             return response
         nas.handler = cleared_after_status
-        assert _resolve()["api_key"]
+        assert _resolve(monkeypatch)["api_key"]
         assert [p for _, p in nas.calls].count("/api/anonymous/token") == 2
         assert anon_challenge.pending_challenge() is None
-    def test_a_challenge_is_presented_polled_and_the_exchange_retried(self, nas, presented):
+    def test_a_challenge_is_presented_polled_and_the_exchange_retried(self, nas, presented, monkeypatch):
         nas.challenge_required = True
         nas.challenge_statuses = ["pending", "pending", "needs_interaction"]
-        creds = _resolve()
+        creds = _resolve(monkeypatch)
         assert creds["api_key"]
         assert [c.url for c in presented] == [nas.challenge_url]
         assert presented[0].required and presented[0].message == "A quick check first."
@@ -143,7 +152,7 @@ class TestRequiredChallenge:
             with _nous_shared_store_lock(timeout_seconds=0.5):
                 pass
         monkeypatch.setattr(anon_challenge, "present", present)
-        assert _resolve()["api_key"]
+        assert _resolve(monkeypatch)["api_key"]
 
     def test_a_challenge_that_never_clears_is_a_retryable_error_not_a_hang(self, nas, presented, monkeypatch):
         nas.challenge_required = True
@@ -151,7 +160,7 @@ class TestRequiredChallenge:
         monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0.05)
         monkeypatch.setattr(anon_challenge, "_sleep", lambda _seconds: __import__("time").sleep(0.02))
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED and exc.value.retryable is True
         assert "browser" in str(exc.value)
         # The callers queued behind it fail fast instead of each parking for a full wait.
@@ -160,7 +169,7 @@ class TestRequiredChallenge:
             resolve_nous_runtime_credentials()
         assert len(presented) == 1
 
-    def test_a_second_challenge_after_the_retry_is_not_looped_on(self, nas, presented):
+    def test_a_second_challenge_after_the_retry_is_not_looped_on(self, nas, presented, monkeypatch):
         nas.challenge_required = True
         nas.challenge_statuses = ["failed"]          # the page ruled; the ticket left the waiting states
 
@@ -172,13 +181,15 @@ class TestRequiredChallenge:
             return response
         nas.handler = still_challenged
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED
         assert [p for _, p in nas.calls].count("/api/anonymous/token") == 2
 
     def test_the_managed_tool_token_path_works_a_challenge_too(self, nas, presented):
+        """Against a NAS from before the connectors purpose, which still challenges that mint."""
         from hermes_cli.auth import resolve_nous_access_token
         assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        nas.honours_purpose = False
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
         assert resolve_nous_access_token()
@@ -186,10 +197,10 @@ class TestRequiredChallenge:
 
 
 class TestWhoWaits:
-    def test_a_background_caller_announces_and_returns_at_once(self, nas, presented):
+    def test_a_background_caller_announces_and_returns_at_once(self, nas, presented, monkeypatch):
         """A keepalive tick or a status paint has nobody waiting on it: no poll, no parked thread."""
         from hermes_cli.auth_nous import resolve_nous_runtime_credentials
-        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        claimed_trial(monkeypatch)
         nas.challenge_required = True
         nas.challenge_never_clears = True
         with anon_challenge.background_caller():
@@ -201,16 +212,17 @@ class TestWhoWaits:
         assert anon_challenge.pending_challenge()["url"] == nas.challenge_url
 
     def test_the_messaging_gateway_never_waits_on_a_challenge(self, nas, presented, monkeypatch):
-        """Nobody sits at a gateway's console, and its token reads can run on the event loop."""
+        """Nobody sits at a gateway's console, and its token reads can run on the event loop. (A
+        gateway never carries the free model, so its only challenged exchange is a managed-tool
+        token against a NAS from before the connectors purpose.)"""
         from gateway import status
-        assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
         monkeypatch.setattr(status, "owns_gateway_runtime_lock", lambda: True)
         monkeypatch.setattr(anon_challenge, "CHALLENGE_WAIT_SECONDS", 0.05)
+        nas.honours_purpose = False
         nas.challenge_required = True
         nas.challenge_never_clears = True
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
         with pytest.raises(anon_auth.AuthError) as exc:
-            resolve_nous_runtime_credentials()
+            _connectors_token()
         assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED and exc.value.retryable is True
         assert "/api/anonymous/challenge/status" not in [p for _, p in nas.calls]
 
@@ -232,12 +244,12 @@ class TestWhoWaits:
         _compute_nous_auth_status()
         assert "/api/anonymous/challenge/status" not in [p for _, p in nas.calls]
 
-    def test_a_poll_error_is_a_blip_not_a_verdict(self, nas, presented):
+    def test_a_poll_error_is_a_blip_not_a_verdict(self, nas, presented, monkeypatch):
         nas.challenge_required = True
         nas.challenge_status_errors = [429]              # the "is it already settled?" read
         nas.challenge_statuses = ["pending"]
         nas.challenge_status_errors += [500]
-        assert _resolve()["api_key"]
+        assert _resolve(monkeypatch)["api_key"]
         assert len(presented) == 1                       # the 429 did not skip presenting
 
     def test_an_inherited_desktop_flag_is_not_the_desktop_surface(self, nas, monkeypatch, capsys):
@@ -248,7 +260,7 @@ class TestWhoWaits:
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
         monkeypatch.setenv("SSH_TTY", "/dev/pts/0")
         monkeypatch.setattr(webbrowser, "open", lambda _url: False)
-        _resolve()
+        _connectors_token()
         assert nas.token_requests[-1]["body"]["client"]["surface"] == "cli"
         anon_challenge.present(anon_challenge.BrowserChallenge(f"{PORTAL}/challenge?code=t", True, 600, 2, "m"))
         assert f"{PORTAL}/challenge?code=t" in capsys.readouterr().err
@@ -275,11 +287,11 @@ class TestOtherEndpointsAreUnchanged:
 
 
 class TestWhatIsNeverOpened:
-    def test_a_challenge_url_off_the_portal_origin_is_refused(self, nas, presented):
+    def test_a_challenge_url_off_the_portal_origin_is_refused(self, nas, presented, monkeypatch):
         nas.challenge_required = True
         nas.challenge_url = "https://evil.example/challenge?code=x"
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_SIGNIN_REQUIRED and exc.value.retryable is False
         assert presented == []
 
@@ -290,27 +302,27 @@ class TestWhatIsNeverOpened:
         payload = {"challenges": [{"type": "browser", "url": url}]}
         assert anon_challenge.parse_browser_challenge(payload, PORTAL) is None
 
-    def test_an_unknown_challenge_type_falls_back_to_sign_in(self, nas, presented):
+    def test_an_unknown_challenge_type_falls_back_to_sign_in(self, nas, presented, monkeypatch):
         nas.token_response = httpx.Response(428, json={
             "error": "challenge_required", "message": "Attest your device.",
             "challenges": [{"type": "attestation-v9", "url": f"{PORTAL}/x"}]})
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_SIGNIN_REQUIRED
         assert "Sign in" in str(exc.value) and "Attest" not in str(exc.value)
 
-    def test_an_unknown_428_is_a_sign_in_not_the_proof_of_work_sentence(self, nas):
+    def test_an_unknown_428_is_a_sign_in_not_the_proof_of_work_sentence(self, nas, monkeypatch):
         nas.token_response = httpx.Response(428, json={"error": "something_new"})
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_SIGNIN_REQUIRED
         assert "proof of work" not in str(exc.value)
 
     @pytest.mark.parametrize("error", ["signin_required", "access_denied"])
-    def test_a_refusal_uses_the_services_own_words(self, nas, error):
+    def test_a_refusal_uses_the_services_own_words(self, nas, error, monkeypatch):
         nas.token_response = httpx.Response(403, json={"error": error, "message": "Not from here, sorry."})
         with pytest.raises(anon_auth.AuthError) as exc:
-            _resolve()
+            _resolve(monkeypatch)
         assert exc.value.code == anon_auth.ANON_SIGNIN_REQUIRED and str(exc.value) == "Not from here, sorry."
 
     def test_network_numbers_are_kept_finite_and_sane(self):
@@ -333,16 +345,16 @@ class TestOptionalChallenge:
     def test_a_terminal_never_opens_anything_for_an_optional_challenge(self, nas, presented, monkeypatch):
         announced = []
         monkeypatch.setattr(anon_challenge, "_announce", announced.append)
+        nas.honours_purpose = False       # an inference-scoped grant: the one that carries the offer
         nas.optional_challenge = True
-        assert _resolve()["api_key"]
+        assert _connectors_token()
         assert presented == [] and announced == []
 
     def test_the_desktop_backend_announces_it_and_waits_on_nothing(self, nas, presented, monkeypatch):
         announced = []
         monkeypatch.setattr(anon_challenge, "_announce", announced.append)
-        _desktop_backend(monkeypatch)
         nas.optional_challenge = True
-        assert _resolve()["api_key"]
+        assert _resolve(monkeypatch)["api_key"]
         assert [c.required for c in announced] == [False]
         assert "/api/anonymous/challenge/status" not in [p for _, p in nas.calls]
         assert anon_challenge.pending_challenge()["url"] == nas.challenge_url

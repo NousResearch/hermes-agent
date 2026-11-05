@@ -3,8 +3,43 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
+import { createDashboardSessionMutations } from "./session-mutations";
 
-import type { AuxiliaryModelsResponse } from "./api-aux";
+const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
+
+import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type {
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
+import type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartRequest,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+export type {
+  WhatsAppOnboardingApplyResponse,
+  WhatsAppOnboardingStartResponse,
+  WhatsAppOnboardingStatusResponse,
+} from "./api-whatsapp";
+import type {
+  MessagingPlatform,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
+} from "./api-messaging";
+export type {
+  MessagingPlatform,
+  MessagingPlatformEnvVar,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
+} from "./api-messaging";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -140,6 +175,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  "/api/plugins/", // a plugin's backend: the selected profile's copy, as its bundle is (PLG-3)
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
 ];
@@ -351,12 +387,9 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
-    authParam: await buildWsAuthParam(),
-    basePath: BASE,
-    params,
-    path,
-  });
+  const profile = getManagementProfile(); // a plugin socket names it as its REST calls do (PLG-3)
+  if (profile && path.startsWith("/api/plugins/") && !params?.profile) params = { ...params, profile };
+  return buildHermesWebSocketUrl({ authParam: await buildWsAuthParam(), basePath: BASE, params, path });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.
@@ -488,12 +521,7 @@ export const api = {
       ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
-      {
-        method: "DELETE",
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -512,14 +540,7 @@ export const api = {
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean; title: string }>(
-      `/api/sessions/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, profile: profile || undefined }),
-      },
-    ),
+    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -527,12 +548,11 @@ export const api = {
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),
-  ) =>
-    fetchJSON<SessionImportResponse>("/api/sessions/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessions, profile: profile || undefined }),
-    }),
+  ) => {
+    const id = sessions[0]?.id;
+    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
+    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
+  },
   pruneSessions: (
     older_than_days: number,
     source?: string,
@@ -980,6 +1000,18 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getRelayLinks: () => fetchJSON<RelayLinksResponse>("/api/messaging/relay"),
+  requestRelayLink: (platform: string) =>
+    fetchJSON<RelayLinkCode>(`/api/messaging/relay/${encodeURIComponent(platform)}/link`, {
+      method: "POST",
+    }),
+  getRelayLinkState: (code: string) =>
+    fetchJSON<RelayLinkCodeState>(`/api/messaging/relay/link/${encodeURIComponent(code)}`),
+  unlinkRelayAccount: (platform: string, platformUserId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+      { method: "DELETE" },
+    ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
@@ -1015,10 +1047,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: {
-    mode?: "bot" | "self-chat";
-    allowed_users?: string;
-  }) =>
+  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
     fetchJSON<WhatsAppOnboardingStartResponse>(
       "/api/messaging/whatsapp/onboarding/start",
       {
@@ -1068,8 +1097,8 @@ export const api = {
     ),
 
   // Dashboard plugins
-  getPlugins: () =>
-    fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
+  getPlugins: (profile = getManagementProfile()) => // the profile the caller's asset URLs will name
+    fetchJSON<PluginManifestResponse[]>(`/api/dashboard/plugins${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`),
   rescanPlugins: () =>
     fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
 
@@ -1105,15 +1134,33 @@ export const api = {
       method: "POST",
     }),
 
-  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
+  updateAgentPlugin: (
+    name: string,
+    { acceptCapabilities = false, force = false }: { acceptCapabilities?: boolean; force?: boolean } = {},
+  ) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
+
+  updateAllAgentPlugins: () =>
+    fetchJSON<AgentPluginsUpdateAllResponse>("/api/dashboard/agent-plugins/update-all", {
+      method: "POST",
+    }),
+
+  getPluginAutoUpdate: () =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update"),
+
+  setPluginAutoUpdate: (enabled: boolean) =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
@@ -1669,50 +1716,6 @@ export interface McpOAuthFlow {
   tools?: Array<{ name: string; description: string }>;
 }
 
-export interface MessagingPlatformEnvVar {
-  key: string;
-  required: boolean;
-  is_set: boolean;
-  redacted_value: string | null;
-  description: string;
-  prompt: string;
-  help: string;
-  url: string | null;
-  is_password: boolean;
-  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
-  is_list?: boolean;
-  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
-  value?: string | null;
-  advanced: boolean;
-}
-
-export interface MessagingPlatform {
-  id: string;
-  name: string;
-  description: string;
-  docs_url: string;
-  enabled: boolean;
-  configured: boolean;
-  gateway_running: boolean;
-  /**
-   * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
-   */
-  state: string;
-  error_code: string | null;
-  error_message: string | null;
-  updated_at: string | null;
-  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
-  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
-  ingress_url?: string | null;
-  whatsapp_setup?: {
-    mode?: string;
-    allowed_users_set?: boolean;
-    home_channel_set?: boolean;
-  } | null;
-  env_vars: MessagingPlatformEnvVar[];
-}
-
 export interface MessagingPlatformsResponse {
   env_path: string;
   gateway_start_command: string;
@@ -1906,10 +1909,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;
@@ -2185,38 +2188,6 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
-  needs_restart: boolean;
-  restart_started?: boolean;
-  restart_action?: string;
-  restart_pid?: number | null;
-  restart_error?: string;
-}
-
-export interface WhatsAppOnboardingStartResponse {
-  pairing_id: string;
-  status:
-    | "starting"
-    | "installing"
-    | "waiting"
-    | "connected"
-    | "error"
-    | "expired"
-    | "cancelled";
-  qr_payload?: string | null;
-  expires_at: string;
-  mode: "bot" | "self-chat";
-  allowed_users: string;
-  account_id?: string | null;
-  account_name?: string | null;
-  account_phone?: string | null;
-  error?: string | null;
-}
-
-export type WhatsAppOnboardingStatusResponse = WhatsAppOnboardingStartResponse;
-
-export interface WhatsAppOnboardingApplyResponse {
-  ok: boolean;
-  platform: "whatsapp";
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;
@@ -2545,6 +2516,17 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type {
+  AgentPluginScanFinding,
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogCapabilities,
+  CatalogEntry,
+  CatalogRemovedEntry,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2588,29 +2570,6 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
-}
-
-/** An auxiliary task still pinned to a provider that differs from the
- *  newly-selected main provider after a main-model switch. */
-export interface StaleAuxAssignment {
-  task: string;
-  provider: string;
-  model: string;
-}
-
-export interface ModelAssignmentResponse {
-  confirm_message?: string;
-  confirm_required?: boolean;
-  ok: boolean;
-  scope?: string;
-  provider?: string;
-  model?: string;
-  tasks?: string[];
-  reset?: boolean;
-  /** Auxiliary slots still pinned to a different provider than the new main.
-   *  Switching main never clears aux pins; this lets the UI warn the user
-   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
-  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -2760,64 +2719,4 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
-}
-
-// ── Plugin catalog types ───────────────────────────────────────────────
-
-export interface CatalogCapabilities {
-  provides_tools: string[];
-  provides_hooks: string[];
-  provides_middleware: string[];
-  requires_env: string[];
-}
-
-export interface CatalogEntry {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  sha_short: string;
-  tier: "official" | "community";
-  maintainer: string;
-  requires_hermes: string;
-  platforms: string[];
-  capabilities: CatalogCapabilities;
-  docs_url: string;
-  capability_summary: string;
-  /** Installed-state merge (computed server-side). */
-  installed: boolean;
-  installed_sha: string | null;
-  update_available: boolean;
-  runtime_status: "disabled" | "enabled" | "inactive" | null;
-}
-
-export interface CatalogRemovedEntry {
-  name: string;
-  repo: string;
-  reason: string;
-  date: string;
-}
-
-export interface CatalogResponse {
-  entries: CatalogEntry[];
-  removed: CatalogRemovedEntry[];
-  generated_at: string;
-}
-
-export interface AgentPluginUpdateResponse {
-  ok: boolean;
-  name?: string;
-  output?: string;
-  unchanged?: boolean;
-  error?: string;
-  /** The new catalog pin widens the plugin; nothing changed until the client
-   *  retries with `accept_capabilities`. */
-  consent_required?: boolean;
-  sha?: string;
-  delta_lines?: string[];
-}
-
-export interface PluginProvidersPutRequest {
-  memory_provider?: string;
-  context_engine?: string;
 }

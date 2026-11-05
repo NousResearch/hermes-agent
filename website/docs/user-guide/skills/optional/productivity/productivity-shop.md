@@ -21,7 +21,7 @@ Shop catalog search, checkout, order tracking, returns.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Shopping`, `E-commerce`, `Shop`, `Products`, `Orders`, `Returns`, `Checkout`, `Reorder` |
-| Related skills | [`shopify`](../../optional/productivity/productivity-shopify.md), [`maps`](../../bundled/productivity/productivity-maps.md) |
+| Related skills | [`maps`](../../bundled/productivity/productivity-maps.md) |
 
 ## Reference: full SKILL.md
 

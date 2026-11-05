@@ -1,7 +1,7 @@
 name: tiled-sessions
 repo: https://github.com/strnadchristopher/tiled-sessions
-sha: c5a44fdfd1193f09a6e200366f7da2b4513328de
-description: "Hyprland-style tiling: clicking a session opens it in a new tile, splitting the largest or focused tile."
+sha: 83ce348101c83e9457dadba665483de18e9d8fba
+description: "Hyprland for Hermes Desktop: sessions open as tiles in Grid, Master, Dwindle or Columns layouts, driven by Ctrl+Alt+arrows."
 maintainer: strnadchristopher
 tier: community
 category: desktop

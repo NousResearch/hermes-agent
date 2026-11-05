@@ -1,0 +1,21 @@
+name: grounder
+repo: https://github.com/grounder-labs/grounder-hermes-plugin
+sha: 4c0e58799b2f2c2258f143d9e97ea7d3ff37ebeb
+description: 'Grounder as the web_search backend: one call reaches the search providers a query needs and live data for scores, prices, odds and flights, and returns one deduplicated list of licensed results. Connect with a Grounder search key or `hermes auth add grounder:grounder`. Search only. Disclosure: each query is sent to api.grounder.net and recorded under your Grounder account.'
+maintainer: grounder-labs
+tier: community
+category: web
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/grounder-labs/grounder-hermes-plugin#readme
+version: "0.2.0"
+title: Grounder
+known_issues:
+  - "Installing does not switch web_search over: run hermes config set web.search_backend grounder. The backend is search-only, so web_extract stays with another backend"
+  - "Signing in needs the public client id first: hermes config set GROUNDER_OAUTH_CLIENT_ID https://api.grounder.net/oauth/clients/hermes-agent. A search key needs no client id"
+  - "After a sign-in with no search key, hermes tools still shows Grounder as not set up, because a plugin cannot see Hermes's grant. Searches work once web.search_backend is grounder"
+  - "An account gets 50 free searches a day. Past that, searches use credit bought on the account"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

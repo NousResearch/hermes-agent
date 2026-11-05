@@ -10,14 +10,8 @@ from gateway.session import SessionSource
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
 from gateway.config import Platform
-from hermes_state import SessionDB
-from hermes_state_runtime import (
-    admit_session_input,
-    begin_runtime_epoch,
-    claim_session_input,
-    list_session_admissions,
-    settle_session_input,
-)
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _runner():
@@ -34,20 +28,18 @@ def _source():
 
 
 def _native_row(db, epoch, sid, route):
-    admitted = admit_session_input(
-        db,
+    admitted, _created = db.admissions.admit(
         epoch=epoch,
         principal_id="messaging:native",
         session_id=sid,
         request_id="native",
         payload={"native_text_v1": {"source": {}, "route": route}},
     )
-    started = claim_session_input(db, epoch=epoch, session_id=sid)
-    settle_session_input(
-        db,
+    started = db.admissions.claim(epoch=epoch, session_id=sid)
+    db.admissions.settle(
         epoch=epoch,
-        admission_id=admitted["admission_id"],
-        generation=started["generation"],
+        admission_id=admitted.admission_id,
+        generation=started.generation,
         outcome="completed",
     )
 
@@ -57,14 +49,15 @@ async def test_submit_persists_viewer_provenance_and_restart_accepts_it(monkeypa
     sid = "native-session"
     route = "telegram:default:chat"
     source = _source()
-    db = SessionDB(tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     try:
-        db.create_session(sid, source="telegram")
-        epoch = begin_runtime_epoch(db, instance_id="first")
+        seed_session(db, sid, "telegram")
+        epoch = db.runtime.begin_epoch(instance_id="first")
         _native_row(db, epoch, sid, route)
 
         authority = SessionAuthority(
-            _runner(), profile_id="default", instance_id="first", db=db, epoch=epoch)
+            _runner(), profile_id="default", instance_id="first", epoch=epoch,
+            persistence=storage_handle(tmp_path))
         authority.sessions[sid] = LiveSession(source, route)
         authority._publish_pending = lambda ref: None
         authority._schedule = lambda ref: None
@@ -81,9 +74,9 @@ async def test_submit_persists_viewer_provenance_and_restart_accepts_it(monkeypa
             ),
         )
 
-        rows = list_session_admissions(db, session_id=sid, pending_only=False)
-        viewer = next(row for row in rows if row["request_id"] == "viewer")
-        assert viewer["payload"]["local_operator_v1"] == {
+        rows = db.admissions.list(session_id=sid, pending_only=False)
+        viewer = next(row for row in rows if row.request_id == "viewer")
+        assert viewer.payload["local_operator_v1"] == {
             "profile_id": "default",
             "session_id": sid,
             "principal_id": "authenticated-viewer",
@@ -96,7 +89,8 @@ async def test_submit_persists_viewer_provenance_and_restart_accepts_it(monkeypa
             "gateway.session_envelope.check_native_route", check_native_route)
 
         recovered = SessionAuthority(
-            _runner(), profile_id="default", instance_id="restart", db=db, epoch=epoch)
+            _runner(), profile_id="default", instance_id="restart", epoch=epoch,
+            persistence=storage_handle(tmp_path))
         scheduled = []
         recovered._schedule = lambda ref: scheduled.append(ref.session_id)
 

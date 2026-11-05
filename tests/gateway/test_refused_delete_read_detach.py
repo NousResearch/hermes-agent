@@ -11,6 +11,8 @@ subscription puts it back as a closed, resumable history row with its original e
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 async def _owner(tmp_path, monkeypatch):
@@ -22,11 +24,11 @@ async def _owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
-    return store._db, authority
+    return store.persistence, authority
 
 
 def _viewer(authority, tmp_path, user='native'):
@@ -48,14 +50,13 @@ async def _live_ids(conn):
 @pytest.mark.asyncio
 async def test_detaching_the_reads_subscription_after_a_refused_delete_restores_the_closed_row(tmp_path, monkeypatch):
     db, authority = await _owner(tmp_path, monkeypatch)
-    db.create_session('closed', source='tui', model='fake-model', cwd=str(tmp_path))
-    db.append_message('closed', 'user', 'q')
-    db.append_message('closed', 'assistant', 'a')
+    seed_session(db, 'closed', 'tui', model='fake-model', cwd=str(tmp_path))
+    seed_messages(db, 'closed', {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'a'})
     viewer = _viewer(authority, tmp_path)
     first = await _call(viewer, 'session.resume', session_id='closed')
     await _call(viewer, 'session.detach', session_id='closed', subscription_id=first['subscription_id'],
                 end_reason='tui_close')
-    stamped = db.get_session('closed')
+    stamped = session_row(db, 'closed')
     assert stamped['end_reason'] == 'tui_close'
     picker = _viewer(authority, tmp_path)
     assert await _live_ids(picker) == []
@@ -71,7 +72,7 @@ async def test_detaching_the_reads_subscription_after_a_refused_delete_restores_
     out = await _call(picker, 'session.detach', session_id='closed', subscription_id=read['subscription_id'])
     assert out['detached'] is True
     assert await _live_ids(picker) == []
-    row = db.get_session('closed')
+    row = session_row(db, 'closed')
     assert (row['ended_at'], row['end_reason']) == (stamped['ended_at'], 'tui_close')
     stored = await _call(picker, 'session.list', scope='stored')
     assert [r['id'] for r in stored['sessions']] == ['closed']

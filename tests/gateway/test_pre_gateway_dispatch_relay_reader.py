@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _hook(callback):
@@ -82,7 +84,7 @@ async def _relay(tmp_path, monkeypatch, media=None):
             yield adapter, await asyncio.wait_for(ready.get(), 5), outgoing, authority, admissions
         finally:
             await adapter.disconnect()
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @asynccontextmanager
@@ -116,7 +118,7 @@ async def test_a_hook_that_sends_a_reply_gets_its_outbound_result_and_the_ack_fo
     async with _relay(tmp_path, monkeypatch) as (_adapter, ws, outgoing, authority, _admissions):
         await ws.send(json.dumps({"type": "inbound", "event": _inbound("r1"), "bufferId": "buf-1"}) + "\n")
         await async_wait_until(lambda: _acked(outgoing), timeout=20, what="buf-1 acknowledged")
-        rows = authority.db._read_all("SELECT request_id FROM session_admissions")
+        rows = raw_holder(authority.persistence)._read_all("SELECT request_id FROM session_admissions")
     assert [result.success for result in sent] == [True], "the hook's send never got its outbound_result"
     assert [row["request_id"] for row in rows] == ["r1"]
     kinds = [frame["type"] for frame in outgoing]
@@ -153,7 +155,7 @@ async def test_a_hook_waiting_for_another_chat_does_not_block_it_and_one_chat_st
         assert fired == ["a1"]
         await deliver("buf-3", "b1", "chat-b")
         await async_wait_until(lambda: len(_acked(outgoing)) == 3, timeout=20, what="all three acknowledged")
-        rows = authority.db._read_all("SELECT request_id FROM session_admissions ORDER BY rowid")
+        rows = raw_holder(authority.persistence)._read_all("SELECT request_id FROM session_admissions ORDER BY rowid")
         assert adapter._admission_lanes == {}  # each chat's lane is dropped once its last admission is done
     assert fired == ["a1", "b1", "a2"]
     assert [row["request_id"] for row in rows if row["request_id"].startswith("a")] == ["a1", "a2"]
@@ -184,7 +186,7 @@ async def test_an_admission_cancelled_while_the_hook_waits_releases_its_prepared
         await asyncio.wait([admission])
         await async_wait_until(lambda: not list(_media_root().rglob("*.png")), timeout=10,
                                what="the prepared copy released")
-        rows = authority.db._read_all("SELECT 1 FROM session_admissions")
+        rows = raw_holder(authority.persistence)._read_all("SELECT 1 FROM session_admissions")
     assert copied and admission.cancelled()
     assert (rows, _acked(outgoing)) == ([], [])
 
@@ -217,7 +219,7 @@ async def test_an_admission_cancelled_after_its_write_began_keeps_the_media_the_
         await asyncio.wait([admission])
         proceed.set()
         rows = await async_wait_until(
-            lambda: authority.db._read_all("SELECT payload_json FROM session_admissions"), timeout=20,
+            lambda: raw_holder(authority.persistence)._read_all("SELECT payload_json FROM session_admissions"), timeout=20,
             what="the shielded write committed")
     [reference] = json.loads(rows[0]["payload_json"])["native_text_v1"]["media"]
     assert admission.cancelled() and _acked(outgoing) == []

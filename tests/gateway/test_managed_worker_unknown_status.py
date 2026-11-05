@@ -6,6 +6,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_contract import SessionActor, SessionRef
 
@@ -24,19 +26,17 @@ for line in sys.stdin.buffer:
 def _authority_with_a_lost_worker(tmp_path, monkeypatch):
     """A real authority whose next managed turn's child says hello, then sends a bogus frame."""
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
     runner = SimpleNamespace(_draining=False, _cached_agent_for=lambda route: None,
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     published = []
     original = live.event_stream.publish
@@ -54,7 +54,7 @@ def _authority_with_a_lost_worker(tmp_path, monkeypatch):
 
     async def claim():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        return claim_session_input(db, epoch=authority.epoch, session_id='s')
+        return admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
     return authority, ref, policy, claim, published, db
 
 

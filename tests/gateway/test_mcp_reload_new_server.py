@@ -3,6 +3,7 @@ through a gateway-committed policy generation (``reload.mcp`` for the calling id
 refresh when a client attaches), definitions and private values included, so a managed worker connects it.
 ``reload.mcp`` names a configured server that did not connect instead of answering plain success."""
 import asyncio
+from dataclasses import asdict
 import json
 import os
 from types import SimpleNamespace
@@ -65,12 +66,11 @@ def _worker_servers(frame, monkeypatch):
 
 
 def _generation(store, sid):
-    return store._db.get_session(sid)['runtime_generation']
+    return store.persistence.sessions.get(sid).runtime_generation
 
 
 @pytest.mark.asyncio
 async def test_a_new_mcp_server_reaches_a_session_only_through_a_committed_generation(tmp_path, monkeypatch):
-    from hermes_state_local import local_receipt
     home = _home(monkeypatch)
     monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
     store, authority = await _owner_authority(home)
@@ -92,7 +92,7 @@ async def test_a_new_mcp_server_reaches_a_session_only_through_a_committed_gener
         assert servers['fixt']['command'] == 'fixt-mcp' and servers['fixt']['env'] == {'FIXT_TOKEN': 'sekret'}
         from gateway.session_policy import policy_for_source
         assert 'fixt' in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets  # in process
-        assert 'sekret' not in json.dumps(local_receipt(store._db, sid))  # the private value stays private
+        assert 'sekret' not in json.dumps(asdict(store.persistence.bindings.receipt(sid)))  # the private value stays private
         # Another session of the profile is not changed implicitly...
         assert 'fixt' not in _worker_frame(authority, other, monkeypatch)['policy']['toolsets']
         assert _generation(store, other) == other_generation
@@ -136,7 +136,6 @@ async def test_reload_never_changes_a_running_or_queued_turns_servers(tmp_path, 
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionRef, Submission
     from gateway.session_policy import policy_for_source
-    import hermes_state_runtime as rt
     home = _home(monkeypatch)
     monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
     store = SessionStore(home / 'sessions', GatewayConfig())
@@ -161,7 +160,7 @@ async def test_reload_never_changes_a_running_or_queued_turns_servers(tmp_path, 
         assert _generation(store, sid) == generation
         assert 'fixt' not in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets
         release.set()
-        await async_wait_until(lambda: rt.get_session_admission(store._db, admission_id=turn.admission_id)['status']
+        await async_wait_until(lambda: store.persistence.admissions.get(admission_id=turn.admission_id).status
                                == 'terminal', what='turn-1 to settle')
         assert (await _call(owner, 'reload.mcp', session_id=sid, confirm=True))['session'] == 'applied'
         assert 'fixt' in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets
@@ -175,8 +174,6 @@ async def test_reload_never_changes_a_running_or_queued_turns_servers(tmp_path, 
 async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(tmp_path, monkeypatch):
     """reload.mcp's session commit is fenced inside its write transaction: a turn queued after the refresh
     read the stored policy refuses it (``session: busy``), and that turn runs without the new server."""
-    import hermes_state_runtime as rt
-    from hermes_state_local import local_receipt
     from tests.gateway.test_session_resume_config_refresh import admit_during_refresh, hold_refresh_commit
     home = _home(monkeypatch)
     monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
@@ -192,14 +189,14 @@ async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(
     owner = _connect(authority)
     try:
         sid = (await _call(owner, 'session.create', request_id='q', source='cli', cwd=str(tmp_path)))['session_id']
-        stored = local_receipt(store._db, sid)['policy']
+        stored = store.persistence.bindings.receipt(sid).policy
         (home / 'config.yaml').write_text(ADDED)
-        barrier = hold_refresh_commit(monkeypatch)
+        barrier = hold_refresh_commit(monkeypatch, authority)
         reload = _call(owner, 'reload.mcp', session_id=sid, confirm=True)
         result, turn = await admit_during_refresh(authority, owner.actor, sid, reload, barrier)
         assert result['session'] == 'busy', result
-        assert local_receipt(store._db, sid)['policy'] == stored
-        await async_wait_until(lambda: rt.get_session_admission(store._db, admission_id=turn.admission_id)['status']
+        assert store.persistence.bindings.receipt(sid).policy == stored
+        await async_wait_until(lambda: store.persistence.admissions.get(admission_id=turn.admission_id).status
                                == 'terminal', what='the queued turn to run')
         assert seen == [False]
     finally:
@@ -208,7 +205,8 @@ async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(
 
 
 def _state_bytes(store):
-    path = store._db.db_path
+    from persistence_assembly import store_location
+    path = store_location(store.persistence.scope)
     return b''.join(p.read_bytes() for p in (path, path.with_name(path.name + '-wal')) if p.exists())
 
 
@@ -218,7 +216,6 @@ async def test_a_rotated_mcp_secret_commits_a_generation_with_the_new_value(tmp_
     compares the private values' fingerprints too: ``reload.mcp`` and a resume (also after an owner restart)
     commit it, and the next turn's worker gets the new token, which never reaches state.db."""
     from gateway.session_authority import initialize_session_authority
-    from hermes_state_local import local_receipt
     home = _home(monkeypatch)
     (home / 'config.yaml').write_text(ADDED)
     monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
@@ -230,11 +227,11 @@ async def test_a_rotated_mcp_secret_commits_a_generation_with_the_new_value(tmp_
         sid = (await _call(owner, 'session.create', request_id='a', source='cli', cwd=str(tmp_path)))['session_id']
         other = (await _call(owner, 'session.create', request_id='b', source='cli', cwd=str(tmp_path)))['session_id']
         generations = {key: _generation(store, key) for key in (sid, other)}
-        ref = local_receipt(store._db, sid)['policy']['config_secret_ref']
+        ref = store.persistence.bindings.receipt(sid).policy['config_secret_ref']
         (home / 'config.yaml').write_text(ADDED.replace('FIXT_TOKEN: sekret', 'FIXT_TOKEN: rotated-sekret'))
         result = await _call(owner, 'reload.mcp', session_id=sid, confirm=True)
         assert result['session'] == 'applied' and _generation(store, sid) == generations[sid] + 1, result
-        assert local_receipt(store._db, sid)['policy']['config_secret_ref'] != ref
+        assert store.persistence.bindings.receipt(sid).policy['config_secret_ref'] != ref
         servers, _ = _worker_servers(_worker_frame(authority, sid, monkeypatch), monkeypatch)
         assert servers['fixt']['env'] == {'FIXT_TOKEN': 'rotated-sekret'}
         # Nothing else moved: the next reload commits nothing.
@@ -448,7 +445,7 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
     applied change. Only a server that registered (live or lazy), a completed removal or a committed session
     generation turns an unavailable server into partial success."""
     from gateway import session_ancillary
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     refreshed = []
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False),
                              _mcp_reload_refresh_cached_agents=lambda multiplex, profile: refreshed.append(profile))
@@ -465,7 +462,7 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
         return asyncio.run(session_ancillary.reload_mcp(connection, None, {'confirm': True}))
     # Every attempted addition failed (and a teardown is still unfinished): nothing applied, the named refusal.
     for outcome in ({}, {'added': ['broken']}, {'added': ['broken'], 'pending': ['slow']}):
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             reload(**outcome)
         assert refused.value.reason == 'mcp_servers_unavailable' and 'broken' in refused.value.detail, outcome
     assert refreshed == ['default'] * 3

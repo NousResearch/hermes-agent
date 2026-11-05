@@ -196,6 +196,8 @@ function slashHarness() {
   return { composer, request: gw.request, send, slash: createSlashHandler(ctx as any), sys }
 }
 
+const edit = (text: string) => ({ display: text, text })
+
 const mutations = (request: ReturnType<typeof gateway>['request']) =>
   request.mock.calls.filter(([method]) => method === 'session.mutate')
 
@@ -215,7 +217,7 @@ describe('browse → Enter → send', () => {
     await flush()
     expect(mutations(request)).toHaveLength(0)
 
-    expect(sendPendingRewind('BETA please v2', 'owner')).toBe(true)
+    expect(sendPendingRewind(edit('BETA please v2'), 'owner')).toBe(true)
     await flush()
     await flush()
     await flush()
@@ -234,11 +236,11 @@ describe('browse → Enter → send', () => {
     const browse = $overlayState.get().rewind!
 
     browse.onEdit(browse.targets[0]!)
-    expect(sendPendingRewind('/help', 'owner')).toBe(false)
+    expect(sendPendingRewind(edit('/help'), 'owner')).toBe(false)
     expect($pendingRewind.get()).toBeNull()
 
     browse.onEdit(browse.targets[0]!)
-    expect(sendPendingRewind('ALPHA v2', 'other')).toBe(false)
+    expect(sendPendingRewind(edit('ALPHA v2'), 'other')).toBe(false)
 
     browse.onEdit(browse.targets[0]!)
     expect(cancelPendingRewind(sys)).toBe(true)

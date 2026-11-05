@@ -21,6 +21,7 @@ import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq, DetailsMode, Msg, PanelSection, SecretReq, SectionVisibility, SlashCatalog, SudoReq, VaultCodeReq, VaultSaveLoginReq, VaultUnlockReq } from '../types.js'
 
+import type { RewindSubmission } from './backtrackStore.js'
 import type { SubmissionDestination } from './submissionDestination.js'
 
 export interface StateSetter<T> {
@@ -324,7 +325,7 @@ export interface RewindOverlay {
   onEdit: (target: RewindTarget) => void
   onFork: (target: RewindTarget) => void
   /** Cut back to just before `target` and send `text` (the armed edit's send). */
-  onSubmit: (target: RewindTarget, text: string) => void
+  onSubmit: (target: RewindTarget, edit: RewindSubmission | string) => void
   /** A printable key that is not a browse key: browsing closes and the key is typed into the composer. */
   onType: (text: string) => void
 }

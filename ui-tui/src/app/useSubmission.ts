@@ -345,22 +345,24 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       // An armed backtrack edit: a plain message rewinds to before the picked prompt and sends;
       // a slash or shell command disarms it (nothing cut) and runs as usual.
-      if (sendPendingRewind(full, getUiState().sid)) {
-        composerActions.pushHistory(full)
-        composerActions.clearIn()
-
-        return
-      }
-
       // History stores resolved content, not `[[…]]` labels: tokens are cleared
       // on submit, so recall must be self-contained. Image tokens resolve to
       // nothing — a detached image can't be re-attached by recalling the text.
       // Idempotent on token-free text, so re-submitting a recalled entry is
       // stable.
-      const destination = captureDestination()
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
+
+      // Expanded here, before clearIn() empties the tokens the async rewind would expand against.
+      if (sendPendingRewind(submission, getUiState().sid)) {
+        composerActions.pushHistory(toHistory)
+        composerActions.clearIn()
+
+        return
+      }
+
+      const destination = captureDestination()
 
       // The composer is the only copy of a draft until the pending-input
       // journal holds it, so it is cleared after that first durable write and

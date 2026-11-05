@@ -22,6 +22,12 @@ from pathlib import Path
 import pytest
 
 from gateway import run
+from persistence.authority.coordination import PendingHandoff
+
+
+def _store(coordination):
+    """A storage handle stand-in exposing ``coordination`` in its awaitable form."""
+    return types.SimpleNamespace(aio=types.SimpleNamespace(coordination=coordination))
 
 
 class _FakeConfig:
@@ -75,7 +81,7 @@ def test_scopes_degrade_to_root_when_resolution_raises(monkeypatch):
 
 
 class _RecordingDB:
-    """Minimal AsyncSessionDB-shaped stub; records nothing pending."""
+    """Minimal coordination stub in its awaitable form; records nothing pending."""
 
     def __init__(self, tag=None):
         self.polls = 0
@@ -87,13 +93,10 @@ class _RecordingDB:
 
 
 class _ProbeDB:
-    """Probe-side store stub for the idle gate (goals SessionDB cache)."""
+    """Probe-side store stub for the idle gate (goals store-handle cache)."""
 
     def __init__(self, pending):
-        self._pending = pending
-
-    def has_pending_handoffs(self):
-        return self._pending
+        self.coordination = types.SimpleNamespace(has_pending_handoffs=lambda: pending)
 
 
 @pytest.mark.asyncio
@@ -151,7 +154,7 @@ async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
                     return False
 
         fake = types.SimpleNamespace()
-        fake._session_db = db
+        fake.persistence = _store(db)
         fake._running = _Running()
         fake._run_in_executor_with_context = asyncio.to_thread
 
@@ -225,7 +228,7 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
                 return False
 
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _Running()
 
     async def _process_handoff(row, profile_name=None):
@@ -273,7 +276,7 @@ async def test_watcher_resolves_scopes_off_the_event_loop(monkeypatch):
     async def _process_handoff(row, profile_name=None):
         return None
 
-    fake = types.SimpleNamespace(_session_db=_RecordingDB(), _running=_Running(),
+    fake = types.SimpleNamespace(persistence=_store(_RecordingDB()), _running=_Running(),
                                  _process_handoff=_process_handoff,
                                  _run_in_executor_with_context=asyncio.to_thread)
     await asyncio.wait_for(run.GatewayRunner._handoff_watcher(fake, interval=0.0), timeout=5)
@@ -312,7 +315,7 @@ async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, t
             return []
 
     fake = types.SimpleNamespace(
-        _session_db=_DB(),
+        persistence=_store(_DB()),
         _running=False,
     )
 
@@ -350,7 +353,7 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
 
     The earlier test proves the ``with`` runs; it cannot prove the store was
     re-resolved, because it pins one fake db for every scope. Here
-    ``_session_db`` is a property whose value depends on the active scope, and
+    ``persistence`` is a property whose value depends on the active scope, and
     each store yields a pending row tagged with its profile — so a regression
     that polls the root three times, or that drops ``profile_name``, fails.
     """
@@ -389,16 +392,16 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
             self.tag = tag
 
         async def list_pending_handoffs(self):
-            return [{"id": f"row-from-{self.tag}"}]
+            return (PendingHandoff(session_id=f"row-from-{self.tag}", platform=None, title=None, started_at=0.0),)
 
-        async def claim_handoff(self, _sid):
+        async def claim_handoff(self, *, session_id):
             return True
 
-        async def complete_handoff(self, _sid):
+        async def complete_handoff(self, *, session_id):
             return None
 
-        async def fail_handoff(self, _sid, _err):
-            return None
+        async def fail_handoff(self, *, session_id, error, only_states=None):
+            return True
 
     stores = {
         None: _ScopedDB("root"),
@@ -418,9 +421,9 @@ async def test_each_scope_resolves_its_own_store_and_profile(monkeypatch):
                 return False
 
         @property
-        def _session_db(self):
+        def persistence(self):
             # Mirrors the real property: resolves from the ACTIVE scope.
-            return stores[active["home"]]
+            return _store(stores[active["home"]])
 
         async def _process_handoff(self, row, profile_name=None):
             processed.append((row["id"], profile_name))

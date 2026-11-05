@@ -21,13 +21,13 @@ async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_com
         await release.wait()
         return SimpleNamespace(status='queued', admission_id='queued')
 
-    authority = SimpleNamespace(admit_native=admit, native_waiters=set(), waiters={}, db=None)
+    # admit_message re-reads the committed row (a drain may already have settled it); still queued.
+    authority = SimpleNamespace(admit_native=admit, native_waiters=set(), waiters={}, persistence=SimpleNamespace(
+        admissions=SimpleNamespace(get=lambda admission_id: SimpleNamespace(status='queued', outcome=None))))
     adapter = SimpleNamespace(_background_tasks=set(), _message_handler=lambda event: admit_message(authority, event),
                               _release_turn_marker=AsyncMock())
     delivery = AsyncMock()
     monkeypatch.setattr(ingress, 'deliver_response', delivery)
-    # admit_message re-reads the committed row (a drain may already have settled it); still queued.
-    monkeypatch.setattr('hermes_state_runtime.get_session_admission', lambda db, admission_id: {'status': 'queued'})
     event = MessageEvent(text='next', source=SessionSource(platform=Platform.TELEGRAM, chat_id='chat'))
     receive = asyncio.create_task(dispatch_shared_busy(adapter, event, 'route'))
     await asyncio.wait_for(accepted.wait(), 5)
@@ -44,13 +44,13 @@ async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_com
 
 @pytest.mark.asyncio
 async def test_pre_admission_refusal_reaches_receive_loop():
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     async def refused(event):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
 
     adapter = SimpleNamespace(_background_tasks=set(), _message_handler=refused, _release_turn_marker=AsyncMock())
     event = MessageEvent(text='refused', source=SessionSource(platform=Platform.TELEGRAM, chat_id='chat'))
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await dispatch_shared_busy(adapter, event, 'route')
     assert not adapter._background_tasks

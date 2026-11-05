@@ -8,11 +8,22 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import tools.async_delegation as ad
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
+
+def _record(row):
+    """A session row as the storage interface's record: the fields the resolver reads, as attributes."""
+    if row is None:
+        return None
+    return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **row})
 
 
 @pytest.fixture(autouse=True)
@@ -76,14 +87,14 @@ class TestGatewayPinningFailsClosed:
         from gateway.session import AsyncSessionStore
 
         runner = object.__new__(GatewayRunner)
-        db = MagicMock()
-        db.get_session = AsyncMock(side_effect=lambda session_id: rows.get(session_id))
-        db.get_compression_tip = AsyncMock(
+        handle = MagicMock()
+        handle.aio.sessions.get = AsyncMock(side_effect=lambda session_id: _record(rows.get(session_id)))
+        handle.aio.lineage.tip = AsyncMock(
             return_value=compression_tip,
             side_effect=compression_error,
         )
-        runner._session_db = db
         runner.session_store = MagicMock()
+        runner.session_store.persistence = handle
         runner.session_store.switch_session = MagicMock(return_value=switched_entry)
         runner.session_store.advance_compression_session = MagicMock(
             return_value=switched_entry
@@ -171,25 +182,26 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.advance_compression_session.assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
 
     @pytest.mark.asyncio
-    async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
+    async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path, request):
         from gateway.run import GatewayRunner
         from gateway.session import AsyncSessionStore
-        from hermes_state import AsyncSessionDB, SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        session_db = SessionDB(db_path=tmp_path / "state.db")
-        session_db.create_session("sess_parent", source="telegram")
-        session_db.end_session("sess_parent", end_reason="compression")
-        session_db.create_session(
+        session_db = storage_handle(tmp_path)
+        seed_session(session_db, "sess_parent", "telegram", end_reason="compression")
+        seed_session(
+            session_db,
             "sess_tip",
-            source="telegram",
+            "telegram",
             parent_session_id="sess_parent",
         )
 
         current = self._entry("sess_parent")
         tip = self._entry("sess_tip")
         runner = object.__new__(GatewayRunner)
-        runner._session_db = AsyncSessionDB(session_db)
         runner.session_store = MagicMock()
+        runner.session_store.persistence = open_persistence(profile_scope(home=tmp_path))
+        request.addfinalizer(runner.session_store.persistence.close)
         runner.session_store.switch_session = MagicMock(return_value=tip)
         runner.session_store.advance_compression_session = MagicMock(return_value=tip)
         runner._async_session_store = AsyncSessionStore(runner.session_store)
@@ -206,13 +218,12 @@ class TestGatewayPinningFailsClosed:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", ["none", "revoke", "replace"])
-async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
+async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary, monkeypatch):
     """A non-compression re-pin that resolved its row across an await must not move the route
     after the run was invalidated (/stop) or the route was replaced (/new, /resume) meanwhile;
     an undisturbed pin still lands. Real store + real resolver; the DB lookup is event-gated.
     Scenario by the #113690 reporter."""
     import asyncio
-    from types import SimpleNamespace
 
     from gateway.config import GatewayConfig, Platform
     from gateway.run import GatewayRunner
@@ -230,9 +241,10 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
     async def get_session(session_id):
         entered.set()
         await release.wait()
-        return {"id": session_id, "ended_at": None}
+        return _record({"session_id": session_id, "ended_at": None})
 
-    runner._session_db = SimpleNamespace(get_session=AsyncMock(side_effect=get_session))
+    handle = SimpleNamespace(aio=SimpleNamespace(sessions=SimpleNamespace(get=AsyncMock(side_effect=get_session))))
+    monkeypatch.setattr(GatewayRunner, "persistence", handle)
     task = asyncio.create_task(runner._resolve_async_delegation_session(entry, "test-pinned"))
     await asyncio.wait_for(entered.wait(), 3)
     expected = "test-pinned"
@@ -263,7 +275,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
     tmp_path, monkeypatch, phase, fault, request, private_db_probe_cleanup,
 ):
     """Uncertain lineage never consumes the result or mutates its route; replay recovers."""
-    from types import SimpleNamespace
+    import dataclasses
     from typing import Any, cast
 
     from gateway.config import GatewayConfig, Platform
@@ -279,18 +291,18 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         entry = store.get_or_create_session(SessionSource(
             platform=Platform.TELEGRAM, chat_id="compression-owner", chat_type="dm",
         ))
-        db = store._db
+        db = store.persistence
         parent = entry.session_id
-        db.end_session(parent, end_reason="compression")
-        db.create_session("middle", source="telegram", parent_session_id=parent)
+        db.sessions.end(parent, "compression")
+        seed_session(db, "middle", "telegram", parent_session_id=parent)
         entry = store.switch_session(entry.session_key, "middle")
         assert entry is not None
-        db.end_session("middle", end_reason="compression")
-        db.create_session("tip", source="telegram", parent_session_id="middle")
-        before = {sid: db.get_session(sid) for sid in (parent, "middle", "tip")}
-        async_db = runner._session_db
-        get_session = async_db.get_session
-        get_tip = async_db.get_compression_tip
+        db.sessions.end("middle", "compression")
+        seed_session(db, "tip", "telegram", parent_session_id="middle")
+        before = {sid: session_row(db, sid) for sid in (parent, "middle", "tip")}
+        handle = runner.persistence
+        get_session = handle.sessions.get
+        get_tip = handle.lineage.tip
         parent_reads = 0
         enabled = True
         resolver_probe = True
@@ -298,7 +310,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         def failing():
             return enabled and (resolver_probe or phase == "readiness" or parent_reads >= 2)
 
-        async def lookup_session(sid):
+        def lookup_session(sid):
             nonlocal parent_reads
             if sid == parent:
                 parent_reads += 1
@@ -309,25 +321,25 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
                     raise RuntimeError("temporary session lookup failure")
                 if fault.endswith("missing"):
                     return None
-                row = await get_session(sid)
-                return dict(row, ended_at=1, end_reason="compression")
-            return await get_session(sid)
+                row = get_session(sid)
+                return dataclasses.replace(row, ended_at=1, end_reason="compression")
+            return get_session(sid)
 
-        async def lookup_tip(sid):
+        def lookup_tip(sid):
             if failing() and ((sid == parent and fault.startswith("parent_tip"))
                               or (sid == "middle" and fault.startswith("route_tip"))):
                 if fault.endswith("error"):
                     raise RuntimeError("temporary compression lookup failure")
                 return sid if fault.endswith("self") else None
-            return await get_tip(sid)
+            return get_tip(sid)
 
-        monkeypatch.setattr(async_db, "get_session", lookup_session)
-        monkeypatch.setattr(async_db, "get_compression_tip", lookup_tip)
+        monkeypatch.setattr(handle.sessions, "get", lookup_session)
+        monkeypatch.setattr(handle.lineage, "tip", lookup_tip)
         assert await runner._resolve_async_delegation_session(entry, parent) is None
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None and current.session_id == "middle"
         for sid, row in before.items():
-            assert db.get_session(sid) == row
+            assert get_session(sid).as_session_row() == row
         resolver_probe = False
         parent_reads = 0
         resolved = []
@@ -358,7 +370,7 @@ async def test_compression_uncertainty_keeps_durable_completion_retryable(
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None and current.session_id == "middle"
         for sid, original in before.items():
-            assert db.get_session(sid) == original
+            assert get_session(sid).as_session_row() == original
         enabled = False
         assert await runner._deliver_completion_notification("completed result", event) is True
         assert resolved == ["tip"]
@@ -375,12 +387,14 @@ def _build_delegate_chain(db, parent, case):
     import json
     import sqlite3
 
+    from persistence_assembly import store_location
+
     previous = parent
     children = []
     for index in range({"nested": 2, "intermediate_boundary": 2, "limit": 16, "over_limit": 17}.get(case, 1)):
         child = f"worker-{index}"
-        db.create_session(child, source="telegram" if case == "relabeled" else "subagent",
-                          parent_session_id=previous, model_config={"_delegate_from": previous})
+        seed_session(db, child, "telegram" if case == "relabeled" else "subagent",
+                     parent_session_id=previous, model_config={"_delegate_from": previous})
         children.append(child)
         previous = child
     pinned = children[-1]
@@ -394,10 +408,10 @@ def _build_delegate_chain(db, parent, case):
     if case in configs:
         config = configs[case]
         raw = config if config is None or isinstance(config, str) else json.dumps(config)
-        with sqlite3.connect(db.db_path) as conn:
+        with sqlite3.connect(store_location(db.scope)) as conn:
             conn.execute("UPDATE sessions SET model_config=? WHERE id=?", (raw, pinned))
     if case == "generic_parent":
-        with sqlite3.connect(db.db_path) as conn:
+        with sqlite3.connect(store_location(db.scope)) as conn:
             conn.execute("UPDATE sessions SET source='telegram' WHERE id=?", (pinned,))
     return children, pinned
 
@@ -410,28 +424,28 @@ def _apply_route_case(store, db, source, entry, parent, pinned, children, case):
         entry = store.switch_session(entry.session_key, pinned)
         assert entry is not None
         if case == "child_to_current":
-            db.create_session("grandchild", source="subagent", model_config={"_delegate_from": pinned})
+            seed_session(db, "grandchild", "subagent", model_config={"_delegate_from": pinned})
             children.append("grandchild")
             pinned = "grandchild"
     if case == "current_boundary":
-        db.end_session(pinned, end_reason="session_reset")
+        db.sessions.end(pinned, "session_reset")
     if case == "parent_boundary":
-        db.end_session(parent, end_reason="session_reset")
+        db.sessions.end(parent, "session_reset")
     if case == "child_ended":
-        db.end_session(pinned, end_reason="agent_close")
+        db.sessions.end(pinned, "agent_close")
     if case == "child_boundary":
-        db.end_session(pinned, end_reason="session_reset")
+        db.sessions.end(pinned, "session_reset")
     if case == "intermediate_boundary":
-        db.end_session(children[0], end_reason="session_reset")
+        db.sessions.end(children[0], "session_reset")
     if case in {"child_boundary", "intermediate_boundary"}:
         # The live ancestor must not override a newer user-selected route.
         entry = store.get_or_create_session(source, force_new=True)
         children.append(entry.session_id)
     if case == "idle":
-        db.end_session(parent, end_reason="idle")
+        db.sessions.end(parent, "idle")
     if case in {"compression", "compression_foreign"}:
-        db.create_session("continuation", source="telegram", parent_session_id=parent)
-        db.end_session(parent, end_reason="compression")
+        seed_session(db, "continuation", "telegram", parent_session_id=parent)
+        db.sessions.end(parent, "compression")
         children.append("continuation")
         if case == "compression_foreign":
             entry = store.get_or_create_session(source, force_new=True)
@@ -469,11 +483,11 @@ async def test_delegate_completion_preserves_real_route_ownership(
         request.addfinalizer(store.close_all_db_handles)
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="owner-chat", chat_type="dm")
         entry = store.get_or_create_session(source)
-        db = store._db
+        db = store.persistence
         parent = entry.session_id
         children, pinned = _build_delegate_chain(db, parent, case)
         entry, pinned = _apply_route_case(store, db, source, entry, parent, pinned, children, case)
-        before = {sid: db.get_session(sid) for sid in [parent, *children]}
+        before = {sid: session_row(db, sid) for sid in [parent, *children]}
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
         route_before = current.session_id
@@ -523,6 +537,6 @@ async def test_delegate_completion_preserves_real_route_ownership(
         assert current.session_id == (route_before if rejected else expected)
         if case not in {"generic_parent", "compression"}:
             for sid, row in before.items():
-                after = db.get_session(sid)
+                after = session_row(db, sid)
                 for field in ("ended_at", "end_reason", "source", "session_key", "model_config"):
                     assert after[field] == row[field], (case, sid, field)

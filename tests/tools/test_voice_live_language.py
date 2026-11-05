@@ -15,7 +15,7 @@ def write_live_config(settings):
     (home / "config.yaml").write_text(yaml.safe_dump({"voice": {"gpt_live": settings}}))
 
 
-@pytest.mark.parametrize("language", [None, "", "auto"])
+@pytest.mark.parametrize("language", [None, "", "auto", "Auto", " AUTO "])
 def test_auto_preserves_existing_persona_and_custom_instructions(language):
     settings = {"instructions": "Speak slowly."}
     if language is not None:

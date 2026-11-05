@@ -544,6 +544,18 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ["task_id"],
 )
 
+KANBAN_SPECIFY_SCHEMA = _schema(
+    "kanban_specify",
+    (
+        "Promote a triage task created by the calling profile. The task lands "
+        "in ready when all parents are done, otherwise todo. The authenticated "
+        "profile is derived from the session context; caller/profile arguments "
+        "are not accepted."
+    ),
+    {"task_id": _prop("string", "Triage task id to promote.")},
+    ["task_id"],
+)
+
 KANBAN_LINK_SCHEMA = _schema(
     "kanban_link",
     (

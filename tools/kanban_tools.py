@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_SPECIFY_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -1271,6 +1271,23 @@ def _handle_unblock(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
+@_kanban_handler("kanban_specify")
+def _handle_specify(args: dict, **kw) -> str:
+    """Promote a creator-owned triage card without changing its content."""
+    _reject_delegated_child_mutation("kanban_specify")
+    tid = _require_task_id(args)
+    _enforce_worker_task_ownership(tid)
+    identity = _persisted_identity()
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        _check(task.status == "triage", f"task {tid} is not in triage (status={task.status!r})")
+        _check(task.created_by == identity,
+               f"task {tid} was created by {task.created_by!r}, not the authenticated profile")
+        _check(kb.specify_triage_task(conn, tid, author=identity),
+               f"could not specify {tid} (it may have moved out of triage)")
+        return _ok_landed(kb, conn, tid, "todo")
+
+
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links/running
@@ -1306,6 +1323,7 @@ _TOOLS = (
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
+    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "✎"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 

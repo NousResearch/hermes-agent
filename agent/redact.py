@@ -256,9 +256,10 @@ _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0
 # falling back to ``\S+`` at the apostrophe and leaving the tail visible. A double-quoted
 # value honours backslash escapes (``"a\"b c"``) and a single-quoted one the shell's
 # ``'\''`` splice, and either may span a newline. The body is capped and possessive: an
-# unterminated quote falls back to ``\S+`` after at most 512 characters instead of
-# rescanning the rest of the text from every flag.
-_QUOTED_FLAG_VALUE = r"\"(?:\\[\s\S]|[^\"\\]){1,512}+\"|'(?:'\\''|[^']){1,512}+'|\S+"
+# unterminated or over-long quote masks through the end of its line instead of only its
+# first word, and never rescans the rest of the text from every flag.
+_QUOTED_FLAG_VALUE = (r"\"(?:\\[\s\S]|[^\"\\]){1,512}+\"|'(?:'\\''|[^']){1,512}+'"
+                      r"|[\"'][^\n]*+|\S+")
 _CLI_SECRET_FLAG_RE = re.compile(
     r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
     r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
@@ -973,8 +974,11 @@ def _is_python_repr_secret_key(key: str) -> bool:
 
 
 # A qualified key masks short values too, except a sample or switch that cannot be the
-# credential: ``{"encryptKey": "true"}``, ``master_key: default``, ``"<your key>"``.
-_CONFIG_PLACEHOLDER_VALUE_RE = re.compile(r"<[^<>]*>|true|false|yes|no|null|none|default", re.IGNORECASE)
+# credential: ``{"encryptKey": "true"}``, ``master_key: default``, ``"<your key>"``. Only a
+# word-shaped bracket is a docs sample; ``<hunter2>`` / ``<Abc9!xyz>`` are still masked.
+_CONFIG_PLACEHOLDER_VALUE_RE = re.compile(
+    r"<[a-z]+(?:[ _-][a-z]+)+>|<(?:key|token|secret|password|value)>|true|false|yes|no|null|none|default",
+    re.IGNORECASE)
 _KEY_SECRET_QUALIFIERS = frozenset({
     "secret", "private", "signing", "encryption", "encrypt", "master", "hmac",
     "symmetric", "access",

@@ -194,6 +194,25 @@ describe('narrow overlay of a stacked zone', () => {
     expect(queryByTestId('sessions-body')).toBeNull()
   })
 
+  it('focuses zone tabs without switching until keyboard activation and retains tab focus', () => {
+    const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
+    revealPane('sessions')
+    const sessions = overlayTab('sessions')!
+    const bots = overlayTab('bots')!
+    act(() => sessions.focus())
+
+    expect(sessions.tabIndex).toBe(0)
+    expect(bots.tabIndex).toBe(-1)
+    fireEvent.keyDown(sessions, { key: 'ArrowRight' })
+    expect(globalThis.document.activeElement).toBe(bots)
+    expect(getByTestId('sessions-body')).toBeTruthy()
+    expect(queryByTestId('bots-body')).toBeNull()
+    fireEvent.keyDown(bots, { key: 'Enter' })
+    expect(getByTestId('bots-body')).toBeTruthy()
+    expect(queryByTestId('sessions-body')).toBeNull()
+    expect(globalThis.document.activeElement).toBe(overlayTab('bots'))
+  })
+
   it('keeps the stripless form for a zone with a single collapsible', () => {
     // Direct set: declareDefaultTree only ADOPTS into an existing tree — it
     // would keep the beforeEach zone (with bots) instead of replacing it.

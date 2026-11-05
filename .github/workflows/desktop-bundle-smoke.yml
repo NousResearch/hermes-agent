@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           case "$TARGET" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
+            darwin/arm64/dmg|darwin/arm64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
             *) echo '::error::unsupported native smoke target'; exit 1 ;;
           esac
 
@@ -81,8 +81,7 @@ jobs:
     name: macOS install and chat
     needs: validate
     if: inputs.platform == 'darwin'
-    # Blacksmith has no Intel macOS runners, so the x64 leg stays GitHub-hosted.
-    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'blacksmith-6vcpu-macos-15' }}
+    runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 30
     # Also constrains the recording action's nested cache to read-only.
     cache-mode: read
@@ -141,7 +140,7 @@ jobs:
             product=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["identity"]["artifactNamePascal"])' "$SMOKE_ROOT/request.json")
           fi
           case "$PLATFORM/$ARCH/$FORMAT" in
-            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip)
+            darwin/arm64/dmg|darwin/arm64/zip)
               name="darwin-$ARCH"; pattern="$product-*-mac-$ARCH.$FORMAT" ;;
             win32/arm64/msix|win32/x64/msix)
               name="win32-$ARCH"; pattern="$product-*-win-$ARCH.msix" ;;

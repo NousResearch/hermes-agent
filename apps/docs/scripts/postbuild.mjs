@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, cpSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, cpSync, rmSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +24,7 @@ export function htmlPath(outputDir, route) {
   return path.join(outputDir, ...segments, 'index.html');
 }
 
-export function exportedRoutes(appDir) {
+function manifestRoutes(appDir) {
   const manifest = JSON.parse(readFileSync(path.join(appDir, '.next/prerender-manifest.json'), 'utf8'));
   if (!manifest.routes || typeof manifest.routes !== 'object' || Array.isArray(manifest.routes)) {
     throw new Error('The Next prerender manifest has no route map');
@@ -32,6 +32,35 @@ export function exportedRoutes(appDir) {
   const notFound = new Set(manifest.notFoundRoutes ?? []);
   const routes = Object.keys(manifest.routes).filter((route) => !internalRoutes.has(route) && !notFound.has(route)).sort();
   if (!routes.length) throw new Error('The export contains no prerendered pages');
+  return routes;
+}
+
+/**
+ * With trailingSlash off Next writes `x.html` (and `x.txt`, the RSC payload
+ * client navigation fetches). The production edge serves `/docs/x` from
+ * `x/index.html`, so move each page there; payloads and segment files stay.
+ * A flat `x.html` left behind would be a second URL for the same page.
+ */
+function nestPages(appDir, routes) {
+  const outputDir = path.join(appDir, 'out');
+  for (const route of routes) {
+    if (route === '/') continue;
+    const flat = path.join(outputDir, ...route.split('/').filter(Boolean)) + '.html';
+    if (!existsSync(flat)) continue; // already nested (re-run) or a hand-written alias
+    const nested = htmlPath(outputDir, route);
+    mkdirSync(path.dirname(nested), { recursive: true });
+    renameSync(flat, nested);
+  }
+}
+
+/** The RSC payload client navigation fetches for a route: `x.txt`, or `index.txt` at the root. */
+export function rscPath(outputDir, route) {
+  if (route === '/') return path.join(outputDir, 'index.txt');
+  return path.join(path.dirname(htmlPath(outputDir, route))) + '.txt';
+}
+
+export function exportedRoutes(appDir) {
+  const routes = manifestRoutes(appDir);
   for (const route of routes) {
     const info = statSync(htmlPath(path.join(appDir, 'out'), route), { throwIfNoEntry: false });
     if (!info?.isFile()) throw new Error(`Missing exported HTML for ${route}`);
@@ -137,11 +166,14 @@ function writeLocalizedArtifacts(outputDir) {
 }
 
 export function finishExport(appDir = appRoot) {
+  const outputDir = path.join(appDir, 'out');
+  nestPages(appDir, manifestRoutes(appDir));
   const routes = exportedRoutes(appDir);
   const redirects = redirectEntries(routes);
-  const outputDir = path.join(appDir, 'out');
   // Next exports its internal not-found route as a page; 404.html already serves misses.
-  rmSync(path.join(outputDir, '_not-found'), { recursive: true, force: true });
+  for (const leftover of ['_not-found', '_not-found.html', '_not-found.txt']) {
+    rmSync(path.join(outputDir, leftover), { recursive: true, force: true });
+  }
   writeFileSync(path.join(outputDir, 'sitemap.xml'), sitemapXml(routes));
   writeRedirects(outputDir, redirects);
   writeOpenSearch(outputDir);

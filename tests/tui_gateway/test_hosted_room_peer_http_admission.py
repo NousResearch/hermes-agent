@@ -48,6 +48,7 @@ def test_an_uncertain_admission_stays_uncertain_through_a_failed_replay(tmp_path
 
 @pytest.mark.parametrize("status,code,definite", [
     *((status, "fixture_refusal", True) for status in (400, 401, 404, 408, 422, 425, 429)),
+    (409, "permission_denied", True), (409, "admission_conflict", True),  # proven refusals
     (409, "idempotency_key_conflict", False),  # a run already exists under this key
     (200, b"not-json", False), (200, b"[]", False),  # a 2xx this client cannot read
 ])

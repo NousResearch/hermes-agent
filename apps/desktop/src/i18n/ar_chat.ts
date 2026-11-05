@@ -142,6 +142,9 @@ export const arChat = {
     queueDelete: 'حذف من الطابور',
     queueSteerRefusedTitle: 'لم يُقبل التوجيه',
     queueSteerRefusedBody: 'تعذّر على الدور الجاري قبول التوجيه. تبقى رسالتك في قائمة الانتظار وهي الآن الأولى في الترتيب.',
+    steerNotSentTitle: "لم تُرسل الرسالة",
+    steerExternalNotSentBody:
+      "لم تُرسل هذه الرسالة ولم تُضف إلى قائمة الانتظار. انسخ نصها لإرسالها بنفسك.",
     steerUnconfirmedTitle: 'لم يتم تأكيد التسليم',
     steerUnconfirmedBody: 'التسليم غير مؤكد. تحقق من الرسائل وقائمة الانتظار قبل أن تقرر الإرسال مجددًا.',
     steerExternalUnconfirmedBody:

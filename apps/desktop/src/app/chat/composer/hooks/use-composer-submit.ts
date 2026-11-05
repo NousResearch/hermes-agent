@@ -5,6 +5,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import {
+  notifyCorrectionNotSent,
   notifyCorrectionQueued,
   notifyCorrectionUnconfirmed,
   UnconfirmedCorrectionError
@@ -270,12 +271,19 @@ export function useComposerSubmit({
 
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
           const enqueue = (key: string | null = queueKey, id?: string) =>
-            void enqueueQueuedPrompt(key, {
+            enqueueQueuedPrompt(key, {
               text,
               attachments: [],
               ...(id ? { id } : {}),
               ...(displayKind ? { displayKind } : {})
             })
+
+          const keepUnsent = () => {
+            // Do not re-home a late fallback; an external request has no draft to retain its words.
+            if (!stillHere() || !enqueue()) {
+              notifyCorrectionNotSent(text)
+            }
+          }
 
           if (!current.busy) {
             // Explicitly no attachments: the send must not pick up the draft's files. A rejected
@@ -298,14 +306,16 @@ export function useComposerSubmit({
           if (displayKind) {
             if (current.onSteerHidden) {
               if (pendingSteers.current.has(submittedScope)) {
+                notifyCorrectionNotSent(text)
+
                 return
               }
 
               pendingSteers.current.add(submittedScope)
               void new Promise<boolean>(resolve => resolve(current.onSteerHidden!(text)))
                 .then(accepted => {
-                  if (!accepted && stillHere()) {
-                    enqueue()
+                  if (!accepted) {
+                    keepUnsent()
                   }
                 })
                 .catch(unconfirmed)
@@ -324,14 +334,17 @@ export function useComposerSubmit({
             !SLASH_COMMAND_RE.test(text.trim())
           ) {
             if (pendingSteers.current.has(submittedScope)) {
+              // Bus requests are separate work, not repeated Enter on the owned draft.
+              notifyCorrectionNotSent(text)
+
               return
             }
 
             pendingSteers.current.add(submittedScope)
             void new Promise<boolean>(resolve => resolve(current.onSteer!(text)))
               .then(accepted => {
-                if (!accepted && stillHere()) {
-                  enqueue()
+                if (!accepted) {
+                  keepUnsent()
                 }
               })
               .catch(unconfirmed)

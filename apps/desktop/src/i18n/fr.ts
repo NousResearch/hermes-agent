@@ -3941,6 +3941,9 @@ export const frOverrides = {
       "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
     queueSteerRefusedTitle: 'Redirection non prise en compte',
     queueSteerRefusedBody: "Le tour en cours n'a pas pu prendre en compte la redirection. Votre message reste dans la file d'attente et passe désormais en premier.",
+    steerNotSentTitle: "Message non envoyé",
+    steerExternalNotSentBody:
+      "Ce message n’a été ni envoyé ni mis en file d’attente. Copiez son texte pour l’envoyer vous-même.",
     steerUnconfirmedTitle: "Livraison non confirmée",
     steerUnconfirmedBody: "La livraison est incertaine. Vérifiez les messages et la file avant de décider de renvoyer.",
     steerExternalUnconfirmedBody: "Un envoi précédent est incertain. Copiez son texte et vérifiez les messages et la file avant de décider de renvoyer.",

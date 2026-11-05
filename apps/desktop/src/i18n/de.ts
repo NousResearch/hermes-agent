@@ -3932,6 +3932,9 @@ export const deOverrides = {
       'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',
     queueSteerRefusedTitle: 'Steuern nicht übernommen',
     queueSteerRefusedBody: 'Der laufende Turn konnte die Umleitung nicht übernehmen. Ihre Nachricht bleibt in der Warteschlange und steht jetzt an erster Stelle.',
+    steerNotSentTitle: "Nachricht nicht gesendet",
+    steerExternalNotSentBody:
+      "Diese Nachricht wurde weder gesendet noch eingereiht. Kopiere den Text, um sie selbst zu senden.",
     steerUnconfirmedTitle: 'Zustellung unbestätigt',
     steerUnconfirmedBody:
       'Die Zustellung ist unbestätigt. Prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',

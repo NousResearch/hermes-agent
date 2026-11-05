@@ -14,14 +14,29 @@ export class UnconfirmedCorrectionError extends Error {
 }
 
 export function notifyCorrectionUnconfirmed(text?: string, id?: string): string {
+  return notifyCorrectionRecovery(text, id)
+}
+
+/** A refused external request has no draft; retain its exact text without replaying it. */
+export function notifyCorrectionNotSent(text: string): string {
+  return notifyCorrectionRecovery(text, undefined, true)
+}
+
+function notifyCorrectionRecovery(text?: string, id?: string, notSent = false): string {
   const show = (copyFailed = false): string =>
     notify({
       ...(id ? { id } : {}),
       kind: 'warning',
       persistent: text !== undefined,
-      title: translateNow(copyFailed ? 'common.copyFailed' : 'composer.steerUnconfirmedTitle'),
+      title: translateNow(
+        copyFailed ? 'common.copyFailed' : notSent ? 'composer.steerNotSentTitle' : 'composer.steerUnconfirmedTitle'
+      ),
       message: translateNow(
-        text === undefined ? 'composer.steerUnconfirmedBody' : 'composer.steerExternalUnconfirmedBody'
+        notSent
+          ? 'composer.steerExternalNotSentBody'
+          : text === undefined
+            ? 'composer.steerUnconfirmedBody'
+            : 'composer.steerExternalUnconfirmedBody'
       ),
       ...(text === undefined
         ? {}

@@ -3921,6 +3921,9 @@ export const esOverrides = {
       'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
     queueSteerRefusedTitle: 'Redirección no aceptada',
     queueSteerRefusedBody: 'El turno en vivo no pudo aceptar la redirección. Tu mensaje sigue en la cola y ahora es el primero.',
+    steerNotSentTitle: "Mensaje no enviado",
+    steerExternalNotSentBody:
+      "Este mensaje no se envió ni se puso en cola. Copia su texto para enviarlo tú.",
     steerUnconfirmedTitle: 'Entrega sin confirmar',
     steerUnconfirmedBody:
       'La entrega no está confirmada. Revisa los mensajes y la cola antes de decidir si enviar de nuevo.',

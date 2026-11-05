@@ -1,8 +1,7 @@
 """ACP historical catalog without storage initialization or an execution owner."""
-import json
 from pathlib import Path
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence_reader
 from acp_adapter.session import (
     _normalize_cwd_for_compare, _parse_model_config, _session_info, _updated_at_sort_key,
 )
@@ -13,31 +12,26 @@ def read_catalog_rows(path):
     if not path.exists():
         return {}
     from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
     # The owner stores an editor thread as ``local`` with ``created_source='acp'``; the surface
-    # reader matches both labels in SQL, before the LIMIT.
-    with SessionDB(db_path=path, read_only=True) as db:
-        rows = SurfaceLabelReader(db).list_sessions_rich(source="acp", limit=1000)
+    # labels match both in SQL, before the LIMIT.
+    with open_persistence_reader(path) as persistence:
+        expanded = SurfaceLabelReader(persistence)._expand(["acp"])
+        query = (SessionQuery(sources=("acp",)) if expanded is None
+                 else SessionQuery(sources=tuple(expanded[0]), local_created_sources=tuple(expanded[1])))
+        entries = persistence.sessions.list_sessions(query, SessionWindow(limit=1000))
+        rows = [entry.as_list_row() for entry in entries]
         return {str(row["id"]): dict(row) for row in rows}
 
 
-def _local_owners(db):
+def _local_owners(persistence):
     """Physical id -> retained logical owner, from each private local creation receipt's lineage.
     A canonical reset or compression advances the receipt's physical target but keeps policy/FIFO
     on the creation id. Legacy reset histories have no receipt and stay independent chats."""
-    from hermes_state_local import POLICY_PREFIX
     owners = {}
-    with db._read_ctx() as conn:
-        rows = conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)).fetchall()
-    for (raw,) in rows:
-        try:
-            receipt = json.loads(raw)
-        except (TypeError, ValueError):
-            continue
-        owner = receipt.get('session_id') if isinstance(receipt, dict) else None
-        lineage = receipt.get('lineage') if isinstance(owner, str) else None
-        for physical in lineage if isinstance(lineage, list) else ():
-            if isinstance(physical, str):
-                owners[physical] = owner
+    for receipt in persistence.bindings.list_lineages():
+        for physical in receipt.lineage:
+            owners[physical] = receipt.owner
     return owners
 
 
@@ -45,8 +39,8 @@ def read_local_owners(path):
     path = Path(path)
     if not path.exists():
         return {}
-    with SessionDB(db_path=path, read_only=True) as db:
-        return _local_owners(db)
+    with open_persistence_reader(path) as persistence:
+        return _local_owners(persistence)
 
 
 def logical_session_id(path, session_id):
@@ -56,10 +50,10 @@ def logical_session_id(path, session_id):
     path = Path(path)
     if not path.exists():
         return session_id
-    with SessionDB(db_path=path, read_only=True) as db:
-        lineage = db.get_compression_lineage(session_id)
+    with open_persistence_reader(path) as persistence:
+        lineage = persistence.lineage.lineage(session_id)
         root = lineage[0] if lineage else session_id
-        return _local_owners(db).get(root, root)
+        return _local_owners(persistence).get(root, root)
 
 
 def catalog_sessions(path, cwd=None):

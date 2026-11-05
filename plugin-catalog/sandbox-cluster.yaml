@@ -1,11 +1,11 @@
 name: sandbox-cluster
 repo: https://github.com/xiaoyaner0201/hermes-sandbox-cluster
-sha: bd0cac083372c92badbdc4a2dcd7ffb1f3c8028a
+sha: 2acb15de97d87d960a217c1261957ed222af165b
 subdir: plugin/agent_sandbox_backend
-version: "0.22.7-2"
-image: https://raw.githubusercontent.com/xiaoyaner0201/hermes-sandbox-cluster/bd0cac083372c92badbdc4a2dcd7ffb1f3c8028a/docs/kitchen-en.png
+version: "0.22.7.3"
+image: https://raw.githubusercontent.com/xiaoyaner0201/hermes-sandbox-cluster/2acb15de97d87d960a217c1261957ed222af165b/docs/kitchen-en.png
 title: "Sandbox Cluster (self-hosted k3s + gVisor)"
-description: "Self-hosted sandbox cluster for Hermes: a terminal backend that runs Hermes terminal, file and execute_code tools in disposable gVisor sandboxes claimed from a kubernetes-sigs/agent-sandbox warm pool on your own k3s or Kubernetes cluster (`hermes config set terminal.backend agent_sandbox`). One sandbox per session, claimed in about 0.2 s, released at session close or idle reap, with a cluster-side expiry as backstop. The task's code dirs sync both ways; git network commands run on the host so git credentials stay there, confined to the code dirs. Disclosure: spawns the kubectl binary you configure, using the kubeconfig you name, against that cluster's API server only; sends into the sandbox the host process environment minus a skip list you can extend with globs (secrets you do not withhold reach the sandbox), declared config files, the task's code dirs, a read-only copy of the skills dir and the git config without credential-bearing settings; writes on the host only inside the code dirs (in .git only history and index); no other network calls, no telemetry, no stored credentials, no background process of its own; dangerous-command approval stays on."
+description: "Self-hosted sandbox cluster for Hermes: a terminal backend that runs Hermes terminal, file and execute_code tools in disposable gVisor sandboxes claimed from a kubernetes-sigs/agent-sandbox warm pool on your own k3s or Kubernetes cluster (`hermes config set terminal.backend agent_sandbox`). One sandbox per session, claimed in about 0.2 s, released at session close or idle reap, with a cluster-side expiry as backstop. The sandbox only runs and builds code; credentials stay on the host: git network commands run on the host, confined to the code dirs. Disclosure: spawns the kubectl binary you configure, using the kubeconfig you name, against that cluster's API server only; sends into the sandbox only the host environment variables you list in agent_sandbox_forward_env (none by default), declared config files, the task's code dirs (each repository's .git/config reduced to an exact key allowlist), a read-only copy of the skills dir, and identity and everyday settings from the host git config (exact key allowlist; no aliases, helpers, includes, http/url settings or user:pass@ values); writes on the host only inside the code dirs (in .git only history and index); no other network calls, no telemetry, no stored credentials, no background process of its own. Dangerous-command approval stays on (skip_container_guards is False)."
 maintainer: xiaoyaner0201
 tier: community
 category: tools
@@ -14,7 +14,7 @@ docs_url: https://github.com/xiaoyaner0201/hermes-sandbox-cluster#readme
 platforms: [linux, macos]
 known_issues:
   - "Needs a reachable k3s/Kubernetes cluster with agent-sandbox v1.0.9 and gVisor; the cluster/ scripts of xiaoyaner0201/self-hosted-agent-sandbox (whose core this plugin vendors unmodified) set one up on Linux x86_64 nodes."
-  - "Forwarding the environment wholesale also forwards secrets in it; list names to withhold in agent_sandbox_env_skip."
+  - "Files in the code dirs, sync paths and the skills copy are sent as they are (only repository git configs are reduced to an allowlist); keep tokens out of them (for example no .env with real keys in the working tree)."
 capabilities:
   provides_tools: []
   provides_hooks: []

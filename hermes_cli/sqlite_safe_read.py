@@ -11,9 +11,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import secrets
 import sqlite3
 import threading
-import weakref
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,13 @@ logger = logging.getLogger(__name__)
 _live_lock = threading.RLock()
 # canonical path -> number of live connections opened by this process
 _live_connections: dict[str, int] = {}
+# Keys whose connection SQLite has closed, queued from wherever that happened (possibly inside a
+# garbage collection) and applied under _live_lock by the next registry read. Lock-free on purpose:
+# a collection can run while any lock is held, so it must never wait for _live_lock.
+_released: deque[str] = deque()
+# Private, randomised name so no caller overloads it by accident (that would free the release
+# object early, while the connection is still open).
+_RELEASE_FUNCTION = f"_hermes_release_{secrets.token_hex(8)}"
 
 
 class UntrackableConnectionError(RuntimeError):
@@ -77,11 +85,39 @@ def untrack_connection(path: Path | str) -> None:
         _track_key(_key(path), -1)
 
 
+def _apply_releases() -> None:
+    """Untrack every connection SQLite has finished closing (caller holds ``_live_lock``)."""
+    while _released:
+        _track_key(_released.popleft(), -1)
+
+
+class _ReleaseOnClose:
+    """Registered as a SQL function on each tracked connection, so SQLite holds the only reference.
+    SQLite frees a connection's functions after it has closed the database files (btrees first,
+    then the function table, in ``sqlite3LeaveMutexAndCloseZombie``; not an API promise, which
+    the tests pin), so this object is released only once the descriptors are gone: after ``close()``, or when pysqlite closes a
+    connection collected without it, on any thread (#149291). It only queues its key."""
+
+    __slots__ = ("armed", "key")
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.armed = False
+
+    def __call__(self) -> None:
+        return None
+
+    def __del__(self) -> None:
+        if self.armed and _released is not None:  # None only during interpreter teardown
+            _released.append(self.key)
+
+
 def _live_main_key(key: str) -> Optional[str]:
     """The tracked main-database key that makes *key* live, or ``None`` (caller holds ``_live_lock``).
 
     SQLite locks the main file and its WAL sidecars; a raw ``close()`` of any of those
     inodes cancels this process's POSIX locks, but the registry is keyed by the main path."""
+    _apply_releases()
     if key in _live_connections:
         return key
     for suffix in ("-wal", "-shm"):
@@ -104,26 +140,17 @@ class _TrackingMixin:
 
     The real ``close()`` and the unregister happen together under ``_live_lock`` so a concurrent
     probe can never observe "no live connection" while this descriptor is still open. Unregister
-    runs only after ``close()`` succeeds: untracking before a failing close (e.g. cross-thread
-    ProgrammingError) would leave the FD open while the byte-probe guard thinks nothing is live.
+    runs only after the files are closed, through :class:`_ReleaseOnClose`: a failing close (e.g.
+    cross-thread ProgrammingError) keeps the entry while the FD stays open (#75629).
     """
 
     _hermes_tracked_path: str | None = None
-    _hermes_untrack_finalizer: weakref.finalize | None = None
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
-            path = getattr(self, "_hermes_tracked_path", None)
-            # Close first; untrack only once the descriptor is actually gone. Untracking before a failing
-            # close (e.g. cross-thread ProgrammingError) leaves the FD open while the byte-probe guard
-            # thinks nothing is live — see #75629.
             super().close()  # type: ignore[misc]
-            if path is not None:
-                self._hermes_tracked_path = None
-                finalizer = getattr(self, "_hermes_untrack_finalizer", None)
-                if finalizer is not None:
-                    finalizer.detach()  # this close() untracks; the collector must not untrack again
-                untrack_connection(path)
+            self._hermes_tracked_path = None
+            _apply_releases()
 
 
 class TrackedConnection(_TrackingMixin, sqlite3.Connection):
@@ -170,13 +197,16 @@ def connect_tracked(
                 # simulating FTS5-less runtimes do this). Retag the instance's class so close()
                 # still releases the registry entry rather than silently losing probe safety.
                 conn = _retrofit_tracking(conn, resolved)
-            conn._hermes_tracked_path = resolved
             _track_key(resolved)
+            release = _ReleaseOnClose(resolved)
             try:
-                _untrack_when_collected(conn, resolved)
+                conn.create_function(_RELEASE_FUNCTION, 0, release)
+                conn.execute(f"SELECT {_RELEASE_FUNCTION}()").fetchone()  # registered for real
             except Exception:
-                _track_key(resolved, -1)  # the unwind below closes without untracking
+                _track_key(resolved, -1)  # the release object can never fire: take the count back
                 raise
+            release.armed = True
+            conn._hermes_tracked_path = resolved
             return conn
         except Exception:
             try:
@@ -186,26 +216,6 @@ def connect_tracked(
             except Exception:
                 pass
             raise
-
-
-def _untrack_collected(key: str) -> None:
-    with _live_lock:
-        _track_key(key, -1)
-
-
-def _untrack_when_collected(conn: sqlite3.Connection, key: str) -> None:
-    """Release *conn*'s registry entry if it is garbage-collected without ``close()`` (#149291).
-
-    Without this, a dropped connection stays "live" for the life of the process and every
-    :func:`offline_file_access` on its path is refused. Attached only after ``_track_key`` so it
-    never releases a count that was not taken. The callback can run on any thread mid-collection;
-    ``_live_lock`` is reentrant, so a collection on a thread that already holds it still proceeds.
-    Weakref callbacks run before ``sqlite3.Connection`` deallocates, so the entry is released just
-    before the descriptor closes. The connection is already unreachable then, so nothing can rely on
-    its locks during that gap."""
-    finalizer = weakref.finalize(conn, _untrack_collected, key)
-    finalizer.atexit = False  # at interpreter exit the registry no longer matters
-    conn._hermes_untrack_finalizer = finalizer
 
 
 def _retrofit_tracking(conn: sqlite3.Connection, resolved: str) -> sqlite3.Connection:

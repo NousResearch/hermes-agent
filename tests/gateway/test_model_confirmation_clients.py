@@ -117,6 +117,7 @@ async def test_acp_set_config_option_model_asks_through_request_permission(tmp_p
     agent = GatewayACPAgent()
     agent._gateway = owner
     agent._client = lambda: _ready(owner)
+    agent._snapshots[owner.sid] = {}  # held-session precondition of the config RPC
     try:
         before = owner.state()
         agent._conn = Editor(DeniedOutcome(outcome='cancelled'))

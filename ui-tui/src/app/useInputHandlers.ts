@@ -241,6 +241,21 @@ export function applyVoiceRecordResponse(
 
 type SensitivePrompt = (typeof SENSITIVE_PROMPTS)[number]
 
+/** Overlays that own the keyboard while they are up: their own useInput handlers take every key,
+ * so the app-level handler must not also act on it (a plain letter would otherwise fall through). */
+const PROMPT_OVERLAY_KEYS = [
+  'approval',
+  'billing',
+  'clarify',
+  'confirm',
+  'connection',
+  'rewind',
+  'subscription',
+  'tree'
+] as const satisfies readonly (keyof OverlayState)[]
+
+const isPromptOverlay = (overlay: OverlayState) => PROMPT_OVERLAY_KEYS.some(key => Boolean(overlay[key]))
+
 const DISMISSED_PROMPT_NOTICE: { [K in SensitivePrompt]: (req: NonNullable<OverlayState[K]>) => string } = {
   sudo: () => t('session.input.sudoCancelled'),
   secret: () => t('session.input.secretCancelled'),
@@ -571,15 +586,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay =
-        overlay.approval ||
-        overlay.billing ||
-        overlay.clarify ||
-        overlay.confirm ||
-        overlay.connection ||
-        overlay.rewind ||
-        overlay.subscription ||
-        overlay.tree
+      const promptOverlay = isPromptOverlay(overlay)
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 

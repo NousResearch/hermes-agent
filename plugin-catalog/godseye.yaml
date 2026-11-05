@@ -1,6 +1,6 @@
 name: godseye
 title: Eye Of Hermes (EOH)
-repo: https://github.com/mojomast/hermes-godseye
+repo: https://github.com/mojomast/EOH
 sha: 29de8b6fa24e1e1791180d32b31fef5dcd080fb9
 description: >-
   Eye Of Hermes (EOH), built on God's Eye View (bilawalsidhu/gods-eye-view, MIT):
@@ -27,14 +27,14 @@ description: >-
 maintainer: mojomast
 tier: community
 category: tools
-docs_url: https://github.com/mojomast/hermes-godseye#readme
+docs_url: https://github.com/mojomast/EOH#readme
 version: "0.2.0"
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-godseye/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hermes-chat-tokyo-nvg.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-godseye/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-full-ui.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-godseye/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/live-fly-to-tokyo.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-godseye/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hud-via-hermes.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-godseye/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-globe-only.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/EOH/29de8b6fa24e1e1791180d32b31fef5dcd080fb9/docs/screenshots/pane-globe-only.jpg
 platforms: []
 known_issues:
   - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."

@@ -3810,14 +3810,15 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
 def _auth_refresh_provider_for_route(
     resolved_provider: Optional[str], client_base_url: str, effective_provider: str = "",
 ) -> str:
-    """Provider whose credentials to refresh. An ``"auto"`` route's client tag names its backend; only an untagged
-    client falls back to the host, which OAuth and API-key siblings share (api.x.ai, generativelanguage)."""
+    """Provider whose credentials to refresh. An ``"auto"`` route's client tag names its backend when it is a registered
+    provider (OAuth/API-key siblings share hosts); chain labels (``api-key``, ``local/custom``) fall back to the host."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized and normalized != "auto":
         return normalized
-    raw_effective = str(effective_provider or "").strip().lower()
-    if raw_effective and raw_effective not in {"auto", "actual"} and not raw_effective.startswith("custom"):
-        return _normalize_aux_provider(raw_effective)
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    raw = str(effective_provider or "").strip().lower()  # aliases (x-ai, grok) normalise; custom:<n> never does
+    if not raw.startswith("custom") and (t := _normalize_aux_provider(raw)) in PROVIDER_REGISTRY and t != "actual":
+        return t
     return _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST) or normalized
 
 

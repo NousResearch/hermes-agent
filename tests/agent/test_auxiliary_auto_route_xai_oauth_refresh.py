@@ -21,5 +21,17 @@ def test_auto_route_on_xai_host_refreshes_xai_oauth_unless_api_key_backend(effec
     assert _auth_refresh_provider_for_route("auto", "https://api.x.ai/v1", effective_provider) == expected
 
 
+@pytest.mark.parametrize("chain_label", ["api-key", "local/custom", "actual"])
+def test_a_discovery_chain_label_is_not_a_provider(chain_label):
+    """The discovery chain tags clients with its labels; an Anthropic 401 must still refresh ``anthropic``."""
+    assert _auth_refresh_provider_for_route("auto", "https://api.anthropic.com", chain_label) == "anthropic"
+
+
 def test_unknown_host_on_auto_route_stays_auto():
     assert _auth_refresh_provider_for_route("auto", "https://unknown.example.com/v1") == "auto"
+
+
+@pytest.mark.parametrize("alias", ["x-ai", "grok"])
+def test_an_alias_tag_names_its_canonical_provider(alias):
+    """An alias of the API-key ``xai`` backend must not borrow the ``xai-oauth`` grant's refresh."""
+    assert _auth_refresh_provider_for_route("auto", "https://api.x.ai/v1", alias) == "xai"

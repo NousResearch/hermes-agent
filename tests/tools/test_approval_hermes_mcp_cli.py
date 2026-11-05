@@ -34,8 +34,16 @@ def test_other_mcp_commands_do_not_require_approval(command):
     assert detect_dangerous_command(command) == (False, None, None)
 
 
-def test_an_older_rule_keeps_its_key_in_a_compound_command():
-    # Approval keys on the first matching rule only, so this row sits last and never masks an older pattern rule.
-    dangerous, key, _ = detect_dangerous_command("hermes mcp add foo --yes --command npx; git reset --hard")
-    assert dangerous is True
-    assert key == "git reset --hard (destroys uncommitted changes)"
+@pytest.mark.parametrize("other, key", [
+    ("git reset --hard", "git reset --hard (destroys uncommitted changes)"),
+    # Found only in a later command variant (subshell, quoted command word) or by a structural check.
+    ("(npm uninstall foo)", "package manager uninstall"),
+    ('"git" reset --hard', "git reset --hard (destroys uncommitted changes)"),
+    ("python3 -c 'import os'", "script execution via -e/-c flag"),
+    ("bash -c 'echo hi'", "shell command via -c/-lc flag"),
+])
+def test_any_other_finding_keeps_its_key_in_a_compound_command(other, key):
+    # Approval keys on the first finding only, and this rule is checked after everything else, so approving it for
+    # the session never covers another finding in the same command.
+    for command in ("hermes mcp add foo --yes --command npx; " + other, other + "; hermes mcp add foo --yes --command npx"):
+        assert detect_dangerous_command(command)[:2] == (True, key), command

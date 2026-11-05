@@ -66,10 +66,11 @@ class ProactivePruneMixin:
         # Under-threshold runway skip is ordinary hysteresis (silent); above it the lockout is the bug.
         if before < self._proactive_prune_rearm_tokens and not self._billed_basis_over_threshold(current_tokens):
             return messages, 0
-        # Capability gate first: a store without archive_and_compact makes every prune a no-op.
+        # Capability gate first: a store with neither a writer handle nor archive_and_compact makes every prune a no-op.
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
-        if session_db and session_id and not callable(getattr(session_db, "archive_and_compact", None)):
+        if (session_db and session_id and self._store_interface() is None
+                and not callable(getattr(session_db, "archive_and_compact", None))):
             self._warn_reclamation_no_op("prune:store_cannot_persist", current_tokens)
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
@@ -92,21 +93,23 @@ class ProactivePruneMixin:
         next_rearm_tokens = after + runway
         if session_db and session_id:
             _cc_ = _cc()
-            from hermes_state_errors import HeldRowRewrittenError
+            from persistence.core.errors import HeldRowRewritten
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
             StaleHeldHistory = _cc_.StaleHeldHistory
             _DB_PERSISTED_MARKER = _cc_._DB_PERSISTED_MARKER
             rewritten = None
             try:
                 # Raises StaleHeldHistory when another compaction already won, for both commit paths.
-                watermark = _cc_._archive_watermark_for(session_db, session_id, messages)
+                store = self._store_interface()
+                watermark = _cc_._archive_watermark_for(session_db, session_id, messages, persistence=store)
                 rewritten = self._rewrite_pruned_rows_in_place(
-                    session_db, session_id, messages, pruned_msgs, model_config_patch)
+                    session_db, session_id, messages, pruned_msgs, model_config_patch, persistence=store)
                 if rewritten is None:
-                    from agent.conversation_compression_archive import coverage_for_commit
-                    covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
-                    session_db.archive_and_compact(
-                        session_id, pruned_msgs,
+                    from agent.conversation_compression_archive import commit_compaction, coverage_for_commit
+                    covered_ids, unresolved_held = coverage_for_commit(
+                        session_db, session_id, messages, persistence=store)
+                    commit_compaction(
+                        session_db, store, session_id, pruned_msgs,
                         model_config_patch=model_config_patch,
                         watermark=watermark,
                         covered_ids=covered_ids, unresolved_held=unresolved_held,
@@ -117,7 +120,7 @@ class ProactivePruneMixin:
                 logger.info("Proactive tool-result prune skipped: another compaction already committed this session")
                 self._warn_reclamation_no_op("prune:stale_generation", current_tokens, before=before)
                 return messages, 0
-            except HeldRowRewrittenError:
+            except HeldRowRewritten:
                 # The full writer's in-transaction CAS fence tripped: a held row changed between the
                 # precheck and the commit. Same disposition as StaleHeldHistory — nothing was written.
                 logger.info("Proactive tool-result prune skipped: a held row was rewritten in place before the commit")
@@ -143,7 +146,7 @@ class ProactivePruneMixin:
 
     def _rewrite_pruned_rows_in_place(
         self, session_db: Any, session_id: str, messages: list[dict[str, Any]],
-        pruned_msgs: list[dict[str, Any]], model_config_patch: dict[str, Any],
+        pruned_msgs: list[dict[str, Any]], model_config_patch: dict[str, Any], *, persistence: Any = None,
     ) -> Optional[int]:
         """Commit a prune by rewriting only its changed rows (#124102); ``None`` means use the full rewrite.
 
@@ -153,12 +156,14 @@ class ProactivePruneMixin:
         order; one sitting before durable rows would land out of order). A row the store cannot name
         exactly also falls back: ``archive_and_compact`` handles every shape. A row it *can* name whose
         stored body changed is not ambiguity but a lost race, and raises ``StaleHeldHistory`` so the
-        caller skips the pass rather than republishing the held generation.
+        caller skips the pass rather than republishing the held generation. With the storage interface
+        handle *persistence* the rewrite goes through it, and each rewritten replacement takes its row's
+        new ``_db_row_snapshot``.
         """
         rewrite = getattr(session_db, "rewrite_pruned_rows", None)
-        if not callable(rewrite) or len(messages) != len(pruned_msgs):
+        if (persistence is None and not callable(rewrite)) or len(messages) != len(pruned_msgs):
             return None
-        from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
+        from persistence.core.errors import PruneRowStale, PruneRowUnresolved
 
         _DB_PERSISTED_MARKER = _cc()._DB_PERSISTED_MARKER
         ignored = {_DB_PERSISTED_MARKER, "_row_id"}
@@ -176,14 +181,24 @@ class ProactivePruneMixin:
                     != {k: v for k, v in replacement.items() if k not in ignored}):
                 changes.append((original, replacement))
         try:
-            return rewrite(session_id, changes, model_config_patch=model_config_patch)
-        except PruneRowStaleError as exc:
+            if persistence is None:
+                return rewrite(session_id, changes, model_config_patch=model_config_patch)
+            from agent.conversation_compression_archive import held_message
+            from persistence.conversation.messages import NewMessage, PrunedRowChange
+            result = persistence.messages.rewrite_pruned_rows(session_id, [
+                PrunedRowChange(held_message(original), NewMessage.from_live(replacement), NewMessage.from_live(original))
+                for original, replacement in changes], model_config_patch=model_config_patch)
+        except PruneRowStale as exc:
             # A named row whose stored body changed is another writer's generation, which is exactly
             # what StaleHeldHistory exists to catch — the in-place prune preserved the row ids, so
             # _archive_watermark_for could not see it. Falling back would hand this stale transcript to
             # archive_and_compact, which archives rows it never compared and republishes the held text
             # over the newer one. Fail closed; the caller skips the pass.
             raise _cc().StaleHeldHistory(str(exc)) from exc
-        except PruneRowUnresolvedError as exc:
+        except PruneRowUnresolved as exc:
             logger.info("Proactive prune: in-place rewrite refused (%s); using the full rewrite", exc)
             return None
+        for (_, replacement), snapshot in zip(changes, result.snapshots):
+            if snapshot is not None:
+                replacement["_db_row_snapshot"] = snapshot
+        return result.rewritten

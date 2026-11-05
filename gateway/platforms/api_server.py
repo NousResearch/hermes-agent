@@ -306,7 +306,7 @@ def _is_compressed_summary_message(message: Any) -> bool:
     (SessionDB drops the in-process marker; a prefix scan misses merge-into-tail carriers)."""
     if not isinstance(message, dict):
         return False
-    from agent.context_compressor import is_compaction_summary_message
+    from session_rules.turns import is_compaction_summary_message
     return is_compaction_summary_message(message)
 
 

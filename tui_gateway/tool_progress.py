@@ -63,7 +63,7 @@ def _tool_args_text(args: dict) -> str:
 
 def _tool_result_text(result: object) -> str:
     def render():
-        from agent.tool_dispatch_helpers import _multimodal_text_summary
+        from session_rules.turns import _multimodal_text_summary
         return _multimodal_text_summary(result)
 
     return _verbose_text(render, lambda: str(result))

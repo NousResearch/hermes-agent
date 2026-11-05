@@ -39,16 +39,21 @@ export interface DeclaredFields {
   required: readonly string[]
 }
 
-const fields = ({ properties, required = [] }: Schema): DeclaredFields => ({ fields: Object.keys(properties), required })
+const fields = ({ properties, required = [] }: Schema): DeclaredFields => ({
+  fields: Object.keys(properties),
+  required
+})
 
 /** `method`'s declared params and result keys, or undefined when the contract does not declare it. */
 export function declaredGroupMethod(method: string): { params: DeclaredFields; result: DeclaredFields } | undefined {
   const declaration = declarations.get(method)
 
-  return declaration && {
-    params: fields(schema(declaration.params[0].schema.$ref)),
-    result: fields(schema(declaration.result.schema.$ref))
-  }
+  return (
+    declaration && {
+      params: fields(schema(declaration.params[0].schema.$ref)),
+      result: fields(schema(declaration.result.schema.$ref))
+    }
+  )
 }
 
 /** A `groups.capabilities` answer fixture, refused when it lists an undeclared method or a key
@@ -78,9 +83,23 @@ export const CANONICAL_GROUP_CAPABILITIES = declaredCapabilities({
   authority_gateway_id: 'install:canonical',
   room_link: { enabled: false, reason: 'canonical_driver_required' },
   features: ['room_identity', 'monotonic_log', 'replayable_disband'],
-  methods: ['groups.capabilities', 'groups.list', 'groups.state', 'groups.log', 'groups.create', 'groups.rename', 'groups.context',
-    'groups.disband', 'groups.send', 'groups.attachment.upload', 'groups.attachment.download', 'groups.stop',
-    'groups.retry', 'groups.discard', 'groups.approve'],
+  methods: [
+    'groups.capabilities',
+    'groups.list',
+    'groups.state',
+    'groups.log',
+    'groups.create',
+    'groups.rename',
+    'groups.context',
+    'groups.disband',
+    'groups.send',
+    'groups.attachment.upload',
+    'groups.attachment.download',
+    'groups.stop',
+    'groups.retry',
+    'groups.discard',
+    'groups.approve'
+  ],
   max_log_limit: 500
 })
 
@@ -92,12 +111,41 @@ export const STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
   persistent_process: false,
   authority_gateway_id: 'install:standalone',
   room_link: { enabled: false, reason: 'gateway_roomlink_secret_unavailable' },
-  features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log', 'idempotent_send',
-    'replayable_disband', 'typed_events', 'actor_identity', 'log_replication', 'authority_takeover'],
-  methods: ['groups.capabilities', 'groups.list', 'groups.create', 'groups.state', 'groups.send', 'groups.rename', 'groups.context',
-    'groups.log', 'groups.disband', 'groups.replicate', 'groups.replica_state', 'groups.promote', 'groups.demote',
-    'groups.stop', 'groups.retry', 'groups.approve', 'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.register',
-    'groups.attachment.upload', 'groups.attachment.download'],
+  features: [
+    'authority_epoch',
+    'coordinator_fencing',
+    'room_identity',
+    'monotonic_log',
+    'idempotent_send',
+    'replayable_disband',
+    'typed_events',
+    'actor_identity',
+    'log_replication',
+    'authority_takeover'
+  ],
+  methods: [
+    'groups.capabilities',
+    'groups.list',
+    'groups.create',
+    'groups.state',
+    'groups.send',
+    'groups.rename',
+    'groups.context',
+    'groups.log',
+    'groups.disband',
+    'groups.replicate',
+    'groups.replica_state',
+    'groups.promote',
+    'groups.demote',
+    'groups.stop',
+    'groups.retry',
+    'groups.approve',
+    'groups.peer.invite',
+    'groups.peer.revoke',
+    'groups.peer.register',
+    'groups.attachment.upload',
+    'groups.attachment.download'
+  ],
   max_log_limit: 500
 })
 
@@ -121,8 +169,11 @@ export function standaloneGroupProblems({ method, params }: GroupRequestCall): s
   const declaration = STANDALONE_GROUP_CAPABILITIES.methods.includes(method) ? shared.get(method) : undefined
   const { properties } = declaration ? schema(declaration.params[0].schema.$ref) : { properties: undefined }
 
-  return properties ? Object.keys(params).filter(key => params[key] !== undefined && !Object.hasOwn(properties, key))
-    .map(key => `${method}.${key}`) : []
+  return properties
+    ? Object.keys(params)
+        .filter(key => params[key] !== undefined && !Object.hasOwn(properties, key))
+        .map(key => `${method}.${key}`)
+    : []
 }
 
 /** Refuse what either surface refuses before any handler runs. The gateway (`4001 invalid_params`):
@@ -130,7 +181,9 @@ export function standaloneGroupProblems({ method, params }: GroupRequestCall): s
  *  unknown key in a method it lists. */
 export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
   for (const { method, params } of calls) {
-    const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
+    const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method)
+      ? declaredGroupMethod(method)?.params
+      : undefined
 
     if (!declared) {
       throw new Error(`Undeclared canonical group method: ${method}`)

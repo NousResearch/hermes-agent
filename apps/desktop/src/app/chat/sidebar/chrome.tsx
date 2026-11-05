@@ -150,7 +150,10 @@ export function SidebarDateDivider({
         <button
           aria-expanded={toggle.open}
           aria-label={toggle.ariaLabel}
-          className={cn('flex min-w-0 flex-1 items-center gap-2 rounded-sm bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE)}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-2 rounded-sm bg-transparent text-left',
+            SIDEBAR_FOCUS_VISIBLE
+          )}
           onClick={toggle.onToggle}
           type="button"
         >
@@ -211,7 +214,12 @@ export function SidebarRowCluster({ className, ...props }: React.ComponentProps<
 
 /** Session row main tap target. */
 export function SidebarRowBody({ className, ...props }: React.ComponentProps<'button'>) {
-  return <RowButton className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props} />
+  return (
+    <RowButton
+      className={cn(SIDEBAR_ROW_INSET, 'bg-transparent text-left', SIDEBAR_FOCUS_VISIBLE, className)}
+      {...props}
+    />
+  )
 }
 
 /** Tappable label — underline/truncate live on the inner span, not the button. */
@@ -222,7 +230,10 @@ export function SidebarRowLink({
   ...props
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
-    <RowButton className={cn('min-w-0 shrink rounded-sm bg-transparent p-0 text-left', SIDEBAR_FOCUS_VISIBLE, className)} {...props}>
+    <RowButton
+      className={cn('min-w-0 shrink rounded-sm bg-transparent p-0 text-left', SIDEBAR_FOCUS_VISIBLE, className)}
+      {...props}
+    >
       <span className={cn(SIDEBAR_ROW_LABEL, labelClassName)}>{children}</span>
     </RowButton>
   )
@@ -305,7 +316,10 @@ export function SidebarGroupRow({
             <button
               aria-expanded={toggle.open}
               aria-label={toggle.ariaLabel}
-              className={cn('flex flex-1 items-center self-stretch rounded-sm bg-transparent p-0', SIDEBAR_FOCUS_VISIBLE)}
+              className={cn(
+                'flex flex-1 items-center self-stretch rounded-sm bg-transparent p-0',
+                SIDEBAR_FOCUS_VISIBLE
+              )}
               data-row-actions
               onClick={toggle.onToggle}
               type="button"

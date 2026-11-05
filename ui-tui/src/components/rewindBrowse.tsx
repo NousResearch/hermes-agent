@@ -82,7 +82,7 @@ export function RewindBrowse({
     if (typeof action === 'number') {
       // Default mode: the transcript scroll belongs to the global handler.
       return (
-        native && setOffset(prev => clampOffset(prev + action * (Math.abs(action) > 1 ? rows : 1), lines.length, rows))
+        native && setOffset(prev => clampOffset(prev + (Math.abs(action) > 1 ? Math.sign(action) * rows : action), lines.length, rows))
       )
     }
 

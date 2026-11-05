@@ -500,3 +500,59 @@ describe('default browse finds paste and image prompts', () => {
     expect(rewindFocusIndex(resumed, { rowId: 15, text: 'stored text', turn: 1 })).toBe(1)
   })
 })
+
+describe('native pager paging', () => {
+  it('PgUp/PgDn move one screen, ↑/↓ one row', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => [
+      { role: 'user' as const, text: `PROMPT ${i + 1}` },
+      { role: 'assistant' as const, text: `reply ${i + 1}` }
+    ]).flat()
+
+    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
+    const manyTargets = Array.from({ length: 30 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })
+    const frames: string[] = []
+    stdout.on('data', chunk => frames.push(stripAnsi(chunk.toString())))
+
+    const instance = renderSync(
+      <RewindBrowse cols={100} native {...handlers} req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }} t={DEFAULT_THEME} />,
+      { patchConsole: false, stdin: stdin as any, stdout: stdout as any }
+    )
+
+    // The topmost pager row on screen, as `› PROMPT n` / `• reply n` / blank → its line number in the pager.
+    const lineOf = (text: string) => {
+      const prompt = /› PROMPT (\d+)/.exec(text)
+      const reply = /• reply (\d+)/.exec(text)
+
+      return prompt ? (Number(prompt[1]) - 1) * 4 : reply ? (Number(reply[1]) - 1) * 4 + 2 : -1
+    }
+
+    const top = () => {
+      const screen = frames.join('')
+      const hits = [...screen.matchAll(/(?:› PROMPT|• reply) \d+/g)].map(hit => lineOf(hit[0]))
+
+      frames.length = 0
+
+      return Math.min(...hits)
+    }
+
+    await settle()
+    const bottom = top()
+    const rows = 24 - 8
+
+    stdin.send('\x1b[5~') // PgUp
+    await settle(80)
+    const paged = top()
+
+    expect(bottom - paged).toBeGreaterThanOrEqual(rows - 1)
+    expect(bottom - paged).toBeLessThanOrEqual(rows + 1)
+    stdin.send('\x1b[A')
+    await settle(80)
+    expect(paged - top()).toBeLessThanOrEqual(2)
+    stdin.send('\x1b[6~') // PgDn
+    await settle(80)
+    expect(top()).toBeGreaterThan(paged)
+    instance.unmount()
+  })
+})

@@ -26,7 +26,7 @@ finish gracefully re-flush nothing.
 
 These tests exercise BOTH a lightweight unit path (the flush hook is invoked
 with the in-flight messages) AND a true E2E path (a real ``AIAgent`` flush
-against a real ``SessionDB`` in a temp ``HERMES_HOME``, read back through the
+against a real store in a temp ``HERMES_HOME``, read back through the
 real ``SessionStore.load_transcript``).
 """
 
@@ -38,6 +38,10 @@ import types
 from unittest.mock import MagicMock
 
 import pytest
+
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture(autouse=True)
@@ -109,28 +113,25 @@ class TestFinalizeShutdownFlushesInflightTranscript:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# E2E: real AIAgent flush → real SessionDB → real load_transcript.
+# E2E: real AIAgent flush → real store → real load_transcript.
 # ─────────────────────────────────────────────────────────────────────────
 class TestShutdownTranscriptSurvivesResumeE2E:
     def test_interrupted_turn_persisted_and_readable_on_resume(self, tmp_path, monkeypatch):
-        """Drive the real flush path against a real SessionDB and confirm the
+        """Drive the real flush path against a real store and confirm the
         in-flight turn is readable back through SessionStore.load_transcript —
         the exact path the resume logic reads on the next message."""
         # Isolated state.db.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 
-        from hermes_state import SessionDB
         from run_agent import AIAgent
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         session_id = "sess-e2e-13121"
-        db.create_session(session_id=session_id, source="discord")
+        seed_session(db, session_id, "discord")
 
         # Simulate a session whose FIRST turn completed and was persisted...
-        db.append_message(session_id=session_id, role="user",
-                          content="hello, remember my cat is Mochi")
-        db.append_message(session_id=session_id, role="assistant",
-                          content="Noted — Mochi the cat.")
+        seed_messages(db, session_id, {"role": "user", "content": "hello, remember my cat is Mochi"},
+                      {"role": "assistant", "content": "Noted — Mochi the cat."})
 
         # ...and a SECOND turn that was interrupted mid tool-loop. These rows
         # were NEVER flushed to the DB (only live in _session_messages).
@@ -152,7 +153,7 @@ class TestShutdownTranscriptSurvivesResumeE2E:
 
         # Build a real AIAgent shaped only with what the flush path reads.
         agent = object.__new__(AIAgent)
-        agent._session_db = db
+        agent._session_db = agent.persistence = db
         agent._session_db_created = True
         agent.session_id = session_id
         agent.platform = "discord"
@@ -164,7 +165,7 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         agent._flushed_db_message_session_id = session_id
 
         # Sanity: only the 2 first-turn rows are in the DB before shutdown.
-        before = db.get_messages_as_conversation(session_id)
+        before = conversation(db, session_id)
         assert len(before) == 2, before
 
         # Drive the gateway shutdown finalization with this real agent.
@@ -174,7 +175,7 @@ class TestShutdownTranscriptSurvivesResumeE2E:
 
         # The in-flight turn must now be durable and readable via the SAME
         # path the resume logic uses (SessionStore.load_transcript → DB).
-        after = db.get_messages_as_conversation(session_id)
+        after = conversation(db, session_id)
         roles = [m.get("role") for m in after]
         contents = [m.get("content") for m in after]
 

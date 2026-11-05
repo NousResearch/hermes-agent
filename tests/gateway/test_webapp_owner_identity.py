@@ -12,8 +12,10 @@ import pytest
 
 
 from gateway.owner_identity import host_owner_subject, same_owner
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from gateway.session_persistence import owner_rule
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import history_binding_key, hosted_owner_key, raw_holder
+from tests.fixtures.storage_seed import seed_session
 
 MEMBERS = [{'member_id': 'one', 'profile': 'default', 'handle': 'one'},
            {'member_id': 'two', 'profile': 'two', 'handle': 'two'}]
@@ -28,9 +30,9 @@ def authority(tmp_path, monkeypatch):
     (tmp_path / 'config.yaml').write_text(
         'hosted_rooms:\n  profiles:\n    two: ' + str((tmp_path / 'profiles' / 'two').resolve()) + '\n')
     from gateway.session_hosted_service import CanonicalHostedRoomService
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), instance_id='owner', events={},
-                                    epoch=begin_runtime_epoch(db, instance_id='test'))
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(persistence=db, profile_id=str(tmp_path), instance_id='owner', events={},
+                                    epoch=db.runtime.begin_epoch(instance_id='test'))
         authority.hosted_room_service = CanonicalHostedRoomService(authority, None)
         yield authority
 
@@ -61,11 +63,10 @@ async def test_a_webapp_tab_and_native_desktop_share_one_group_chat_list(authori
 
 @pytest.mark.asyncio
 async def test_a_room_an_older_build_stored_under_the_login_stays_the_owners(authority):
-    from gateway.session_hosted_service import _OWNER
     desktop = _connect(authority, NATIVE)
     assert await _call(desktop, 'groups.create', room_id='old-web-room', name='Old', members=MEMBERS) is not None
-    authority.db._execute_write(lambda conn: conn.execute('UPDATE state_meta SET value=? WHERE key=?',
-                                ('auth:v1:["basic","","admin"]', _OWNER + 'old-web-room')))
+    raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
+        'UPDATE state_meta SET value=? WHERE key=?', ('auth:v1:["basic","","admin"]', hosted_owner_key('old-web-room'))))
     assert [r['room_id'] for r in (await _call(desktop, 'groups.list'))['rooms']] == ['old-web-room']
     stranger = _connect(authority, {**NATIVE, 'user_id': 'uid:999999'})
     assert (await _call(stranger, 'groups.list'))['rooms'] == []
@@ -89,44 +90,51 @@ def test_only_sign_in_stamps_and_this_machines_account_read_as_the_owners(stamp,
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        yield SimpleNamespace(db=db, profile_id=str(tmp_path), sessions={}, _require_admission_open=lambda: None)
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        yield SimpleNamespace(persistence=db, profile_id=str(tmp_path), sessions={},
+                              _require_admission_open=lambda: None)
 
 
-def _bind(store, sid, subject, **row):
-    from hermes_state_mutation_binding import BINDING_PREFIX
-    store.db.create_session(sid, **row)
+def _bind(store, sid, subject, source):
+    seed_session(store.persistence, sid, source)
     binding = json.dumps([store.profile_id, subject], separators=(',', ':'))
-    store.db._execute_write(lambda conn: conn.execute(
-        'INSERT INTO state_meta(key,value) VALUES(?,?)', (BINDING_PREFIX + sid, binding)))
+    raw_holder(store.persistence)._execute_write(lambda conn: conn.execute(
+        'INSERT INTO state_meta(key,value) VALUES(?,?)', (history_binding_key(sid), binding)))
 
 
 def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
     """The sidebar (authorize_history) and the open (mount_history) read a binding by one rule."""
     from gateway.session_contract import SessionActor
     from gateway.session_history_mount import mount_history
-    from hermes_state_mutation_binding import authorize_history
     caps = frozenset({'session:create', 'session:read'})
     owner, stranger = (SessionActor(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))
-    _bind(store, 'imported-web', WEBAPP_LOGIN, source='webui')
-    with store.db._read_ctx() as conn:
-        assert authorize_history(conn, owner, 'imported-web') is True
+    _bind(store, 'imported-web', WEBAPP_LOGIN, 'webui')
+    assert store.persistence.bindings.authorize_history(
+        session_id='imported-web', profile_id=owner.profile_id, subject=owner.subject,
+        may_create='session:create' in owner.capabilities, owner=owner_rule()) is True
     assert mount_history(store, owner, 'imported-web') is True
     store.sessions.clear()
     assert mount_history(store, stranger, 'imported-web') is False
 
 
 def test_an_old_chat_a_webapp_tab_edited_is_adopted_by_the_owner(store):
-    from hermes_state_local_migration import bind_legacy_target
-    from hermes_state_runtime import RuntimeStoreError
-    _bind(store, 'legacy-web', WEBAPP_LOGIN, source='cli')
+    from gateway.session_policy import created_surface
+    from persistence.authority.bindings import NewSessionBinding
+    from persistence.core.errors import AuthorityRefusal
+    _bind(store, 'legacy-web', WEBAPP_LOGIN, 'cli')
+    epoch = store.persistence.runtime.begin_epoch(instance_id='test')
 
     def adopt(subject):
-        receipt = {'legacy_session_id': 'legacy-web', 'session_id': 'legacy-web', 'principal_id': subject,
-                   'profile_id': store.profile_id, 'route': 'agent:main:local:dm:legacy-web',
-                   'entry': {'origin': {'platform': 'local', 'chat_id': 'legacy-web', 'user_id': subject}}}
-        store.db._execute_write(lambda conn: bind_legacy_target(store.db, conn, receipt))
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        stamp = '2026-10-06T10:58:32'
+        binding = NewSessionBinding(
+            profile_id=store.profile_id, principal_id=subject, request_id='adopt', session_id='legacy-web',
+            route='agent:main:local:dm:legacy-web',
+            entry={'session_id': 'legacy-web', 'created_at': stamp, 'updated_at': stamp,
+                   'origin': {'platform': 'local', 'chat_id': 'legacy-web', 'user_id': subject}},
+            policy={'source': 'cli', 'request_json': '{}', 'model': None, 'cwd': None},
+            created_source=created_surface('cli'), legacy_session_id='legacy-web', lineage=('legacy-web',))
+        store.persistence.bindings.reserve(epoch=epoch, binding=binding, owner=owner_rule())
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         adopt('uid:999999')
     adopt(OWNER)
-    assert store.db.get_session('legacy-web')['user_id'] == OWNER
+    assert store.persistence.sessions.get('legacy-web').user_id == OWNER

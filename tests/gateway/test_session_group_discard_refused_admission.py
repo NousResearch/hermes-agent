@@ -10,7 +10,7 @@ from gateway import hosted_room_driver as driver
 from aiohttp import web
 
 from gateway.platforms import api_server_runs
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway.test_session_group_peer_discard import (
     _never_admitted_deferred_turn, gateway as gateway_fixture, linked_peer as linked_peer_fixture,
 )
@@ -50,7 +50,7 @@ async def test_discard_after_a_refused_overlapping_admission_settles_the_turn(
     admit, overlapped = api_server_runs._admit_run_to_authority, []
 
     async def refuse(*_a, **_kw):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
 
     async def discard_then_refuse(adapter, launch, run_id, *args):
         # Retry's POST reserved the key; Discard finds that reservation before admission ends.
@@ -64,14 +64,14 @@ async def test_discard_after_a_refused_overlapping_admission_settles_the_turn(
     assert first == 'session_busy'
     client = service.peer_clients[('linked', 'reviewer')]
     assert client._receipt(identity.task_id, 1)['run_id'] == run_id  # the receipt Discard saved
-    assert driver.get_task(db, identity)['status'] == 'deferred'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
     assert gateway.adapter._run_statuses == {}  # the member refused it: nothing runs there
 
     discarded = await call(gateway.owner, 'groups.discard', **control)
     assert isinstance(discarded, dict) and discarded['discarded'], discarded
-    assert driver.get_task(db, identity)['status'] == 'cancelled'
+    assert driver.get_task(db, identity, placement='profile')['status'] == 'cancelled'
     route = service.peer_routes[('linked', 'reviewer')]
-    task = driver.get_task(db, identity)
+    task = driver.get_task(db, identity, placement='profile')
     late = build_member_dispatch(
         binding=service.bindings()[0], route=route, room_id='linked', task_id=identity.task_id,
         target_profile='default', execution_generation=1, source_event_seq=task['payload']['source_event_seq'],
@@ -92,7 +92,7 @@ async def test_disband_after_a_refused_overlapping_admission_finishes(gateway, m
     admit = api_server_runs._admit_run_to_authority
 
     async def refuse(*_a, **_kw):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
 
     async def discard_then_refuse(adapter, launch, run_id, *args):
         assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
@@ -102,8 +102,8 @@ async def test_disband_after_a_refused_overlapping_admission_finishes(gateway, m
     _member_admits_through_its_authority(gateway, monkeypatch, discard_then_refuse)
     assert await call(gateway.owner, 'groups.retry', **control) == 'peer_unreachable'
     assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id='linked')
-    assert driver.list_tasks(db, room_id='linked') == [] or all(
-        t['status'] == 'cancelled' for t in driver.list_tasks(db, room_id='linked'))
+    assert driver.list_tasks(db, placement='profile', room_id='linked') == [] or all(
+        t['status'] == 'cancelled' for t in driver.list_tasks(db, placement='profile', room_id='linked'))
     assert gateway.adapter._run_statuses == {}
 
 
@@ -116,7 +116,7 @@ async def test_retry_checks_the_saved_run_before_trusting_it(gateway, monkeypatc
     admit = api_server_runs._admit_run_to_authority
 
     async def refuse(*_a, **_kw):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
 
     with monkeypatch.context() as overlap:
         async def discard_then_refuse(adapter, launch, run_id, *args):
@@ -133,7 +133,8 @@ async def test_retry_checks_the_saved_run_before_trusting_it(gateway, monkeypatc
     if case == 'restarted_home':
         # A restarted home builds a new client, with no group chat scope bound until it's first used.
         client = service.peer_clients[key] = PeerRunsHTTPClient(
-            base_url=client.base_url, api_key='', receipt_db_path=client.receipt_db_path)
+            base_url=client.base_url, api_key='', receipt_store=client.receipt_store,
+            receipt_placement=client.receipt_placement)
     if case == 'untyped_404':
         async def no_route(*_a, **_kw):
             return web.Response(status=404, text='Not Found')
@@ -148,5 +149,5 @@ async def test_retry_checks_the_saved_run_before_trusting_it(gateway, monkeypatc
     new = client._receipt(identity.task_id, 1)['run_id']
     assert new != saved
     assert list(gateway.adapter._run_statuses) == [new]
-    task = driver.get_task(db, identity)
+    task = driver.get_task(db, identity, placement='profile')
     assert task['execution_generation'] == 1 and task['status'] == 'indeterminate'

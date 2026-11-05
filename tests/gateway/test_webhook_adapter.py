@@ -910,34 +910,29 @@ class TestCrossPlatformDeliveryMirror:
 
     @staticmethod
     def _seed_dm(home, sid, chat):
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=home / "state.db")
-        db.create_session(sid, source="telegram")
-        db._conn.execute("UPDATE sessions SET session_key=?, chat_id=?, user_id=? WHERE id=?",
-                         (f"agent:main:telegram:dm:{chat}", chat, chat, sid))
-        db._conn.commit()
-        db.close()
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
+        with open_persistence(profile_scope(home=home)) as store:
+            seed_session(store, sid, "telegram", session_key=f"agent:main:telegram:dm:{chat}", chat_id=chat,
+                         user_id=chat)
 
     @staticmethod
     def _transcript(home, sid):
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=home / "state.db")
-        rows = db._conn.execute("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)).fetchall()
-        db.close()
-        return [(r[0], r[1]) for r in rows]
+        from persistence.conversation.messages import TranscriptRead, TranscriptView
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import transcript_rows
+        with open_persistence(profile_scope(home=home)) as store:
+            rows = transcript_rows(store, sid, TranscriptRead(view=TranscriptView.ALL))
+        return [(r["role"], r["content"]) for r in rows]
 
     @pytest.fixture
     def homes(self, tmp_path, monkeypatch):
         from pathlib import Path
-        import hermes_state
         from hermes_cli.profiles import get_profile_dir
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(default_home))
-        # The hermetic conftest pins DEFAULT_DB_PATH when hermes_state is already imported; un-pin it so
-        # state.db resolves from the active (profile-scoped) home at call time, as in production.
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
         work_home = get_profile_dir("work")
         work_home.mkdir(parents=True)
         # A DM chat_id is the user's id on every bot, so both profiles hold a session for it.

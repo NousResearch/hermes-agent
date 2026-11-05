@@ -24,6 +24,9 @@ from gateway.shutdown_flush import (
     recover_gateway_pending,
     recover_pending_to_db,
 )
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -39,9 +42,10 @@ def flush_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def make_store(tmp_path):
-    """Build a real ``SessionStore`` whose transcript writes go to *db*. It goes through the
-    constructor, so new store state does not break these tests."""
+def make_store(tmp_path, monkeypatch):
+    """Build a real ``SessionStore`` whose transcript writes go to *db*: a fake pinned through ``_beside``,
+    a storage handle through the store's own handle on that home. It goes through the constructor, so new
+    store state does not break these tests."""
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
 
@@ -49,20 +53,45 @@ def make_store(tmp_path):
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
         store._loaded = True
-        store._db = db
+        if isinstance(db, MagicMock) or not hasattr(db, "scope"):
+            store._db = db
+            store._persistence_beside = _beside
+        else:
+            monkeypatch.setenv("HERMES_HOME", str(db.scope.profile_dir))
         return store
 
     return build
 
 
+def _beside(db):
+    """The storage handle over a fake store: ``messages.append`` lands on its ``append_message`` as the live
+    writer's row, ``search.rebuild_search_index`` on its ``rebuild_fts``."""
+    from gateway.session_transcript import transcript_append_kwargs
+    fields = transcript_append_kwargs("", {}).keys() - {"session_id"}
+    return SimpleNamespace(
+        capabilities=SimpleNamespace(full_text_search=hasattr(db, "rebuild_fts")),
+        search=SimpleNamespace(rebuild_search_index=lambda: db.rebuild_fts()),
+        messages=SimpleNamespace(append=lambda sid, message: db.append_message(
+            session_id=sid, **{k: getattr(message, k) for k in fields})),
+        close=lambda: None)
+
+
 @pytest.fixture
 def boot_db(monkeypatch):
-    """Make boot recovery's default state.db the given handle."""
-    import hermes_state_registry
+    """Make boot recovery's default store the given one: a fake through ``_beside``, a storage handle through
+    another handle on its home."""
+    import persistence_assembly
+
+    real_open = persistence_assembly.open_persistence
 
     def use(db):
-        monkeypatch.setattr(hermes_state_registry, "acquire", lambda: db)
-        monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda _db: None)
+        if isinstance(db, MagicMock) or not hasattr(db, "scope"):
+            def opened(_scope, eager=False):
+                return _beside(db)
+        else:
+            def opened(_scope, eager=False):
+                return real_open(db.scope, eager=eager)
+        monkeypatch.setattr(persistence_assembly, "open_persistence", opened)
 
     return use
 
@@ -119,7 +148,7 @@ def _fail_unlink_for(monkeypatch, name: str) -> None:
 
 
 def test_replays_in_drop_order_not_file_name_order(flush_dir):
-    """SessionDB restores by AUTOINCREMENT id, so append order IS the order the user sees
+    """The store restores by AUTOINCREMENT id, so append order IS the order the user sees
     after recovery. Production names are ``pending-<uuid4>.json``; these names sort opposite
     to drop order, and a burst inside one second shares ``ts``, so ``seq`` breaks the tie."""
     _write_spool(flush_dir, "pending-zzz.json", "sess-1",
@@ -130,7 +159,7 @@ def test_replays_in_drop_order_not_file_name_order(flush_dir):
                  {"role": "user", "content": "third"}, ts=101, seq=2)
 
     mock_db = MagicMock()
-    assert recover_pending_to_db(mock_db) == 3
+    assert recover_pending_to_db(_beside(mock_db)) == 3
     assert _contents(mock_db) == ["first", "second", "third"]
 
 
@@ -143,7 +172,7 @@ def test_an_out_of_range_ordering_field_does_not_abort_recovery(flush_dir):
                  {"role": "user", "content": "valid"}, ts=100, seq=1)
 
     mock_db = MagicMock()
-    assert recover_pending_to_db(mock_db) == 2
+    assert recover_pending_to_db(_beside(mock_db)) == 2
     assert sorted(_contents(mock_db)) == ["huge ts", "valid"]
 
 
@@ -187,7 +216,7 @@ def test_a_replayed_row_is_the_row_the_live_writer_writes(flush_dir, make_store)
     _write_spool(flush_dir, "pending-aaa.json", "sess-1", user, ts=999, seq=2)
 
     recovery_db, live_db = MagicMock(), MagicMock()
-    assert recover_pending_to_db(recovery_db) == 3
+    assert recover_pending_to_db(_beside(recovery_db)) == 3
     store = make_store(live_db)
     for message in (assistant, tool, user):
         store._append_transcript_message("sess-1", message)
@@ -224,7 +253,7 @@ def test_a_failed_replay_holds_back_that_sessions_later_messages_only(flush_dir,
     mock_db.append_message.side_effect = append_message
 
     with caplog.at_level("INFO", logger="gateway.shutdown_flush"):
-        assert recover_pending_to_db(mock_db) == 1
+        assert recover_pending_to_db(_beside(mock_db)) == 1
 
     assert _contents(mock_db) == ["first", "other-session"]
     assert first.exists() and second.exists()
@@ -278,11 +307,9 @@ def test_live_write_waits_while_held_back_files_still_fail_to_drain(flush_dir, m
 def test_a_poisoned_spool_row_does_not_stop_later_live_rows(flush_dir, tmp_path, make_store, boot_db):
     """A spooled field sqlite cannot bind used to fail on every replay. With live writes waiting
     behind the spool, the session then stopped persisting for good, across restarts too."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("sess-1", source="telegram")
+        seed_session(db, "sess-1", "telegram")
         _write_spool(flush_dir, "pending-bbb.json", "sess-1",
                      {"role": "tool", "content": "result", "tool_call_id": {"bad": 1}}, ts=100, seq=0)
         _write_spool(flush_dir, "pending-aaa.json", "sess-1",
@@ -296,7 +323,7 @@ def test_a_poisoned_spool_row_does_not_stop_later_live_rows(flush_dir, tmp_path,
         assert _boot(store) == 3
         store.append_to_transcript("sess-1", {"role": "user", "content": "live"})
 
-        assert [m["content"] for m in db.get_messages("sess-1")] == ["result", "older", "big id", "live"]
+        assert [m["content"] for m in transcript_rows(db, "sess-1")] == ["result", "older", "big id", "live"]
         assert not list(flush_dir.iterdir())
         assert not store._dirty_transcripts
     finally:
@@ -343,10 +370,16 @@ def test_only_errors_about_the_rows_own_values_are_rejections():
     assert not is_row_rejection(sqlite3.OperationalError("database is locked"))
     assert not is_row_rejection(sqlite3.IntegrityError("FOREIGN KEY constraint failed"))
     assert not is_row_rejection(sqlite3.DatabaseError("database disk image is malformed"))
+    from persistence.core.errors import PermanentStoreError
+    for cause, rejected in ((sqlite3.ProgrammingError("Error binding parameter 1: type 'dict' is not supported"), True),
+                            (sqlite3.OperationalError("database is locked"), False)):
+        wrapped = PermanentStoreError(str(cause))  # the storage interface raises it chained from the sqlite error
+        wrapped.__cause__ = cause
+        assert is_row_rejection(wrapped) is rejected
 
 
 def test_transient_no_more_rows_error_keeps_the_row_for_retry(flush_dir, make_store, boot_db):
-    """SessionDB retries 'no more rows available' as WAL contention and re-raises it unchanged once
+    """The store retries 'no more rows available' as WAL contention and re-raises it unchanged once
     its patience runs out. The row itself is valid, so at boot and in the live drain it must stay on
     disk and be written once the contention clears, not be quarantined."""
     transient = sqlite3.InterfaceError("no more rows available")

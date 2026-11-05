@@ -102,18 +102,17 @@ async def test_session_create_selects_the_posture_for_its_named_folder(project, 
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {**FOCUS, 'model': {'default': 'm'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     try:
         authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='posture')
         actor = SessionActor('owner', str(tmp_path), frozenset({'session:create', 'session:read'}), 'socket')
         ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'cli', 'cwd': str(project)})
-        policy = local_receipt(store._db, ref.session_id)['policy']
+        policy = store.persistence.bindings.receipt(ref.session_id).policy
     finally:
-        store._db.close()
+        store.close_all_db_handles()
     assert policy['coding_posture'] is True and policy['toolsets'] == ['coding']
 
 
@@ -125,7 +124,8 @@ def test_a_following_session_takes_a_profile_coding_context_change(project, tmp_
     config = {**FOCUS, 'model': {'default': 'm'}}
     (home / 'config.yaml').write_text(json.dumps(config))
     policy = create({'source': 'cli', 'cwd': str(project), 'follow_profile_config': True}, config)
-    authority = SimpleNamespace(db=SimpleNamespace(db_path=str(home / 'state.db')))
+    from persistence_assembly import profile_scope
+    authority = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=home)))
     assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('coding',)
     (home / 'config.yaml').write_text(json.dumps({**config, 'agent': {'coding_context': 'off'}}))
     assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('terminal',)

@@ -27,7 +27,7 @@ async def test_disband_spaced_identifier_revokes_held_grant(gateway, monkeypatch
     request = _surface(gateway, monkeypatch, surface)
     result = await request('groups.disband', room_id=' linked ')
     assert 'tombstone' in result, result
-    assert hosted_rooms.held_room_grant_revokes(gateway.db.db_path, room_id='linked') == []
+    assert hosted_rooms.held_room_grant_revokes(gateway.db, placement='profile', room_id='linked') == []
     assert await _grant_error(url, held) == 'room_reauthorization_required'
     assert (await request('groups.disband', room_id=' linked '))['tombstone']['idempotent']
 
@@ -73,7 +73,8 @@ async def test_disband_refusals_are_typed_and_retryable(gateway, monkeypatch, li
             'room_disbanding_retry': 'The group chat is already disbanding; retry deletion.',
             'peer_revoke_unsupported': 'The member cannot revoke its group chat grant; retry after upgrading it.',
         }[refusal]
-        assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
+        assert hosted_rooms.room_state(
+            service.store, placement=service.placement, room_id='linked').get('disbanded_at') is None
         assert ('linked', 'reviewer') in service.peer_routes
     finally:
         service.peer_clients['linked', 'reviewer'] = client

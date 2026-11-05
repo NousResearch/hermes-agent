@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles
+
 
 def test_shared_approval_outlives_viewer_and_bypasses_fifo(tmp_path):
     repo = Path(__file__).resolve().parents[2]

@@ -22,7 +22,7 @@ async def probe(peer):
     from gateway.platforms.webhook import WebhookAdapter
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state_runtime import list_session_admissions
+    from tests.fixtures.storage_holder import raw_holder
     from tests.waiting import async_wait_until
 
     runner = GatewayRunner()
@@ -41,25 +41,25 @@ async def probe(peer):
         'X-Hub-Signature-256': 'sha256=' + hmac.new(b'owned-hook-secret', body, hashlib.sha256).hexdigest()}
     def rows():
         return [row for sid in authority.sessions for row in
-                list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+                authority.persistence.admissions.list(session_id=sid, pending_only=False)]
     try:
         async with aiohttp.ClientSession() as client:
             denied = await client.post(url, data=body, headers={**headers, 'X-Hub-Signature-256': 'sha256=bad'})
             assert denied.status == 401 and not rows()
-            authority.db._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_ingress BEFORE INSERT ON session_admissions BEGIN SELECT RAISE(ABORT, 'owned storage failure'); END"))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_ingress BEFORE INSERT ON session_admissions BEGIN SELECT RAISE(ABORT, 'owned storage failure'); END"))
             failed = await client.post(url, data=body, headers=headers)
             assert failed.status == 503, (failed.status, await failed.text())
             assert not rows() and not peer.requests
-            authority.db._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_ingress'))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_ingress'))
             accepted = await client.post(url, data=body, headers=headers)
             assert accepted.status == 202, (accepted.status, await accepted.text())
-            assert len(rows()) == 1 and rows()[0]['request_id'] == 'stable-provider-id'
+            assert len(rows()) == 1 and rows()[0].request_id == 'stable-provider-id'
             assert await asyncio.to_thread(peer.blocked.wait, 10)
             duplicate = await client.post(url, data=body, headers=headers)
             assert duplicate.status in (200, 202), await duplicate.text()
             assert len(rows()) == 1
             peer.release.set()
-            await async_wait_until(lambda: rows()[0]['status'] == 'terminal', timeout=25,
+            await async_wait_until(lambda: rows()[0].status == 'terminal', timeout=25,
                                    what='the webhook admission to settle')
             # Lose the process-local optimization: durable identity still suppresses replay.
             adapter._seen_deliveries.clear()
@@ -68,7 +68,7 @@ async def probe(peer):
             assert len(rows()) == 1 and len(peer.requests) == 1
             await async_wait_until(lambda: not adapter._background_tasks, timeout=5,
                                    what='the webhook background tasks to finish')
-            assert authority.db.get_session(rows()[0]['target_session_id'])['ended_at'] is not None
+            assert authority.persistence.sessions.get(rows()[0].target_session_id).ended_at is not None
             Path(os.environ['HERMES_HOME'], 'webhook-receipt.json').write_text(json.dumps({
                 'failed_status': failed.status, 'retry_status': accepted.status,
                 'admissions': len(rows()), 'inferences': len(peer.requests), 'signature_denied': denied.status}))

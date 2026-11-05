@@ -11,7 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 ROWS = {
     'cron_job1_20261001_120000': ('cron', {}),
@@ -32,13 +35,12 @@ async def _connect(tmp_path, monkeypatch, sid, **identity):
     from gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'm1', 'provider': 'openrouter'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     source, columns = ROWS[sid]
-    db.create_session(sid, source=source, model='m-old')
-    db.append_message(sid, role='user', content='q')
-    db.append_message(sid, role='assistant', content='a')
+    seed_session(db, sid, source, model='m-old')
+    seed_messages(db, sid, {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'a'})
     for column, value in columns.items():
-        db._write_sql(f'UPDATE sessions SET {column}=? WHERE id=?', (value, sid))
+        raw_holder(db)._write_sql(f'UPDATE sessions SET {column}=? WHERE id=?', (value, sid))
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _adapter_for_source=lambda source: None, _cached_agent_for=lambda route: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='i')
@@ -56,9 +58,9 @@ async def test_old_stored_history_opens_read_only_for_its_owner(tmp_path, monkey
     opened = await conn.resume(ref, {})
 
     assert [m['content'] for m in opened['messages']] == ['q', 'a']
-    with pytest.raises(RuntimeStoreError, match='session_read_only'):
+    with pytest.raises(AuthorityRefusal, match='session_read_only'):
         await conn.submit(ref, {'text': 'more', 'submission_id': 's1'})
-    assert conn.authority.db.get_session(sid)['message_count'] == 2
+    assert session_row(conn.authority.persistence, sid)['message_count'] == 2
 
 
 @pytest.mark.asyncio
@@ -67,25 +69,25 @@ async def test_a_caller_that_is_not_the_owner_still_finds_nothing(tmp_path, monk
     from gateway.session_contract import SessionActor
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
     login = SessionActor('basic:alice', ref.profile_id, frozenset({'session:read'}), 'web-socket')
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         conn.authority.authorize(login, ref, 'session:read')
     assert ref.session_id not in conn.authority.sessions
     await conn.resume(ref, {})
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         conn.authority.authorize(login, ref, 'session:read')
 
 
 @pytest.mark.asyncio
 async def test_the_owner_deletes_a_completed_subagent_history(tmp_path, monkeypatch):
     conn, ref = await _connect(tmp_path, monkeypatch, 'sub-1')
-    row = conn.authority.db.get_session('sub-1')
+    row = session_row(conn.authority.persistence, 'sub-1')
     await conn.mutate(ref, {'session_id': 'sub-1', 'request_id': 'delete-1', 'expected_revision': row['runtime_revision'],
                             'expected_generation': row['runtime_generation'], 'operation': 'delete', 'payload': {}})
-    assert conn.authority.db.get_session('sub-1') is None
+    assert session_row(conn.authority.persistence, 'sub-1') is None
 
 
 async def _mutate(conn, ref, request_id, operation, payload):
-    row = conn.authority.db.get_session(ref.session_id)
+    row = session_row(conn.authority.persistence, ref.session_id)
     return await conn.mutate(ref, {'session_id': ref.session_id, 'request_id': request_id, 'operation': operation,
                                    'payload': payload, 'expected_revision': row['runtime_revision'],
                                    'expected_generation': row['runtime_generation']})
@@ -97,10 +99,10 @@ async def test_the_owner_archives_unarchives_and_pins_old_stored_history(tmp_pat
     conversation answered ``session_superseded``."""
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
     await _mutate(conn, ref, 'archive', 'archive', {'archived': True})
-    assert conn.authority.db.get_session(ref.session_id)['archived'] == 1
+    assert session_row(conn.authority.persistence, ref.session_id)['archived'] == 1
     await _mutate(conn, ref, 'unarchive', 'archive', {'archived': False})
     await _mutate(conn, ref, 'pin', 'sidebar', {'pinned': True})
-    row = conn.authority.db.get_session(ref.session_id)
+    row = session_row(conn.authority.persistence, ref.session_id)
     assert (row['archived'], row['pinned']) == (0, 1)
 
 
@@ -108,32 +110,32 @@ async def test_the_owner_archives_unarchives_and_pins_old_stored_history(tmp_pat
 async def test_a_stored_history_with_child_sessions_is_not_deleted(tmp_path, monkeypatch):
     """The delete took the run's delegate child with it and detached any other child, unseen."""
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
-    db = conn.authority.db
-    db.create_session('sub-child', source='subagent', model='m-old')
-    db._write_sql('UPDATE sessions SET parent_session_id=?, model_config=? WHERE id=?',
+    db = conn.authority.persistence
+    seed_session(db, 'sub-child', 'subagent', model='m-old')
+    raw_holder(db)._write_sql('UPDATE sessions SET parent_session_id=?, model_config=? WHERE id=?',
                   (ref.session_id, json.dumps({'_delegate_from': ref.session_id}), 'sub-child'))
-    with pytest.raises(RuntimeStoreError, match='session_has_children'):
+    with pytest.raises(AuthorityRefusal, match='session_has_children'):
         await _mutate(conn, ref, 'delete', 'delete', {})
-    assert db.get_session('sub-child')['parent_session_id'] == ref.session_id
+    assert session_row(db, 'sub-child')['parent_session_id'] == ref.session_id
 
 
 @pytest.mark.asyncio
 async def test_a_childless_continuation_whose_chain_has_a_delegate_is_not_deleted(tmp_path, monkeypatch):
     """The delete walks back to the compression parent and took that parent's delegate child too."""
     conn, root = await _connect(tmp_path, monkeypatch, 'api-1')
-    db = conn.authority.db
-    db._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root.session_id,))
-    db.create_session('api-1b', source='api_server', model='m-old', parent_session_id=root.session_id)
-    db.create_session('sub-child', source='subagent', model='m-old')
-    db._write_sql('UPDATE sessions SET session_key=?, chat_id=? WHERE id=?',
+    db = conn.authority.persistence
+    raw_holder(db)._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root.session_id,))
+    seed_session(db, 'api-1b', 'api_server', model='m-old', parent_session_id=root.session_id)
+    seed_session(db, 'sub-child', 'subagent', model='m-old')
+    raw_holder(db)._write_sql('UPDATE sessions SET session_key=?, chat_id=? WHERE id=?',
                   (ROWS['api-1'][1]['session_key'], 'api-1', 'api-1b'))
-    db._write_sql('UPDATE sessions SET parent_session_id=?, model_config=? WHERE id=?',
+    raw_holder(db)._write_sql('UPDATE sessions SET parent_session_id=?, model_config=? WHERE id=?',
                   (root.session_id, json.dumps({'_delegate_from': root.session_id}), 'sub-child'))
     tip = SessionRef(root.profile_id, 'api-1b')
     await conn.resume(tip, {})
-    with pytest.raises(RuntimeStoreError, match='session_has_children'):
+    with pytest.raises(AuthorityRefusal, match='session_has_children'):
         await _mutate(conn, tip, 'delete', 'delete', {})
-    assert db.get_session('sub-child')['parent_session_id'] == root.session_id
+    assert session_row(db, 'sub-child')['parent_session_id'] == root.session_id
 
 
 @pytest.mark.asyncio
@@ -203,13 +205,13 @@ async def test_a_compressed_cron_history_deletes_as_one_chat(tmp_path, monkeypat
     """Deleting one segment of an old cron run's compression chain removed that segment only: the
     other came back as its own chat, or stayed as a detached one."""
     conn, ref = await _connect(tmp_path, monkeypatch, 'cron_job1_20261001_120000')
-    db, root = conn.authority.db, ref.session_id
-    db._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root,))
-    db.create_session('cron-tip', source='cron', model='m-old', parent_session_id=root)
+    db, root = conn.authority.persistence, ref.session_id
+    raw_holder(db)._write_sql("UPDATE sessions SET end_reason='compression', ended_at=1 WHERE id=?", (root,))
+    seed_session(db, 'cron-tip', 'cron', model='m-old', parent_session_id=root)
     target = SessionRef(ref.profile_id, 'cron-tip' if selected == 'tip' else root)
     await conn.resume(target, {})
     await _mutate(conn, target, 'delete', 'delete', {})
-    assert [sid for sid in (root, 'cron-tip') if db.get_session(sid) is not None] == []
+    assert [sid for sid in (root, 'cron-tip') if session_row(db, sid) is not None] == []
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from persistence_assembly import store_location
+from tests.fixtures.storage_seed import seed_messages
 
 
 @pytest_asyncio.fixture
@@ -28,7 +30,7 @@ async def owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.setattr(run, '_hermes_home', home)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     runner._adapters_for_profile = lambda profile: runner.adapters
@@ -175,7 +177,6 @@ async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner
     unverified. The wait holds a thread of the runner's own unbounded pool instead."""
     import asyncio
     import concurrent.futures
-    from pathlib import Path
     from types import MethodType
     import cron.scheduler
     from cron.jobs import create_job, get_job
@@ -191,7 +192,7 @@ async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner
         return submit(job, **kwargs) if current_execution() is None else (True, '# out', 'ran', None)
     monkeypatch.setattr(cron.scheduler, 'run_job', run_job)
     # The fire is submitted to the owner bound to the home of the authority's store (bind_owner).
-    home = Path(owner.authority.db.db_path).resolve().parent
+    home = store_location(owner.authority.persistence.scope).resolve().parent
     (home / 'config.yaml').write_text((owner.home / 'config.yaml').read_text())
     monkeypatch.setenv('HERMES_HOME', str(home))
     ids = [create_job('ping', 'every 2h', name=name)['id'] for name in ('one', 'two')]
@@ -266,7 +267,7 @@ async def test_context_breakdown_is_reused_until_the_transcript_moves(owner, mon
     assert computed == [0] and again == first
     from gateway.session_tui_reads import _stored_id
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
-    owner.authority.db.append_message(stored, 'user', 'hello')
+    seed_messages(owner.authority.persistence, stored, {'role': 'user', 'content': 'hello'})
     moved = await owner.call('session.context_breakdown', session_id=sid)
     assert computed == [0, 1] and moved['estimated_total'] == 1
     await owner.call('session.context_breakdown', session_id=sid)
@@ -292,10 +293,10 @@ async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypa
     monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
     from gateway.session_tui_reads import _stored_id
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
-    db = owner.authority.db
-    row_id = db.append_message(stored, 'user', 'explain @file:big.py')
+    db = owner.authority.persistence
+    [row_id] = seed_messages(db, stored, {'role': 'user', 'content': 'explain @file:big.py'})
     before = await owner.call('session.context_breakdown', session_id=sid)
     expanded = 'explain @file:big.py\n' + 'x' * 20000
-    assert db.set_user_message_content(stored, row_id, expanded) == 1
+    assert db.messages.set_user_message_content(stored, row_id, expanded) is True
     after = await owner.call('session.context_breakdown', session_id=sid)
     assert after['estimated_total'] == len(expanded) > before['estimated_total']

@@ -1,7 +1,7 @@
 """The existing run status poll reports only its admission's live tool progress."""
 import pytest
 
-from hermes_state_runtime import claim_session_input, settle_session_input
+from gateway.session_authority import admission_row
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _OTHER_AUTH_HEADERS, _runs_client
 
 
@@ -17,7 +17,7 @@ async def test_run_progress_is_scoped_to_the_started_admission(api, owner):
                                          headers={**_AUTH_HEADERS, 'Idempotency-Key': text})
             assert accepted.status == 202, await accepted.text()
             paths.append('/v1/runs/' + (await accepted.json())['run_id'])
-        row = claim_session_input(owner.db, epoch=owner.epoch, session_id='api-session')
+        row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id='api-session'))
         generation = row['generation']
         owner.executing['api-session'] = generation
 
@@ -39,10 +39,10 @@ async def test_run_progress_is_scoped_to_the_started_admission(api, owner):
         completed = await poll()
         assert 'tool' not in completed and completed['progress_at'] >= active['progress_at']
         owner.publish_execution('api-session', generation, 'tool.start', {'tool_id': 'two', 'name': 'terminal'})
-        settle_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
-                             generation=generation, outcome='interrupted')
+        owner.persistence.admissions.settle(epoch=owner.epoch, admission_id=row['admission_id'],
+                                            generation=generation, outcome='interrupted')
         assert 'progress_at' not in await poll()
-        follower = claim_session_input(owner.db, epoch=owner.epoch, session_id='api-session')
+        follower = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id='api-session'))
         assert follower['generation'] != generation
         assert 'progress_at' not in await poll(paths[1])
     finally:

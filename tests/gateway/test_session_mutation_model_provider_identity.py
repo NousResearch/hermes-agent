@@ -5,6 +5,8 @@ from dataclasses import asdict
 import json
 from types import SimpleNamespace
 
+from persistence_assembly import open_persistence, profile_scope
+
 import pytest
 
 
@@ -13,13 +15,12 @@ async def _pick(tmp_path, monkeypatch, before, after, provider):
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, bind_launch_key, restore_policy
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
-    from hermes_state import SessionDB
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     (tmp_path / 'config.yaml').write_text(json.dumps(before))
     private = {}
     policy = build_policy({'cwd': str(tmp_path), 'model': 'original'}, deepcopy(before), private_secrets=private)
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='review', epoch=1, profile_id='review', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='review', epoch=1, profile_id='review', persistence=handle)
         runner = SimpleNamespace(session_authority=authority)
         authority.runner = runner
         policy = bind_launch_key(authority, 'sid', policy, None, config_secrets=private)

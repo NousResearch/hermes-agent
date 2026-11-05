@@ -1490,7 +1490,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self, adapter, source: SessionSource, transcripts: list[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
-        for tx in transcripts:
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        for tx in transcripts if automatic_notices_allowed(source) else ():
             try:
                 await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
             except Exception as echo_exc:
@@ -1687,7 +1688,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         expanded, refusal = await inbound_references(self, source, session_key, message_text)
         if refusal is None:
             return expanded
-        _adapter = self._delivery_adapter_for(source)
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        _adapter = self._delivery_adapter_for(source) if automatic_notices_allowed(source) else None
         if _adapter:
             await _adapter.send(source.chat_id, refusal)
         return None

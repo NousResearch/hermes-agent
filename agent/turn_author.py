@@ -78,8 +78,6 @@ def parse_turn_author(raw: Any) -> Optional[dict[str, Any]]:
         hops = raw.get("hops")
         if isinstance(hops, int) and not isinstance(hops, bool) and 0 < hops <= _MAX_CHAIN_HOPS:
             author["hops"] = hops
-        if raw.get("expects_reply") is False:
-            author["expects_reply"] = False
         origin = _clean_text(raw.get("origin"))
         if origin and author["id"] and author["id"].startswith("bot:") and "/" not in author["id"]:
             author["id"] = _clean_text(bot_author_id(author["id"][len("bot:"):], origin))

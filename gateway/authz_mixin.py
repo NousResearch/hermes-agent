@@ -723,6 +723,12 @@ class GatewayAuthorizationMixin:
                         source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
         return allowed
 
+    def _note_bot_reply(self, source) -> None:
+        """This turn's reply to a bot peer went out: its next message answers an answer."""
+        if getattr(source, "is_bot", False):
+            self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
+                self._bot_loop_guard_conversation(source), str(source.user_id or "")))
+
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.
 

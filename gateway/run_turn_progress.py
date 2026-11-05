@@ -935,7 +935,10 @@ class GatewayTurnProgressMixin:
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
+        from gateway.bot_peer_notices import automatic_notices_allowed
         ctx = self._ctx
+        if not automatic_notices_allowed(ctx.source):
+            return
         self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
@@ -989,7 +992,8 @@ class GatewayTurnProgressMixin:
             return
         # Lifecycle diagnostics (including provider fallback notices) are UI affordances for a
         # human caller. Sending them to a known bot peer can create a new inbound turn and a loop.
-        if getattr(ctx.source, "is_bot", False):
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(ctx.source):
             logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)

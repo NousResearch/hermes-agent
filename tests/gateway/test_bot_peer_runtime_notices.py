@@ -97,3 +97,43 @@ def test_status_and_notice_callbacks_stay_quiet_for_a_bot_peer():
     turn_runner._notice_callback_sync(SimpleNamespace(key="credits.low", text="Credits are low", level="warn"))
 
     turn_runner._schedule.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_expected", [True, None], ids=["addressed (DM / mention)", "unaddressed"])
+async def test_an_addressed_bot_may_still_end_the_exchange_in_silence(reply_expected):
+    """Greptile 4467193953: Telegram/Slack set reply_expected=True for a DM or mention, bots included;
+    the silence fallback would then be runtime text the peer answers."""
+    runner = _Runner()
+    response, silent, _ = await runner._hmwa_shape_agent_response(
+        {"final_response": "[SILENT]", "api_calls": 1, "messages": []}, _source(True), history=[],
+        session_entry=SimpleNamespace(session_id="s"), session_key=None, _quick_key=None, run_generation=0,
+        _run_start_session_id="s", _platform_name="telegram", _msg_start_time=0.0, reply_expected=reply_expected)
+    assert silent is True and response != _unexpected()
+    human, silent, _ = await runner._hmwa_shape_agent_response(
+        {"final_response": "[SILENT]", "api_calls": 1, "messages": []}, _source(False), history=[],
+        session_entry=SimpleNamespace(session_id="s"), session_key=None, _quick_key=None, run_generation=0,
+        _run_start_session_id="s", _platform_name="telegram", _msg_start_time=0.0, reply_expected=True)
+    assert silent is False and human == _unexpected()  # the human control keeps the visible fallback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_bot, sent", [(True, 0), (False, 1)], ids=["bot peer", "human control"])
+async def test_platform_notices_and_the_inactivity_warning_skip_a_bot_peer(is_bot, sent):
+    """Greptile 4467193888: the delegation-failure notice (``_deliver_platform_notice``) and the
+    inactivity warning sent straight to the adapter both go through the one bot-peer policy."""
+    from gateway.run import GatewayRunner
+
+    adapter = SimpleNamespace(send=AsyncMock(), emit_warning=AsyncMock(), config=None)
+    runner = object.__new__(GatewayRunner)
+    runner.config = None
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._thread_metadata_for_source = lambda source, anchor=None: None
+    source = _source(is_bot)
+
+    await GatewayRunner._deliver_platform_notice(runner, source, "⚠️ Subagent failed: timeout")
+    worker = SimpleNamespace(agent_warning=600, agent_timeout=1200)
+    await GatewayRunner._run_agent_inactivity_warning(runner, worker, source, None)
+
+    assert adapter.send.await_count == sent and adapter.emit_warning.await_count == sent
+

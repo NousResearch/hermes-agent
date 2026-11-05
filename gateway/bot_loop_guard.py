@@ -7,7 +7,7 @@ once ``max_events`` land inside ``window_seconds``. Settings: config.yaml ``gate
 The chain rules (``chain_admit``) end an exchange long before that budget: a human message starts a
 new chain; each bot message after it is one hop and ``max_hops`` caps them; a bot repeating the same
 text inside one chain is one hop, not a new ask; and with ``bot_replies_expect_reply`` false (the
-default) a bot answering the reply this bot just gave it is not answered again (#137027).
+default) a bot answering the reply this bot delivered to it is not answered again (#137027).
 """
 
 from __future__ import annotations
@@ -176,14 +176,24 @@ class BotLoopGuard:
             ask = (sender, hashlib.sha256(" ".join(str(text or "").split()).encode()).hexdigest())
             if ask in chain.asks:
                 return False, "duplicate"
-            if not settings.bot_replies_expect_reply and chain.last_trigger == sender:
+            if not settings.bot_replies_expect_reply and chain.replied_to == sender:
                 return False, "reply_to_reply"
             if chain.hops >= settings.max_hops:
                 return False, "max_hops"
             chain.hops += 1
             chain.asks.add(ask)
-            chain.last_trigger = sender
             return True, "ok"
+
+    def note_reply(self, conversation: Hashable, recipient: str) -> None:
+        """Record that this bot's reply to bot ``recipient`` went out. Only a delivered reply makes the
+        recipient's next message an answer to an answer: a message still waiting for its turn, or one
+        the turn chose to leave unanswered, does not."""
+        if not self._settings().enabled:
+            return
+        with self._lock:
+            chain = self._chains.get(conversation)
+            if chain is not None:
+                chain.replied_to = recipient
 
     def _sweep(self, now: float, settings: BotLoopGuardSettings) -> None:
         """Drop idle conversations at most once per window so memory stays bounded."""
@@ -201,10 +211,10 @@ class BotLoopGuard:
 
 class _Chain:
     """One bot-to-bot exchange since the last human message in a conversation."""
-    __slots__ = ("asks", "hops", "last_trigger", "updated")
+    __slots__ = ("asks", "hops", "replied_to", "updated")
 
     def __init__(self) -> None:
         self.hops = 0
         self.asks: set[tuple[str, str]] = set()
-        self.last_trigger: str = ""
+        self.replied_to: str = ""
         self.updated = 0.0

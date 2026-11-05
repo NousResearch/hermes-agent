@@ -1,4 +1,5 @@
-"""Bot-to-bot exchanges end (#137027): the gateway's chain rules and the Bot Mode hop cap.
+"""Bot-to-bot exchanges end (#137027): the messaging gateway's chain rules (``BotLoopGuard.chain_admit``).
+The Bot Mode hop cap is ``tests/agent/test_bot_chain.py``; the tool entry ``tests/tools/test_bot_mode_dm_chain.py``.
 
 Two Hermes gateways DMing each other on Mattermost ran 17 h because every inbound bot message
 produced an outbound one (runtime notices included) and nothing counted the exchange.
@@ -44,9 +45,20 @@ def test_a_bot_answering_this_bots_reply_starts_no_turn_by_default(clock):
     """The default reply rule: our answer to a bot needs no answer, so its answer to that ends it."""
     guard = _guard(clock)
     assert guard.chain_admit(CHAT, PEER, "what is 2+2?", is_bot=True) == (True, "ok")
+    guard.note_reply(CHAT, PEER)  # our "4" went out
     assert guard.chain_admit(CHAT, PEER, "thanks!", is_bot=True) == (False, "reply_to_reply")
     # Another bot in the same chat is a new ask, not a reply to our reply.
     assert guard.chain_admit(CHAT, "other_bot", "hello", is_bot=True) == (True, "ok")
+
+
+def test_a_second_ask_before_any_reply_is_not_a_reply(clock):
+    """Greptile 4467194010: admission is not an answer. A bot's follow-up while its first message waits
+    (or after a turn that stayed silent) is a new ask, still capped by max_hops."""
+    guard = _guard(clock, max_hops=3)
+    assert guard.chain_admit(CHAT, PEER, "question", is_bot=True) == (True, "ok")
+    assert guard.chain_admit(CHAT, PEER, "also this", is_bot=True) == (True, "ok")
+    guard.note_reply(CHAT, PEER)
+    assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
 
 
 def test_the_same_ask_repeated_inside_one_chain_is_one_hop(clock):
@@ -87,6 +99,7 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
 
     first = _event(PEER, "question", True)
     assert await runner._hm_admit_event(first) is not None
+    runner._note_bot_reply(first.source)  # the turn's reply was delivered
     # The session authority executes the admitted row through the same handler: not a second hop.
     token = executing_admission.set(True)
     try:
@@ -104,98 +117,3 @@ def test_bot_users_marks_a_peer_on_a_platform_without_a_bot_flag():
     assert not configured_bot_user(config, HUMAN)
     assert configured_bot_user(SimpleNamespace(extra={"bot_users": "a,peer_bot"}), "peer_bot")
     assert not configured_bot_user(SimpleNamespace(extra={}), "peer_bot")
-
-
-# --- Bot Mode message_agent hop cap --------------------------------------------------------------
-
-
-@pytest.fixture
-def bot_chain(monkeypatch):
-    from agent import bot_chain
-
-    monkeypatch.setattr(bot_chain, "_CHAINS", {})
-    monkeypatch.setattr(bot_chain, "_settings", lambda: BotLoopGuardSettings(max_hops=4))
-    return bot_chain
-
-
-def _agent(session_id):
-    return SimpleNamespace(session_id=session_id, _turn_author=None)
-
-
-def _turn(chain, agent, author=None, kind=None):
-    from agent.turn_author import parse_turn_author
-    agent._turn_author = parse_turn_author(author) if author else None
-    chain.on_turn_start(agent, agent._turn_author, kind)
-
-
-def test_message_agent_ping_pong_is_refused_past_max_hops_on_both_sides(bot_chain, monkeypatch):
-    """A -> B -> A -> B with the envelope's hop count: the send that would be hop 5 delivers nothing.
-    Replies stay reply-expecting here so only the cap ends the exchange."""
-    monkeypatch.setattr(bot_chain, "_settings", lambda: BotLoopGuardSettings(max_hops=4, bot_replies_expect_reply=True))
-    alpha, beta = _agent("alpha-chat"), _agent("beta-chat")
-    _turn(bot_chain, alpha, kind="internal_notification")  # the user's kick-off
-    sent = []
-    sender, receiver, envelope = alpha, beta, None
-    for n in range(1, 8):
-        if envelope is not None:
-            _turn(bot_chain, receiver, {"id": f"bot:{sender.session_id[:-5]}", "name": "x", "is_bot": True, **envelope})
-            sender, receiver = receiver, sender
-        refusal, envelope = bot_chain.admit_send(sender, receiver.session_id[:-5], str(n))
-        if refusal:
-            assert "max_hops" in refusal
-            break
-        sent.append(n)
-        envelope.setdefault("hops", 1)
-    assert sent == [1, 2, 3, 4]
-
-
-def test_the_hop_count_cannot_be_lowered_by_the_envelope(bot_chain):
-    """Each side counts its own bot turns: an envelope claiming hop 1 every time still hits the cap."""
-    beta = _agent("beta-chat")
-    allowed = []
-    for n in range(8):
-        _turn(bot_chain, beta, {"id": "bot:alpha", "name": "alpha", "is_bot": True})
-        allowed.append(bot_chain.admit_send(beta, "gamma", f"msg {n}")[0] is None)
-    assert allowed == [True, True, True, False, False, False, False, False]
-
-
-def test_reply_to_the_messaging_bot_is_notify_only_and_ends_the_exchange(bot_chain):
-    beta = _agent("beta-chat")
-    _turn(bot_chain, beta, {"id": "bot:alpha", "name": "alpha", "is_bot": True})
-    refusal, envelope = bot_chain.admit_send(beta, "@alpha", "2")
-    assert refusal is None and envelope["expects_reply"] is False
-
-    alpha = _agent("alpha-chat")
-    _turn(bot_chain, alpha, {"id": "bot:beta", "name": "beta", "is_bot": True, **envelope})
-    refusal, _ = bot_chain.admit_send(alpha, "beta", "3")
-    assert refusal and "needs no answer" in refusal
-    # A third teammate is a new ask, still under the cap.
-    assert bot_chain.admit_send(alpha, "gamma", "fyi")[0] is None
-
-
-def test_identical_ask_is_one_hop_and_a_person_resets_the_chain(bot_chain):
-    alpha = _agent("alpha-chat")
-    _turn(bot_chain, alpha, {"id": "bot:beta", "name": "beta", "is_bot": True})
-    assert bot_chain.admit_send(alpha, "gamma", "status?")[0] is None
-    assert "already sent" in bot_chain.admit_send(alpha, "gamma", " status? ")[0]
-
-    _turn(bot_chain, alpha)  # a person's message
-    assert bot_chain.admit_send(alpha, "gamma", "status?")[0] is None
-
-
-def test_message_agent_tool_refuses_past_the_cap_and_delivers_nothing(bot_chain, monkeypatch, tmp_path):
-    """Through the real tool entry: the refusal is the tool result and no transport is started."""
-    import tools.bot_mode_dm as dm
-    import tools.bot_mode_probe as probe
-
-    monkeypatch.setattr(dm, "_session_title", lambda agent: probe.BOT_CHAT_TITLE)
-    monkeypatch.setattr(probe, "is_bot_mode_managed", lambda home: True)
-    monkeypatch.setattr(dm, "_agent_home", lambda agent: str(tmp_path))
-    monkeypatch.setattr(dm, "_start_delivery", lambda *a, **k: pytest.fail("delivered past the cap"))
-    monkeypatch.setattr(dm, "_try_relay_delivery", lambda *a, **k: pytest.fail("delivered past the cap"))
-    monkeypatch.setattr("hermes_cli.observability.shared_metrics_signals.record_feature_used", lambda *a, **k: None)
-    agent = _agent("beta-chat")
-    bot_chain._CHAINS["beta-chat"] = {"hops": 4, "sent": 4, "asks": set(), "updated": 1e18}
-    agent._turn_author = {"id": "bot:alpha", "name": "alpha", "is_bot": True}
-    result = json.loads(dm.message_agent_tool(target="gamma", message="5", agent=agent))
-    assert "max_hops" in result["error"]

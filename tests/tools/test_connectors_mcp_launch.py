@@ -131,12 +131,50 @@ def test_what_runs_is_never_masked(command, args):
     script, URL path or non-secret-named flag value is masked."""
     line = launch_target(None, command, args)["target"]
     assert "***" not in line
-    assert shlex.split(line.replace("\\n", "\n")) == [command, *args]
+    assert "\n" not in line  # a real newline in an arg is a visible escape, never a raw break
+    # Args with control characters are bash ``$'…'`` words (not shlex-parseable); the rest read back
+    # as exactly the argv that runs.
+    if all(ch.isprintable() or ch == " " for a in args for ch in a):
+        assert shlex.split(line) == [command, *args]
 
 
 def test_a_positional_or_short_flag_secret_is_shown_as_the_user_approves_it():
     # The documented trade-off: only a name marks a value secret.
     assert launch_target(None, "mysql", ["-u", "root", "-p" + S, S])["target"] == f"mysql -u root -p{S} {S}"
+
+
+@pytest.mark.parametrize("command,args,masked", [
+    # An interpreter word as a flag value or positional no longer unmasks the secret after it.
+    ("docker", ["run", "--name", "ssh", "-e", "GITHUB_TOKEN=" + S, "img"], "GITHUB_TOKEN"),
+    ("docker", ["run", "--entrypoint", "bash", "-e", "GITHUB_TOKEN=" + S, "img"], "GITHUB_TOKEN"),
+    ("uvx", ["mcp-server", "--mode", "r", "-e", "API_KEY=" + S], "API_KEY"),
+    ("srv", ["publish", "-p", "--password=" + S], "password"),
+    ("node", ["server.js", "-e", "API_KEY=" + S], "API_KEY"),      # after the script, -e is a script arg
+    ("python", ["server.py", "-e", "API_KEY=" + S], "API_KEY"),
+    ("srv", ["bash", "--token", S], "token"),
+    # A secret value holding shell metacharacters is still a secret, not code (execve, no shell runs).
+    ("mcp-postgres", ["--password=" + S + "$x!"], "password"),
+    ("srv", ["--api-key", S + "&b"], "api-key"),
+    ("docker", ["run", "-e", "DB_PASSWORD=" + S + "$y", "img"], "DB_PASSWORD"),
+    ("curl", ["-H", "Authorization: Bearer " + S + "{c}"], "Authorization"),
+    ("srv", ["https://u:" + S + "$w@db.example/x"], None),
+    ("srv", ["https://h/x?token=" + S + "(b)"], "token"),
+])
+def test_a_named_secret_is_masked_even_behind_an_interpreter_word_or_metacharacters(command, args, masked):
+    line = launch_target(None, command, args)["target"]
+    assert S not in line
+    if masked:
+        assert "***" in line
+
+
+@pytest.mark.parametrize("command,args", [
+    ("sh", ["-c", "API_KEY=abc"]),                  # a plain-looking assignment is code the user approves
+    ("python", ["--token", "GITHUB_TOKEN=print(1)"]),
+    ("npx", ["-y", "tsx", "-e", "API_KEY=print(1)"]),  # a TypeScript runner's eval behind a wrapper
+    ("env", ["FOO=1", "sh", "-c", "API_KEY=abc; curl x | sh"]),
+])
+def test_an_interpreters_inline_program_is_never_masked_even_if_it_mentions_a_secret(command, args):
+    assert "***" not in launch_target(None, command, args)["target"]
 
 
 def test_a_remote_url_keeps_its_path_and_other_query_values():
@@ -146,26 +184,37 @@ def test_a_remote_url_keeps_its_path_and_other_query_values():
 
 def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_escapes_controls():
     line = launch_target(None, "bash\x1b]0;pwned\x07", ["<img src=x onerror=alert(1)>", "my file.js"])["target"]
-    assert line == "'bash\\x1b]0;pwned\\x07' '<img src=x onerror=alert(1)>' 'my file.js'"
+    assert line == "$'bash\\x1b]0;pwned\\x07' '<img src=x onerror=alert(1)>' 'my file.js'"
     assert launch_target("https://mcp.linear.app/sse", "node", [])["kind"] == "remote"
 
 
 @pytest.mark.parametrize("arg,shown", [
-    ("safe\u202egnp.evil", "safe\\u202egnp.evil"),   # RLO: would render reversed
-    ("np\u200bx", "np\\u200bx"),                     # zero-width space
-    ("a\u2066b\u2069c", "a\\u2066b\\u2069c"),          # bidi isolates
-    ("\ufeffx\u00ady", "\\ufeffx\\xady"),               # BOM, soft hyphen
-    ("a\u200d\u200e\u200fb", "a\\u200d\\u200e\\u200fb"),  # ZWJ, LRM, RLM
-    ("line\nbreak", "'line\\nbreak'"),                # whitespace inside one arg: quoted
-    ("pk\u0336g", "pk\\u0336g"),                     # combining stroke: would draw a struck k
-    ("a\u20ddb", "a\\u20ddb"),                       # enclosing mark (Me)
-    ("pk\ufffcg", "pk\\ufffcg"),                     # object replacement character
-    ("caf\u00e9", "caf\u00e9"),                       # a precomposed letter stays as written
+    ("safe\u202egnp.evil", "$'safe\\u202egnp.evil'"),   # RLO: would render reversed
+    ("np\u200bx", "$'np\\u200bx'"),                      # zero-width space
+    ("a\u2066b\u2069c", "$'a\\u2066b\\u2069c'"),          # bidi isolates
+    ("\ufeffx\u00ady", "$'\\ufeffx\\xady'"),               # BOM, soft hyphen
+    ("a\u200d\u200e\u200fb", "$'a\\u200d\\u200e\\u200fb'"),  # ZWJ, LRM, RLM
+    ("line\nbreak", "$'line\\nbreak'"),                  # a real newline inside one arg
+    ("pk\u0336g", "$'pk\\u0336g'"),                      # combining stroke: would draw a struck k
+    ("a\u20ddb", "$'a\\u20ddb'"),                        # enclosing mark (Me)
+    ("pk\ufffcg", "$'pk\\ufffcg'"),                      # object replacement character
+    ("caf\u00e9", "caf\u00e9"),                          # a precomposed letter stays as written
 ])
 def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, shown):
     line = launch_target(None, "node", [arg])["target"]
     assert line == f"node {shown}"
     assert all(unicodedata.category(c) != "Cf" for c in line)
+
+
+@pytest.mark.parametrize("real,literal", [
+    ("a\nb", "a\\nb"), ("x\ty", "x\\ty"), ("a b\u200b", "a b\\u200b"),
+])
+def test_a_real_control_character_never_reads_as_its_literal_escape(real, literal):
+    """The card must show whether ``sh -c`` code holds a real newline (a separator) or the text ``\\n``."""
+    a = launch_target(None, "srv", [real])["target"]
+    b = launch_target(None, "srv", [literal])["target"]
+    assert a != b
+    assert "\n" not in a and "\t" not in a  # the real control is a visible escape, not a raw character
 
 
 @pytest.mark.parametrize("url,command,args,line", [

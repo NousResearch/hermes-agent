@@ -445,6 +445,56 @@ def test_spilled_result_keeps_host_fallback_when_sandbox_creation_fails():
     assert messages[-1]["content"] == "host path"
 
 
+def test_small_result_never_starts_a_sandbox():
+    """Only a result that will spill may start the task's sandbox."""
+    agent = _make_agent()
+    messages: list = []
+    assistant_message = SimpleNamespace(
+        content="", tool_calls=[_mock_tool_call(call_id="small-result")],
+    )
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch("model_tools.handle_function_call", return_value="small"),
+        patch("agent.tool_executor.get_active_env", return_value=None),
+        patch("agent.tool_executor.ensure_task_env") as ensure,
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "docker-task")
+
+    ensure.assert_not_called()
+    assert messages[-1]["content"] == "small"
+
+
+def test_turn_budget_counts_multimodal_text_before_starting_a_sandbox():
+    """A part list's size is its text characters, not its number of parts."""
+    from agent import tool_executor
+    from tools.budget_config import BudgetConfig
+
+    sandbox = MagicMock()
+    batch = [{
+        "role": "tool",
+        "tool_call_id": "mm",
+        "content": [
+            {"type": "text", "text": "m" * 2_000},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }]
+    with (
+        patch.object(tool_executor, "get_active_env", return_value=None),
+        patch.object(tool_executor, "ensure_task_env", return_value=sandbox) as ensure,
+        patch.object(tool_executor, "enforce_turn_budget") as enforce,
+        patch.object(tool_executor.plugin_live_notes, "keep_after_turn_budget"),
+        patch.object(tool_executor, "sync_rewritten_tool_rows"),
+        patch.object(tool_executor, "record_tool_batch"),
+    ):
+        tool_executor._finalize_tool_batch(
+            MagicMock(), batch, "docker-task", 1, BudgetConfig(turn_budget=1_000),
+        )
+
+    ensure.assert_called_once_with("docker-task")
+    assert enforce.call_args.kwargs["env"] is sandbox
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

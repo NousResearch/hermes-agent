@@ -58,6 +58,7 @@ from agent.tool_dispatch_helpers import (
 from tools.terminal_tool_lifecycle import ensure_task_env, get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    _content_text_size,
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
@@ -1232,7 +1233,8 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     contents_before = [message.get("content") for message in batch]
     storage_env = _result_storage_env(
         effective_task_id,
-        needs_persistence=sum(len(message.get("content", "")) for message in batch) > budget.turn_budget,
+        needs_persistence=sum(_content_text_size(message.get("content")) for message in batch)
+        > budget.turn_budget,
     )
     enforce_turn_budget(batch, env=storage_env, config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)

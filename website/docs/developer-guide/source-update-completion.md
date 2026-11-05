@@ -89,6 +89,13 @@ store that refuses the terminal write prints `⚠ Update receipt not written` an
 child answers its parent with the correlated terminal record it finalized in memory, so the exit
 status stays 0; only a user action (local changes left in the stash) still exits 1.
 
+On Windows, dashboard cleanup allows a bounded grace period for an existing
+supervisor to replace a stopped backend. Recovery requires a fresh, verified
+process identity for the same install, home, backend kind and endpoint; an
+unrelated healthy listener is not recovery. The supervisor keeps ownership of
+launch arguments and environment. Missing or mismatched replacement evidence
+still leaves the backend unrecovered and makes the update fail.
+
 ## Parent lifecycle and failures
 
 The parent waits and propagates the child's exact nonzero result (a signal is

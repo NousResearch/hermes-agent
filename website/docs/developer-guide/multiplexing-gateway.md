@@ -167,6 +167,36 @@ accepts only a policy owned by the bound agent. The code-health rule HX014 block
 through relative imports; existing ones migrate when their function is next
 edited.
 
+### Shared-process state
+
+A hosted process serves many tenants' agents at once, so a module-level dict,
+list or set, an `lru_cache`, or a class attribute filled at runtime is shared by
+all of them. The code-health rule HX015 refuses new state of that kind in every
+module the hosted entry point imports. Two forms pass (`hermes_scope_cache`):
+
+- `ScopedCache(name)`: one slot per `(tenant, agent)` of the bound scope.
+  `slot()` and `drop()` raise `UnscopedStateError` when no scope is bound; there
+  is no shared fallback slot.
+- `tenant_neutral(value, reason="...")` (or `@tenant_neutral(reason="...")` on a
+  cached function): state that is the same for every tenant, such as a model
+  catalog or tool schemas. The reason must be a non-empty literal.
+
+The entry point is the list `HOSTED_ENTRY` in `scripts/code_health/config.py`.
+There is no hosted boot module yet, so the list names what it will load: the
+inbound turn path, the turn loop, the scope modules and the registries. The
+graph (`scripts/code_health/hosted_graph.py`) follows imports that run at import
+time; imports inside functions are not followed, so a module the hosted process
+loads lazily is listed as a root. When the hosted boot lands, it is added to
+the list. State that already existed when the rule landed is baselined by the
+ratchet and is migrated when it is next touched.
+
+The tool, MCP, provider and plugin registries are frozen once the hosted boot
+finishes: it calls `registry_freeze.freeze_registries()`, after which every
+registration path raises `RegistryFrozen` and reads are unchanged. A per-agent
+toggle is a filter applied from the bound scope at read time, never a
+registration. A local install never freezes, so runtime plugin and MCP loading
+behave as before.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

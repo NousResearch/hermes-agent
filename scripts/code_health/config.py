@@ -56,7 +56,28 @@ class Rule:
     blocking: bool = True
     include: tuple[str, ...] = ()  # when set, the rule applies only to these paths
     pattern_id: str = ""  # regex rules: id in scripts/ci/profile_scope_patterns.json
+    hosted: bool = False  # applies only to modules the hosted entry point imports (hosted_graph)
 
+
+# The hosted entry point: the modules a shared (multi-tenant) process starts from. HX015 judges
+# every module these import at import time (``hosted_graph``). There is no hosted boot module
+# yet, so the roots are what it will load whatever its shape: the inbound turn path, the turn
+# loop, the scope modules and the four registries ``registry_freeze`` freezes. The hosted boot,
+# when it lands, is added here (and any root it makes redundant dropped) in the same PR. A test
+# fails when a root no longer names a module, so a rename cannot silently empty the graph.
+HOSTED_ENTRY: tuple[str, ...] = (
+    "gateway.run",
+    "run_agent",
+    "model_tools",
+    "hermes_scope",
+    "hermes_scope_cache",
+    "agent.runtime_scope",
+    "registry_freeze",
+    "tools.registry",
+    "tools.mcp_tool",
+    "providers",
+    "hermes_cli.plugins",
+)
 
 # Heuristic rules print as warnings until a frozen replay (`python -m scripts.code_health.replay`)
 # shows most of their hits on merged PRs are real problems; flip a rule to blocking with that
@@ -135,6 +156,13 @@ RULES: tuple[Rule, ...] = (
          " is next edited", "ast",
          exclude=SINGLE_PROFILE + ("agent/runtime_scope.py", "hermes_constants.py",
                                    "agent/secret_scope.py", "tools/terminal_scope.py")),
+    Rule("HX015", "process-wide mutable state on the hosted path", "one hosted process serves"
+         " every tenant, so this state is shared by all of them: key it per agent with"
+         " `hermes_scope_cache.ScopedCache(name)` (raises with no scope bound), or, when it is"
+         " identical for every tenant (a catalog, tool schemas), declare it with"
+         " `tenant_neutral(value, reason=\"...\")` / `@tenant_neutral(reason=\"...\")`."
+         " Registries are frozen after hosted boot (`registry_freeze`); a per-agent toggle is a"
+         " filter applied from the bound scope, never a registration", "ast", hosted=True),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
+from registry_freeze import refuse_if_frozen
 
 logger = logging.getLogger(__name__)
 
@@ -594,6 +595,7 @@ class ToolRegistry:
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
+        refuse_if_frozen("tool registry")
         with self._lock:
             existing = self._toolset_aliases.get(alias)
             if existing and existing != toolset:
@@ -618,6 +620,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
@@ -637,6 +640,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
@@ -741,6 +745,7 @@ class ToolRegistry:
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
+        refuse_if_frozen("tool registry")
         # Reject malformed schemas at registration, not at request time: a non-dict
         # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
         # whole turn far from the offending plugin. Failing here names the culprit instead.
@@ -820,6 +825,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
@@ -872,6 +878,7 @@ class ToolRegistry:
     def move_to_scope(self, names, scope: str) -> None:
         """Move process-global registrations into *scope*'s overlay (a single-profile process that
         starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
+        refuse_if_frozen("tool registry")
         scope = normalize_scope(scope)
         with self._lock:
             moved = {name: self._tools.pop(name) for name in names if name in self._tools}
@@ -886,6 +893,7 @@ class ToolRegistry:
         The identity check is deliberate: another plugin (or ``PluginManager`` in a
         multi-profile process) may have registered a newer entry under the same name, and
         unloading this entry must leave that newer one untouched."""
+        refuse_if_frozen("tool registry")
         with self._lock:
             target = self._slot(scope, create=True)
             if target.get(name) is not current:

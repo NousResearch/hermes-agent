@@ -14,6 +14,7 @@ from pathlib import Path
 from scripts.code_health import gitio
 from scripts.code_health.compare import compare
 from scripts.code_health.config import in_scope
+from scripts.code_health.hosted_graph import reachable
 from scripts.code_health.measure import Measurer
 from scripts.code_health.report import (
     apply_allows,
@@ -75,7 +76,7 @@ def _parser() -> argparse.ArgumentParser:
 def _report(repo: Path, head: str | None) -> int:
     paths = [p for p in gitio.tracked_files(repo, head) if in_scope(p)]
     measurer = Measurer(repo, resolve_ruff(repo), known_env=gitio.known_env_names(repo, head))
-    print(summarize_tree(measurer.measure(head, paths)))
+    print(summarize_tree(measurer.measure(head, paths, hosted=reachable(repo, head))))
     return 0
 
 
@@ -107,7 +108,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False,
     ruff = resolve_ruff(repo) if needs_ruff else []
     measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base))
     base_m = measurer.measure(base, base_paths)
-    head_m = measurer.measure(head, head_paths)
+    hosted = reachable(repo, head) if any(p.endswith(".py") for p in head_paths) else frozenset()
+    head_m = measurer.measure(head, head_paths, hosted=hosted)
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
     blocking, advisory = verdict(findings)

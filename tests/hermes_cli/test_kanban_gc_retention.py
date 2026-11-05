@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,31 @@ def test_cmd_gc_keeps_a_scratch_dir_a_live_task_still_uses(board):
     with kbc.connect_closing() as conn:
         kbw._cleanup_workspace(conn, archived)
         assert _deferred_reasons(conn, archived) == ["shared"]
+
+
+def test_cleanup_workspace_ignores_uninitialized_sibling_board_db(board):
+    from hermes_cli import kanban_db_workspace as kbw
+
+    placeholder = kb.boards_root() / "uninitialized"
+    placeholder.mkdir(parents=True)
+    sqlite3.connect(placeholder / "kanban.db").close()
+
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="archived scratch")
+        workspace = kb.workspaces_root() / task_id
+        workspace.mkdir(parents=True)
+        (workspace / "scratch.txt").write_text("ephemeral", encoding="utf-8")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='archived', workspace_kind='scratch', "
+                "workspace_path=? WHERE id=?",
+                (str(workspace), task_id),
+            )
+
+        kbw._cleanup_workspace(conn, task_id)
+
+        assert not workspace.exists()
+        assert _deferred_reasons(conn, task_id) == []
 
 
 def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(board, monkeypatch):

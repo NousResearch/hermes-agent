@@ -158,6 +158,10 @@ def _other_board_uses_path(db_file: Path, task_id: str, key: str) -> bool:
     other = sqlite3.connect(uri, uri=True, timeout=1.0)
     try:
         other.row_factory = sqlite3.Row
+        if other.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ).fetchone() is None:
+            return False
         return _conn_uses_path(other, task_id, key, exclude_task_id=False)
     finally:
         other.close()

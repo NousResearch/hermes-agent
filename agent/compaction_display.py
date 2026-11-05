@@ -6,10 +6,8 @@ import re
 
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import (
-    _LEAN_RECOVERY_HEADING, _LEAN_USER_MESSAGES_HEADING, ContextCompressor, is_compaction_summary_message,
-)
-from agent.message_content import flatten_message_text
+from agent.context_compressor import _LEAN_RECOVERY_HEADING, _LEAN_USER_MESSAGES_HEADING, ContextCompressor
+from session_rules.turns import flatten_message_text, is_compaction_summary_message
 
 
 _COMPACTION_INTERNAL_FIELDS = (

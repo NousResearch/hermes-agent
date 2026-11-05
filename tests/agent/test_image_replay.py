@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent.image_routing import build_native_content_parts
-from agent.session_persistence import _durable_content
+from session_rules.turns import _durable_content
 from agent.turn_context import build_api_messages
 from gateway.session_ingress_media import capture_native_media
 from hermes_state import SessionDB

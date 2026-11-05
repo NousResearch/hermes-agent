@@ -176,7 +176,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     screen, retitle the window or restyle the panel. Pure-reasoning assistant rows with no
     visible output are skipped, as are tool-call-only rows when ``resume_skip_tool_only``.
     """
-    from agent.message_metadata import withheld_prompt_text
+    from session_rules.turns import withheld_prompt_text
     from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
     max_user_len = int(disp.get("resume_max_user_chars", 300))
     max_asst_len = int(disp.get("resume_max_assistant_chars", 200))

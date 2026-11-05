@@ -148,12 +148,18 @@ mini-swe-agent/
 .direnv/
 .nix-stamps/
 result
-# Legacy Docusaurus outputs left by source-checkout upgrades. Only the
-# released-client model catalog remains tracked under website/.
-/website/*
-!/website/static/
-/website/static/*
-!/website/static/api/
+# Legacy Docusaurus outputs left by source-checkout upgrades. Name each one:
+# other website/ paths (the released-client model catalog, the upgrade E2E
+# fixtures) must stay trackable without a forced add.
+/website/build/
+/website/.docusaurus/
+/website/.cache-loader/
+/website/.cache/
+/website/node_modules/
+/website/docs/
+/website/i18n/
+/website/src/data/
+/website/static/llms*.txt
 /website/static/api/*
 !/website/static/api/model-catalog.json
 

@@ -6,7 +6,7 @@ maintainer: MCPVOT
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-version: "0.5.2"
+version: "0.5.1"
 image: "https://raw.githubusercontent.com/MCPVOT/hermes-zkagent/b53194918e5cec8e6e00e80e17e8767696657935/docs/assets/banner.png"
 known_issues:
   - "8 actions per receipt (the circuit's slot count); longer sessions need several attestations"

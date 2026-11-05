@@ -614,6 +614,34 @@ def _rewrite_document_links(body: str, source_rel: str) -> str:
     return "\n".join(out)
 
 
+_HEADING_ANCHOR_RE = re.compile(r"^(#{1,6}\s.*?)\s*\[#[A-Za-z0-9_-]+\]\s*$")
+_MDX_COMMENT_RE = re.compile(r"\s*\{/\*.*?\*/\}")
+
+
+def _strip_authoring_syntax(body: str) -> str:
+    """Drop heading `[#id]` suffixes and `{/* ... */}` comments from prose.
+
+    Both are instructions to the renderer, not text. Code fences, indented
+    code and inline-code spans keep them verbatim, as `_line_kinds` and
+    `_code_spans` define those.
+    """
+    out: list[str] = []
+    for live, line in _line_kinds(body):
+        if live:
+            line = _HEADING_ANCHOR_RE.sub(r"\1", line)
+            if "{/*" in line:
+                closed, open_span = _code_spans(line, 0)
+                code = closed if open_span is None else [*closed, (open_span[0], len(line))]
+
+                def drop(m: re.Match[str]) -> str:
+                    brace = m.start() + m.group(0).index("{")
+                    return m.group(0) if any(cs <= brace < ce for cs, ce in code) else ""
+
+                line = _MDX_COMMENT_RE.sub(drop, line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def emit_llms_full() -> str:
     """Concatenate every doc under apps/docs/content/en/ into a single markdown file.
 
@@ -644,7 +672,7 @@ def emit_llms_full() -> str:
         title, _desc = resolve_meta(slug)
         _meta, body = read_frontmatter(path)
         source_rel = path.relative_to(DOCS).as_posix()
-        body = _convert_callouts(_rewrite_document_links(body, source_rel))
+        body = _convert_callouts(_strip_authoring_syntax(_rewrite_document_links(body, source_rel)))
         chunks.append(f"<!-- source: apps/docs/content/en/{path.relative_to(DOCS)} -->\n")
         chunks.append(f"# {title}\n\n")
         chunks.append(body.rstrip() + "\n\n---\n\n")

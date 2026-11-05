@@ -8,6 +8,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..conversation.lineage import LineageRepository
+from ..conversation.messages import MessageRepository
+from ..conversation.search import SessionSearch
+from ..conversation.sessions import SessionRepository
+from ..conversation.usage import UsageAnalytics, UsageRepository
 from .admin import AdminUnsupported, ProfileRepairAdmin, StoreAdmin
 from .aio import AwaitableStore
 from .capabilities import PersistenceCapabilities
@@ -26,6 +31,12 @@ class PersistenceStore(Protocol):
     capabilities: PersistenceCapabilities
     aio: AwaitableStore
     health: StorageHealth
+    sessions: SessionRepository
+    messages: MessageRepository
+    lineage: LineageRepository
+    search: SessionSearch
+    usage: UsageRepository
+    usage_analytics: UsageAnalytics
 
 
 @runtime_checkable

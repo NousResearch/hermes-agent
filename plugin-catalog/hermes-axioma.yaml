@@ -1,0 +1,26 @@
+name: hermes-axioma
+repo: https://github.com/percyhendrux123-prog/hermes-axioma
+sha: "66b40e6c802c8b11da961b742b01dd0d958333bd"
+version: "0.2.0"
+title: Axioma
+description: "Inline signal color in the agent's normal reply. The agent marks the few phrases that deserve a second look (stop, caution, go, whisper) and the plugin renders them per surface with color, a style cue and a word, never color alone: Desktop through KaTeX color, CLI/TUI through truecolor ANSI, Telegram/Discord/Slack as bold plus the word, SMS and email as the word only. Green renders only when a tool call Hermes reported as successful in this session backs it; a rarity budget caps marks per reply; malformed tags never leak. A color-vision-safe palette and a style-and-words-only mode are one setting away. Secondary: an advisory card (intent, light, signal, question) staged before configured send/spend/spin/scrub tool calls and shown through Hermes's own approval prompt. Advisor, not a gate: it never blocks, approves or executes anything. Disclosure: no network, model calls, subprocesses, background threads, telemetry or credential reads (agent.secret_scope.get_secret is used for presence only, for an optional provider-conflict check); writes flag metadata (no message bodies) to SQLite under its own plugin data directory; adds a short markup guide to the system context through pre_llm_call."
+maintainer: percyhendrux123-prog
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/percyhendrux123-prog/hermes-axioma/blob/66b40e6c802c8b11da961b742b01dd0d958333bd/README.md
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/66b40e6c802c8b11da961b742b01dd0d958333bd/docs/evidence/desktop/desktop-night-inline-signal.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/66b40e6c802c8b11da961b742b01dd0d958333bd/docs/evidence/desktop/terminal-app-cli-render.png
+capabilities:
+  provides_tools: [axioma_card]
+  provides_hooks: [pre_tool_call, post_tool_call, post_approval_response, pre_llm_call, on_session_finalize, transform_llm_output]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Signals are written by the model. A model that ignores the markup guide produces plain replies; nothing breaks, nothing is colored."
+  - "Desktop color uses KaTeX inline math. Where the span or the reply would confuse Desktop's math parsing (code, links, stray $, characters KaTeX cannot draw), the phrase falls back to bold plus the word. Details in docs/HOST-GAPS.md."
+  - "SCRUB detection for advisory cards is best-effort shell parsing: an unparsed remove/move is capped at CAUTION, and removes inside bash -c, eval, ssh, docker exec or scripts are not seen."
+  - "Hermes shows only the first plugin's approval text, so when Axioma's card comes first another plugin's description is not shown (the human is still asked)."

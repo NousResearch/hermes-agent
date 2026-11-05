@@ -6,32 +6,25 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
-class _CapturingSessionDB:
-    """Minimal SessionDB stand-in that records every appended message."""
-
-    def __init__(self):
-        self.rows = []
-
-    def append_message(self, session_id, role, content=None, **kwargs):
-        self.rows.append({"role": role, "content": content})
-        return len(self.rows)
-
-    def append_messages_batch(self, session_id, messages, **kwargs):
-        # Mirror the real batch writer: same rows, one call.
-        for m in messages:
-            self.rows.append({"role": m.get("role"), "content": m.get("content")})
-        return list(range(len(self.rows) - len(messages) + 1, len(self.rows) + 1))
+@pytest.fixture
+def store(tmp_path):
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
-def _agent_with_capturing_db():
+def _agent_with_store(store):
+    seed_session(store, "sess-test", "cli")
     agent = AIAgent.__new__(AIAgent)
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
-    agent._session_db = _CapturingSessionDB()
+    agent._session_db = agent.persistence = store
     agent._session_db_created = True
     agent._last_flushed_db_idx = 0
     agent.session_id = "sess-test"
@@ -107,14 +100,14 @@ def test_persist_session_keeps_unmarked_terminal_empty_response():
 
 
 
-def test_flush_never_writes_buried_empty_recovery_scaffolding():
+def test_flush_never_writes_buried_empty_recovery_scaffolding(store):
     """When an empty-after-tools nudge is followed by a tool-calling response,
     the synthetic ``(empty)`` + nudge pair stays buried in the live message
     list (only the trailing copies are ever dropped). The append-only flush
     must skip it regardless of position, otherwise the synthetic turns land in
     the session store and pollute every resumed transcript.
     """
-    agent = _agent_with_capturing_db()
+    agent = _agent_with_store(store)
 
     messages = [
         {"role": "user", "content": "run the task"},
@@ -145,7 +138,7 @@ def test_flush_never_writes_buried_empty_recovery_scaffolding():
 
     agent._flush_messages_to_session_db(messages, conversation_history=[])
 
-    persisted = agent._session_db.rows
+    persisted = transcript_rows(store, agent.session_id)
     assert all(row["content"] != "(empty)" for row in persisted)
     assert all("empty response" not in (row["content"] or "") for row in persisted)
     # Only the genuine turns reach the store, in order.
@@ -155,8 +148,8 @@ def test_flush_never_writes_buried_empty_recovery_scaffolding():
     assert persisted[-1]["content"] == "All done."
 
 
-def test_flush_skips_thinking_prefill_scaffolding():
-    agent = _agent_with_capturing_db()
+def test_flush_skips_thinking_prefill_scaffolding(store):
+    agent = _agent_with_store(store)
     messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "", "_thinking_prefill": True},
@@ -164,7 +157,7 @@ def test_flush_skips_thinking_prefill_scaffolding():
     ]
     agent._flush_messages_to_session_db(messages, conversation_history=[])
 
-    assert [r["content"] for r in agent._session_db.rows] == ["hi", "Hello!"]
+    assert [r["content"] for r in transcript_rows(store, agent.session_id)] == ["hi", "Hello!"]
 
 
 # ── Real turn loop: a tool that already ran survives an empty-response exit ──
@@ -190,7 +183,7 @@ def _write_file_call(path):
 
 @pytest.fixture
 def real_loop(tmp_path, monkeypatch):
-    """A real AIAgent on the real ``file`` toolset and a real SessionDB; only the provider is scripted.
+    """A real AIAgent on the real ``file`` toolset and a real store; only the provider is scripted.
     Any request that would still leave the process dies on a dead local address."""
     for var in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.setenv(var, _DEAD_LOCAL)
@@ -199,12 +192,12 @@ def real_loop(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     monkeypatch.setattr("agent.title_generator.start_title_upgrade", lambda *a, **k: None)
     monkeypatch.chdir(tmp_path)
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid = "sess-empty-exit"
     with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
         agent = AIAgent(
             api_key="test-key", base_url=f"{_DEAD_LOCAL}/v1", model="test/model", quiet_mode=True,
-            skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], session_db=db, session_id=sid,
+            skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], persistence=db, session_id=sid,
         )
 
     def _no_real_client(*_a, **_k):
@@ -231,7 +224,7 @@ def _assert_saved_tool_pairs_stay_live(result, db, sid):
         calls = {tc["id"] for m in rows if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])}
         return calls, {m.get("tool_call_id") for m in rows if m.get("role") == "tool"}
 
-    saved = db.get_messages_as_conversation(sid)
+    saved = conversation(db, sid)
     saved_calls, saved_results = ids(saved)
     live_calls, live_results = ids(result["messages"])
     assert saved_calls and saved_calls == saved_results

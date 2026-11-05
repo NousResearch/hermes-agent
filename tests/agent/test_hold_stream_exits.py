@@ -1,7 +1,7 @@
 """Every exit of a held turn (``hold_stream=True`` transform) goes through the turn-start transform
 snapshot, and every assistant row the user did not get stays out of history.
 
-Through a real ``AIAgent`` + ``SessionDB`` against the loopback model: a reply capped by the output
+Through a real ``AIAgent`` + store against the loopback model: a reply capped by the output
 limit on every continuation, a continuation that recovers, an iteration-budget summary, and a
 provider error that ends the turn all reach the user (and the stored row) only as the rewrite; an
 answer a late language-server verdict sends back for another try, and commentary on a call to an
@@ -16,6 +16,7 @@ import pytest
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall
 from tests.fakes.providers.openai_responses import FakeResponsesServer, Message, Turn
 from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home
+from tests.fixtures.storage_read import conversation, transcript_rows
 
 ATTEMPT = "Done, the deploy key SECRET-321 is in place."
 
@@ -26,7 +27,7 @@ def _agent(server, db, session_id: str, **kwargs):
     kwargs.setdefault("enabled_toolsets", ["todo"])
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",
                    quiet_mode=True, skip_context_files=True, skip_memory=True,
-                   session_id=session_id, session_db=db, **kwargs)
+                   session_id=session_id, persistence=db, **kwargs)
 
 
 @pytest.fixture
@@ -35,7 +36,7 @@ def held(tmp_path):
     -> (result, shown, displayed history, server, db)`` for one held turn."""
     from gateway.session_controls import display_projection
     from hermes_cli import plugins
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     home = Path(os.environ["HERMES_HOME"])
     opened = []
@@ -47,14 +48,14 @@ def held(tmp_path):
         if plugin_body:
             (home / "plugins" / "redactor" / "__init__.py").write_text(plugin_body, encoding="utf-8")
         plugins._reset_plugin_managers_for_tests()
-        db = SessionDB(db_path=tmp_path / "held.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         opened.append(db.close)
         agent = _agent(server, db, "held-exit", **kwargs)
         shown = []
         agent.stream_delta_callback = shown.append
         agent.interim_assistant_callback = lambda text, **_: shown.append(text)
         result = agent.run_conversation("show config")
-        displayed = display_projection(db.get_messages("held-exit"), home)
+        displayed = display_projection(transcript_rows(db, "held-exit"), home)
         return result, [text for text in shown if text], displayed, server, db
 
     yield run
@@ -127,7 +128,7 @@ def test_answer_sent_back_by_a_late_lsp_verdict_stays_out_of_history(held, monke
     live = [m for m in server.main_requests()[1]["messages"] if m["role"] == "assistant"]
     assert [m["content"] for m in live] == [ATTEMPT]
     resumed = _agent(server, db, "held-exit")
-    resumed.run_conversation("thanks", conversation_history=db.get_messages_as_conversation("held-exit"))
+    resumed.run_conversation("thanks", conversation_history=conversation(db, "held-exit"))
     replayed = [m for m in server.main_requests()[2]["messages"] if m["role"] == "assistant"]
     assert replayed[0] == live[0]
 
@@ -168,7 +169,7 @@ def test_answer_kept_as_the_budget_fallback_is_shown_in_history_as_the_rewrite(h
     assert "SECRET-" not in str(displayed) and _assistant_texts(displayed) == [rewrite]
     # The model keeps the answer it wrote: a resumed turn replays it unchanged.
     resumed = _agent(server, db, "held-exit", enabled_toolsets=["file"])
-    resumed.run_conversation("thanks", conversation_history=db.get_messages_as_conversation("held-exit"))
+    resumed.run_conversation("thanks", conversation_history=conversation(db, "held-exit"))
     replayed = [m for m in server.main_requests()[-1]["messages"] if m["role"] == "assistant" and m.get("content")]
     assert [m["content"] for m in replayed] == [ATTEMPT]
 

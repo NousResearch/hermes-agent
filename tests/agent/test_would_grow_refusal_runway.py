@@ -26,10 +26,11 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent(db: SessionDB, session_id: str):
+def _build_agent(db, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -38,7 +39,7 @@ def _build_agent(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -49,18 +50,18 @@ def _build_agent(db: SessionDB, session_id: str):
 
 
 def test_would_grow_refusal_restores_prune_runway(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "WOULD_GROW_RUNWAY"
-    db.create_session(session_id, source="test")
+    seed_session(db, session_id, "test")
 
     agent = _build_agent(db, session_id)
     compressor = agent.context_compressor
     armed_runway = 250_000
     compressor._proactive_prune_rearm_tokens = armed_runway
     # Arm the durable copy too, exactly as a committed prune would have
-    # (prune_tool_results_only persists it via archive_and_compact's
+    # (prune_tool_results_only persists it via the compaction's
     # model_config_patch) — the refusal must leave it untouched.
-    db.patch_session_model_config(
+    db.sessions.patch_model_config(
         session_id, {"_proactive_prune_rearm_tokens": armed_runway}
     )
 
@@ -85,10 +86,10 @@ def test_would_grow_refusal_restores_prune_runway(tmp_path: Path) -> None:
     # (never-cleared) durable copy, keeping the #79640 throttle armed.
     assert compressor._proactive_prune_rearm_tokens == armed_runway
     assert (
-        db.get_session_model_config_value(
+        db.sessions.get_model_config_value(
             session_id, "_proactive_prune_rearm_tokens", 0
         )
         == armed_runway
     )
     # And the compression lock must not leak.
-    assert db.get_compression_lock_holder(session_id) is None
+    assert db.coordination.get_compression_lock_holder(session_id=session_id) is None

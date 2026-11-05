@@ -6,7 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import RuntimeLock
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 SESSION_ID = "switch-session"
 
@@ -21,40 +24,40 @@ def _stored_prompt(model: str, provider: str) -> str:
 
 
 @pytest.fixture()
-def db(tmp_path, monkeypatch):
-    """Real SessionDB on a temp state.db, isolated from the live HERMES_HOME."""
+def store(tmp_path, monkeypatch):
+    """A storage interface handle on a temp state.db, isolated from the live HERMES_HOME."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    yield session_db
-    session_db.close()
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 _ROUTE_COMMITS = {
-    "model": lambda db: db.update_session_model(
-        SESSION_ID, "anthropic/claude-opus-4.8", provider="anthropic", base_url="https://a/v1",
+    "model": lambda store: store.sessions.update_model(
+        SESSION_ID, "anthropic/claude-opus-4.8", "anthropic", base_url="https://a/v1",
     ),
-    "runtime_lock": lambda db: db.update_session_runtime_lock(
-        SESSION_ID, model="anthropic/claude-opus-4.8", provider="anthropic", confirmed=True,
+    "runtime_lock": lambda store: store.sessions.set_runtime_lock(
+        SESSION_ID, RuntimeLock(model="anthropic/claude-opus-4.8", provider="anthropic", confirmed=True),
     ),
-    "billing_route": lambda db: db.update_session_billing_route(
+    "billing_route": lambda store: store.usage.set_billing_route(
         SESSION_ID, provider="openrouter", base_url="https://o/v1",
     ),
 }
 
 
 @pytest.mark.parametrize("commit", _ROUTE_COMMITS.values(), ids=_ROUTE_COMMITS.keys())
-def test_route_commits_keep_the_stored_prompt(db, commit):
+def test_route_commits_keep_the_stored_prompt(store, commit):
     """Each switch-path writer leaves the stored prompt in place."""
     prompt = _stored_prompt("x-ai/grok-4.5", "nous")
-    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-    db.update_system_prompt(SESSION_ID, prompt)
+    seed_session(store, SESSION_ID, "discord", model="x-ai/grok-4.5")
+    store.sessions.update_system_prompt(SESSION_ID, prompt)
 
-    commit(db)
+    commit(store)
 
-    assert db.get_session(SESSION_ID)["system_prompt"] == prompt
+    assert session_row(store, SESSION_ID)["system_prompt"] == prompt
 
 
-def test_compression_tip_adoption_applies_the_identity_check(db):
+def test_compression_tip_adoption_applies_the_identity_check(store):
     """The other reader that seeds ``_cached_system_prompt`` from a stored row.
 
     ``_adopt_live_compression_child`` bypasses ``_restore_or_build_system_prompt`` (the turn
@@ -72,12 +75,11 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
 
     stale = _stored_prompt("model-a", "prov-a")
     parent_prompt = _stored_prompt("parent-model", "parent-provider")
-    db.create_session("parent", source="discord", model="model-a")
-    db.end_session("parent", "compression")
-    db.create_session("child", source="discord", model="model-a", parent_session_id="parent")
-    db.update_system_prompt("child", stale)
-    db.append_message("child", "user", "hi")
-    db.update_session_model("child", "model-b", provider="prov-b", base_url="https://b/v1")
+    seed_session(store, "parent", "discord", model="model-a", end_reason="compression")
+    seed_session(store, "child", "discord", model="model-a", parent_session_id="parent")
+    store.sessions.update_system_prompt("child", stale)
+    seed_messages(store, "child", {"role": "user", "content": "hi"})
+    store.sessions.update_model("child", "model-b", "prov-b", base_url="https://b/v1")
 
     def _adopt(model: str, provider: str) -> MagicMock:
         agent = MagicMock()
@@ -87,7 +89,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
         agent.pass_session_id = False
         agent.context_compressor = None
         agent._memory_manager = None
-        assert _adopt_live_compression_child(agent, db, "parent") is not None
+        assert _adopt_live_compression_child(agent, store, "parent", store) is not None
         return agent
 
     rejected = _adopt("model-b", "prov-b")
@@ -96,7 +98,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
     assert _adopt("model-a", "prov-a")._cached_system_prompt == stale
 
 
-def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
+def _turn_agent(store, model: str, provider: str, prose: str = "") -> MagicMock:
     """A fresh per-turn agent (the gateway shape) whose rebuild renders the real trailer."""
     from agent.system_prompt import _timestamp_line
 
@@ -110,7 +112,7 @@ def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
     agent._bot_chat_timeless_prompt = False
     agent._persist_disabled = False
     agent._use_prompt_caching = False
-    agent._session_db = db
+    agent._session_db = agent.persistence = store
     agent._platform_hint_overrides = None
     agent._surface_switch_note = ""
     agent._gateway_turn_context_notes = ""
@@ -119,10 +121,10 @@ def _turn_agent(db, model: str, provider: str, prose: str = "") -> MagicMock:
     return agent
 
 
-def _run_turn(db, model: str, provider: str, prose: str = "") -> MagicMock:
+def _run_turn(store, model: str, provider: str, prose: str = "") -> MagicMock:
     from agent.conversation_loop import _restore_or_build_system_prompt
 
-    agent = _turn_agent(db, model, provider, prose)
+    agent = _turn_agent(store, model, provider, prose)
     _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
     return agent
 
@@ -132,31 +134,60 @@ def _run_turn(db, model: str, provider: str, prose: str = "") -> MagicMock:
     [("x-ai/grok-4.5", ""), ("", "nous")],
     ids=["provider_empty", "model_empty"],
 )
-def test_emptied_live_identity_rebuilds_once_then_reuses(db, live_model, live_provider):
+def test_emptied_live_identity_rebuilds_once_then_reuses(store, live_model, live_provider):
     """A stored ``Provider:``/``Model:`` line with an empty live value is a stale route: route
     commits keep the stored prompt, so this check is the only rebuild trigger. The rebuilt prompt
     omits the empty line, and memory/context prose carrying its own ``Provider:``/``Model:`` lines
     must not stand in for it, or every turn would rebuild (a prompt-cache miss per turn)."""
     prose = "MEMORY\nProvider: openrouter\nModel: some/other-model\n\n"
     stale = _stored_prompt("x-ai/grok-4.5", "nous")
-    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-    db.update_system_prompt(SESSION_ID, stale)
+    seed_session(store, SESSION_ID, "discord", model="x-ai/grok-4.5")
+    store.sessions.update_system_prompt(SESSION_ID, stale)
 
-    _run_turn(db, live_model, live_provider, prose)._build_system_prompt.assert_called_once()
-    rebuilt = db.get_session(SESSION_ID)["system_prompt"]
+    _run_turn(store, live_model, live_provider, prose)._build_system_prompt.assert_called_once()
+    rebuilt = session_row(store, SESSION_ID)["system_prompt"]
     assert rebuilt != stale
 
-    second = _run_turn(db, live_model, live_provider, prose)
+    second = _run_turn(store, live_model, live_provider, prose)
     second._build_system_prompt.assert_not_called()
     assert second._cached_system_prompt == rebuilt
 
 
-def test_prompt_without_identity_lines_keeps_reusing(db):
+def test_prompt_without_identity_lines_keeps_reusing(store):
     """Pre-trailer prompts carry no identity lines; they must not rebuild on upgrade."""
     legacy = "You are Hermes Agent.\n\nConversation started: Thursday, September 24, 2026"
-    db.create_session(SESSION_ID, source="discord", model="x-ai/grok-4.5")
-    db.update_system_prompt(SESSION_ID, legacy)
+    seed_session(store, SESSION_ID, "discord", model="x-ai/grok-4.5")
+    store.sessions.update_system_prompt(SESSION_ID, legacy)
 
-    agent = _run_turn(db, "x-ai/grok-4.5", "")
+    agent = _run_turn(store, "x-ai/grok-4.5", "")
     agent._build_system_prompt.assert_not_called()
     assert agent._cached_system_prompt == legacy
+
+
+@pytest.mark.parametrize("writer", [True, False], ids=["writer_handle", "store_only"])
+def test_switch_billing_route_keeps_the_stored_prompt(store, writer):
+    """The post-switch billing route lands through the agent's writer handle when it holds one, else through
+    the store, and the stored prompt stays in place either way."""
+    from types import SimpleNamespace
+
+    from agent.agent_runtime_helpers import _persist_switch_billing_route
+
+    prompt = _stored_prompt("x-ai/grok-4.5", "nous")
+    seed_session(store, SESSION_ID, "discord", model="x-ai/grok-4.5")
+    store.sessions.update_system_prompt(SESSION_ID, prompt)
+    # The agent's store as a client of the file's owner (a managed worker's), whose route write the owner
+    # applies through the usage verb.
+    owner_client = SimpleNamespace(update_session_billing_route=MagicMock(side_effect=store.usage.set_billing_route))
+    agent = SimpleNamespace(
+        _session_db=owner_client, persistence=store if writer else None, session_id=SESSION_ID,
+        provider="openrouter", base_url="https://o/v1", api_mode="chat_completions",
+    )
+    _persist_switch_billing_route(agent)
+
+    row = session_row(store, SESSION_ID)
+    assert (row["billing_provider"], row["billing_base_url"], row["billing_mode"]) == (
+        "openrouter", "https://o/v1", "chat_completions",
+    )
+    assert row["system_prompt"] == prompt
+    if writer:
+        owner_client.update_session_billing_route.assert_not_called()

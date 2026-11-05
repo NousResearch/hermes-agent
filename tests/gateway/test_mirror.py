@@ -11,6 +11,14 @@ from gateway.mirror import (
 )
 
 
+def _fake_open_persistence(store, released):
+    """``open_persistence`` stand-in: a real handle bound to ``store`` whose release is recorded."""
+    from persistence_assembly import Persistence, profile_scope
+
+    return lambda scope: Persistence(profile_scope(), read_only=False, bind=lambda: store,
+                                     release=lambda: released.append(store))
+
+
 def _setup_sessions(tmp_path, sessions_data):
     """Helper to write a fake sessions.json and patch module-level paths."""
     sessions_dir = tmp_path / "sessions"
@@ -129,34 +137,29 @@ class TestMirrorToSession:
             },
         })
         broken_db = MagicMock()
-        broken_db.find_session_by_origin.return_value = None  # resolve via sessions.json
-        broken_db.append_message.side_effect = OSError("disk full")
+        broken_db.routing.session_for_origin.return_value = None  # resolve via sessions.json
+        broken_db.messages.append.side_effect = OSError("disk full")
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("hermes_state_registry.acquire", return_value=broken_db), \
-             patch("hermes_state_registry.release_or_close"):
+             patch("persistence_assembly.open_persistence", _fake_open_persistence(broken_db, [])):
             result = mirror_to_session("telegram", "123", "Hello!")
 
         assert result is False
-        broken_db.append_message.assert_called_once()
+        broken_db.messages.append.assert_called_once()
 
 
 class TestAppendToSqlite:
     def test_connection_is_released_after_use(self, tmp_path):
-        """Verify _append_to_sqlite returns the shared SessionDB reference."""
+        """Verify _append_to_sqlite releases the shared store handle."""
         from gateway.mirror import _append_to_sqlite
         mock_db = MagicMock()
         released = []
 
-        with patch("hermes_state_registry.acquire", return_value=mock_db), \
-             patch(
-                 "hermes_state_registry.release_or_close",
-                 side_effect=lambda db: released.append(db),
-             ):
+        with patch("persistence_assembly.open_persistence", _fake_open_persistence(mock_db, released)):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
-        mock_db.append_message.assert_called_once()
+        mock_db.messages.append.assert_called_once()
         assert released == [mock_db], (
             "the shared handle must be released exactly once after use"
         )

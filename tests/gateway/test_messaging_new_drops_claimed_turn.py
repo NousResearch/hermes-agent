@@ -5,13 +5,14 @@ in the drain, so without a fence it resolved the route's fresh session and ran t
 adopts its agent and the Stop that /new sent is lost. That holds for a viewer's submit into a chat
 too. A move that sends no Stop (/resume) keeps main's behaviour, and a compression is no move even
 with a Stop latched (the turn reaches the tip, where adoption fires it). Real GatewayRunner,
-DiscordAdapter, SessionAuthority, drain and session resolver over a real SessionDB; preparation is
+DiscordAdapter, SessionAuthority, drain and session resolver over a real store; preparation is
 a stand-in.
 """
 import asyncio
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
 from tests.waiting import async_wait_until
 
 
@@ -26,7 +27,6 @@ async def test_route_move_after_claim(monkeypatch, case):
     from gateway.session_contract import SessionActor, Submission
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -44,7 +44,7 @@ async def test_route_move_after_claim(monkeypatch, case):
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
     runner._wire_adapter_handlers(adapter)
     source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
-    key, store, db = runner.session_store._generate_session_key(source), runner.session_store, authority.db
+    key, store, db = runner.session_store._generate_session_key(source), runner.session_store, authority.persistence
     entered, gate = asyncio.Event(), asyncio.Event()
     ran_on = []
     resolve = runner._hmwa_resolve_session
@@ -74,11 +74,11 @@ async def test_route_move_after_claim(monkeypatch, case):
         await adapter.handle_message(MessageEvent(text='/new', source=source, message_id='new'))
         await async_wait_until(lambda: sent, what='the /new reply')
     elif case == 'resume':  # an idle /resume before the turn's busy guard: no Stop is sent
-        db.create_session('R', source='discord')
+        seed_session(db, 'R', 'discord')
         assert store.switch_session(key, 'R', expected_session_id=claimed) is not None
     else:  # a compression continuation, and a /stop in the same window
-        db.create_session('tip', source='discord', parent_session_id=claimed)
-        db.end_session(claimed, end_reason='compression')
+        seed_session(db, 'tip', 'discord', parent_session_id=claimed)
+        db.sessions.end(claimed, 'compression')
         assert store.advance_compression_session(key, claimed, 'tip') is not None
         await adapter.handle_message(MessageEvent(text='/stop', source=source, message_id='stop'))
         assert claimed in authority.pending_stops  # latched for this claim, so the check runs
@@ -87,12 +87,12 @@ async def test_route_move_after_claim(monkeypatch, case):
     gate.set()
 
     def settled():
-        rows = list_session_admissions(db, session_id=claimed, pending_only=False)
-        return rows and rows[0]['status'] == 'terminal' and rows[0]
+        rows = db.admissions.list(session_id=claimed, pending_only=False)
+        return rows and rows[0].status == 'terminal' and rows[0]
     await async_wait_until(settled, timeout=10, what='the claimed turn to settle')
     if case in ('new', 'viewer_new'):
         assert ran_on == [], f'the claimed turn ran on the fresh session {moved}'
-        assert settled()['outcome'] == 'interrupted'
+        assert settled().outcome == 'interrupted'
     else:
         assert ran_on == [moved], f'the claimed turn was dropped instead of running on {moved}'
     if case == 'viewer_new':

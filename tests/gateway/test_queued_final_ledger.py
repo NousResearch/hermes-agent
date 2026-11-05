@@ -31,6 +31,8 @@ import pytest
 from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -53,8 +55,15 @@ _COLUMNS = ("obligation_id", "session_key", "state", "attempts", "last_error", "
             "platform")
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._db_path().parent))
+
+
 def _rows():
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []  # the ledger creates its table on its first use of the store
         cur = conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM delivery_obligations")
         return [dict(zip(_COLUMNS, r)) for r in cur.fetchall()]
 

@@ -15,12 +15,15 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 
 @pytest_asyncio.fixture
-async def headless(tmp_path, monkeypatch):
+async def headless(tmp_path, monkeypatch, api_store):
     from gateway import run
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
@@ -30,16 +33,15 @@ async def headless(tmp_path, monkeypatch):
     # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
                         lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
-    from hermes_state import SessionDB
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             persistence=api_store(store.persistence))
     # The gateway owns its home's session authority; no Desktop/CLI ever made a "Bot Chat".
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter.gateway_runner = runner
-    adapter._session_db = authority.db
+    adapter._session_db = authority.persistence
     runner.adapters[Platform.API_SERVER] = adapter
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     executed = []
@@ -61,11 +63,11 @@ async def headless(tmp_path, monkeypatch):
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-        store._db.close()
+        store.close_all_db_handles()
 
 
 def _api_admissions(authority):
-    return authority.db._read_all("SELECT 1 FROM session_admissions WHERE principal_id='api'")
+    return raw_holder(authority.persistence)._read_all("SELECT 1 FROM session_admissions WHERE principal_id='api'")
 
 
 @pytest.mark.asyncio
@@ -74,7 +76,7 @@ async def test_headless_peer_dm_creates_the_bot_chat_through_its_owner(headless)
     created = await headless.cli.post("/api/sessions", json={"title": "Bot Chat", "source": "bot_peer_dm"})
     assert created.status == 201, await created.text()
     session_id = (await created.json())["session"]["id"]
-    row = headless.authority.db.get_session_by_title('Bot Chat')
+    row = headless.authority.persistence.sessions.get_by_title('Bot Chat').as_session_row()
     assert row['id'] == session_id and str(row['chat_id']).startswith('local-'), row
 
     for text in ('one', 'two'):
@@ -92,7 +94,7 @@ async def test_headless_peer_dm_creates_the_bot_chat_through_its_owner(headless)
 
 
 def _sessions(authority):
-    return authority.db._read_all("SELECT id FROM sessions")
+    return raw_holder(authority.persistence)._read_all("SELECT id FROM sessions")
 
 
 @pytest.mark.parametrize('extra, fields', [
@@ -123,29 +125,29 @@ async def test_concurrent_peer_creates_mint_one_local_bot_chat(headless):
     assert statuses == [201, 400], statuses
     loser = second if second.status == 400 else first
     assert (await loser.json())['error']['code'] == 'invalid_title'
-    rows = headless.authority.db._read_all("SELECT id, chat_id FROM sessions")
+    rows = raw_holder(headless.authority.persistence)._read_all("SELECT id, chat_id FROM sessions")
     assert len(rows) == 1 and str(rows[0][1]).startswith('local-'), rows
-    assert headless.authority.db.get_session_by_title('Bot Chat')['id'] == rows[0][0]
+    assert headless.authority.persistence.sessions.get_by_title('Bot Chat').session_id == rows[0][0]
 
 
 def _api_bot_chat(db, sid='api_1_stale', source='api_server', hidden=True):
     """A canonical Bot Chat an older gateway minted through the plain API create (#140769): an
     ``api_`` row, no ``chat_id``, that no native client can ever adopt."""
-    db.create_session(sid, source)
-    db.set_session_title(sid, 'Bot Chat')
-    db.append_message(sid, 'user', 'old history')
+    seed_session(db, sid, source)
+    db.sessions.set_title(sid, 'Bot Chat')
+    seed_messages(db, sid, {'role': 'user', 'content': 'old history'})
     if hidden:
-        db._execute_write(lambda conn: conn.execute('UPDATE sessions SET hidden=1 WHERE id=?', (sid,)))
+        raw_holder(db)._execute_write(lambda conn: conn.execute('UPDATE sessions SET hidden=1 WHERE id=?', (sid,)))
     return sid
 
 
 def _assert_displaced(db, old, new):
     """The API row keeps its id and history under a visible name; the title is the local chat's."""
-    row = db.get_session(old)
+    row = session_row(db, old)
     assert row['title'] == f'Bot Chat (API {old})' and not row['hidden'], row
-    assert [m['content'] for m in db.get_messages(old)] == ['old history']
-    titled = db._read_all("SELECT id FROM sessions WHERE title = 'Bot Chat'")
-    assert [r[0] for r in titled] == [new] and str(db.get_session(new)['chat_id']).startswith('local-')
+    assert [m['content'] for m in transcript_rows(db, old)] == ['old history']
+    titled = raw_holder(db)._read_all("SELECT id FROM sessions WHERE title = 'Bot Chat'")
+    assert [r[0] for r in titled] == [new] and str(session_row(db, new)['chat_id']).startswith('local-')
 
 
 @pytest.mark.parametrize('source', ['api_server', 'bot_peer_dm'])
@@ -154,14 +156,14 @@ async def test_peer_dm_into_an_api_created_bot_chat_lands_in_a_local_bot_chat(he
     # #140769 / MSG-21: main refused every DM with ``bot_chat_not_local`` ("rename or delete it
     # there"), and neither is possible: the canonical title cannot be renamed and the API has no
     # rename route. The owner now moves the API row aside and mints the local Bot Chat.
-    db = headless.authority.db
+    db = headless.authority.persistence
     old = _api_bot_chat(db, source=source)
     resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": 'one', "author": AUTHOR})
     body = await resp.json()
     assert resp.status == 200, body
     assert body['message']['content'] == 'pong'
-    new = db.get_session_by_title('Bot Chat')['id']
-    assert new != old and db.get_session(new)['user_id'] == 'api-peer'
+    new = db.sessions.get_by_title('Bot Chat').session_id
+    assert new != old and session_row(db, new)['user_id'] == 'api-peer'
     _assert_displaced(db, old, new)
     # ``hermes peer dm`` resolves the Bot Chat by title on every call: the next DM names the new id.
     resp = await headless.cli.post(f"/api/sessions/{new}/chat", json={"message": 'two', "author": AUTHOR})
@@ -174,7 +176,7 @@ async def test_peer_dm_into_an_api_created_bot_chat_lands_in_a_local_bot_chat(he
 
 @pytest.mark.asyncio
 async def test_peer_create_if_missing_after_the_api_row_moved_finds_the_local_chat(headless):
-    db = headless.authority.db
+    db = headless.authority.persistence
     old = _api_bot_chat(db)
     resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": "one", "author": AUTHOR})
     assert resp.status == 200, await resp.text()
@@ -189,13 +191,12 @@ async def test_peer_create_if_missing_after_the_api_row_moved_finds_the_local_ch
 async def test_local_bot_relay_delivery_moves_an_api_bot_chat_aside(headless):
     # MSG-21 on the local door: ``bot_relay.deliver`` / a cron delivery found the API row by title
     # and failed adoption with ``not_found``, permanently.
-    from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from tests.waiting import async_wait_until
-    db = headless.authority.db
+    db = headless.authority.persistence
     old = _api_bot_chat(db)
-    profile = served_profile_name(Path(db.db_path).parent.resolve())
+    profile = served_profile_name(db.scope.profile_dir)
     record = await deliver(_local_owner(headless.authority),
                            dict(id='e' * 32, profile=profile, message='relayed', author=AUTHOR))
     new = record['session_id']
@@ -208,41 +209,40 @@ async def test_local_bot_relay_delivery_moves_an_api_bot_chat_aside(headless):
 async def test_a_submit_only_delivery_never_moves_the_api_bot_chat(headless):
     # Owner recovery and other submit-only principals cannot create the replacement, so the title
     # stays where it is (still ``not_found``): moving it would leave the profile with no Bot Chat.
-    from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import RuntimeStoreError
-    db = headless.authority.db
+    from persistence.core.errors import AuthorityRefusal
+    db = headless.authority.persistence
     old = _api_bot_chat(db)
     actor = SessionActor('uid:1000', headless.authority.profile_id,
                       frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
-    profile = served_profile_name(Path(db.db_path).parent.resolve())
-    with pytest.raises(RuntimeStoreError) as exc:
+    profile = served_profile_name(db.scope.profile_dir)
+    with pytest.raises(AuthorityRefusal) as exc:
         await deliver(SimpleNamespace(authority=headless.authority, actor=actor),
                       dict(id='f' * 32, profile=profile, message='relayed'))
     assert exc.value.reason == 'not_found'
-    assert db.get_session_by_title('Bot Chat')['id'] == old and len(_sessions(headless.authority)) == 1
+    assert db.sessions.get_by_title('Bot Chat').session_id == old and len(_sessions(headless.authority)) == 1
 
 
 @pytest.mark.asyncio
 async def test_an_adoptable_legacy_bot_chat_is_not_moved_aside(headless):
     # A pre-upgrade CLI Bot Chat is real local history its owner adopts on first open; the peer is
     # told so by name, and its title and history stay where they are.
-    db = headless.authority.db
-    db.create_session('legacy_cli', 'cli')
-    db.set_session_title('legacy_cli', 'Bot Chat')
+    db = headless.authority.persistence
+    seed_session(db, 'legacy_cli', 'cli')
+    db.sessions.set_title('legacy_cli', 'Bot Chat')
     resp = await headless.cli.post("/api/sessions/legacy_cli/chat", json={"message": "ping", "author": AUTHOR})
     body = await resp.json()
     assert resp.status == 502 and body['error']['code'] == 'bot_chat_unbound', body
-    assert db.get_session_by_title('Bot Chat')['id'] == 'legacy_cli' and len(_sessions(headless.authority)) == 1
+    assert db.sessions.get_by_title('Bot Chat').session_id == 'legacy_cli' and len(_sessions(headless.authority)) == 1
 
 
 async def _peer_minted(headless):
     created = await headless.cli.post("/api/sessions", json={"title": "Bot Chat", "source": "bot_peer_dm"})
     assert created.status == 201, await created.text()
     session_id = (await created.json())["session"]["id"]
-    assert headless.authority.db.get_session(session_id)['user_id'] == 'api-peer'
+    assert session_row(headless.authority.persistence, session_id)['user_id'] == 'api-peer'
     return session_id
 
 
@@ -284,26 +284,25 @@ async def test_peer_minted_bot_chat_resumes_by_title_and_admits_a_local_turn(hea
     assert resumed['session_id'] == session_id
     monkeypatch.setattr(headless.authority, '_schedule', lambda ref: None)  # admission only, no agent
     await _rpc(local, 'prompt.submit', session_id=session_id, input_id='local-1', text='hello')
-    rows = headless.authority.db._read_all(
+    rows = raw_holder(headless.authority.persistence)._read_all(
         "SELECT principal_id, target_session_id FROM session_admissions WHERE principal_id='uid:1000'")
     assert [tuple(row) for row in rows] == [('uid:1000', session_id)]
 
 
 @pytest.mark.asyncio
 async def test_local_bot_relay_delivery_lands_in_the_peer_minted_bot_chat(headless):
-    from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from tests.waiting import async_wait_until
     session_id = await _peer_minted(headless)
-    profile = served_profile_name(Path(headless.authority.db.db_path).parent.resolve())
+    profile = served_profile_name(headless.authority.persistence.scope.profile_dir)
     # ``bot_relay.deliver``'s handler (``AuthorityConnection.bot_deliver``) on the local connection.
     record = await deliver(_local_owner(headless.authority),
                            dict(id='a' * 32, profile=profile, message='relayed', author=AUTHOR))
     assert record['session_id'] == session_id, record
     await async_wait_until(lambda: headless.executed, timeout=10, interval=.05)
     assert [(sid, text) for sid, _, text in headless.executed] == [(session_id, 'relayed')]
-    titled = headless.authority.db._read_all("SELECT id FROM sessions WHERE title LIKE 'Bot Chat%'")
+    titled = raw_holder(headless.authority.persistence)._read_all("SELECT id FROM sessions WHERE title LIKE 'Bot Chat%'")
     assert [row[0] for row in titled] == [session_id], 'a second Bot Chat was minted'
 
 
@@ -311,7 +310,6 @@ async def test_local_bot_relay_delivery_lands_in_the_peer_minted_bot_chat(headle
 async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_retry(headless, monkeypatch):
     # The local operator's delivery was admitted on ``session:operator`` (the chat is api-peer's);
     # its one transient-failure retry must be admitted on that same access, not refused.
-    from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from tests.waiting import async_wait_until
@@ -329,7 +327,7 @@ async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_
         return 'pong'
 
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
-    home = Path(headless.authority.db.db_path).parent.resolve()
+    home = headless.authority.persistence.scope.profile_dir
     key = 'b' * 32
     await deliver(_local_owner(headless.authority),
                   dict(id=key, profile=served_profile_name(home), message='relayed', author=AUTHOR))
@@ -349,7 +347,6 @@ async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_
 async def test_a_receipt_without_recorded_operator_access_retries_as_before(headless, monkeypatch):
     # A receipt written before ``operator`` was recorded (or by a non-operator actor) never gains
     # that access on retry: the retry into api-peer's chat is still refused, nothing is widened.
-    from pathlib import Path
     from gateway import session_bot_mailbox
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
@@ -372,7 +369,7 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
 
     monkeypatch.setattr(session_bot_mailbox, '_write_receipt', old_shape)
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
-    home = Path(headless.authority.db.db_path).parent.resolve()
+    home = headless.authority.persistence.scope.profile_dir
     key = 'd' * 32
     await deliver(_local_owner(headless.authority),
                   dict(id=key, profile=served_profile_name(home), message='relayed', author=AUTHOR))
@@ -385,11 +382,10 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
 
 @pytest.mark.asyncio
 async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headless):
-    from pathlib import Path
     from gateway.session_group_controls import _profiles
     session_id = await _peer_minted(headless)
     # ``profiles.list``'s roster row (the Desktop Bots roster's canonical-session discovery).
-    home = Path(headless.authority.db.db_path).parent
+    home = headless.authority.persistence.scope.profile_dir
     roster = _profiles(headless.authority, _local_owner(headless.authority).actor, home, {})
     assert (roster['profiles'][0]['canonical_session'] or {}).get('id') == session_id, roster['profiles'][0]
 
@@ -401,7 +397,7 @@ async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, do
     # that keeps the id it was given must not continue in the displaced API row.
     import asyncio
     import json
-    db = headless.authority.db
+    db = headless.authority.persistence
     old = _api_bot_chat(db)
     if door == 'chat':
         resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": 'one', "author": AUTHOR})
@@ -423,7 +419,7 @@ async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, do
             await asyncio.sleep(0.05)
         assert status['status'] == 'completed', status
         named = {status['session_id']}
-    new = db.get_session_by_title('Bot Chat')['id']
+    new = db.sessions.get_by_title('Bot Chat').session_id
     assert new != old and named == {new}, (named, old, new)
     assert [sid for sid, _, _ in headless.executed] == [new]
 
@@ -432,42 +428,41 @@ async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, do
 async def test_a_protected_desktop_bot_chat_refusal_never_promises_a_move(headless):
     # A Desktop row a served remote login stamped is that login's local history: it is never moved
     # aside (``displaceable_bot_chat``), so the refusal must not say it will be.
-    db = headless.authority.db
-    db.create_session('desktop_alice', 'desktop')
-    db.set_session_title('desktop_alice', 'Bot Chat')
-    db._execute_write(lambda conn: conn.execute(
+    db = headless.authority.persistence
+    seed_session(db, 'desktop_alice', 'desktop')
+    db.sessions.set_title('desktop_alice', 'Bot Chat')
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET user_id='github:alice' WHERE id='desktop_alice'"))
     for _attempt in range(2):  # "on the next delivery": the second is refused the same way
         resp = await headless.cli.post("/api/sessions/desktop_alice/chat", json={"message": "ping", "author": AUTHOR})
         body = await resp.json()
         assert resp.status == 502 and body['error']['code'] == 'bot_chat_not_local', body
         assert 'moved aside' not in body['error']['message'], body
-    assert db.get_session_by_title('Bot Chat')['id'] == 'desktop_alice' and len(_sessions(headless.authority)) == 1
+    assert db.sessions.get_by_title('Bot Chat').session_id == 'desktop_alice' and len(_sessions(headless.authority)) == 1
 
 
 @pytest.mark.asyncio
 async def test_a_messaging_bot_chat_moved_aside_is_labelled_by_its_platform(headless):
     # A messaging row that took the canonical title is moved aside too, but it is no API conversation:
     # its new name says where it came from.
-    from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
-    db = headless.authority.db
-    db.create_session('tg_row', 'telegram')
-    db.set_session_title('tg_row', 'Bot Chat')
-    db._execute_write(lambda conn: conn.execute("UPDATE sessions SET chat_id='12345' WHERE id='tg_row'"))
-    profile = served_profile_name(Path(db.db_path).parent.resolve())
+    db = headless.authority.persistence
+    seed_session(db, 'tg_row', 'telegram')
+    db.sessions.set_title('tg_row', 'Bot Chat')
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET chat_id='12345' WHERE id='tg_row'"))
+    profile = served_profile_name(db.scope.profile_dir)
     record = await deliver(_local_owner(headless.authority),
                            dict(id='c' * 32, profile=profile, message='relayed', author=AUTHOR))
     assert record['session_id'] != 'tg_row'
-    assert db.get_session('tg_row')['title'] == 'Bot Chat (telegram tg_row)'
+    assert session_row(db, 'tg_row')['title'] == 'Bot Chat (telegram tg_row)'
 
 
 def test_a_local_bot_chat_is_never_displaceable_without_a_lineage_read(headless, monkeypatch):
     # Every delivery asks; a bound local chat answers from its own row, before any tip or session read.
     from gateway.session_bot import displaceable_bot_chat
-    db = headless.authority.db
+    db = headless.authority.persistence
     reads = []
-    monkeypatch.setattr(db, 'get_compression_tip', lambda sid: reads.append(sid) or sid)
+    monkeypatch.setattr(db.lineage, 'tip', lambda sid: reads.append(sid) or sid)
     assert displaceable_bot_chat(headless.authority, {'id': 'x', 'chat_id': 'local-abc', 'source': 'gui'}) is None
     assert reads == []

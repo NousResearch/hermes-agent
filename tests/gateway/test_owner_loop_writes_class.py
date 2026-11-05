@@ -9,7 +9,11 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import store_location
+from tests.fixtures.storage_read import session_row
 from tests.waiting import async_wait_until
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from pathlib import Path
 
 
 def _owner(tmp_path, monkeypatch, handle):
@@ -18,17 +22,16 @@ def _owner(tmp_path, monkeypatch, handle):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _handle_message=handle,
                              _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
-                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=storage_handle(Path(store_location(db.scope)).parent),
+                                 epoch=db.runtime.begin_epoch(instance_id='owner'))
     return store, authority, AuthorityConnection(authority, object(), {'user_id': 'human'})
 
 
@@ -39,8 +42,7 @@ def _local(authority, owner, tmp_path, source='cli', request_id='m'):
 
 
 async def _terminal(db, receipt):
-    import hermes_state_runtime as rt
-    await async_wait_until(lambda: rt.get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal',
+    await async_wait_until(lambda: db.admissions.get(admission_id=receipt.admission_id).status == 'terminal',
                            timeout=10, interval=0.02, what='the admission to settle')
 
 
@@ -51,7 +53,7 @@ async def _model_prepare(authority, owner, tmp_path, db):
         success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1')
     try:
         ref = _local(authority, owner, tmp_path)
-        snap = db.get_session(ref.session_id)
+        snap = session_row(db, ref.session_id)
         reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
             'expected_generation': snap['runtime_generation'], 'operation': 'model',
@@ -64,9 +66,9 @@ async def _model_prepare(authority, owner, tmp_path, db):
 async def _claim_reopen(authority, owner, tmp_path, db):
     from gateway.session_contract import Submission
     ref = _local(authority, owner, tmp_path)
-    db.end_session(ref.session_id, 'tui_shutdown')
+    db.sessions.end(ref.session_id, 'tui_shutdown')
     await _terminal(db, await authority.submit(owner.actor, Submission('first', ref, {'text': 'FIRST'}, 'queue')))
-    assert db.get_session(ref.session_id)['end_reason'] is None
+    assert db.sessions.get(ref.session_id).end_reason is None
 
 
 async def _acp_idle_after_turn(authority, owner, tmp_path, db):
@@ -75,14 +77,14 @@ async def _acp_idle_after_turn(authority, owner, tmp_path, db):
     await _terminal(db, await authority.submit(owner.actor, Submission('acp', ref, {'text': 'ACP'}, 'queue')))
     async with asyncio.timeout(10):
         await authority.sessions[ref.session_id].task
-    assert db.get_session(ref.session_id)['end_reason'] is not None
+    assert db.sessions.get(ref.session_id).end_reason is not None
 
 
 async def _acp_detach(authority, owner, tmp_path, db):
     ref = _local(authority, owner, tmp_path, source='acp')
     snapshot = await authority.attach(owner.actor, ref)
     await authority.detach(owner.actor, snapshot.subscription_id)
-    assert db.get_session(ref.session_id)['end_reason'] is not None
+    assert db.sessions.get(ref.session_id).end_reason is not None
 
 
 async def _create_titled_hidden(authority, owner, tmp_path, db):
@@ -125,12 +127,11 @@ async def _initialize(authority, owner, tmp_path, db):
 async def _initialize_adoption(authority, owner, tmp_path, db):
     """Boot and hot-profile activation (``serve_profile_runtime`` -> ``_build_profile_authority``)
     recover through ``initialize_session_authority`` while the loop serves the other profiles."""
-    from hermes_state_local import local_receipt
     from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
     ref = _local(authority, owner, tmp_path)
     _compact_like_0_22_2(db, ref.session_id, 'classic-child')
     await _initialize(authority, owner, tmp_path, db)
-    assert local_receipt(db, ref.session_id)['entry']['session_id'] == 'classic-child'
+    assert db.bindings.receipt(ref.session_id).entry['session_id'] == 'classic-child'
 
 
 async def _first_read_adoption(authority, owner, tmp_path, db):
@@ -139,16 +140,15 @@ async def _first_read_adoption(authority, owner, tmp_path, db):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
     from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
     ref = _local(authority, owner, tmp_path)
     _compact_like_0_22_2(db, ref.session_id, 'classic-child')
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(**vars(authority.runner))
-    runner.session_store, runner._session_db, runner.adapters = store, store._db, {}
+    runner.session_store, runner._session_db, runner.adapters = store, store.persistence, {}
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-    cold = SessionAuthority(runner, profile_id='owned', instance_id='cold', db=store._db,
-                            epoch=rt.begin_runtime_epoch(store._db, instance_id='cold'))
+    cold = SessionAuthority(runner, profile_id='owned', instance_id='cold', persistence=store.persistence,
+                            epoch=store.persistence.runtime.begin_epoch(instance_id='cold'))
     reader = AuthorityConnection(cold, object(), {'user_id': 'human'})
     try:
         reply = await reader.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
@@ -162,16 +162,16 @@ async def _first_read_adoption(authority, owner, tmp_path, db):
 # (case, module holding the write's name, name, driver): the writer lock is taken just before
 # the named call runs.
 CASES = [
-    ('model-prepare', 'gateway.session_mutations', 'mutate_runtime_session', _model_prepare),
+    ('model-prepare', 'persistence.sqlite.authority._mutation', 'mutate_runtime_session', _model_prepare),
     ('claim-reopen', 'gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
-    ('acp-idle-after-turn', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_after_turn),
-    ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
+    ('acp-idle-after-turn', 'persistence.sqlite.authority._local', 'end_idle_local_session', _acp_idle_after_turn),
+    ('acp-detach', 'persistence.sqlite.authority._local', 'end_idle_local_session', _acp_detach),
     ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
     ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
-    ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),
-    ('initialize-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+    ('initialize-epoch', 'persistence.sqlite.authority._runtime_ends', 'begin_runtime_epoch', _initialize),
+    ('initialize-compression-adoption', 'persistence.sqlite.authority._local', 'adopt_untracked_compression',
      _initialize_adoption),
-    ('first-read-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+    ('first-read-compression-adoption', 'persistence.sqlite.authority._local', 'adopt_untracked_compression',
      _first_read_adoption),
 ]
 
@@ -193,12 +193,12 @@ async def test_in_class_write_never_runs_on_the_owner_loop_thread(tmp_path, monk
     real, threads = getattr(target, name), []
 
     def recorded(*args, **kwargs):
-        if name != 'mutate_runtime_session' or kwargs.get('_prepare_only'):
+        if name != 'mutate_runtime_session' or kwargs.get('prepare_only'):
             threads.append(threading.get_ident())
         return real(*args, **kwargs)
     monkeypatch.setattr(target, name, recorded)
     try:
-        await drive(authority, owner, tmp_path, store._db)
+        await drive(authority, owner, tmp_path, store.persistence)
         assert threads, f'{case}: the in-class write never ran'
         assert loop_thread not in threads, f'{case}: the write ran on the owner loop thread'
     finally:

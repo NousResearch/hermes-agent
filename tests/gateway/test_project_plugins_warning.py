@@ -5,6 +5,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
 
 
 async def _owner(home, monkeypatch):
@@ -16,15 +17,14 @@ async def _owner(home, monkeypatch):
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))
     store = SessionStore(home / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
     # This fixture's runner has no adapter table: hand session.info the session's frozen policy.
     from gateway import session_policy
-    from hermes_state_local import local_receipt
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: session_policy.restore_policy(
-        local_receipt(owner.db, source.chat_id)['policy']))
+        owner.persistence.bindings.receipt(source.chat_id).policy))
     return owner, AuthorityConnection(owner, object(), {'user_id': 'owner'})
 
 
@@ -58,7 +58,7 @@ async def test_an_opted_in_session_is_told_project_plugins_do_not_load(tmp_path,
         assert create('desktop', repo) is None  # a client that sends no environment
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_session_create_carries_the_notice_through_its_strict_wire_contrac
         assert 'not attached to this gateway locally' in await create('remote', False)
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_an_unlistable_plugins_folder_never_blocks_the_session(tmp_path, m
         assert 'error' not in info and info.get('config_warning') is None, info
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def test_classic_cli_prints_the_sessions_config_warning(capsys):

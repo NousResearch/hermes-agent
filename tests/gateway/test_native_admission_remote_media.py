@@ -7,6 +7,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import prepare_native
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -32,7 +33,7 @@ async def test_remote_media_url_is_dropped_with_a_note_instead_of_refusing_the_m
         assert [media['size'] for media in envelope['media']] == [len(b'video-bytes')]
         assert envelope['event']['media_types'] == ['video/mp4']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -50,7 +51,7 @@ async def test_an_attachment_only_message_stores_just_the_note(tmp_path, monkeyp
         payload = await prepare_native(runner, event)
         assert payload['text'] == '[The user sent an attachment (image/png) that could not be retrieved.]'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -74,4 +75,4 @@ async def test_dropping_a_remote_attachment_keeps_original_names_aligned(tmp_pat
         payload = await prepare_native(runner, event)
         assert payload['native_text_v1']['event']['media_filenames'] == ['Q3 plan.pdf']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

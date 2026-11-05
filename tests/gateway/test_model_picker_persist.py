@@ -257,16 +257,11 @@ async def test_multiplex_picker_global_persists_only_named_profile(
     assert written["model"]["provider"] == "openrouter"
 
 
-def _make_store_runner(adapter, sessions_dir, monkeypatch):
+def _make_store_runner(adapter, sessions_dir):
     """Bare runner with a real JSONL SessionStore (the durable /model override lives there)."""
-    import hermes_state
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
 
-    def _no_sqlite(*_a, **_k):
-        raise RuntimeError("SQLite disabled in test")
-
-    monkeypatch.setattr(hermes_state, "SessionDB", _no_sqlite)
     runner = _make_runner(adapter)
     runner.session_store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
     return runner
@@ -289,7 +284,7 @@ async def test_global_switch_clears_redundant_session_override(tmp_path, monkeyp
     ``gpt-5.6-sol-900k`` as the base 272K model)."""
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
-    runner = _make_store_runner(adapter, tmp_path / "sessions", monkeypatch)
+    runner = _make_store_runner(adapter, tmp_path / "sessions")
     source = _make_event("x").source
     session_key = runner._session_key_for_source(source)
     runner.session_store.get_or_create_session(source)
@@ -304,7 +299,7 @@ async def test_global_switch_clears_redundant_session_override(tmp_path, monkeyp
     assert runner._session_model_override(session_key) is None
     assert runner.session_store.get_model_override(session_key) is None
     # Restart: a fresh store + runner rehydrate nothing, so config.yaml decides the model.
-    restarted = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    restarted = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions")
     restarted._rehydrate_session_model_override(session_key)
     assert restarted._session_model_override(session_key) is None
 
@@ -315,7 +310,7 @@ async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_
     store) and the confirmation must not claim a clean global save (#100314)."""
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
-    runner = _make_store_runner(adapter, tmp_path / "sessions", monkeypatch)
+    runner = _make_store_runner(adapter, tmp_path / "sessions")
     source = _make_event("x").source
     session_key = runner._session_key_for_source(source)
     runner.session_store.get_or_create_session(source)
@@ -350,7 +345,7 @@ async def test_concurrent_model_commands_commit_in_issue_order(tmp_path, monkeyp
 
     cfg_path = _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
-    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions")
     source = _make_event("x").source
     session_key = runner._session_key_for_source(source)
     runner.session_store.get_or_create_session(source)
@@ -372,7 +367,7 @@ async def test_global_switch_keeps_session_override_under_channel_override(tmp_p
     from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
 
     _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
-    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions")
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
         enabled=True, channel_overrides={"12345": ChannelOverride(model="channel-model")})})
     source = _make_event("x").source
@@ -392,7 +387,7 @@ async def test_global_switch_reports_failed_stale_override_cleanup(tmp_path, mon
     in-memory override stays (memory agrees with the store's copy surviving) and the confirmation
     warns instead of claiming a clean 'Saved to config.yaml' (#100314 acceptance)."""
     _setup_isolated_home(tmp_path, monkeypatch, {"default": "old-model", "provider": "openrouter"})
-    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions", monkeypatch)
+    runner = _make_store_runner(_FakePickerAdapter(), tmp_path / "sessions")
     source = _make_event("x").source
     session_key = runner._session_key_for_source(source)
     runner.session_store.get_or_create_session(source)

@@ -10,7 +10,8 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import prepare_native
 from gateway.session_ingress import admit_message
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -39,14 +40,14 @@ async def test_invalid_params_names_the_failing_clause(tmp_path, monkeypatch, ca
     authority, source = await _authority(tmp_path, monkeypatch)
     try:
         with caplog.at_level(logging.WARNING, logger='gateway.session_envelope'):
-            with pytest.raises(RuntimeStoreError) as raised:
+            with pytest.raises(AuthorityRefusal) as raised:
                 await prepare_native(authority.runner, MessageEvent(text='hi', source=source, **fields))
         # A string still refuses after MSG-2's None -> [] normalisation. The wire reason is unchanged; the clause rides beside it (was a bare invalid_params).
         assert raised.value.reason == 'invalid_params' and raised.value.field == clause
         assert any(clause in record.getMessage() and 'invalid_params' in record.getMessage()
                    for record in caplog.records), [r.getMessage() for r in caplog.records]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -55,13 +56,13 @@ async def test_messaging_user_sees_named_refusal_not_generic_error(tmp_path, mon
     try:
         reply = await admit_message(authority, MessageEvent(text='hi', source=source, message_id='m1',
                                                             media_urls='https://example.com/a.png'))
-        # Was: RuntimeStoreError escaped -> "Sorry, I encountered an error (RuntimeStoreError)".
+        # The named refusal, not the generic "Sorry, I encountered an error (...)" reply of an escaped one.
         assert 'invalid_params' in reply and 'media_urls' in reply, reply
         # Refused before commit: nothing is queued for a retry or a drain to run.
-        assert not any(list_session_admissions(authority.db, session_id=live, pending_only=False)
+        assert not any(authority.persistence.admissions.list(session_id=live, pending_only=False)
                        for live in authority.sessions)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def _forge_multiplex(authority, source):
@@ -82,7 +83,7 @@ async def test_trust_clause_refusal_is_not_named_to_the_chat(tmp_path, monkeypat
     try:
         forge(authority, source)
         with caplog.at_level(logging.WARNING, logger='gateway.session_envelope'):
-            with pytest.raises(RuntimeStoreError) as raised:
+            with pytest.raises(AuthorityRefusal) as raised:
                 await prepare_native(authority.runner, MessageEvent(text='hi', source=source))
             reply = await admit_message(authority, MessageEvent(text='hi', source=source, message_id='m1'))
         assert raised.value.reason == 'invalid_params' and raised.value.field == clause
@@ -91,7 +92,7 @@ async def test_trust_clause_refusal_is_not_named_to_the_chat(tmp_path, monkeypat
         assert 'invalid_params' in reply and clause not in reply and 'provenance' not in reply, reply
         assert any(clause in record.getMessage() and 'invalid_params' in record.getMessage()
                    for record in caplog.records), [r.getMessage() for r in caplog.records]
-        assert not any(list_session_admissions(authority.db, session_id=live, pending_only=False)
+        assert not any(authority.persistence.admissions.list(session_id=live, pending_only=False)
                        for live in authority.sessions)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

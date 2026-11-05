@@ -10,6 +10,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_ingress import admit_message
 from gateway.session_results import execution_result
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -46,4 +47,4 @@ async def test_epoch_zero_producer_timestamp_runs_with_local_time_and_keeps_retr
         first = await authority.admit_native(pinned())
         assert first.status == 'terminal' and len(stamps) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

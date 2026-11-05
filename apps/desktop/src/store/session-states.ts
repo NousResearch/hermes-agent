@@ -16,7 +16,13 @@
  * itself here as the delegate so tile UI stays dependency-light.
  */
 
-import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+import {
+  backendScopeKey,
+  backendScopePrefix,
+  type GatewayEvent,
+  LOCAL_CONNECTION_ID,
+  registryBackendScopeKey
+} from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { setSessionOwnerResolver } from '@/api/client'
@@ -216,6 +222,47 @@ export function liveSessionScopes(): Set<string> {
   }
 
   return scopes
+}
+
+/** Stored ids of sessions whose live turn was delivered by a backend OTHER
+ *  than `connectionId`.
+ *
+ *  A gateway pick is a live activation, not a switch: the outgoing backend
+ *  keeps its socket, its turns keep publishing into `$sessionStates`, and the
+ *  fleet rail and agents panel are meant to show them there. The sidebar,
+ *  though, pages ONE backend per refresh — so liveness alone must never claim
+ *  a row for the list on screen, or the other backend's conversation is
+ *  painted into this backend's sidebar as if it lived here.
+ *
+ *  Untagged events are the local primary's; a bare profile scope is the legacy
+ *  local secondary pool. Both belong to this device. No published route yet
+ *  (boot, reconnect blip) has no opinion and keeps everything.
+ */
+export function liveSessionIdsOutsideSource(connectionId: null | string | undefined): string[] {
+  const active = String(connectionId ?? '').trim()
+
+  if (!active) {
+    return []
+  }
+
+  // `registryBackendScopeKey` tags a registry route `conn:<id>::<profile>`;
+  // anything else is a local route (untagged primary events, profile-only pool).
+  const activePrefix = backendScopePrefix(active)
+
+  const onActiveSource = (scope: string | undefined): boolean =>
+    scope?.startsWith('conn:') ? scope.startsWith(activePrefix) : active === LOCAL_CONNECTION_ID
+
+  const ids = new Set<string>()
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (!state?.busy || onActiveSource(sessionScopeByRuntimeId.get(runtimeId))) {
+      continue
+    }
+
+    ids.add(state.storedSessionId ?? runtimeId)
+  }
+
+  return [...ids]
 }
 
 // The owner hold itself (the map, TTL, hold/release/reset, and the

@@ -1007,6 +1007,7 @@ export function useMainApp(gw: GatewayClient) {
     actions: {
       appendMessage,
       cancelClarify,
+      countPrompts: () => historyItemsRef.current.filter(msg => msg.role === 'user' && !msg.kind).length,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,

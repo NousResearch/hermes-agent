@@ -477,6 +477,8 @@ export interface UseComposerStateResult {
 export interface InputHandlerActions {
   appendMessage: (msg: Msg) => void
   cancelClarify: () => void
+  /** User prompts in the transcript on screen (gates the backtrack prime hint). */
+  countPrompts: () => number
   die: () => void
   dispatchSubmission: (full: string | QueueItem) => void
   /** Open backtrack browsing (the `/rewind` command, not echoed or counted as typed). */

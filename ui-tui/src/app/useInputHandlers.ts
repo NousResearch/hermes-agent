@@ -10,12 +10,11 @@ import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
-import { $backtrackPrime, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack, setPrimeCount } from './backtrackStore.js'
+import { $backtrackPrime, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack } from './backtrackStore.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type ComposerActions,
@@ -38,8 +37,6 @@ import {
 } from './overlayStore.js'
 import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
-import { rewindTargets } from './slash/canonicalRewindPicker.js'
-import type { MutationSnapshot } from './slash/canonicalSessionControls.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { $uiState, getUiState } from './uiStore.js'
@@ -139,16 +136,6 @@ export function shouldOpenRewindOnDoubleEsc(opts: {
   return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
 }
 
-/** The first backtrack Esc: prime, and count the earlier prompts so the hint only shows when
- * there is one to go back to. */
-function primeAndPrefetch(gw: GatewayServices['gw'], sid: string) {
-  primeBacktrack(sid)
-  void gw
-    .request('session.resume', { session_id: sid })
-    .then(raw => setPrimeCount(sid, rewindTargets(asRpcResult<MutationSnapshot>(raw) ?? {}).length))
-    .catch(() => setPrimeCount(sid, 0))
-}
-
 /** The second Esc of a double-Esc: interrupt a busy turn or discard a draft. True when it acted. */
 function runDoubleEsc(o: {
   actions: InputHandlerContext['actions']
@@ -216,18 +203,16 @@ function runBacktrackEsc(o: {
   const prime = $backtrackPrime.get()
 
   if (prime?.sid !== live.sid) {
-    primeAndPrefetch(gw, live.sid)
+    // Counted from the transcript already on screen (no RPC on a reflex key), so the hint only
+    // shows with an earlier prompt to go back to; browsing itself still reads the owner's rows.
+    primeBacktrack(live.sid, actions.countPrompts())
 
     return true
   }
 
   cancelBacktrackPrime()
-
-  if (prime.count === 0) {
-    actions.sys(t('slashCmd.core.rewind.noPrevious'))
-  } else {
-    actions.openBacktrack()
-  }
+  // `/rewind` reads the owner's rows and says `No previous message to edit.` when there are none.
+  actions.openBacktrack()
 
   return true
 }

@@ -96,6 +96,24 @@ def gateway_room_grant_secret(root: Path | str | None = None) -> bytes:
     return _gateway_room_grant_secret_for_home(str(Path(root).expanduser().resolve()))
 
 
+def gateway_room_grant_secret_available(root: Path | str | None = None) -> bool:
+    """Whether this installation has, or can mint, its RoomLink secret, without minting it: a
+    read-only capability probe must never create the file (``gateway_room_grant_secret`` does,
+    when a grant is first issued)."""
+    if root is None:
+        from hermes_constants import get_hermes_home
+        root = os.environ.get("HERMES_HOME") or get_hermes_home()
+    home = Path(root).expanduser().resolve()
+    path = home / _ROOM_GRANT_SECRET_FILE
+    try:
+        return len(path.read_bytes()) == 32
+    except FileNotFoundError:
+        parent = home if home.exists() else next((p for p in home.parents if p.exists()), home)
+        return os.access(parent, os.W_OK | os.X_OK)
+    except OSError:
+        return False
+
+
 def derive_room_grant_secret(api_key: str) -> bytes:
     """Domain-separate room grants from the configured API key.
 

@@ -23,7 +23,7 @@ def _api_server(authority):
 def room_link(authority):
     """Whether this gateway can host a member of another gateway's room; else the first missing piece."""
     from gateway import hosted_rooms
-    from gateway.hosted_room_peer import gateway_room_grant_secret
+    from gateway.hosted_room_peer import gateway_room_grant_secret_available
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     from gateway.session_authorities import served_profile_name
     if served_profile_name(Path(authority.profile_id)) != 'default':
@@ -33,9 +33,7 @@ def room_link(authority):
         return {'enabled': False, 'reason': 'api_server_required'}
     if not getattr(getattr(adapter, '_run_idempotency_store', None), 'durable', False):
         return {'enabled': False, 'reason': 'durable_run_storage_required'}
-    try:
-        gateway_room_grant_secret()
-    except (OSError, RuntimeError, ValueError):
+    if not gateway_room_grant_secret_available():
         return {'enabled': False, 'reason': 'gateway_roomlink_secret_unavailable'}
     try:
         _, catalog = _local_room_catalog(adapter, 'default', hosted_rooms.local_authority_gateway_id())

@@ -138,6 +138,21 @@ exec(code, main.__dict__)
 """
 
 
+def _runs_on_store_python(repo: Path, store_python: Path) -> bool:
+    """Is this process one of PM's store interpreters: the recorded one, or any other the store
+    still holds (a process started before PM replaced its Python keeps running the old one)?
+    Unknown counts as yes, so the #123044 guard keeps failing loudly."""
+    from pm.environments import store_root
+
+    if not sys.executable:
+        return True
+    try:
+        running = Path(sys.executable).resolve()
+        return running == store_python.resolve() or running.is_relative_to(store_root(repo).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
 def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     """POSIX managed-store installs run cron ``.py`` scripts on the selected dependency venv's
     interpreter: the store Python has the repo and managed site-packages only on its in-process
@@ -146,17 +161,26 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     extensions (#123440). The venv resolves Hermes from its generation's workspace snapshot,
     rebuilt only on a dependency change, so the bootstrap puts the live checkout first.
     Lazy installs are off for the script's process tree: a script importing ``hermes_bootstrap``
-    could otherwise complete a source update and ``execv`` itself onto the bare store Python."""
+    could otherwise complete a source update and ``execv`` itself onto the bare store Python.
+    A process that does not run on a store interpreter keeps ``sys.executable`` when no venv is
+    selected, even if the shared store records a Python (#145208)."""
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
     repo = Path(__file__).resolve().parents[1]
-    if resolve_store_python(repo) is None:
+    store_python = resolve_store_python(repo)
+    if store_python is None:
         return [sys.executable, str(script)], {}
     # project_python, not committed_venv as on Windows: a pre-PM venv selected before the first
     # commit runs on its OWN interpreter here, so there is no ABI mix (#122183).
     python = project_python(repo)
     if not python.is_file():
+        if not _runs_on_store_python(repo, store_python):
+            # A python fact in the store does not make this a managed-store install: PM records
+            # one whenever it provisions uv. Hermes runs on an interpreter PM does not own (Nix,
+            # Docker, a pip or system install), and that interpreter already carries Hermes and
+            # its dependencies, exactly as when no store exists (#145208).
+            return [sys.executable, str(script)], {}
         # The caller's interpreter is the bare store Python here — the #123044 failure mode.
         raise RuntimeError(f"dependency environment interpreter is missing: {python}")
     return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],

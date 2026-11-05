@@ -413,6 +413,55 @@ class TestRunJobScript:
         assert success is False
         assert "dependency environment" in output
 
+    @pytest.mark.platforms("posix")
+    def test_posix_store_python_the_process_does_not_run_on_is_ignored(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """#145208: a python fact in the shared store (PM records one whenever it provisions uv)
+        does not make a Nix, Docker or pip install a managed-store one. With no selected venv, a
+        process that is not running on a store interpreter runs the script on its own interpreter,
+        which already carries Hermes and its dependencies, as when no store exists at all."""
+        from cron.scheduler_script import _run_job_script
+
+        store = tmp_path / "store"
+        store_python = store / "python-3.14.9" / "bin" / "python3"
+        store_python.parent.mkdir(parents=True)
+        store_python.write_text("", encoding="utf-8")  # recorded, never executed
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda repo: store_python)
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: tmp_path / "no-venv")
+        (cron_env / "scripts" / "probe.py").write_text(
+            "import sys, pytest\nprint(sys.executable)\n", encoding="utf-8"
+        )
+
+        success, output = _run_job_script("probe.py")
+        assert success is True, output
+        assert Path(output.strip()).resolve() == Path(sys.executable).resolve()
+
+    @pytest.mark.platforms("posix")
+    def test_posix_older_store_interpreter_without_a_venv_still_fails_loudly(
+        self, cron_env, tmp_path, monkeypatch
+    ):
+        """The #123044 guard covers every store interpreter, not only the recorded one: a gateway
+        started before PM replaced its Python keeps running the older one the store still holds.
+        A missing venv there is a failed run, never a run on the bare store Python. (The recorded
+        interpreter is covered by the test above.)"""
+        from cron.scheduler_script import _posix_cron_script_argv
+
+        store = tmp_path / "store"
+        recorded = store / "python-3.14.9" / "bin" / "python3"
+        older = store / "python-3.14.7" / "bin" / "python3"
+        for interpreter in (recorded, older):
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_text("", encoding="utf-8")
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda repo: recorded)
+        monkeypatch.setattr("pm.environments.selected_venv", lambda repo: tmp_path / "no-venv")
+        monkeypatch.setattr(sys, "executable", str(older))
+
+        with pytest.raises(RuntimeError, match="dependency environment interpreter is missing"):
+            _posix_cron_script_argv(cron_env / "scripts" / "probe.py")
+
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).
 

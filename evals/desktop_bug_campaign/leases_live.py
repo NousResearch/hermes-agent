@@ -227,9 +227,11 @@ memory:
         retry = b.call('prompt.submit', {'session_id': sid_b, 'text': 'RECOVERY_TURN_ONLY'})
         check('foreign backend submits after recovery', 'result' in retry, retry)
         wait_idle(18041, sid_b)
-        import sqlite3
-        with sqlite3.connect(home / 'state.db') as db:
-            replies = db.execute("SELECT count(*) FROM messages WHERE session_id=? AND role='assistant' AND content LIKE ?", (stored, '%LEASE_RECOVERY_REPLY%')).fetchone()[0]
+        from persistence.conversation.messages import TranscriptRead, TranscriptView
+        from persistence_assembly import open_persistence_reader
+        with open_persistence_reader(home / 'state.db') as store:
+            rows = store.messages.read_transcript(stored, TranscriptRead(view=TranscriptView.ALL))
+        replies = sum(1 for r in rows if r.role == 'assistant' and 'LEASE_RECOVERY_REPLY' in str(r.content))
         check('post-recovery reply persisted to receiver database', replies >= 1, {'assistant_replies': replies})
         b.close()
     finally:

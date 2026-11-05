@@ -17,8 +17,12 @@ with tempfile.TemporaryDirectory(prefix="markdown-producer-") as temporary:
             os.environ.pop(key, None)
     os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"))
     from cron.jobs import create_job, save_job_output
+    from gateway.config import PlatformConfig
+    from gateway.platforms.api_server import APIServerAdapter
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import ConversationRequest
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
     from tools.cronjob_tools import _manual_run_completion
     from tools.process_registry_notifications import format_process_notification
 
@@ -29,15 +33,13 @@ with tempfile.TemporaryDirectory(prefix="markdown-producer-") as temporary:
     event = dict(result, type="async_delegation", delegation_id="markdown-probe", goal="Inspect a generated report")
     envelope = format_process_notification(event)
     assert envelope is not None
-    db = SessionDB(db_path=home / "delivery.db")
-    db.create_session(session_id="markdown-probe", source="desktop")
-
-    class DeliveryStore:
-        def _ensure_session_db(self):
-            return db
-
-    asyncio.run(persist_delegation_delivery(DeliveryStore(), text=envelope, session_id="markdown-probe", evt=event))
-    rows = db.get_messages_as_conversation("markdown-probe", include_row_ids=True)
+    store = open_persistence(profile_scope(), eager=True)
+    store.sessions.create(NewSession(session_id="markdown-probe", source="desktop"))
+    # The adapter opens this home's store itself.
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    asyncio.run(persist_delegation_delivery(adapter, text=envelope, session_id="markdown-probe", evt=event))
+    rows = [m.as_openai_message() for m in store.messages.read_conversation("markdown-probe", ConversationRequest(include_row_ids=True))]
     output.write_text(json.dumps({"report": report, "result": result, "envelope": envelope, "rows": rows}, indent=2), encoding="utf-8")
-    print(json.dumps({"producer": "save_job_output -> _manual_run_completion -> format_process_notification -> persist_delegation_delivery -> SessionDB readback", "rows": len(rows), "report_preserved": report in rows[0]["content"], "display_kind": rows[0].get("display_kind"), "model_requests": 0}))
-    db.close()
+    print(json.dumps({"producer": "save_job_output -> _manual_run_completion -> format_process_notification -> persist_delegation_delivery -> store readback", "rows": len(rows), "report_preserved": report in rows[0]["content"], "display_kind": rows[0].get("display_kind"), "model_requests": 0}))
+    adapter._close_cached_session_dbs()
+    store.close()

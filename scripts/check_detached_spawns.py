@@ -50,8 +50,9 @@ ROOT = Path(__file__).resolve().parent.parent
 MARKER = "detached-spawn: ok"
 # The helper itself: the one place a detached spawn is the point.
 HELPER_FILES = {"hermes_cli/process_identity.py"}
-SCAN_TREES = ("agent", "cron", "gateway", "hermes_cli", "plugins", "tools", "tui_gateway", "acp_adapter", "pm")
-SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "hermes_state.py", "utils.py", "hermes_constants.py")
+SCAN_TREES = ("agent", "cron", "gateway", "hermes_cli", "plugins", "tools", "tui_gateway", "acp_adapter", "pm",
+              "persistence")
+SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "utils.py", "hermes_constants.py")
 SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 _DETACH_OS_ATTRS = {"setsid", "setpgid", "setpgrp"}
 # Helpers that return detaching Popen kwargs (``start_new_session=True`` on POSIX).

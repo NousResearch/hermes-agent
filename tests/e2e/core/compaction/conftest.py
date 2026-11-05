@@ -35,9 +35,6 @@ def make_scenario(provider, tmp_path, monkeypatch):
         # state.db live-system guard treats $HOME/.hermes as production.
         hermes_home = tmp_path / name
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        import hermes_state
-
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_home / "state.db")
         slow = mode == "slow"
         if slow:
             # The compression request timeout has a 300 s production floor; pin it (and the host idle

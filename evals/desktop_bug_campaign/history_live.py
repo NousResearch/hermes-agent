@@ -21,18 +21,20 @@ out.mkdir(parents=True, exist_ok=False)
 home = Path(tempfile.mkdtemp(prefix='history-'+tag+'-', dir=out))
 os.environ['HOME'] = str(home)
 os.environ['HERMES_HOME'] = str(home)
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from websockets.sync.client import connect
 
 items = [{'type': 'message', 'role': 'assistant', 'phase': 'final_answer', 'content': [{'type': 'output_text', 'text': 'HISTORY_SIDECAR_REPLY'}]}]
-with SessionDB(db_path=home/'state.db') as db:
-    db.create_session('history-witness', source='desktop')
-    db.append_message('history-witness', 'user', 'HISTORY_USER_PROMPT')
-    db.append_message('history-witness', 'assistant', '', codex_message_items=items, reasoning='THINKING_BEFORE_TOOL', tool_calls=[{'id':'call-1','type':'function','function':{'name':'terminal','arguments':'{}'}}])
-    db.append_message('history-witness', 'tool', 'TOOL_OUTPUT', tool_call_id='call-1')
-    db.create_session('history-control', source='desktop')
-    db.append_message('history-control', 'user', 'CONTROL_USER')
-    db.append_message('history-control', 'assistant', 'CONTROL_REPLY')
+with open_persistence(profile_scope(home=home), eager=True) as store:
+    store.sessions.create(NewSession(session_id='history-witness', source='desktop'))
+    store.messages.append('history-witness', NewMessage(role='user', content='HISTORY_USER_PROMPT'))
+    store.messages.append('history-witness', NewMessage(role='assistant', content='', codex_message_items=items, reasoning='THINKING_BEFORE_TOOL', tool_calls=({'id':'call-1','type':'function','function':{'name':'terminal','arguments':'{}'}},)))
+    store.messages.append('history-witness', NewMessage(role='tool', content='TOOL_OUTPUT', tool_call_id='call-1'))
+    store.sessions.create(NewSession(session_id='history-control', source='desktop'))
+    store.messages.append('history-control', NewMessage(role='user', content='CONTROL_USER'))
+    store.messages.append('history-control', NewMessage(role='assistant', content='CONTROL_REPLY'))
 env = {k: v for k, v in os.environ.items() if k in ['PATH', 'HOME', 'LANG', 'USER', 'VIRTUAL_ENV']}
 env.update(HOME=str(home), HERMES_HOME=str(home), HERMES_DASHBOARD_SESSION_TOKEN='history-fixture-token', PYTHONPATH=repo, HERMES_NONINTERACTIVE='1')
 cmd=[sys.executable, '-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(args.port), '--isolated']

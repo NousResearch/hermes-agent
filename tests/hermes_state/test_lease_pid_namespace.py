@@ -18,6 +18,7 @@ import pytest
 
 import hermes_state_common
 import hermes_state_pidns
+import process_identity
 from agent.conversation_compression import _compression_lock_holder
 from hermes_state import SessionDB
 from hermes_state_pidns import LocalPidNamespace
@@ -28,6 +29,7 @@ _OURS, _SIBLING = "111", "222"
 @pytest.fixture(autouse=True)
 def _pinned_namespace(monkeypatch):
     monkeypatch.setattr(hermes_state_pidns, "_LOCAL_PID_NS", LocalPidNamespace(_OURS, True))
+    monkeypatch.setattr(process_identity, "_LOCAL_PID_NS", process_identity.LocalPidNamespace(_OURS, True))
 
 
 def _dead_pid() -> int:

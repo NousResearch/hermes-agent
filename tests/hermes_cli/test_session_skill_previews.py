@@ -228,7 +228,7 @@ class TestSkillScaffoldedSessionLookup:
         rows = db.list_skill_scaffolded_sessions()
         assert [row["id"] for row in rows] == ["auto"]
         # The caller re-derives the typed request through the describer.
-        from agent.skill_commands import describe_skill_invocation
+        from session_rules.turns import describe_skill_invocation
         assert describe_skill_invocation(rows[0]["content"]) == "why is my deploy timing out?"
 
 

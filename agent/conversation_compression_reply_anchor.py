@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from agent.message_sanitization import coalesce_tool_call_id
+from session_rules.turns import coalesce_tool_call_id
 from agent.model_metadata import estimate_messages_tokens_rough
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,8 @@ def _ensure_compressed_keeps_last_assistant_reply(
     carried row at commit), or ``None`` when nothing was reinserted — every skip
     that is not "the reply is already there" is logged here with its reason.
     """
-    from agent.context_compressor import (
-        _DB_PERSISTED_MARKER, _fresh_compaction_message_copy, is_compaction_summary_message,
-    )
+    from agent.context_compressor import _DB_PERSISTED_MARKER, _fresh_compaction_message_copy
+    from session_rules.turns import is_compaction_summary_message
     from agent.conversation_compression import _message_text
 
     reply, reply_text = None, ""

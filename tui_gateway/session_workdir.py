@@ -815,7 +815,7 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
     if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
         return
     if staged["content"] != persist_user_message:
-        from agent.session_persistence import _durable_content
+        from session_rules.turns import _durable_content
         with _session_db(session) as db:
             if db is None:
                 return
@@ -874,7 +874,9 @@ def _rewind_active_session_history(
     """Rewind one canonical user turn while retaining carrier scaffolding. Caller holds ``history_lock``. Persistent
     sessions go through ``SessionDB.rewind_user_turn`` (the durable transcript is the authority; memory is installed
     only after the commit); a session without a key rewinds the warm history alone."""
-    from agent.context_compressor import history_before_user_originated_turn, retryable_user_text, user_originated_turn_view
+    from session_rules.turns import (
+        history_before_user_originated_turn, retryable_user_text, user_originated_turn_view,
+    )
 
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     user_indices = [i for i, m in enumerate(history) if user_originated_turn_view(m) is not None]
@@ -911,7 +913,7 @@ def _rewind_active_session_history(
 
 def _history_without_ephemeral_scaffolding(history: list[dict]) -> list[dict]:
     """Return the durable transcript shape without transient recovery rows."""
-    from agent.session_persistence import _is_ephemeral_scaffolding
+    from session_rules.turns import _is_ephemeral_scaffolding
     return [message.copy() for message in history if not _is_ephemeral_scaffolding(message)]
 
 

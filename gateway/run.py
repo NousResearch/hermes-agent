@@ -1330,7 +1330,7 @@ def _select_cached_agent_history(
     retention.
     """
     if isinstance(live_history, list) and len(live_history) > len(persisted_history):
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from session_rules.turns import _is_ephemeral_scaffolding
 
         has_unpersisted_row = any(
             isinstance(message, dict) and not message.get("_db_persisted")

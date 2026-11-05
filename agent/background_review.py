@@ -799,6 +799,17 @@ def _record_review_usage_to_parent(
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
+        from agent.agent_init_session import agent_interface
+        if (store := agent_interface(parent_agent)) is not None:
+            from persistence.conversation.usage import TokenCounts
+            api_calls = counts.pop("api_calls")
+            store.usage.record_auxiliary_usage(
+                session_id, task, model=usage.get("model"),
+                billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
+                tokens=TokenCounts(**counts), estimated_cost_usd=usage.get("estimated_cost_usd"),
+                api_call_count=api_calls,
+            )
+            return
         session_db.record_auxiliary_usage(
             session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
@@ -1015,7 +1026,7 @@ def build_cache_parity_fork(
     # emits go via _print_fn/status_callback, which bypass the stdout redirect.
     review_agent._skip_mcp_refresh = review_agent._persist_disabled = review_agent.suppress_status_output = True
     review_agent._end_session_on_close = False
-    review_agent._session_db = None
+    review_agent._session_db = review_agent.persistence = None
     review_agent.session_id = agent.session_id
     # No DB, so the fork can't walk to the root itself: plugin tool hooks get the parent's conversation.
     review_agent._inherited_conversation_id = conversation_id(agent)

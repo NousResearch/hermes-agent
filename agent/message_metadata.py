@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from time import time as wall_time
-from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
+from session_rules.turns import (
+    index_tool_call_uids, message_uid_or_none, mint_uid, resolve_tool_call_uid, withheld_prompt_text,
+)
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -25,7 +26,7 @@ CANONICAL_ROW = "_canonical_row"
 RESTORED_FROM_STORE = "_restored_from_store"
 REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW, RESTORED_FROM_STORE})
 # Unanswered text a merged user row held before the current turn was absorbed
-# (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
+# (session_rules.turns._merge_consecutive_users); the persist override keeps it.
 # It repeats the row's own content, so pricing it would double the estimate.
 MERGED_TURN_PREFIX = "_merged_turn_prefix"
 # The durable per-message id (``messages.message_uid``): minted once at the row's first insert and kept by
@@ -78,7 +79,7 @@ def data_use_requirement(messages: Any) -> frozenset[str]:
 
 def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> None:
     """Mark a tool message with its requirement. The ``display_metadata`` copy is the durable one: that
-    column already rides every writer, branch and compaction copy, and replay lifts it back (SessionDB)."""
+    column already rides every writer, branch and compaction copy, and replay lifts it back (the session store)."""
     if not requires:
         return
     message[DATA_USE] = list(requires)
@@ -105,36 +106,9 @@ def stamp_typed_ask(message: MutableMapping[str, Any], text: str) -> None:
     _set_display_metadata_key(message, TYPED_ASK, text)
 
 
-def drop_typed_ask(message: MutableMapping[str, Any]) -> None:
-    """Forget the typed-ask stamp on a row whose content no longer is that one ask (a fold, a redaction)."""
-    metadata = message.get("display_metadata")
-    if isinstance(metadata, dict) and TYPED_ASK in metadata:
-        message["display_metadata"] = {k: v for k, v in metadata.items() if k != TYPED_ASK}
-
-
 def typed_ask_text(message: Any) -> Optional[str]:
     """The typed ask stamped on *message*, else None."""
     return _display_metadata_str(message, TYPED_ASK)
-
-
-def withheld_prompt_text(message: Any) -> Optional[str]:
-    """The typed text a transcript view shows for a vetoed user row, else None."""
-    return _display_metadata_str(message, WITHHELD_PROMPT)
-
-
-def typed_prompt_content(content: Any, message: Any) -> Any:
-    """*content* (a rewind's live view of *message*) with the withheld placeholder swapped back for what
-    the user typed: ``/retry`` re-submits the real ask so the hook decides again, and ``/undo`` restores it
-    to the composer. Never the placeholder as a new prompt."""
-    typed = withheld_prompt_text(message)
-    if typed is None:
-        return content
-    if isinstance(content, str):
-        return content.replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)
-    if isinstance(content, list):
-        return [{**part, "text": part["text"].replace(PRE_LLM_BLOCK_WITHHELD_PROMPT, typed)}
-                if isinstance(part, dict) and isinstance(part.get("text"), str) else part for part in content]
-    return content
 
 
 def without_withheld_prompts(messages: Any) -> Any:
@@ -219,23 +193,6 @@ def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
     return {k: v for k, v in msg.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
 
 
-def mint_uid() -> str:
-    """A fresh durable id (message or tool-call occurrence): random, never derived from content."""
-    return uuid4().hex
-
-
-def uid_list(value: Any) -> list[str]:
-    """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
-    return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
-
-
-def message_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
-    """The dict's ``message_uid`` when it is a non-empty string, else ``None`` (never coerced: an int or a
-    blank would be a bug upstream of the write, not an identity)."""
-    uid = msg.get(MESSAGE_UID)
-    return uid if isinstance(uid, str) and uid else None
-
-
 def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     """The dict's ``message_uid``, minting one (``mint_uid``) when it carries none.
 
@@ -250,7 +207,7 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
 
 
 # Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
-# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# display_metadata (persisted by the session store, popped from every wire copy) so gateway replay can send the
 # row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
 INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
 
@@ -316,111 +273,6 @@ def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = Fa
     return identity
 
 
-def _is_empty_content(content: Any) -> bool:
-    """Nothing to fold: any part (an image too) is content, unlike ``is_content_blank``'s text-only test."""
-    return content is None or content == [] or (isinstance(content, str) and not content.strip())
-
-
-def record_absorbed_message(
-    survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
-) -> None:
-    """Merge-witness bookkeeping for every host fold of *dropped* into *survivor*.
-
-    The composite keeps the uid of the constituent whose text comes first and records every other
-    constituent's uid in ``_absorbed_message_uids`` (text order, no repeats). By default the survivor's
-    text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
-    into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
-    A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
-    leaves the survivor untouched. The survivor's typed-ask stamp goes when *dropped* brought content (the row
-    now holds more than that one ask, so ``previous_message`` reads it as before stamps existed); an empty
-    turn leaves the content, and so the stamp, as they were.
-    """
-    if not _is_empty_content(dropped.get("content")):
-        drop_typed_ask(survivor)
-    survivor_uid = message_uid_or_none(survivor)
-    dropped_uid = message_uid_or_none(dropped)
-    own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))
-    theirs = uid_list(dropped.get(ABSORBED_MESSAGE_UIDS))
-    if dropped_leads and dropped_uid:
-        survivor[MESSAGE_UID] = dropped_uid
-        ordered = theirs + ([survivor_uid] if survivor_uid else []) + own
-    else:
-        ordered = own + ([dropped_uid] if dropped_uid else []) + theirs
-    if absorbed := [uid for uid in dict.fromkeys(ordered) if uid != survivor.get(MESSAGE_UID)]:
-        survivor[ABSORBED_MESSAGE_UIDS] = absorbed
-
-
-def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> dict:
-    """Union two ``_tool_call_uids`` maps without losing an occurrence. Folding two assistant turns that
-    reuse a provider id (llama.cpp-style constant ids) leaves both calls in ``tool_calls``; the id then maps
-    to every occurrence's uid, in call order, as a list. Provider ids themselves are never rewritten."""
-    merged = dict(into)
-    for call_id, uid in extra.items():
-        merged[call_id] = _uid_occurrences(merged[call_id]) + _uid_occurrences(uid) if call_id in merged else uid
-    return merged
-
-
-def _uid_occurrences(value: Any) -> list:
-    return list(value) if isinstance(value, list) else [value]
-
-
-def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: list[Mapping[str, Any]]) -> dict:
-    """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
-    single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
-    before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
-    the appended uids would align with the wrong calls."""
-    from agent.message_sanitization import coalesce_tool_call_id
-
-    counts = Counter(call_id for tc in tool_calls if (call_id := coalesce_tool_call_id(tc)))
-    expanded = dict(uids)
-    for call_id, count in counts.items():
-        if count > 1 and isinstance(uid := uids.get(call_id), str):
-            expanded[call_id] = [uid] * count
-    return expanded
-
-
-def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:
-    """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
-    later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
-    every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
-    NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
-    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid.
-    Returns every pairing-id variant the assistant names."""
-    from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
-
-    calls = [(tc, tool_call_id_variants(tc)) for tc in assistant.get("tool_calls") or ()]
-    named = frozenset(variant for _, variants in calls for variant in variants)
-    for variant in named:
-        index.pop(variant, None)
-    uids = assistant.get(TOOL_CALL_UIDS)
-    if not isinstance(uids, dict) or not uids:
-        return named
-    occurrence: dict = {}  # provider id -> calls seen so far: a list value holds one uid per occurrence
-    for tc, variants in calls:
-        call_id = coalesce_tool_call_id(tc)
-        uid = uids.get(call_id)
-        if isinstance(uid, list):
-            nth = occurrence[call_id] = occurrence.get(call_id, -1) + 1
-            uid = uid[nth] if nth < len(uid) else None
-        if isinstance(uid, str) and uid:
-            for variant in variants:
-                index[variant] = uid
-    return named
-
-
-def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) -> Optional[str]:
-    """The uid an indexed assistant dict minted for ``tool_call_id`` (any variant), else ``None``."""
-    from agent.message_sanitization import tool_result_id_variants
-
-    if not index or not isinstance(tool_call_id, str) or not tool_call_id:
-        return None
-    for variant in tool_result_id_variants(tool_call_id):
-        uid = index.get(variant)
-        if uid:
-            return uid
-    return None
-
-
 def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
@@ -429,7 +281,7 @@ def tool_call_uid_from_history(messages: list[dict], tool_index: int, owners: di
     tool_call_id = messages[tool_index].get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return None
-    from agent.message_sanitization import tool_result_id_variants
+    from session_rules.turns import tool_result_id_variants
 
     result_variants = set(tool_result_id_variants(tool_call_id))
     for prior_index in range(tool_index - 1, -1, -1):  # no messages[:i] copy: this runs per flushed result

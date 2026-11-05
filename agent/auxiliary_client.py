@@ -7117,7 +7117,7 @@ class _ChatStreamAccumulator:
         if delta is None:
             return False
         made_progress = False
-        from agent.message_content import flatten_message_text
+        from session_rules.turns import flatten_message_text
 
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
         if piece:

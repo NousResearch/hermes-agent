@@ -29,6 +29,22 @@ def _agent_session_source(agent: Any) -> str:
     return session_source_for(getattr(agent, "platform", None))
 
 
+def _queue_usage(agent: Any, **counts: Any) -> None:
+    """Enqueue one API call's accounting (``queue_token_counts`` keywords) on the agent's store."""
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    if store is None:
+        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts)
+        return
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    tokens = TokenCounts(**{key: counts.pop(key, 0) for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
+    route = {key: counts.pop(key, None) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")}
+    delta = UsageDelta(tokens=tokens, route=BillingRoute(**route) if route["model"] else None,
+                       source=_agent_session_source(agent), **counts)
+    store.usage.queue_usage(agent.session_id, delta)
+
+
 @dataclass
 class ResponseUsageOutcome:
     """``compression_attempts`` is the (possibly rearmed-to-zero) budget counter;
@@ -272,9 +288,8 @@ def record_response_usage(
             # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
             if not agent._session_db_created:
                 agent._ensure_db_session()
-            agent._session_db.queue_token_counts(
-                agent.session_id,
-                source=_agent_session_source(agent),
+            _queue_usage(
+                agent,
                 input_tokens=canonical_usage.input_tokens,
                 output_tokens=canonical_usage.output_tokens,
                 cache_read_tokens=canonical_usage.cache_read_tokens,

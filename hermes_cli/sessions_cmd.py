@@ -912,7 +912,7 @@ def _cmd_pinned(db, args):
 
 
 def _cmd_retitle_skills(db, args):
-    from agent.skill_commands import describe_skill_invocation
+    from session_rules.turns import describe_skill_invocation
     from agent.title_generator import generate_title
     limit = max(1, int(getattr(args, "limit", 200) or 200))
     apply_changes = bool(getattr(args, "apply", False))

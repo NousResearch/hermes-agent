@@ -69,12 +69,12 @@ def _carrier(role, row=None, force_user_leading=False):
 
 
 def _repair_users(first, second):
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from session_rules.turns import _merge_consecutive_users
     return _merge_consecutive_users([first, second, {"role": "assistant", "content": "x"}])[0][:1]
 
 
 def _repair_assistants(first, second):
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from session_rules.turns import _merge_consecutive_assistants
     return _merge_consecutive_assistants([{"role": "user", "content": "u"}, first, second])[0][-1:]
 
 

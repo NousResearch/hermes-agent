@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, message_uid_or_none
+from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID
+from session_rules.turns import message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _parse_tool_calls
@@ -162,7 +163,7 @@ class SessionCoverageMixin:
         ``set_message_api_content``, a re-stamped reasoning item). A copy WITHOUT the row's ``api_content``
         stands for it only when its own content is those bytes (the flush stores sanitize-changed text as the
         sidecar), or when the compressor rewrote the content, which drops the stale sidecar by design."""
-        from agent.transcript_repair import REPLAY_SIDECARS
+        from hermes_state_transcript_repair import REPLAY_SIDECARS
 
         serialized = self._serialized_message_row(row["session_id"], held, float(row["timestamp"] or 0))
         content = self._decode_content(row["content"])
@@ -184,7 +185,7 @@ class SessionCoverageMixin:
         row-addressed load, which omits the digest by design) may predate any number of rewrites, so the row
         is cloned: a duplicate, never an older instruction in place of the current one."""
         # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_state_transcript_repair import transcript_row_snapshot
 
         snapshot = held.get(DB_ROW_SNAPSHOT)
         return isinstance(snapshot, str) and snapshot == transcript_row_snapshot(row)

@@ -17,7 +17,7 @@ from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.served_model import result_model_fields
@@ -442,9 +442,13 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             and _stripped[-1:] not in _SENTENCE_END
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
+            from agent.agent_init_session import agent_interface
+            from persistence_assembly import store_location
+            _store = agent_interface(agent)
             _explanation = agent._format_turn_completion_explanation(
                 _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
-                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
+                db_path=(store_location(_store.scope) if _store is not None
+                         else getattr(getattr(agent, "_session_db", None), "db_path", None)),
                 model=str(getattr(agent, "model", "") or ""),
             )
             if _explanation:

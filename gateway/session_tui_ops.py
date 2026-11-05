@@ -341,7 +341,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn, or when that turn
     ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""
     authority = connection.authority
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
     from gateway.session_local_recovery import local_history
     from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
     rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]

@@ -16,7 +16,8 @@ from agent.reasoning_effort import (
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
-from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
+from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
+from session_rules.turns import coalesce_tool_call_id
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport

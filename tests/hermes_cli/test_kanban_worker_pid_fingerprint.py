@@ -149,3 +149,87 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+# ── macOS composite-fingerprint drift tolerance (#99680) ───────────────
+#
+# On a platform with no /proc boot witness (macOS), current_instantiation_epoch()
+# reads "" and the composite fingerprint degrades to "|<start>", where <start> is
+# psutil's create_time() quantized to centiseconds. Two independent reads of the
+# SAME live process can differ by ~1s (kern.boottime adjustment, #117505). The
+# composite fingerprint must compare its two fields separately — epoch exactly,
+# start with gateway.status's existing drift tolerance — never as one exact
+# string, or the dispatcher kills and re-spawns a duplicate of a live worker.
+
+
+def test_macos_style_epoch_jitter_is_tolerated_for_liveness_and_signal_decisions(board, monkeypatch):
+    """A live worker's start reading drifts by 1s (well within the 2s tolerance): still our
+    worker — claim extended, not reclaimed, and the timeout path still signals it."""
+    from gateway import drain_control
+
+    conn = board
+    killed = []
+    # Deterministic macOS-shaped epoch regardless of host: no boot_id witness.
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "")
+    live_pid = os.getpid()
+    real_fp = kbd._process_fingerprint(live_pid)
+    assert real_fp is not None and real_fp.startswith("|"), real_fp
+    real_start = int(real_fp.partition("|")[2])
+
+    jittered = f"|{real_start - 100}"  # 1s of drift (centisecond scale) — under the 2s tolerance.
+    tid = _claimed_running(conn, pid=live_pid, started_at=jittered)
+    assert kbd._worker_alive(live_pid, jittered) is True
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+    kinds = [e.kind for e in kb.list_events(conn, tid)]
+    assert "claim_extended" in kinds
+
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET max_runtime_seconds = 1 WHERE id = ?", (tid,))
+    kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed and killed[0] == (live_pid, signal.SIGTERM)
+
+
+def test_macos_style_start_drift_beyond_tolerance_is_still_recycled(board, monkeypatch):
+    """A start reading more than the tolerance away (same empty epoch) is a real recycle:
+    claim released, zero signals — the tolerance must not swallow genuine PID reuse."""
+    from gateway import drain_control
+
+    conn = board
+    killed = []
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "")
+    live_pid = os.getpid()
+    real_fp = kbd._process_fingerprint(live_pid)
+    assert real_fp is not None and real_fp.startswith("|"), real_fp
+    real_start = int(real_fp.partition("|")[2])
+
+    far = f"|{real_start - 1000}"  # 10s away — beyond the 2s tolerance.
+    tid = _claimed_running(conn, pid=live_pid, started_at=far, max_runtime=1)
+    assert kbd._worker_alive(live_pid, far) is False
+    assert tid in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "ready" and task.worker_pid is None
+
+
+def test_macos_style_epoch_mismatch_with_matching_start_is_still_foreign(board, monkeypatch):
+    """Composite compare is per-field, not start-only: a start within tolerance but a
+    DIFFERENT epoch must still be reported recycled (guards against a fix that drops the
+    epoch check while adding start tolerance)."""
+    from gateway import drain_control
+
+    conn = board
+    killed = []
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "")
+    live_pid = os.getpid()
+    real_fp = kbd._process_fingerprint(live_pid)
+    assert real_fp is not None and real_fp.startswith("|"), real_fp
+    real_start = int(real_fp.partition("|")[2])
+
+    foreign_epoch = f"deadbeef-boot:1|{real_start}"  # identical start, foreign epoch.
+    tid = _claimed_running(conn, pid=live_pid, started_at=foreign_epoch, max_runtime=1)
+    assert kbd._worker_alive(live_pid, foreign_epoch) is False
+    assert tid in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "ready" and task.worker_pid is None

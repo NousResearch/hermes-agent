@@ -60,6 +60,44 @@ def test_pm_failure_is_reported_without_vendor_fallback(monkeypatch, capsys, upg
     assert "offline" in capsys.readouterr().out
 
 
+def test_successful_pm_install_reprobes_gated_tools_for_new_sessions(monkeypatch):
+    """A driver prepared in this process must appear in the next tool snapshot."""
+    import pm
+    import model_tools
+    from hermes_cli import tools_config_cua as cua
+    from tools.registry import invalidate_check_fn_cache, registry
+
+    available = {"value": False}
+    tool_name = "test_cua_pm_install_gated_tool"
+    registry.register(
+        name=tool_name,
+        toolset="test_cua_pm_install",
+        schema={"description": "test tool", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _args: "{}",
+        check_fn=lambda: available["value"],
+    )
+    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    monkeypatch.setattr(cua, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(model_tools, "_select_tool_names", lambda *_args: {tool_name})
+    monkeypatch.setattr(cua, "_resolved_cua_driver_cmd", lambda: "cua-driver" if available["value"] else None)
+    monkeypatch.setattr(cua, "_cua_driver_contract_status", lambda *_args: {"ready": True, "version": "0.20.0"})
+    monkeypatch.setattr(pm, "ensure", lambda *_args, **_kwargs: available.__setitem__("value", True))
+    invalidate_check_fn_cache()
+    model_tools._clear_tool_defs_cache()
+    try:
+        before = model_tools.get_tool_definitions(quiet_mode=True, skip_tool_search_assembly=True)
+        assert tool_name not in {tool["function"]["name"] for tool in before}
+
+        assert cua.install_cua_driver(show_installer_progress=False) is True
+
+        after = model_tools.get_tool_definitions(quiet_mode=True, skip_tool_search_assembly=True)
+        assert tool_name in {tool["function"]["name"] for tool in after}
+    finally:
+        registry.deregister(tool_name)
+        invalidate_check_fn_cache()
+        model_tools._clear_tool_defs_cache()
+
+
 @pytest.mark.parametrize("upgrade", [False, True])
 def test_broken_override_never_acquires_standard_driver(tmp_path, monkeypatch, upgrade):
     import pm

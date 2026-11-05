@@ -105,7 +105,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...createBrowserConnectionBridge({ api, bootstrap }),
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
-    ...createBrowserThemesBridge(api),
+    ...createBrowserThemesBridge(),
     ...uploads,
     api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the

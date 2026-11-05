@@ -464,13 +464,14 @@ class GatewayAuthorizationMixin:
         ``transport_profile`` (no live adapter: the restored row of the transport matrix). Every path
         that revives a session from durable state — auto-resume, heartbeat restore, plugin injection,
         background-process events — reads the origin through here, so the receiving bot decides
-        delivery and authorization after a restart, not the runtime profile's heuristics."""
+        delivery and authorization after a restart, not the runtime profile's heuristics. An
+        explicit unavailable runtime returns ``None`` rather than reviving under a fallback home."""
         source = getattr(entry, "origin", None)
         if source is None:
             return None
         from gateway.session_identity import restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
-        return source
+        return None if getattr(source, "profile_route_rejected", False) is True else source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted

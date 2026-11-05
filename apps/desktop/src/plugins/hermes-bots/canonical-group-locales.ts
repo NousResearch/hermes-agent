@@ -167,12 +167,13 @@ export const CANONICAL_GROUP_LOCALES = {
     assignmentFallback: '{lead} is taking this',
     routedTo: 'Assigned to {names}',
     routedEveryone: 'Assigned to everyone',
-    routedFallback: 'Couldn\'t choose who answers, so everyone will',
+    routedFallback: "Couldn't choose who answers, so everyone will",
     pausedAfter: 'Paused after {count} messages',
     continueDiscussion: 'Continue',
     continued: 'Continued',
     routingAuto: 'Pick who answers automatically',
-    routingAutoHint: 'A quick model call picks who a message is for. @mentions still go straight to the people you name.'
+    routingAutoHint:
+      'A quick model call picks who a message is for. @mentions still go straight to the people you name.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -599,7 +600,8 @@ export const CANONICAL_GROUP_LOCALES = {
     routingEveryone: 'Отвечают все',
     routingLead: 'Ведущий: {name}',
     routingEveryoneHint: 'Каждый участник отвечает по очереди, как сейчас.',
-    routingLeadHint: 'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
+    routingLeadHint:
+      'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
     leadBadge: 'Ведущий',
     assignment: '{lead} передал(а) это: {names}',
     assignmentFallback: '{lead} берёт это на себя',
@@ -610,7 +612,8 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Продолжить',
     continued: 'Продолжено',
     routingAuto: 'Выбирать отвечающих автоматически',
-    routingAutoHint: 'Быстрый вызов модели определяет, кому адресовано сообщение. @упоминания по-прежнему идут прямо тем, кого вы назвали.'
+    routingAutoHint:
+      'Быстрый вызов модели определяет, кому адресовано сообщение. @упоминания по-прежнему идут прямо тем, кого вы назвали.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -626,8 +629,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
     emptyGroups: 'Aucun groupe de passerelle trouvé.',
-    driverUnavailable:
-      'Pilote de groupe indisponible. Mettez à jour ou reconnectez la passerelle propriétaire.',
+    driverUnavailable: 'Pilote de groupe indisponible. Mettez à jour ou reconnectez la passerelle propriétaire.',
     invalidLogCursor: 'Curseur de journal de salon invalide',
     allowOnce: 'Autoriser une fois',
     deny: 'Refuser',
@@ -636,7 +638,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: "Confirmer l'abandon",
     unconfirmedSend:
       "L'envoi précédent n'est pas confirmé. Réessayez son texte d'origine avant d'envoyer un autre message.",
-    restoredPendingSend: 'Un envoi non confirmé a été restauré. Réessayez-le avant d\'envoyer un autre message.',
+    restoredPendingSend: "Un envoi non confirmé a été restauré. Réessayez-le avant d'envoyer un autre message.",
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
@@ -687,11 +689,12 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLabel: 'Qui répond à un message qui ne nomme personne',
     routingEveryone: 'Tout le monde répond',
     routingLead: 'Responsable : {name}',
-    routingEveryoneHint: 'Chaque membre a son tour, comme aujourd\'hui.',
-    routingLeadHint: 'Le responsable choisit qui s\'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.',
+    routingEveryoneHint: "Chaque membre a son tour, comme aujourd'hui.",
+    routingLeadHint:
+      "Le responsable choisit qui s'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.",
     leadBadge: 'Responsable',
     assignment: '{lead} a confié ceci à {names}',
-    assignmentFallback: '{lead} s\'en charge',
+    assignmentFallback: "{lead} s'en charge",
     routedTo: 'Attribué à {names}',
     routedEveryone: 'Attribué à tout le monde',
     routedFallback: 'Impossible de choisir qui répond, donc tout le monde répondra',
@@ -699,7 +702,8 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Continuer',
     continued: 'Reprise',
     routingAuto: 'Choisir automatiquement qui répond',
-    routingAutoHint: 'Un appel rapide au modèle choisit à qui s\'adresse un message. Les @mentions vont toujours directement aux personnes nommées.'
+    routingAutoHint:
+      "Un appel rapide au modèle choisit à qui s'adresse un message. Les @mentions vont toujours directement aux personnes nommées."
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -778,7 +782,8 @@ export const CANONICAL_GROUP_LOCALES = {
     routingEveryone: 'Alle antworten',
     routingLead: 'Leitung: {name}',
     routingEveryoneHint: 'Jedes Mitglied ist an der Reihe, wie bisher.',
-    routingLeadHint: 'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
+    routingLeadHint:
+      'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
     leadBadge: 'Leitung',
     assignment: '{lead} hat das an {names} gegeben',
     assignmentFallback: '{lead} übernimmt das',
@@ -789,7 +794,8 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Fortsetzen',
     continued: 'Fortgesetzt',
     routingAuto: 'Automatisch wählen, wer antwortet',
-    routingAutoHint: 'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.'
+    routingAutoHint:
+      'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -805,16 +811,14 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',
     emptyGroups: 'No se encontraron grupos de la pasarela.',
-    driverUnavailable:
-      'Controlador de grupo no disponible. Actualiza o vuelve a conectar la pasarela propietaria.',
+    driverUnavailable: 'Controlador de grupo no disponible. Actualiza o vuelve a conectar la pasarela propietaria.',
     invalidLogCursor: 'Cursor de registro de sala no válido',
     allowOnce: 'Permitir una vez',
     deny: 'Denegar',
     discardUnknown: 'Descartar trabajo con resultado desconocido',
     discardWarning: 'Puede que ya se hayan producido efectos secundarios. Descartar no los deshace.',
     confirmDiscard: 'Confirmar descarte',
-    unconfirmedSend:
-      'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
+    unconfirmedSend: 'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
     restoredPendingSend: 'Se restauró un envío sin confirmar. Reintántalo antes de enviar otro mensaje.',
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
@@ -867,7 +871,8 @@ export const CANONICAL_GROUP_LOCALES = {
     routingEveryone: 'Responden todos',
     routingLead: 'Líder: {name}',
     routingEveryoneHint: 'Cada miembro tiene su turno, como ahora.',
-    routingLeadHint: 'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
+    routingLeadHint:
+      'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
     leadBadge: 'Líder',
     assignment: '{lead} se lo dio a {names}',
     assignmentFallback: '{lead} se encarga',
@@ -878,6 +883,7 @@ export const CANONICAL_GROUP_LOCALES = {
     continueDiscussion: 'Continuar',
     continued: 'Reanudado',
     routingAuto: 'Elegir automáticamente quién responde',
-    routingAutoHint: 'Una llamada rápida al modelo elige a quién va dirigido un mensaje. Las @menciones siguen yendo directamente a quienes nombras.'
+    routingAutoHint:
+      'Una llamada rápida al modelo elige a quién va dirigido un mensaje. Las @menciones siguen yendo directamente a quienes nombras.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

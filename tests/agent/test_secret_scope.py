@@ -254,7 +254,7 @@ class TestScopeSetupRecovery:
         def boom(home, env_overlay=None):
             raise RuntimeError("terminal policy unreadable")
 
-        monkeypatch.setattr("tools.terminal_scope.profile_terminal_policy", boom)
+        monkeypatch.setattr("tools.terminal_scope.prepare_profile_terminal_scope", boom)
         with pytest.raises(RuntimeError):
             server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
         assert get_hermes_home_override() is None

@@ -7,13 +7,19 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_GRAPH_AUTHORITY_URL = "https://login.microsoftonline.com"
+DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 DEFAULT_TOKEN_SKEW_SECONDS = 120
+# Graph service root per national cloud (https://learn.microsoft.com/graph/deployments). A token minted
+# for one cloud's Graph resource is rejected by the others, so REST calls go to the scope's host.
+_NATIONAL_CLOUD_GRAPH_HOSTS = frozenset({
+    "graph.microsoft.com", "graph.microsoft.us", "dod-graph.microsoft.us", "microsoftgraph.chinacloudapi.cn"})
 
 _REQUIRED_ENV = ("MSGRAPH_TENANT_ID", "MSGRAPH_CLIENT_ID", "MSGRAPH_CLIENT_SECRET")
 
@@ -54,6 +60,14 @@ class GraphCredentials:
     @property
     def token_url(self) -> str:
         return f"{self.authority_url.rstrip('/')}/{self.tenant_id.strip().strip('/')}/oauth2/v2.0/token"
+
+    @property
+    def graph_base_url(self) -> str:
+        """Graph REST root for the cloud ``scope`` targets (``https://graph.microsoft.us/.default`` →
+        ``https://graph.microsoft.us/v1.0``); scopes naming no known Graph host (e.g. the app-id GUID
+        form) keep the global endpoint."""
+        host = urlparse(self.scope).hostname
+        return f"https://{host}/v1.0" if host in _NATIONAL_CLOUD_GRAPH_HOSTS else DEFAULT_GRAPH_BASE_URL
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None, *, required: bool = True) -> GraphCredentials | None:

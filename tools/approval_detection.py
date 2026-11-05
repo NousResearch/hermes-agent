@@ -345,7 +345,7 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
 # one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
 # `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
-_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?|\s+\w+=\S*)*"
+_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
     r"(?:^|[;&|({`\n]"
     r"|\b(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"

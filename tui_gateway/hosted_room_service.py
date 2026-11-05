@@ -341,7 +341,8 @@ class HostedRoomService:
     def revoke_room_routes(self, room_id: str) -> int:
         """Revoke and forget every scoped peer route for one room; an unreachable target
         leaves the room intact for retry rather than a false disband with a live grant.
-        Held revokes owed for grants a renewal replaced become due once the routes are gone."""
+        Retained grants are revoked individually: an expired route proves nothing about them."""
+        self._revoke_retained_room_grants(room_id)
         with self._policy_lock:
             routes = [(key, route) for key, route in self.peer_routes.items() if key[0] == room_id]
         for key, route in routes:
@@ -362,6 +363,16 @@ class HostedRoomService:
                     table.pop(key, None)
         self.runtime.wakeup()
         return len(routes)
+
+    def _revoke_retained_room_grants(self, room_id: str) -> None:
+        for held in hosted_rooms.held_room_grant_revokes(
+                self.db_path, room_id=room_id, now=self.runtime.clock()):
+            client = PeerRunsHTTPClient(base_url=held["target_url"], api_key="")
+            try:
+                client.revoke_grant(grant=held["grant"])
+            except PeerRunsHTTPError as exc:
+                if not _grant_revoke_is_terminal(exc):
+                    raise
 
     def owe_grant_revoke(
         self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any = None) -> None:

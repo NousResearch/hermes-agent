@@ -26,6 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli import kanban_db_worker_signals as worker_signals
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -411,13 +412,6 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         return True
 
 
-def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
-    """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
-    if signal_fn is not None:
-        return signal_fn
-    return os.kill if hasattr(os, "kill") else None
-
-
 def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
     """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
     for _ in range(10):
@@ -463,7 +457,7 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = _kill_fn(signal_fn)
+    kill = worker_signals.kill_fn(signal_fn)
     if kill is None:
         return info
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
@@ -477,11 +471,11 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    signal_target = worker_signals.reclaimed_signal_target(int(pid), kill, allow_group=signal_fn is None)
+
     try:
-        kill(int(pid), signal.SIGTERM)
+        signal_target(int(pid), signal.SIGTERM)
     except OSError:
-        # Already gone = successful termination (Windows reports an absent pid as a bare OSError, not
-        # ProcessLookupError). Leaving terminated=False would make the reclaim defer forever.
         info["terminated"] = not _worker_alive(pid, started_at)
         return info
 
@@ -489,7 +483,7 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
+        if not _sigkill(signal_target, pid):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
@@ -689,7 +683,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
         # mismatch) is never signalled: the worker is already gone.
         killed = False
-        kill = _kill_fn(signal_fn)
+        kill = worker_signals.kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)

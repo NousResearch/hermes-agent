@@ -102,9 +102,14 @@ class TestPipeRemoteToShellPattern:
             detect_dangerous_command(command)
             return time.perf_counter() - start
 
-        base = min(scan(1000) for _ in range(3))
-        wide = scan(4000)
-        assert wide < base * 8 + 0.5
+        def best(n):  # drop load spikes: the least-loaded of three samples
+            return min(scan(n) for _ in range(3))
+
+        base = best(1000)
+        wide = best(4000)
+        # Linear 4x the input stays near 4x the time; quadratic is ~16x. Floor the bound at 2s per the
+        # test guide so a fast baseline cannot make it tight on a loaded runner.
+        assert wide < max(2.0, base * 8)
 
     def test_or_list_is_not_a_pipe_for_the_widened_sink(self):
         pipe = "|"

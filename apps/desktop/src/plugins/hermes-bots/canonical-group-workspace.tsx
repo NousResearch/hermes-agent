@@ -34,12 +34,12 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
   // Preparing mints a thread for a new conversation, so only a reply's thread must match.
   (thread === undefined || payload.thread_id === thread)
 
-const NO_MEMBERS: CanonicalRoomMember[] = []
-
 /** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
  *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
   current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
+
+const NO_MEMBERS: CanonicalRoomMember[] = []
 
 const canSendNow = (gate: { restored: boolean; busy: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
   gate.restored && !gate.busy && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)

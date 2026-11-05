@@ -3762,6 +3762,7 @@ export const en: Translations = {
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
+    applyingStayBackend: 'Keep this window open. Hermes reconnects on its own when the backend is back.',
     applyingBodyAppInstaller:
       'Hermes will close and Windows will finish the update. Hermes will reopen when it’s done — you don’t need to do anything.',
     applyingCloseAppInstaller: 'This window will close, Windows finishes the update, and Hermes reopens on its own.',

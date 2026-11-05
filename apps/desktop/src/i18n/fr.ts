@@ -4267,6 +4267,7 @@ export const frOverrides = {
     applyingBodyBackend:
       'Le backend distant applique la mise à jour et va redémarrer. Hermes se reconnecte automatiquement à son retour.',
     applyingClose: 'Cette fenêtre se fermera pendant la mise à jour, puis Hermes se rouvre seul.',
+    applyingStayBackend: 'Gardez cette fenêtre ouverte. Hermes se reconnecte seul dès le retour du backend.',
     errorTitle: 'Mise à jour non terminée',
     errorBody: "Pas de souci — rien n'a été perdu. Vous pouvez réessayer maintenant.",
     blockerTitle: 'Fermer les aperçus locaux pour mettre à jour Hermes ?',

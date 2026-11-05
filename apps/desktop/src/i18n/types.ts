@@ -3232,6 +3232,8 @@ export interface Translations extends NoticeTranslations {
     applyingBody: string
     applyingBodyBackend: string
     applyingClose: string
+    /** Footer while a backend updates: this window stays open and reconnects (never "closes"). */
+    applyingStayBackend: string
     applyingBodyAppInstaller: string
     applyingCloseAppInstaller: string
     checkUnknownTitleAppInstaller: string

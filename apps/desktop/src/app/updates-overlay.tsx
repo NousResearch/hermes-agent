@@ -654,7 +654,9 @@ function ApplyingView({
         </div>
       ) : null}
 
-      <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
+      <p className="text-center text-xs text-muted-foreground">
+        {isWindowsPackage ? u.applyingCloseAppInstaller : isBackend ? u.applyingStayBackend : u.applyingClose}
+      </p>
     </div>
   )
 }

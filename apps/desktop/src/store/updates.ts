@@ -998,7 +998,21 @@ function legacyBackendReachedTarget(
 
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 
-async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+/** One running `hermes-update` action a window joined after it started (a reload, a second tab). */
+interface JoinedBackendUpdate {
+  name: string
+  action_id?: string
+  startedAtMs: number
+}
+
+type BackendUpdateStart = Awaited<ReturnType<typeof updateHermes>> & { startedAtMs: number }
+
+/** Start a new `hermes update` on the backend: what an Update press runs. */
+async function startBackendUpdate(): Promise<BackendUpdateStart> {
+  return { ...(await updateHermes()), startedAtMs: Date.now() }
+}
+
+async function runBackendUpdate(start: () => Promise<BackendUpdateStart>): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
@@ -1015,8 +1029,8 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       ? previousStatus.targetSha.slice('backend:'.length)
       : undefined
 
-    const started = await updateHermes()
-    const applyStartedAtMs = Date.now()
+    const started = await start()
+    const applyStartedAtMs = started.startedAtMs
 
     if (!started.ok) {
       const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
@@ -1127,16 +1141,62 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   }
 }
 
-export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+export function applyBackendUpdate(joined?: JoinedBackendUpdate): Promise<DesktopUpdateApplyResult> {
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }
 
-  backendUpdateInFlight = runBackendUpdate().finally(() => {
+  // A joined update is already running: follow it instead of starting another.
+  const start = joined ? async () => ({ ok: true, pid: 0, ...joined }) : startBackendUpdate
+  backendUpdateInFlight = runBackendUpdate(start).finally(() => {
     backendUpdateInFlight = null
   })
 
   return backendUpdateInFlight
+}
+
+// A receipt still `running` this long after it started belongs to a killed update (the next run
+// marks it interrupted: update_receipt.reconcile_interrupted_runs), not one to show progress for.
+const JOIN_RUNNING_RECEIPT_MAX_MS = 45 * 60 * 1000
+
+/** The backend's `hermes update` running right now, if any. `running` answers only from the
+ *  gateway that spawned it; once the update restarted that gateway, the action's own receipt
+ *  (`outcome: running`) is what still says so. */
+function runningBackendUpdate(status: Awaited<ReturnType<typeof getActionStatus>>): JoinedBackendUpdate | null {
+  const receipt = status.receipt
+  const receiptStartedMs = receipt?.started_at ? Date.parse(receipt.started_at) : NaN
+
+  const receiptRunning =
+    receipt?.outcome === 'running' &&
+    !!receipt.action_id &&
+    Number.isFinite(receiptStartedMs) &&
+    Date.now() - receiptStartedMs < JOIN_RUNNING_RECEIPT_MAX_MS
+
+  if (receiptRunning) {
+    return { name: status.name, action_id: receipt.action_id!, startedAtMs: receiptStartedMs }
+  }
+
+  return status.running ? { name: status.name, startedAtMs: Date.now() } : null
+}
+
+/** A window that connects while its backend is updating joins that update: the progress overlay
+ *  opens and follows the running action to its outcome, as if this window had pressed Update.
+ *  Before, a reload mid-update showed a normal app with no hint the backend was about to restart. */
+export async function joinRunningBackendUpdate(): Promise<void> {
+  if (backendUpdateInFlight) {
+    return
+  }
+
+  const status = await getActionStatus('hermes-update', 1).catch((): null => null)
+  const running = status ? runningBackendUpdate(status) : null
+
+  if (!running || backendUpdateInFlight) {
+    return
+  }
+
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  void applyBackendUpdate(running)
 }
 
 // ── Update everything: the client + every registered backend in one action ──
@@ -1392,6 +1452,7 @@ export function startUpdatePoller(): void {
 
     if (conn?.mode === 'remote') {
       void checkBackendUpdates()
+      void joinRunningBackendUpdate()
     }
   })
 

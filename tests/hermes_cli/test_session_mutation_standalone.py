@@ -11,8 +11,9 @@ from fastapi import FastAPI
 from gateway.runtime_ownership import ProfileOwnership
 from hermes_cli.gateway_runtime import GatewayDiscovery
 from hermes_cli.web_routers.sessions import manage_router
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 AUTH = {'Authorization': 'Bearer standalone-token'}
 
@@ -20,7 +21,6 @@ AUTH = {'Authorization': 'Bearer standalone-token'}
 def _standalone_app(tmp_path, monkeypatch):
     from hermes_cli import web_server
     monkeypatch.setattr(web_server, '_SESSION_TOKEN', 'standalone-token')
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.include_router(manage_router)
@@ -30,12 +30,12 @@ def _standalone_app(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_standalone_edits_commit_with_owner_guards(tmp_path, monkeypatch):
     app = _standalone_app(tmp_path, monkeypatch)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('edit-me', source='cli')
-        db.create_session('busy', source='cli')
-        epoch = begin_runtime_epoch(db, instance_id='earlier-gateway')
-        admit_session_input(db, epoch=epoch, principal_id='p', session_id='busy', request_id='q',
-                            payload={'text': 'hi'})
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'edit-me', 'cli')
+        seed_session(store, 'busy', 'cli')
+        epoch = store.runtime.begin_epoch(instance_id='earlier-gateway')
+        store.admissions.admit(epoch=epoch, principal_id='p', session_id='busy', request_id='q',
+                               payload={'text': 'hi'})
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',
                                      headers=AUTH) as client:
             snap = await client.get('/api/sessions/edit-me/mutation-snapshot')
@@ -55,17 +55,17 @@ async def test_standalone_edits_commit_with_owner_guards(tmp_path, monkeypatch):
                 'request_id': 'd1', 'expected_revision': 1, 'expected_generation': 0})
             assert gone.status_code == 200, gone.text
             assert gone.json()['deleted_ids'] == ['edit-me']
-        assert db.get_session('edit-me') is None
-        assert db.get_session('busy') is not None
+        assert session_row(store, 'edit-me') is None
+        assert session_row(store, 'busy') is not None
         # The existing epoch was reused, not advanced: a standalone edit never fences an owner.
-        assert db._conn.execute('SELECT epoch FROM runtime_epoch').fetchone()[0] == epoch
+        assert store.runtime.current_epoch() == epoch
 
 
 @pytest.mark.asyncio
 async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, monkeypatch, caplog):
     app = _standalone_app(tmp_path, monkeypatch)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('owned', source='cli')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'owned', 'cli')
         owner = ProfileOwnership()
         owner.reserve([tmp_path])
         try:
@@ -92,8 +92,8 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
                 assert (pending.status_code, pending.json()['detail']) == (503, 'session_authority_unavailable')
         finally:
             owner.close()
-        assert db.get_session('owned')['title'] is None
-        assert db.get_session('owned')['runtime_revision'] == 0
+        assert session_row(store, 'owned')['title'] is None
+        assert session_row(store, 'owned')['runtime_revision'] == 0
 
 
 @pytest.mark.platforms("posix")
@@ -108,11 +108,11 @@ async def test_a_stale_socket_without_a_gateway_still_edits_offline(tmp_path, mo
     stale.bind('gateway.sock')
     stale.close()
     (tmp_path / 'gateway.sock').chmod(0o755)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('stale', source='cli')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'stale', 'cli')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url='http://localhost', headers=AUTH) as client:
             pinned = await client.patch('/api/sessions/stale',
                                         json={'request_id': 'r1', 'expected_revision': 0, 'pinned': True})
         assert pinned.status_code == 200, pinned.text
-        assert db.get_session('stale')['pinned'] == 1
+        assert session_row(store, 'stale')['pinned'] == 1

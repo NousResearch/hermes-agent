@@ -1,8 +1,8 @@
 // Codex-style Esc backtrack, the two states that live outside the browse overlay:
 //  - PRIME: the first Esc on an idle, empty composer. No time window: it lasts until the next key
 //    that is not Esc, a click, a paste, a turn starting or a session switch. The second Esc opens
-//    browse mode (`overlay.rewind`). `count` is the number of earlier prompts once the prefetch
-//    answers; the hint shows only when there is at least one.
+//    browse mode (`overlay.rewind`). `count` is the number of earlier prompts in the transcript on
+//    screen; the hint shows only when there is at least one.
 //  - PENDING EDIT: Enter in browse mode put the picked prompt into the main composer. Sending a
 //    non-empty, non-slash message while it is armed rewinds the session to just before that prompt
 //    and sends the edit (`rewindAndSend`); nothing is cut before that send.
@@ -14,7 +14,7 @@ import { t } from '../i18n/runtime.js'
 import type { RewindTarget } from './interfaces.js'
 
 export interface BacktrackPrime {
-  count: null | number
+  count: number
   sid: string
 }
 
@@ -35,20 +35,11 @@ export interface PendingRewind {
 export const $backtrackPrime = atom<BacktrackPrime | null>(null)
 export const $pendingRewind = atom<PendingRewind | null>(null)
 
-export const primeBacktrack = (sid: string) => $backtrackPrime.set({ count: null, sid })
+export const primeBacktrack = (sid: string, count: number) => $backtrackPrime.set({ count, sid })
 
 export const cancelBacktrackPrime = () => {
   if ($backtrackPrime.get()) {
     $backtrackPrime.set(null)
-  }
-}
-
-/** The prefetch answered: record how many earlier prompts there are, if this prime is still live. */
-export const setPrimeCount = (sid: string, count: number) => {
-  const prime = $backtrackPrime.get()
-
-  if (prime?.sid === sid) {
-    $backtrackPrime.set({ count, sid })
   }
 }
 

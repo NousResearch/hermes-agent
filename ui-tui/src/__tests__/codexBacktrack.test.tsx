@@ -46,9 +46,10 @@ function gateway(messages: unknown[] = rows) {
   return { isCanonical: true, request }
 }
 
-function escHarness(messages?: unknown[]) {
+function escHarness(messages: unknown[] = rows) {
   const gw = gateway(messages)
-  const actions = { appendMessage: vi.fn(), openBacktrack: vi.fn(), sys: vi.fn() } as any
+  const prompts = messages.filter((row: any) => row.role === 'user').length
+  const actions = { appendMessage: vi.fn(), countPrompts: () => prompts, openBacktrack: vi.fn(), sys: vi.fn() } as any
   const cActions = { clearIn: vi.fn(), pushHistory: vi.fn() } as any
   const cState = { input: '', inputBuf: [] } as any
 
@@ -91,12 +92,13 @@ beforeEach(() => {
 })
 
 describe('Esc backtrack prime', () => {
-  it('first Esc primes and (after the prefetch) shows the hint; second Esc opens browsing, with no time window', async () => {
-    const { actions, esc } = escHarness()
+  it('first Esc primes from the transcript on screen (no RPC); second Esc opens browsing, with no time window', async () => {
+    const { actions, esc, gw } = escHarness()
 
     expect(esc()).toBe(true)
-    await flush()
     expect($backtrackPrime.get()).toEqual({ count: 3, sid: 'owner' })
+    await flush()
+    expect(gw.request).not.toHaveBeenCalled()
     expect(actions.openBacktrack).not.toHaveBeenCalled()
 
     await settle(600) // longer than the old 500 ms double-Esc window
@@ -118,13 +120,17 @@ describe('Esc backtrack prime', () => {
 
   it('zero earlier prompts: primes silently, second Esc says there is nothing to edit', async () => {
     const { actions, esc } = escHarness([])
+    const { request, slash, sys } = slashHarness([])
 
+    actions.openBacktrack.mockImplementation(() => slash('/rewind'))
+    esc()
+    expect($backtrackPrime.get()?.count).toBe(0)
+    expect(hintFrame()).toBeNull()
     esc()
     await flush()
-    expect($backtrackPrime.get()?.count).toBe(0)
-    esc()
-    expect(actions.openBacktrack).not.toHaveBeenCalled()
-    expect(actions.sys).toHaveBeenCalledWith('No previous message to edit.')
+    expect(request).toHaveBeenCalledWith('session.resume', { session_id: 'owner' })
+    expect(sys).toHaveBeenCalledWith('No previous message to edit.')
+    expect($overlayState.get().rewind).toBeFalsy()
   })
 
   it('a draft, a running turn or an overlay is not a backtrack Esc (main behaviour kept)', () => {
@@ -160,7 +166,7 @@ function hintFrame() {
 
 describe('composer hint', () => {
   it('shows the Codex prime hint only with an earlier prompt, and the pending-edit hint when armed', () => {
-    $backtrackPrime.set({ count: null, sid: 'owner' })
+    $backtrackPrime.set({ count: 0, sid: 'owner' })
     expect(hintFrame()).toBeNull()
     $backtrackPrime.set({ count: 2, sid: 'owner' })
     expect(hintFrame()).toBe('esc again to edit previous message')
@@ -170,8 +176,8 @@ describe('composer hint', () => {
   })
 })
 
-function slashHarness() {
-  const gw = gateway()
+function slashHarness(messages: unknown[] = rows) {
+  const gw = gateway(messages)
   const composer = { enqueue: vi.fn(), setInput: vi.fn() }
   const send = vi.fn()
   const sys = vi.fn()

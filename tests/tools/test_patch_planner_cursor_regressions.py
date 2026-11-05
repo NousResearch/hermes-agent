@@ -139,3 +139,11 @@ def test_multiline_consumed_hunk_with_same_replacement_is_not_dropped():
     result, files = apply(source, body)
     assert not result.success
     assert files.source == source and not files.writes
+
+
+def test_missing_hinted_site_after_prior_edit_does_not_target_distant_match():
+    source = 'prefix SECRET_A_EDIT\n' + 'y' * 3000 + '\nprefix SECRET_B_EDIT\n'
+    body = '@@\n-prefix SECRET_A\n+ZZSECRET_A\n@@ SECRET_A_EDIT @@\n-prefix SECRET\n+DONE'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes

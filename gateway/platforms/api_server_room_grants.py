@@ -256,7 +256,7 @@ async def _handle_room_member_run_close(self, request: web.Request) -> web.Respo
     POST /v1/runs under it with ``idempotency_key_conflict``. Rides the grant's ``stop``
     permission and its own run namespace, as POST /v1/runs/{id}/stop does."""
     from gateway.platforms.api_server import _api_request_profile, _openai_error
-    from gateway.platforms.api_server_runs import _remember_room_retention, _room_retention_until, room_run_scope
+    from gateway.platforms.api_server_runs import room_run_scope
     try:
         claims = self._room_grant_claims(request, permission="stop")
         _local_target(claims, _api_request_profile)
@@ -270,11 +270,9 @@ async def _handle_room_member_run_close(self, request: web.Request) -> web.Respo
             or type(generation) is not int or generation < 1):
         return _json_error(_openai_error, "Run close takes task_id and execution_generation.",
                            code="invalid_room_run_close", status=400)
-    _remember_room_retention(request, claims)
     try:
         outcome, record = await asyncio.to_thread(
-            self._run_idempotency_store.find_or_close, room_run_scope(claims), f"room:{task_id}:{generation}",
-            retention_until=_room_retention_until(request))
+            self._run_idempotency_store.find_or_close, room_run_scope(claims), f"room:{task_id}:{generation}")
     except (sqlite3.Error, OSError):
         return _json_error(
             _openai_error, "Run store is unavailable.", err_type="server_error",

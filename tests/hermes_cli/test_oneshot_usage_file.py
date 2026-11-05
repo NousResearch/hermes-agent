@@ -43,6 +43,20 @@ class TestWriteUsageFile:
         assert "failure" not in report
 
 
+    def test_reports_context_fill(self, tmp_path):
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), _result(last_prompt_tokens=61234, context_length=1000000))
+        report = json.loads(path.read_text())
+        assert report["last_prompt_tokens"] == 61234
+        assert report["context_length"] == 1000000
+
+    def test_context_fill_missing_is_null(self, tmp_path):
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), _result())
+        report = json.loads(path.read_text())
+        assert report["last_prompt_tokens"] is None
+        assert report["context_length"] is None
+
     def test_failure_marks_failed_and_records_message(self, tmp_path):
         path = tmp_path / "usage.json"
         _write_usage_file(str(path), {}, failure="boom")

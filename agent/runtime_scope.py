@@ -20,16 +20,19 @@ from hermes_scope import (
     LOCAL_OWNER,
     LOCAL_TENANT,
     BoundSecrets,
+    Fence,
     Scope,
     ScopeSwitchRefused,
     StateToken,
-    TurnScope,
     current_scope,
     current_state,
     push_state,
 )
 
-__all__ = ["bind_profile_scope", "bind_state", "bind_terminal_policy", "bind_turn", "legacy_switch", "scope_for_profile"]
+__all__ = [
+    "bind_profile_scope", "bind_state", "bind_terminal_policy", "bind_turn", "claim_fence", "legacy_switch",
+    "scope_for_profile",
+]
 
 
 def _same_home(a: str | Path, b: str | Path) -> bool:
@@ -37,33 +40,35 @@ def _same_home(a: str | Path, b: str | Path) -> bool:
     return hermes_home_key(a) == hermes_home_key(b)
 
 
+def _identity(scope: Scope) -> tuple[Any, ...]:
+    return scope.tenant, scope.agent, scope.actor, scope.owner, scope.role
+
+
 def _refuse_inside_hosted(what: str, *, unless: Scope | None = None) -> None:
-    """Refuse inside a hosted scope, unless *unless* is the same tenant and agent (a turn of it)."""
+    """Refuse inside a hosted scope, unless *unless* is the same tenant, agent, actor, owner and
+    role (a turn of it): a hosted activity cannot change whom it acts for or what it may do."""
     current = current_scope()
     if current is None or current.is_local:
         return
-    if unless is not None and (unless.tenant, unless.agent) == (current.tenant, current.agent):
+    if unless is not None and _identity(unless) == _identity(current):
         return
     raise ScopeSwitchRefused(
         f"{what} inside a hosted scope (tenant={current.tenant!r}, agent={current.agent!r}); "
         "a hosted activity's agent is fixed by its signed inbound frame")
 
 
-def scope_for_profile(home: str | Path, *, turn: Optional[tuple[str, str]] = None) -> Scope:
+def scope_for_profile(home: str | Path) -> Scope:
     """The scope a local activity for profile *home* runs under.
 
-    Re-entering the bound profile without naming a new turn returns the bound scope, so a turn's
-    session and turn id survive the nested profile binds the gateway makes inside a turn. The
-    actor is the bound scope's, else the local owner (a local install has one person). Raises
+    Re-entering the bound profile returns the bound scope, so a turn's session, turn id and fence
+    survive the nested profile binds the gateway makes inside a turn. The actor is the bound
+    scope's, else the local owner (a local install has one person), and owns the agent. Raises
     :class:`~hermes_scope.ScopeSwitchRefused` inside a hosted scope."""
     _refuse_inside_hosted("a local profile bind")
     current = current_scope()
-    if turn is None and current is not None and _same_home(current.agent, home):
+    if current is not None and _same_home(current.agent, home):
         return current
-    actor = current.actor if current is not None else LOCAL_OWNER
-    if turn is not None:
-        return TurnScope(LOCAL_TENANT, str(home), actor, turn[0], turn[1])
-    return Scope(LOCAL_TENANT, str(home), actor)
+    return Scope(LOCAL_TENANT, str(home), current.actor if current is not None else LOCAL_OWNER)
 
 
 def bind_state(
@@ -96,8 +101,8 @@ def bind_state(
     on its own: removing the earlier change it was copied from cannot take the piece away. Every
     piece is computed before anything is installed, so a failure leaves nothing bound.
 
-    Inside a hosted scope, only a bind of the same tenant and agent is allowed; anything else
-    raises :class:`~hermes_scope.ScopeSwitchRefused`."""
+    Inside a hosted scope, only a bind of the same tenant, agent, actor, owner and role is
+    allowed; anything else raises :class:`~hermes_scope.ScopeSwitchRefused`."""
     _refuse_inside_hosted("a bind of another scope", unless=scope)
     home = scope.home()
     if home is None:
@@ -148,28 +153,33 @@ def _bind_whole_profile(
 
 
 @contextmanager
-def bind_profile_scope(
-    home: str | Path, *, turn: Optional[tuple[str, str]] = None, hydrate_secrets: bool = True,
-) -> Iterator[Scope]:
+def bind_profile_scope(home: str | Path, *, hydrate_secrets: bool = True) -> Iterator[Scope]:
     """Run a body for local profile *home*: home, secrets and terminal policy bound together.
 
-    The replacement for calling the legacy setters directly. ``turn=(session_id, turn_id)`` binds
-    a :class:`~hermes_scope.TurnScope`. Refuses inside a hosted scope."""
-    scope = scope_for_profile(home, turn=turn)
+    The replacement for calling the legacy setters directly. A turn inside it is marked with
+    :func:`bind_turn`. Refuses inside a hosted scope."""
+    scope = scope_for_profile(home)
     with _bind_whole_profile(scope, hydrate_secrets=hydrate_secrets):
         yield scope
 
 
+def claim_fence(row: Mapping[str, Any]) -> Fence:
+    """The fence of a claimed ``session_admissions`` row: the owner epoch and runtime generation
+    the claim stamped on it."""
+    return Fence(row["owner_epoch"], row["generation"])
+
+
 @contextmanager
-def bind_turn(session_id: str, turn_id: str) -> Iterator[Scope | None]:
-    """Mark the body as one turn of the bound scope: the scope becomes a
-    :class:`~hermes_scope.TurnScope` with the same tenant, agent and actor; nothing else changes.
-    With no scope bound (a single-profile gateway keeps its ambient scope) this binds nothing."""
+def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
+    """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
+    :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and role; nothing
+    else changes. With no scope bound (a single-profile gateway keeps its ambient scope) this
+    binds nothing."""
     current = current_scope()
     if current is None:
         yield None
         return
-    turn = TurnScope(current.tenant, current.agent, current.actor, session_id, turn_id)
+    turn = current.for_turn(session_id, turn_id, fence)
     with push_state(scope=turn):
         yield turn
 

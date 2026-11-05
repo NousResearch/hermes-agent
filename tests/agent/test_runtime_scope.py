@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.runtime_scope import bind_profile_scope, bind_state, bind_turn, scope_for_profile
+from agent.runtime_scope import bind_profile_scope, bind_state, bind_turn, claim_fence, scope_for_profile
 from agent.secret_scope import (
     build_profile_secret_scope,
     current_secret_scope,
@@ -23,6 +23,8 @@ from agent.secret_scope import (
 from hermes_constants import get_hermes_home, hermes_home_key, reset_hermes_home_override, set_hermes_home_override
 from hermes_scope import (
     LOCAL_OWNER,
+    Fence,
+    Group,
     Principal,
     Scope,
     ScopeSwitchRefused,
@@ -37,6 +39,14 @@ from tools.terminal_scope import (
     reset_terminal_scope,
     set_terminal_scope,
 )
+
+
+F1 = Fence(1, 1)
+
+
+def _hosted(tenant: str = "acme", agent: str = "agent-7", who: str = "u1") -> Scope:
+    """A hosted scope on a personal agent: the person acting is its owner."""
+    return Scope(tenant, agent, Principal(who), owner=Principal(who), role="owner")
 
 
 def _profile(root: Path, name: str, backend: str) -> Path:
@@ -78,9 +88,9 @@ def test_scope_requires_all_three_parts():
     with pytest.raises(TypeError):
         Scope("local", "/h", "owner")  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        TurnScope("local", "/h", System("boot"), "", "t1")
+        TurnScope("local", "/h", System("boot"), "", "t1", F1)
     assert Scope("local", "/h", LOCAL_OWNER).home() == "/h"
-    assert Scope("acme", "agent-7", Principal("u1")).home() is None
+    assert _hosted().home() is None
 
 
 # --- binding ---
@@ -98,15 +108,15 @@ def test_bind_profile_scope_binds_home_secrets_and_terminal_together(two_profile
 def test_bind_turn_keeps_the_scope_and_adds_session_and_turn(two_profiles):
     a, _b = two_profiles
     with bind_profile_scope(a):
-        with bind_turn("s1", "adm-1") as turn:
-            assert turn == TurnScope("local", str(a), LOCAL_OWNER, "s1", "adm-1")
+        with bind_turn("s1", "adm-1", F1) as turn:
+            assert turn == TurnScope("local", str(a), LOCAL_OWNER, "s1", "adm-1", F1)
             # A nested bind of the same profile (the gateway re-enters it inside a turn) keeps the turn.
             assert scope_for_profile(a) == turn
         assert type(current_scope()) is Scope
 
 
 def test_bind_turn_without_a_scope_binds_nothing():
-    with bind_turn("s1", "adm-1") as turn:
+    with bind_turn("s1", "adm-1", F1) as turn:
         assert turn is None and current_scope() is None
 
 
@@ -160,24 +170,24 @@ def test_legacy_setters_without_a_scope_behave_as_before(two_profiles):
 
 def test_legacy_setters_refuse_in_a_hosted_scope(two_profiles):
     _a, b = two_profiles
-    with bind_state(Scope("acme", "agent-7", Principal("u1"))):
+    with bind_state(_hosted()):
         for call in (lambda: set_hermes_home_override(str(b)),
                      lambda: set_hermes_home_override(None),
                      lambda: set_secret_scope({"K": "v"}, profile_home=str(b)),
                      lambda: install_profile_terminal_scope(b)):
             with pytest.raises(ScopeSwitchRefused):
                 call()
-        assert current_scope() == Scope("acme", "agent-7", Principal("u1"))
+        assert current_scope() == _hosted()
 
 
 def test_hosted_scope_binds_no_directory_state():
-    with bind_state(Scope("acme", "agent-7", Principal("u1"))):
+    with bind_state(_hosted()):
         assert current_secret_scope() is None and get_terminal_scope() is None
 
 
 def test_a_local_bind_refuses_inside_a_hosted_scope(two_profiles):
     _a, b = two_profiles
-    hosted = Scope("acme", "agent-7", Principal("u1"))
+    hosted = _hosted()
     with bind_state(hosted):
         with pytest.raises(ScopeSwitchRefused):
             with bind_profile_scope(b):
@@ -221,20 +231,20 @@ def test_clearing_one_piece_of_a_bound_scope_refuses(two_profiles, clear):
 
 
 def test_a_raw_terminal_mapping_refuses_inside_a_hosted_scope():
-    with bind_state(Scope("acme", "agent-7", Principal("u1"))):
+    with bind_state(_hosted()):
         with pytest.raises(ScopeSwitchRefused):
             set_terminal_scope({"TERMINAL_ENV": "local"}, profile_home="agent-7")
         assert get_terminal_scope() is None
 
 
 def test_a_hosted_scope_cannot_bind_another_hosted_agent_or_tenant():
-    hosted = Scope("acme", "one", Principal("u1"))
+    hosted = _hosted(agent="one")
     with bind_state(hosted):
-        for other in (Scope("acme", "two", Principal("u1")), Scope("other", "one", Principal("u1"))):
+        for other in (_hosted(agent="two"), _hosted(tenant="other", agent="one")):
             with pytest.raises(ScopeSwitchRefused):
                 bind_state(other)
-        with bind_turn("s1", "t1"):  # a turn of the same agent is not a switch
-            assert current_scope() == TurnScope("acme", "one", Principal("u1"), "s1", "t1")
+        with bind_turn("s1", "t1", F1):  # a turn of the same agent is not a switch
+            assert current_scope() == _hosted(agent="one").for_turn("s1", "t1", F1)
         assert current_scope() == hosted
 
 
@@ -342,7 +352,7 @@ def test_a_reset_cannot_leave_a_hosted_agent_from_inside_it(two_profiles):
     (state made inside a scope goes with it); that refuses. Only the bind that entered it can."""
     a, _b = two_profiles
     local = bind_state(Scope("local", str(a), LOCAL_OWNER), hydrate_secrets=False)
-    hosted = Scope("acme", "agent-7", Principal("u1"))
+    hosted = _hosted()
     with bind_state(hosted):
         with pytest.raises(ScopeSwitchRefused):
             local.reset()
@@ -463,3 +473,102 @@ def test_a_deferred_policy_keeps_the_overlay_it_was_bound_with(two_profiles):
             assert get_terminal_scope()["TERMINAL_ENV"] == "docker"
         finally:
             reset_terminal_scope(token)
+
+
+# --- owner, role and fence ---
+
+def test_local_scope_defaults_owner_and_role_to_the_local_person():
+    assert Scope("local", "/h", LOCAL_OWNER).owner == LOCAL_OWNER
+    assert Scope("local", "/h", Principal("alice")).owner == Principal("alice")
+    boot = Scope("local", "/h", System("boot"))
+    assert (boot.owner, boot.role, boot.can_administer) == (LOCAL_OWNER, "owner", True)
+
+
+def test_hosted_scope_must_name_owner_and_role():
+    with pytest.raises(ValueError, match="owner and role"):
+        Scope("acme", "agent-7", Principal("u1"))
+    with pytest.raises(ValueError, match="owner and role"):
+        Scope("acme", "agent-7", Principal("u1"), owner=Principal("u1"))
+
+
+def test_personal_agent_is_used_only_by_its_owner():
+    with pytest.raises(ValueError, match="only by its owner"):
+        Scope("acme", "x", Principal("bob"), owner=Principal("alice"), role="owner")
+    with pytest.raises(ValueError, match="only role is 'owner'"):
+        Scope("acme", "x", Principal("alice"), owner=Principal("alice"), role="member")
+    # Work no person started (a cron tick) still runs on the owner's agent.
+    assert Scope("acme", "x", System("cron"), owner=Principal("alice"), role="owner").can_administer
+
+
+def test_group_agent_roles_decide_administration():
+    team = Group("support")
+    manager = Scope("acme", "bot", Principal("m"), owner=team, role="manager")
+    member = Scope("acme", "bot", Principal("u"), owner=team, role="member")
+    assert manager.can_administer and not member.can_administer
+    with pytest.raises(ValueError, match="'manager' and 'member'"):
+        Scope("acme", "bot", Principal("m"), owner=team, role="owner")
+    with pytest.raises(ValueError, match="role must be one of"):
+        Scope("acme", "bot", Principal("m"), owner=team, role="admin")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="owner must be"):
+        Scope("acme", "bot", Principal("m"), owner="support", role="member")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        Group("")
+
+
+def test_fence_is_two_positive_ints():
+    for bad in ((0, 1), (1, 0), (True, 1), ("1", 1), (1, 1.0)):
+        with pytest.raises(ValueError):
+            Fence(*bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="fence must be a Fence"):
+        TurnScope("local", "/h", LOCAL_OWNER, "s1", "t1", (1, 1))  # type: ignore[arg-type]
+
+
+def test_a_turn_keeps_owner_and_role_and_carries_its_fence(two_profiles):
+    a, _b = two_profiles
+    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), role="member")
+    with bind_state(member):
+        with bind_turn("s1", "t1", Fence(4, 9)) as turn:
+            assert (turn.owner, turn.role, turn.fence) == (Group("support"), "member", Fence(4, 9))
+            assert not turn.can_administer
+    with bind_profile_scope(a), bind_turn("s1", "t1", Fence(2, 3)) as turn:
+        assert (turn.owner, turn.role, turn.fence) == (LOCAL_OWNER, "owner", Fence(2, 3))
+        # A turn re-marked inside a turn (a nested drain) carries the newer claim's fence.
+        with bind_turn("s1", "t2", Fence(2, 4)) as inner:
+            assert (inner.turn, inner.fence) == ("t2", Fence(2, 4))
+        assert current_scope().fence == Fence(2, 3)
+
+
+@pytest.mark.parametrize("change", [
+    dict(actor=Principal("other")),
+    dict(role="manager"),
+    dict(owner=Group("other-team")),
+])
+def test_hosted_scope_refuses_a_bind_that_changes_who_it_acts_for(change):
+    from dataclasses import replace
+    member = Scope("acme", "bot", Principal("u"), owner=Group("support"), role="member")
+    with bind_state(member):
+        with pytest.raises(ScopeSwitchRefused):
+            bind_state(replace(member, **change))
+        assert current_scope() == member
+
+
+def test_claim_fence_reads_the_claimed_admission(tmp_path):
+    """The fence a turn binds is the one the claim stamped on its admission row."""
+    from contextlib import closing
+
+    import hermes_state_runtime as rt
+    from hermes_state import SessionDB
+    from tests.hermes_state.test_target_advance_fence import _local_session
+
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        rt.begin_runtime_epoch(db, instance_id="owner")
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")  # a restarted owner: epoch 2
+        sid = _local_session(db, epoch, tmp_path)
+        for n in range(3):
+            rt.admit_session_input(db, epoch=epoch, principal_id="human", session_id=sid,
+                                   request_id=f"r{n}", payload={"text": "hi"})
+            row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+            rt.settle_session_input(db, epoch=epoch, admission_id=row["admission_id"],
+                                    generation=row["generation"], outcome="completed", result={})
+        assert (epoch, row["generation"]) == (2, 3)
+        assert claim_fence(row) == Fence(2, 3) == Fence(epoch, db.get_session(sid)["runtime_generation"])

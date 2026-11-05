@@ -122,18 +122,32 @@ via `copy_context()` and unwind deterministically — nothing is written to
 
 The scope, the home override, the secret scope and the terminal policy are one
 immutable value, `hermes_scope.ScopeState`, in a single contextvar. The scope is
-`hermes_scope.Scope(tenant, agent, actor)`: `actor` is `Principal(id)` (a
-person) or `System(reason)` (cron, kanban, housekeeping), and a `TurnScope` adds
-`session_id` and `turn_id`. `agent/runtime_scope.py` is the only module that
-turns a scope into profile state:
+`hermes_scope.Scope(tenant, agent, actor, owner=, role=)`:
 
-- `bind_profile_scope(home, turn=None)` binds the scope plus all three pieces as
+- `actor` is `Principal(id)` (a person) or `System(reason)` (cron, kanban,
+  housekeeping).
+- `owner` is the agent's one owner: a `Principal` for a personal agent, used only
+  by that person, or a `Group` for a shared one.
+- `role` is what the activity may do on the agent: `owner` (personal agents),
+  `manager` or `member` (group agents). `Scope.can_administer` is true for owners
+  and managers. A hosted scope must name both; a local scope defaults to the local
+  person as owner with role `owner`.
+- A `TurnScope` adds `session`, `turn` and `fence`: the `Fence(epoch, generation)`
+  the turn's admission was claimed under (`agent.runtime_scope.claim_fence(row)`).
+
+`agent/runtime_scope.py` is the only module that turns a scope into profile
+state:
+
+- `bind_profile_scope(home)` binds the scope plus all three pieces as
   one change and removes it on exit. The process's own home keeps its launch
   semantics; any other home is hydrated from that profile's sources and stamped
   as routed. It refuses inside a hosted scope.
 - `bind_state(scope, ...)` returns the change's token, for a host that holds it
   across calls (the TUI turn, the managed worker) or deliberately binds less.
-- `bind_turn(session_id, turn_id)` marks a turn inside a bound scope.
+- `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
+
+Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and role;
+anything else raises `ScopeSwitchRefused`.
 
 A reset removes its own change and replays the later ones, except those made
 inside a scope the result no longer has. A reset that is stale, repeated, out of

@@ -889,6 +889,9 @@ def _rewind_active_session_history(
                 session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
                 adopt_row_ids=True)
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
+        # The rewound row's durable id: /undo's file half addresses the turn by it (a compaction
+        # restatement keeps the turn's message_uid but not its timestamp).
+        live_view = {**live_view, "_rewound_row_id": outcome.target_row_id}
     else:
         target_index = user_indices[user_ordinal]
         installed, live_view = history_before_user_originated_turn(history, target_index)

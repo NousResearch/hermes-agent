@@ -15,7 +15,7 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_state_errors import SessionActiveWriteGuardError
-from hermes_state_lineage import session_lineage_guard
+from hermes_state_lineage import SessionLineageInventoryError, session_lineage_guard
 from hermes_state_sessions_clauses import (
     _cwd_prefix_clause, _inherit_col_sql, _where_sql, _workspace_key_clause,
 )
@@ -1024,32 +1024,38 @@ class SessionSessionsMixin:
         """
         if not session_id:
             return False
-        # Hold the same home-wide lock used by create/resume through the recovery write.
-        with session_lineage_guard(self.db_path, session_id):
-            try:
-                row = self.get_session(session_id)
-            except Exception:
-                return False
-            if not row or not row.get("archived"):
-                return False
-            # The accidental stamp lives on the live TIP; judge recoverability there.
-            tip = row
-            try:
-                tip_id = self.get_compression_tip(session_id) or session_id
-                if tip_id != session_id:
-                    tip = self.get_session(tip_id) or row
-            except Exception:
-                pass
-            if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
-                return False
-            if not self.set_session_archived(session_id, False):
-                return False
-            # Clear the accidental end stamp, or a LATER deliberate archive (which never
-            # writes end_reason) would auto-resurrect on the next lookup.
-            self._write_sql(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
-            )
-            return True
+        # Expand the root/tip set only after releasing the previous ownership guard.
+        guarded_ids = {session_id}
+        for _attempt in range(3):
+            with session_lineage_guard(self.db_path, guarded_ids):
+                try:
+                    row = self.get_session(session_id)
+                except Exception:
+                    return False
+                if not row or not row.get("archived"):
+                    return False
+                # The accidental stamp lives on the live TIP; judge recoverability there.
+                tip = row
+                try:
+                    tip_id = self.get_compression_tip(session_id) or session_id
+                    if tip_id not in guarded_ids:
+                        guarded_ids.add(tip_id)
+                        continue
+                    if tip_id != session_id:
+                        tip = self.get_session(tip_id) or row
+                except Exception:
+                    return False
+                if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
+                    return False
+                if not self.set_session_archived(session_id, False):
+                    return False
+                # Clear the accidental end stamp, or a LATER deliberate archive (which never
+                # writes end_reason) would auto-resurrect on the next lookup.
+                self._write_sql(
+                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
+                )
+                return True
+        raise SessionLineageInventoryError("Compression tip changed during recovery; retry the operation.")
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).

@@ -145,6 +145,9 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         "start /b wmic shadowcopy delete",
         "powershell.exe -ExecutionPolicy Bypass wmic shadowcopy delete",
         "ssh -i k host wmic shadowcopy delete",
+        # Escaped quotes inside the carrier script, and a quoted program word.
+        r'cmd /c "wmic shadowcopy where \"ID=1\" delete"',
+        'cmd /c "wmic" shadowcopy delete',
         # The script anchor still holds behind a launcher, a path prefix or an outer separator.
         r'sudo pwsh -c "gci | ri"',
         r'cmd /c powershell "gci C:\data | ri -r"',

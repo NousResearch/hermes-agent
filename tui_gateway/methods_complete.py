@@ -371,7 +371,7 @@ def _(rid, params: dict) -> dict:
     reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
-    payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
+    payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=None)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
         provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}

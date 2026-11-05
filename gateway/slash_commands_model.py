@@ -466,7 +466,7 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
+                list_picker_providers, max_models=None, include_moa=True, **listing_kwargs
             )
         except Exception:
             providers = []

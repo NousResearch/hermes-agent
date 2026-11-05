@@ -308,12 +308,12 @@ reach (typically the public VPS), or bridge the network with Tailscale/VPN.
 
 ### Bots from another gateway in a gateway-owned group chat
 
-These group chats keep running when Desktop closes or disconnects. The home and member gateways must stay running; Desktop catches up from the home gateway’s log when it reconnects.
-
 A group chat your gateway owns (its *home*) can seat a bot that lives on another
 gateway (its *member gateway*). The member's turns run on its own machine; the
-home keeps the group chat, its log and its schedule, even with Desktop closed. This is set up over the gateways'
-JSON-RPC; New group chat in Desktop does not offer gateway-owned peer setup yet.
+home keeps the group chat, its log and its schedule, so the group chat keeps running
+when Desktop closes or disconnects. The home and member gateways must stay running;
+Desktop catches up from the home gateway's log when it reconnects. This is set up over
+the gateways' JSON-RPC; New group chat in Desktop does not offer gateway-owned peer setup yet.
 
 Limits: text only (a message with files fails that member's turn, visibly), and
 only the member gateway's `default` profile.

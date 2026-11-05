@@ -65,7 +65,7 @@ URI passed to a CLI process, command, committed file, or response.
 | Task | PostgreSQL | MySQL | SQLite |
 |---|---|---|---|
 | Connect | `psql` with `PGSERVICE` | `mysql -h "$DB_HOST" -u "$DB_USER" -p "$DB_NAME"` | `sqlite3 app.db` |
-| Test availability | `pg_isready -h "$DB_HOST"` | `mysqladmin -h "$DB_HOST" -u "$DB_USER" -p ping` | `sqlite3 app.db "PRAGMA quick_check;"` |
+| Test availability | `pg_isready -h "$DB_HOST"` | `mysqladmin -h "$DB_HOST" -u "$DB_USER" -p ping` | `sqlite3 -readonly app.db "PRAGMA quick_check;"` |
 | List tables | `psql -c '\dt'` | `mysql -h "$DB_HOST" -u "$DB_USER" -p "$DB_NAME" -e 'SHOW TABLES;'` | `sqlite3 app.db '.tables'` |
 | Describe table | `psql -c '\d+ users'` | `mysql -h "$DB_HOST" -u "$DB_USER" -p "$DB_NAME" -e 'DESCRIBE users;'` | `sqlite3 app.db 'PRAGMA table_info(users);'` |
 | Run SQL file | `psql -f change.sql` | `mysql -h "$DB_HOST" -u "$DB_USER" -p "$DB_NAME" < change.sql` | `sqlite3 app.db < change.sql` |

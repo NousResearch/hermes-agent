@@ -102,6 +102,15 @@ def test_connection_checks_and_mysql_commands_keep_the_confirmed_target():
             assert '-u "$' in line or line.endswith("\\")
 
 
+def test_sqlite_availability_reference_opens_existing_database_readonly():
+    quick_reference = _content().split("## Quick Reference", 1)[1].split("## Procedure", 1)[0]
+    availability = next(
+        line for line in quick_reference.splitlines() if line.startswith("| Test availability |")
+    )
+    assert 'sqlite3 -readonly app.db "PRAGMA quick_check;"' in availability
+    assert 'sqlite3 app.db "PRAGMA quick_check;"' not in availability
+
+
 def test_sqlite_backup_and_restore_formats_match():
     content = _content()
     assert 'sqlite3 app.db ".backup \'backup.db\'"' in content

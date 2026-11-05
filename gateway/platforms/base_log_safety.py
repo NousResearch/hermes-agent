@@ -1,4 +1,5 @@
-"""Log-safe URL rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
+"""Log-safe URL and path rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
+import re
 from urllib.parse import urlsplit
 
 
@@ -21,3 +22,13 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     if len(safe) <= max_len:
         return safe
     return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
+
+
+# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a
+# model-emitted path must not forge a log line.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _log_safe_path(path: str) -> str:
+    """Return a single-line, length-bounded path for log output."""
+    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]

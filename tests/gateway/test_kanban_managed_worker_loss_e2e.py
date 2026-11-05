@@ -1,4 +1,4 @@
-"""End-to-end: a managed worker that dies at start leaves a diagnosable record and a usable card.
+"""End-to-end: a managed worker that dies at start leaves a diagnosable record and a parked card.
 
 The fixture (``fixtures/kanban_lost_worker_probe.py``) runs the real stack in a disposable home:
 a real ``gateway.run`` daemon, the real dispatcher, the real worker client and the real managed
@@ -6,11 +6,12 @@ child process, against a real board and the real profile logs. The card requires
 installed, so the child dies in its first turn with ``ValueError: kanban_skills_unavailable`` —
 the same shape as the orca run observed on 2026-11-05, four times over.
 
-What the operator must be able to see afterwards (t_925a816f):
+What the operator must be able to see afterwards (t_925a816f, t_5c02fad2):
 
   * the crash record names the failing step and the exception, not just ``managed_worker_failed``;
   * the profile's errors.log carries the same cause;
-  * the card is claimable again without a manual ``hermes sessions discard``.
+  * the card is NOT left for another blind retry: the guard parks it ``blocked``/``capability`` on
+    the first attempt, with a reason naming the skill the profile could not resolve.
 """
 import json
 import subprocess
@@ -22,7 +23,7 @@ import pytest
 from tests.gateway.fixtures.local_recovery_probe import child_env
 
 
-def test_a_managed_worker_that_dies_at_start_is_diagnosable_and_leaves_a_usable_card(tmp_path):
+def test_a_managed_worker_that_dies_at_start_is_diagnosable_and_parks_the_card(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     env = child_env()
     env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'),
@@ -38,22 +39,27 @@ def test_a_managed_worker_that_dies_at_start_is_diagnosable_and_leaves_a_usable_
     assert receipt['spawned'], receipt
     assert receipt['ran'], receipt
 
-    # 1. The crash record names WHY (step, exception, source line) and carries the child's exit code.
+    # 1. The attempt is diagnosable. The guard parks the card *before* the loss bookkeeping, so the
+    #    board's record is the `blocked` event (assertion 3) and the exception detail (step,
+    #    exception, skill, source line, exit code) rides the profile's errors.log. A structured
+    #    `worker_lost` cause is only recorded while the card is still `running`, so it is optional
+    #    here — but if one exists it must still name the exception.
     cause = receipt['cause']
-    assert cause and cause['step'] == 'execute' and cause['exc_type'] == 'ValueError', receipt
-    assert cause['detail'].startswith('ValueError: kanban_skills_unavailable'), receipt
-    assert cause['where'].startswith('session_kanban.py:'), receipt
-    assert cause['exit_code'] == 1, receipt
-    assert cause['log'].endswith('managed-worker.log'), receipt
+    if cause is not None:
+        assert cause['detail'].startswith('ValueError: kanban_skills_unavailable'), receipt
 
-    # 2. The booked run error quotes that cause, so the board alone is enough to diagnose it.
-    assert 'execute: ValueError: kanban_skills_unavailable' in receipt['run_error'], receipt
-    assert 'child exit 1' in receipt['run_error'], receipt
-
-    # 3. The profile's errors.log says the same thing on one line.
+    # 2. The profile's errors.log names the step, the exception, the skill and the exit code.
     assert 'Managed worker lost: managed_worker_failed' in receipt['errors_log'], receipt
     assert 'execute: ValueError: kanban_skills_unavailable' in receipt['errors_log'], receipt
+    assert 'absent-skill-t925' in receipt['errors_log'], receipt
+    assert 'at session_kanban.py:' in receipt['errors_log'], receipt
+    assert 'child exit 1' in receipt['errors_log'], receipt
 
-    # 4. The card is usable again with no manual ``hermes sessions discard``.
-    assert receipt['task_status'] == 'ready', receipt
-    assert receipt['claimable'] is True, receipt
+    # 3. The card is parked for a human on the FIRST attempt, with the skill named: no blind retry
+    #    of a profile that cannot start a worker turn (t_5c02fad2 retried four times).
+    assert receipt['task_status'] == 'blocked', receipt
+    block = receipt['block']
+    assert block and block['kind'] == 'capability', receipt
+    assert 'absent-skill-t925' in block['reason'], receipt
+    assert "profile 'default'" in block['reason'], receipt
+    assert receipt['claimable'] is False, receipt

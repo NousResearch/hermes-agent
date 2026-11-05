@@ -42,10 +42,9 @@ def build_kanban_policy(connection, params, config):
             if bound and json.loads(bound[0])['request_id'] != 'kanban:' + json.dumps([board, task.id, task.current_run_id], separators=(',', ':')):
                 raise RuntimeStoreError('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
-            skills = list(task.skills or ())
-            if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
-                # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
-                skills = list(dict.fromkeys([*skills, 'sdlc-review']))
+            review_lane = kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review'
+            # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
+            skills = kb.worker_skill_identifiers(task.skills, review_lane=review_lane)
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
     cwd = task.workspace_path
@@ -401,11 +400,38 @@ def worker_exit_code(path, params):
 KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
 
 
+def _park_unsatisfiable_preload(context, missing):
+    """Park a card whose worker cannot resolve *any* preloaded skill, naming the skills.
+
+    The guard below used to only raise: the card stayed ``running``, the dispatcher respawned the
+    same unprovisioned profile until its breaker gave up, and a review gate stranded silently
+    instead of showing what was wrong. Blocking first makes the first attempt the last one — the
+    card lands ``blocked``/``capability`` (resuming into ``review`` where it came from) with the
+    missing identifiers in the reason. Never raises: the caller must still fail the turn.
+    """
+    from hermes_cli.kanban_skill_preflight import preload_failure_reason
+    reason = preload_failure_reason(context.get('profile'), missing)
+    try:
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+        with connect_closing(Path(context['db'])) as conn:
+            kb.block_task(conn, context['task_id'], reason=reason, kind='capability',
+                          expected_run_id=int(context['run_id']))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('kanban preload block failed for %s', context.get('task_id'))
+    return reason
+
+
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+        # Named, not just refused: the identifiers are the diagnosis (see preload_failure_reason).
+        _park_unsatisfiable_preload(context, missing)
+        raise ValueError(
+            'kanban_skills_unavailable: ' + ', '.join(missing)
+            + f" did not resolve for profile '{context.get('profile')}'; card blocked")
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

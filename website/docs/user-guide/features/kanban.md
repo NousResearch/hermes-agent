@@ -666,6 +666,13 @@ hermes kanban create "audit auth flow" \
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
+A skill is required, not advisory: the identifiers a worker preloads are exactly the task's pinned `skills` plus `sdlc-review` on the review lane, and a profile that cannot resolve **any** of them parks the card on the first attempt — `blocked` with `block_kind=capability` and a reason naming the missing skills — instead of dying before its first turn and leaving the card `running` for the dispatcher to retry against the same unprovisioned profile. A partial miss only warns, because one resolved skill is enough for the turn to start. To check a whole board before routing work to it:
+
+```bash
+python -m hermes_cli.kanban_skill_preflight --board default            # every live assignee, both lanes
+python -m hermes_cli.kanban_skill_preflight --lane review --json       # machine-readable, exits 1 on a miss
+```
+
 ### Per-task model override
 
 Pin a task's worker to a specific model (and optionally provider), independent of the assignee profile's default:

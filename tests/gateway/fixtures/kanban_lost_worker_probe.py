@@ -2,8 +2,10 @@
 
 Reproduces the observed failure (t_925a816f) end to end: the card requires a skill nobody
 installed, so the child raises ``ValueError: kanban_skills_unavailable`` while running its first
-turn (``gateway/session_kanban.py``), sends ``managed_worker_failed`` and exits 1. The dispatcher
-then books the attempt.
+turn (``gateway/session_kanban.py``), sends ``managed_worker_failed`` and exits 1. Before raising,
+the guard parks the card ``blocked``/``capability`` with the missing identifier in the reason, so
+the first attempt is also the last one (t_5c02fad2 retried the same unprovisioned profile four
+times). The dispatcher then books the attempt.
 
 Everything here is real: a real ``gateway.run`` daemon in a disposable home, the real dispatcher
 spawning the real worker client, the real managed child process, the real board database and the
@@ -12,7 +14,8 @@ real profile logs. The receipt says what the operator can see afterwards:
   cause        the ``worker_lost`` event's structured cause (step/exception/source/exit code)
   run_error    the booked run error, which must quote that cause
   errors_log   the profile's errors.log line, which must name it too
-  claimable    the card can be claimed again with no ``hermes sessions discard``
+  block        the ``blocked`` event (kind + reason naming the missing skill), if the guard parked it
+  claimable    whether a fresh claim succeeds — False once the card is parked for a human
 """
 import asyncio
 from contextlib import closing
@@ -102,7 +105,9 @@ def main():
                 if (run_id or task.current_run_id) else None
             lost = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='worker_lost' "
                                 "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
-            return task, run, lost
+            blocked = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' "
+                                   "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+            return task, run, lost, blocked
 
     try:
         with daemon(root, home, env, barrier=False) as (_proc, _desc):
@@ -117,11 +122,13 @@ def main():
                 with closing(connect(board='lost')) as conn:
                     # The crash sweep books the dead attempt; one tick is what a dispatcher owes it.
                     dispatch.dispatch_once(conn, board='lost', max_spawn=0)
-                task, run, lost = board_state(receipt.get('run_id'))
+                task, run, lost, blocked = board_state(receipt.get('run_id'))
                 receipt.update(task_status=task.status, claim_lock=task.claim_lock,
                                failures=task.consecutive_failures, run_outcome=run['outcome'] if run else None,
                                run_error=(run['error'] if run else '') or '',
-                               cause=(json.loads(lost[0])['cause'] if lost else None))
+                               last_failure_error=task.last_failure_error or '',
+                               cause=(json.loads(lost[0])['cause'] if lost else None),
+                               block=(json.loads(blocked[0]) if blocked else None))
                 log = home / 'logs' / 'errors.log'
                 if log.exists():
                     lines = log.read_text(encoding='utf-8', errors='replace').splitlines()

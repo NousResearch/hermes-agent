@@ -356,7 +356,8 @@ class HostedRoomService:
         for key, route in routes:
             revoke = _hook(self.peer_clients.get(key), "revoke_grant")
             if revoke is None:
-                raise RuntimeError("peer room grant cannot be revoked safely")
+                raise RoomDisbandRefusedError(
+                    "peer_revoke_unsupported", "The member cannot revoke its group chat grant; retry after upgrading it.")
             try:
                 revoke(grant=route.grant)
             except PeerRunsHTTPError as exc:
@@ -586,7 +587,8 @@ class HostedRoomService:
         """Fence new routes while Stop runs outside the publication and policy locks."""
         with self.peer_route_lock:
             if room_id in self._disbanding_rooms:
-                raise RuntimeError("room is already disbanding; retry deletion")
+                raise RoomDisbandRefusedError(
+                    "room_disbanding_retry", "The group chat is already disbanding; retry deletion.")
             self._disbanding_rooms.add(room_id)
         try:
             yield

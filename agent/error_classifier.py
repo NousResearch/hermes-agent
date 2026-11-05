@@ -217,9 +217,10 @@ def _is_byte_size_limit_message(error_msg: str) -> bool:
         return False
     if _BYTE_SIZE_SUBJECT.search(msg):
         return True
-    # "content length" alone is a field-length complaint unless the request or bytes are named.
+    # "content length" alone is a field-length complaint unless the request or bytes are named. "_" stays
+    # inside a word: the SDK's str() carries the body, whose "invalid_request_error" type is not "request".
     content_length = "content length" in msg or "content-length" in msg
-    return content_length and bool(_REQUEST_WORDS & set(re.split(r"[^a-z0-9]+", msg)))
+    return content_length and bool(_REQUEST_WORDS & set(re.split(r"[^a-z0-9_]+", msg)))
 
 
 # Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media

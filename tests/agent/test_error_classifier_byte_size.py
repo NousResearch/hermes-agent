@@ -1,5 +1,7 @@
 """Request-body byte caps reported as HTTP 400 (or status-less) route to payload_too_large."""
 
+import httpx
+import openai
 import pytest
 
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -43,3 +45,21 @@ def test_request_body_byte_cap_compresses(message, status, body):
 def test_field_or_response_length_errors_are_not_a_body_byte_cap(message):
     result = classify_api_error(_APIError(message, status_code=400))
     assert result.reason not in (FailoverReason.payload_too_large, FailoverReason.context_overflow), message
+
+
+_FIELD_LENGTH = "tools[0].description content length exceeds maximum allowed"
+
+
+@pytest.mark.parametrize("body", [
+    {"error": {"message": _FIELD_LENGTH, "type": "invalid_request_error", "param": None, "code": None}},
+    {"type": "error", "error": {"type": "invalid_request_error", "message": _FIELD_LENGTH}, "request_id": "req_011a"},
+])
+def test_sdk_400_field_length_is_not_a_body_byte_cap(body):
+    # The SDK builds the error itself, so str() embeds the body, so "invalid_request_error" / "request_id" must not count as
+    # naming the request.
+    request = httpx.Request("POST", "https://provider.test/v1/chat/completions")
+    client = openai.OpenAI(api_key="test", base_url="https://provider.test/v1")
+    error = client._make_status_error_from_response(httpx.Response(400, request=request, json=body))
+    assert isinstance(error, openai.BadRequestError)
+    result = classify_api_error(error)
+    assert (result.reason, result.should_compress) == (FailoverReason.format_error, False), str(error)

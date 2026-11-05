@@ -171,10 +171,14 @@ export function registerTerminalIpc({
   function terminalShellEnv() {
     const env = { ...process.env }
 
-    // Electron is commonly launched through `npm run dev`; do not leak npm's
-    // managed prefix into a user's interactive shell (nvm/proto warn loudly).
+    // Electron is commonly launched through `pnpm run dev`; do not leak the
+    // package manager's settings into a user's interactive shell (nvm/proto warn
+    // loudly, and the user's own pnpm would inherit them). Windows env names are
+    // case-insensitive: NPM_CONFIG_* is the same setting.
     for (const key of Object.keys(env)) {
-      if (key === 'npm_config_prefix' || key.startsWith('npm_config_') || key.startsWith('npm_package_')) {
+      const name = key.toLowerCase()
+
+      if (name.startsWith('npm_config_') || name.startsWith('npm_package_') || name.startsWith('pnpm_config_')) {
         delete env[key]
       }
     }

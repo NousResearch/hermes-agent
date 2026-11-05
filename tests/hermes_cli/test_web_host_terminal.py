@@ -116,6 +116,21 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     assert "OPENAI_API_KEY" not in env
 
 
+def test_host_terminal_shell_inherits_no_package_manager_settings(tmp_path, monkeypatch):
+    from hermes_cli import web_host_terminal
+    from hermes_constants import get_hermes_home
+
+    leaked = {"pnpm_config_store_dir": str(tmp_path / "store"), "NPM_CONFIG_CACHE": str(tmp_path / "cache"),
+              "npm_config_prefix": str(tmp_path / "prefix"), "npm_package_name": "hermes-agent"}
+    for name, value in leaked.items():
+        monkeypatch.setenv(name, value)
+
+    _argv, _cwd, env, _shell_name = web_host_terminal.resolve_argv(home=get_hermes_home(), requested_cwd=str(tmp_path))
+
+    assert not set(leaked) & set(env)
+    assert env["TERM"] == "xterm-256color"
+
+
 @pytest.mark.platforms("linux")
 def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
     monkeypatch.setenv("SHELL", "/bin/sh")

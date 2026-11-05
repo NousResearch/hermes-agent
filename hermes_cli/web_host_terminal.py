@@ -136,8 +136,11 @@ def resolve_argv(
     finally:
         reset_hermes_home_override(override_token)
 
+    # A dashboard started through `pnpm run` carries the package manager's
+    # settings; the user's own shell (and pnpm) must not inherit them. Windows
+    # env names are case-insensitive: NPM_CONFIG_* is the same setting.
     for key in list(env):
-        if key == "npm_config_prefix" or key.startswith(("npm_config_", "npm_package_")):
+        if key.lower().startswith(("npm_config_", "npm_package_", "pnpm_config_")):
             env.pop(key, None)
     for key in ("NO_COLOR", "FORCE_COLOR", "COLORFGBG"):
         env.pop(key, None)

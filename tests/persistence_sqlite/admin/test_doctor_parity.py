@@ -1,15 +1,10 @@
-"""``DoctorAdmin`` against the legacy doctor, repair, journal-mode and change-watcher functions: each case runs the
-legacy function and the admin method on two identical copies of one seeded file (or on the same file twice when
-the probe reads only), and compares the results and the files they leave. A held file is held by a child process
-with an open read transaction, started and stopped around the case. The doctor and journal-mode functions are
-main's, from ``_main_reference``."""
+"""``DoctorAdmin`` against the doctor, repair, journal-mode and change-watcher functions: each case runs the function and the admin method on two identical copies of one seeded file (or on the same file twice when the probe reads only), and compares the results and the files they leave. A held file is held by a child process with an open read transaction, started and stopped around the case. The doctor's write-health probe and session count are main's, from ``_main_reference``."""
 
 from __future__ import annotations
 
 import sqlite3
 import subprocess
 import sys
-from argparse import Namespace
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -22,20 +17,14 @@ from persistence.sqlite._state.repair import (
     _db_opens_cleanly, _exclusive_repair_db_guard, _live_writer_holds_db, repair_state_db_schema,
     state_db_has_structural_damage,
 )
-from persistence.sqlite._state.wal import is_sqlite_wal_reset_vulnerable
 from persistence import PermanentStoreError, ProfileScope, StoreContention
 from persistence.sqlite import SQLiteBackend
 from persistence.sqlite.admin import SQLiteStoreAdmin, _doctor
 from persistence.sqlite.admin._doctor import SQLiteRepairGuard
 from tests.fixtures.storage_seed import seed_messages, seed_session
-from tests.persistence_sqlite._legacy_store import legacy_store
 from tests.persistence_sqlite.admin import _main_reference
-from tests.persistence_sqlite.admin._main_reference import (
-    _header_mode, _session_count, _write_health_reason, cmd_set_journal_mode,
-)
+from tests.persistence_sqlite.admin._main_reference import _session_count, _write_health_reason
 from tui_gateway.change_watcher import _newest_mtime_ns
-
-__all__ = ["legacy_store"]
 
 _HOLD = """
 import sqlite3, sys
@@ -64,7 +53,7 @@ def _seed(path: Path, *, rows: int = 120) -> Path:
 
 
 def _store_seed(path: Path, *, rows: int = 120) -> Path:
-    """``_seed``'s rows written through the backend's store."""
+    """One session of ``rows`` user messages written through the backend's store, its WAL checkpointed into the file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     scope = ProfileScope(profile_dir=path.parent, name="default")
     backend = SQLiteBackend({scope.hermes_home_key: path})
@@ -93,17 +82,8 @@ def _dump(path: Path) -> dict:
 
 
 @pytest.fixture
-def pair(tmp_path, legacy_store):
-    """``(legacy path, admin path)``: two identical copies of one seeded store, each in its own home."""
-    seed = _seed(tmp_path / "seed" / "state.db")
-    legacy, admin = tmp_path / "legacy" / "state.db", tmp_path / "admin" / "state.db"
-    _clone(seed, legacy, admin)
-    return legacy, admin
-
-
-@pytest.fixture
 def store_pair(tmp_path):
-    """``pair`` seeded through the backend's store, for the cases whose other side imports no legacy module."""
+    """``(legacy path, admin path)``: two identical copies of one seeded store, each in its own home."""
     seed = _store_seed(tmp_path / "seed" / "state.db")
     legacy, admin = tmp_path / "legacy" / "state.db", tmp_path / "admin" / "state.db"
     _clone(seed, legacy, admin)
@@ -319,57 +299,6 @@ def test_journal_mode(store_pair, mode):
     assert _admin(admin).journal_mode() == _state_db_journal_mode(legacy) == mode
 
 
-def _legacy_set(path: Path, mode: str) -> int:
-    return cmd_set_journal_mode(Namespace(mode=mode, db=str(path), force=False))
-
-
-def test_set_journal_mode_round_trip(pair, capsys):
-    legacy, admin = pair
-    start = _header_mode(legacy)
-    assert start == _header_mode(admin) and start in ("wal", "delete")
-    other = "delete" if start == "wal" else "wal"
-    for target in (other, start, start):
-        if target == "wal" and is_sqlite_wal_reset_vulnerable():
-            assert _legacy_set(legacy, target) == 1
-            with pytest.raises(PermanentStoreError):
-                _admin(admin, read_only=False).set_journal_mode(target)
-            continue
-        before = _header_mode(admin)
-        assert _legacy_set(legacy, target) == 0
-        assert _admin(admin, read_only=False).set_journal_mode(target) == (before, target)
-        assert _header_mode(admin) == _header_mode(legacy) == target
-        assert _dump(admin) == _dump(legacy)
-    capsys.readouterr()
-
-
-def test_set_journal_mode_on_a_held_file_refuses(pair, capsys):
-    legacy, admin = pair
-    target = "delete" if _header_mode(legacy) == "wal" else "wal"
-    before = _header_mode(admin)
-    with _held(legacy, admin):
-        assert _legacy_set(legacy, target) == 1
-        with pytest.raises(StoreContention) as raised:
-            _admin(admin, read_only=False).set_journal_mode(target)
-    assert "other processes hold it open" in str(raised.value)
-    assert _header_mode(admin) == _header_mode(legacy) == before
-    capsys.readouterr()
-
-
-def test_set_journal_mode_refusals(pair, tmp_path, capsys):
-    _legacy, admin = pair
-    target = "delete" if _header_mode(admin) == "wal" else "wal"
-    before = _header_mode(admin)
-    with pytest.raises(PermanentStoreError):
-        _admin(admin).set_journal_mode(target)
-    assert _header_mode(admin) == before
-    missing = tmp_path / "missing" / "state.db"
-    assert _legacy_set(missing, target) == 1
-    with pytest.raises(PermanentStoreError, match="No database at"):
-        _admin(missing, read_only=False).set_journal_mode(target)
-    assert not missing.parent.exists()
-    capsys.readouterr()
-
-
 # schema repair
 
 
@@ -468,41 +397,6 @@ def test_write_health_reason_skips_a_held_file_over_the_snapshot_limit_as_the_le
     else:
         assert expected is None and printed == [_doctor.WRITE_PROBE_SKIPPED]
         assert answer == _doctor.WRITE_PROBE_SKIPPED
-
-
-def test_set_journal_mode_force_waives_only_an_incomplete_holder_scan(pair, monkeypatch, capsys):
-    from persistence.sqlite._state import holders as hermes_state_holders
-
-    legacy, admin = pair
-    target = "delete" if _header_mode(legacy) == "wal" else "wal"
-    if target == "wal" and is_sqlite_wal_reset_vulnerable():
-        pytest.skip("the linked SQLite refuses WAL before the holder scan")
-    before = _header_mode(admin)
-    scan = lambda _path: [(0, "scan")]
-    monkeypatch.setattr(hermes_state_holders, "foreign_state_db_holders", scan)
-    monkeypatch.setattr(_doctor, "foreign_state_db_holders", scan)
-    assert cmd_set_journal_mode(Namespace(mode=target, db=str(legacy), force=False)) == 1
-    with pytest.raises(StoreContention):
-        _admin(admin, read_only=False).set_journal_mode(target)
-    assert _header_mode(admin) == before
-    assert cmd_set_journal_mode(Namespace(mode=target, db=str(legacy), force=True)) == 0
-    assert _admin(admin, read_only=False).set_journal_mode(target, force=True) == (before, target)
-    assert _header_mode(admin) == _header_mode(legacy) == target
-    capsys.readouterr()
-
-
-def test_set_journal_mode_force_still_refuses_a_live_holder(pair, capsys):
-    legacy, admin = pair
-    target = "delete" if _header_mode(legacy) == "wal" else "wal"
-    if target == "wal" and is_sqlite_wal_reset_vulnerable():
-        pytest.skip("the linked SQLite refuses WAL before the holder scan")
-    before = _header_mode(admin)
-    with _held(legacy, admin):
-        assert cmd_set_journal_mode(Namespace(mode=target, db=str(legacy), force=True)) == 1
-        with pytest.raises(StoreContention):
-            _admin(admin, read_only=False).set_journal_mode(target, force=True)
-    assert _header_mode(admin) == _header_mode(legacy) == before
-    capsys.readouterr()
 
 
 def test_session_row_count_matches_the_doctor_count(store_pair):

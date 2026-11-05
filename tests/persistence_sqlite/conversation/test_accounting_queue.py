@@ -1,10 +1,6 @@
-"""The accounting queue behind ``UsageRepository.queue_usage`` and ``flush_usage`` on SQLite, next to main's
-``SessionDB`` queue on its own file: reads that flush first, a flush that times out while the writer is busy,
-coalescing of adjacent same-route deltas, and the stopped-writer fallback. A sibling connection holding the
-write lock keeps the writer busy; the holder's internals only stop the writer and count the applier's calls.
+"""The accounting queue behind ``UsageRepository.queue_usage`` and ``flush_usage`` on SQLite: reads that flush first, a flush that times out while the writer is busy, coalescing of adjacent same-route deltas, and the stopped-writer fallback. A sibling connection holding the write lock keeps the writer busy; the holder's internals only stop the writer and count the applier's calls.
 """
 
-import os
 import sqlite3
 import threading
 import time
@@ -18,67 +14,13 @@ from persistence.conversation.sessions import NewSession
 from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
 from persistence.sqlite import SQLiteBackend, _holder
 from persistence.sqlite.conversation import usage as sqlite_usage
-from tests.persistence_sqlite._legacy_store import legacy_store
 from tests.persistence_sqlite.conftest import store_for
-
-__all__ = ["legacy_store"]
 
 SESSION = "acct-1"
 PROVIDER, BASE_URL = "prov", "https://api.example.test"
 # Queued while the writer is busy on the first delta; the next batch coalesces only adjacent equal routes.
 FOLLOWING = ((2, "model-a"), (3, "model-a"), (4, "model-b"), (5, "model-a"))
 APPLIED = [(SESSION, 1, "model-a"), (SESSION, 5, "model-a"), (SESSION, 4, "model-b"), (SESSION, 5, "model-a")]
-
-
-class _M1:
-    """Main's SessionDB on its own file."""
-
-    write_refusal = sqlite3.OperationalError
-
-    def __init__(self, path: Path, read_only: bool = False):
-        from hermes_state import SessionDB
-
-        self.path, self.db = path, SessionDB(db_path=path, read_only=read_only)
-
-    def create(self, session_id):
-        self.db.create_session(session_id, "cli", model="model-a")
-
-    def queue(self, session_id, input_tokens, model="model-a"):
-        self.db.queue_token_counts(
-            session_id, input_tokens=input_tokens, output_tokens=1, api_call_count=1, model=model,
-            billing_provider=PROVIDER, billing_base_url=BASE_URL, source="cli")
-
-    def flush(self, timeout=5.0):
-        return self.db.flush_token_counts(timeout)
-
-    def totals(self, session_id):
-        row = self.db.get_session(session_id)
-        return row["input_tokens"], row["output_tokens"], row["api_call_count"]
-
-    def route(self, session_id):
-        row = self.db.get_recent_session_model_route(session_id)
-        return (row["model"], row["billing_provider"] or None, row["billing_base_url"] or None,
-                row["billing_mode"] or None, row["api_call_count"])
-
-    def stop_writer(self):
-        self.db._stop_token_writer()
-
-    def count_applies(self, monkeypatch, calls, entered):
-        # The SessionDB's writer applies each coalesced delta through its own update_token_counts.
-        apply = self.db.update_token_counts
-
-        def counting(session_id, **kwargs):
-            calls.append((session_id, kwargs["input_tokens"], kwargs["model"]))
-            entered.set()
-            return apply(session_id, **kwargs)
-
-        monkeypatch.setattr(self.db, "update_token_counts", counting)
-
-    def reader(self):
-        return _M1(self.path, read_only=True)
-
-    def close(self):
-        self.db.close()
 
 
 class _Backend:
@@ -131,15 +73,9 @@ class _Backend:
             self.owned.close()
 
 
-@pytest.fixture(params=("m1", "backend"))
-def side(request, backend, scope_a):
-    if request.param == "m1":
-        request.getfixturevalue("legacy_store")
-        path = Path(os.environ["HERMES_HOME"]) / "m1" / "state.db"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        subject = _M1(path)
-    else:
-        subject = _Backend(backend.open(scope_a), store_for(scope_a))
+@pytest.fixture(params=("backend",))
+def side(backend, scope_a):
+    subject = _Backend(backend.open(scope_a), store_for(scope_a))
     subject.create(SESSION)
     yield subject
     subject.close()

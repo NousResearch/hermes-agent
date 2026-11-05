@@ -14,24 +14,25 @@ import json
 import os
 import queue
 import sqlite3
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Iterable
 
 import pytest
 
 import tools.async_delegation as ad
 import tools.async_delegation_recovery_hints as hints
 from gateway.status import get_process_start_time
+from persistence import PersistenceError
 from persistence.authority.coordination import DELEGATION_CLAIM_STALE_SECONDS, DelegationRecovery, OwnerStamp, RecordedOwner
 from persistence.sqlite._holder import StoreHolder
 from tests.contracts.authority.test_coordination import dead_pid
-from tests.persistence_sqlite.authority.test_coordination_parity import (
-    DAY, NOW, assert_same, copy_db, dump, outcome,
-)
+from tests.persistence_sqlite.authority.conftest import NOW
 from tests.persistence_sqlite.conftest import store_for
 from tools.delegation_redaction import redact_child_result, redact_completion_event
 
 pytestmark = pytest.mark.usefixtures("clock")
 
+DAY = 86400.0
 TABLES = ("async_delegations",)
 LIVE_PID = os.getpid()
 LIVE_STARTED = get_process_start_time(LIVE_PID)
@@ -41,6 +42,44 @@ _COLUMNS = ("delegation_id", "origin_session", "origin_ui_session_id", "parent_s
             "completed_at", "updated_at", "event_json", "result_json", "delivery_state", "delivery_attempts",
             "delivered_at", "owner_pid", "owner_started_at", "task_json", "delivery_claim", "delivery_claimed_at",
             "origin_session_id")
+
+
+def copy_db(src: Path, dst: Path) -> None:
+    with sqlite3.connect(src) as source, sqlite3.connect(dst) as target:
+        source.backup(target)
+
+
+def dump(path: Path, tables: Iterable[str]) -> dict[str, Any]:
+    """Every row and the column list of each named table that exists."""
+    with sqlite3.connect(path) as conn:
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        out: dict[str, Any] = {}
+        for table in tables:
+            if table in present:
+                out[table] = conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+                out[table + ".columns"] = [row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")]
+    return out
+
+
+def outcome(call: Callable[[], Any]) -> tuple[str, Any]:
+    try:
+        return "ok", call()
+    except Exception as exc:  # compared by class and message
+        return "error", exc
+
+
+def assert_same(before: tuple[str, Any], after: tuple[str, Any], project: Callable[[Any], Any] = lambda v: v) -> None:
+    """Equal values, or the same refusal: a legacy SQLite error arrives as a contract error chaining it."""
+    assert after[0] == before[0], (before, after)
+    if before[0] == "ok":
+        assert project(after[1]) == before[1]
+        return
+    legacy_exc, exc = before[1], after[1]
+    if isinstance(legacy_exc, sqlite3.Error):
+        assert isinstance(exc, PersistenceError) and type(exc.__cause__) is type(legacy_exc)
+    else:
+        assert isinstance(exc, type(legacy_exc))
+    assert str(exc) == str(legacy_exc)
 
 
 def row(delegation_id: str, **values: Any) -> dict[str, Any]:

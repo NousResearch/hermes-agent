@@ -8,10 +8,8 @@ from pathlib import Path
 import pytest
 
 from persistence.gateway.hosted_rooms import HostedTaskIdentity
-from tests.persistence_sqlite._legacy_store import legacy_import, legacy_store
 from tests.persistence_sqlite.hosted.conftest import NOW, dump, tables
 
-__all__ = ["legacy_store"]
 
 pytestmark = pytest.mark.usefixtures("clock")
 
@@ -34,33 +32,6 @@ def _read_rooms(store) -> None:
     assert all(event["room_id"] == "old"
                for event in store.hosted_rooms.read_events(placement="shared", room_id="old")["events"])
     assert store.hosted_rooms.handed_room_ids(handoff_gateway_id=HANDOFF) == frozenset()
-
-
-def test_a_read_leaves_a_file_main_wrote_untouched_and_a_fence_read_creates_the_table(backend, scopes, root,
-                                                                                       legacy_store):
-    shared = root / "shared-state.db"
-    m1 = legacy_import("gateway.hosted_rooms")
-    m1.create_room(shared, room_id="old", name="Old", members=MEMBERS, authority_gateway_id=LOCAL, now=NOW)
-    assert _table_sql(shared, "hosted_room_gateway_handoffs") is None
-    before = shared.read_bytes()
-    store = backend.open(scopes["a"])
-    # CONTRACT: a read on a file main settled writes nothing, as main's reads write nothing.
-    _read_rooms(store)
-    assert shared.read_bytes() == before
-    assert _table_sql(shared, "hosted_room_gateway_handoffs") is None
-    # The hand-off's fence read creates the table with main's DDL, as main's _fenced_ids does.
-    assert store.hosted_rooms.fenced_room_ids(handoff_gateway_id=HANDOFF) == frozenset()
-    assert _table_sql(shared, "hosted_room_gateway_handoffs") == HANDOFF_SQL
-
-
-def test_recording_a_handoff_on_a_file_main_wrote_creates_the_table(backend, scopes, root, legacy_store):
-    shared = root / "shared-state.db"
-    m1 = legacy_import("gateway.hosted_rooms")
-    m1.create_room(shared, room_id="old", name="Old", members=MEMBERS, authority_gateway_id=LOCAL, now=NOW)
-    store = backend.open(scopes["a"])
-    store.hosted_rooms.record_room_handoff(room_ids=frozenset({"old"}), now=NOW)
-    assert _table_sql(shared, "hosted_room_gateway_handoffs") == HANDOFF_SQL
-    assert dump(shared, ("hosted_room_gateway_handoffs",))["hosted_room_gateway_handoffs"] == [("old", NOW)]
 
 
 def test_no_room_verb_creates_the_table_until_a_handoff_runs(backend, scopes, root):

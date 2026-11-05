@@ -108,13 +108,17 @@ export function pausedDiscussions(events: readonly CanonicalGroupEvent[], maxCon
   const ordered = [...events].sort((a, b) => a.seq - b.seq)
   const { counts, grants } = pauseCounts(ordered)
   const moved = movedOnPauses(ordered)
+  // A Stop after the discussion's own message fences it for good, even one older than the cap notice.
+  const lastStop = ordered.reduce((seq, event) => event.kind === 'room.stop_requested' ? event.seq : seq, 0)
+  const sourceSeq = new Map(ordered.flatMap(event => event.kind === 'message.user' && event.event_id ? [[event.event_id, event.seq] as const] : []))
   const result = new Map<number, CanonicalPausedDiscussion>()
 
   for (const event of ordered) {
     if (!isBoundedActivity(event)) {continue}
 
     const discussion = discussionOf(event)
-    result.set(event.seq, { count: counts.get(event.seq) ?? 0, actionable: !!discussion && !moved.has(event.seq) && (grants.get(discussion) ?? 0) < maxContinues })
+    const fenced = lastStop > (sourceSeq.get(discussion) ?? event.seq)
+    result.set(event.seq, { count: counts.get(event.seq) ?? 0, actionable: !!discussion && !fenced && !moved.has(event.seq) && (grants.get(discussion) ?? 0) < maxContinues })
   }
 
   return result

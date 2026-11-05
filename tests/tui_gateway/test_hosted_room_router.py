@@ -341,6 +341,30 @@ def test_an_unrelated_event_in_the_continue_gap_still_continues(tmp_path, monkey
     assert event["kind"] == "room.continued" and event["seq"] == max(e["seq"] for e in service._events(ROOM_ID))
 
 
+def test_a_stop_before_a_late_cap_notice_refuses_continue(tmp_path, monkeypatch):
+    """The cap notice is written from a snapshot; a Stop can land just before it. That Stop still fences
+    the discussion, so Continue (which could never reopen it) is refused rather than doing nothing."""
+    (tmp_path / "config.yaml").write_text("hosted_rooms:\n  discussion:\n    max_rounds: 3\n    max_messages: 2\n")
+    service = _service(tmp_path)
+    _room(service, "everyone")
+    _send(service, "m1", "Discuss.")
+    _settle_queued(service, "@everyone next", 0)
+    gateway_id, epoch = service._owned_authority(ROOM_ID)
+    status = service._append_room_status
+
+    def stop_first(room, decision):
+        hosted_rooms.request_room_stop(service.db_path, room_id=ROOM_ID, cancel_id="late", expected_gateway_id=gateway_id,
+                                       expected_epoch=epoch)
+        status(room, decision)
+    monkeypatch.setattr(service, "_append_room_status", stop_first)
+    _settle_queued(service, "@everyone next", 1)
+    kinds = [event["kind"] for event in service._events(ROOM_ID)]
+    assert kinds.index("room.stop_requested") < kinds.index("room.activity")
+    discussion_id = _kinds(service, "room.activity")[0]["payload"]["discussion_event_id"]
+    with pytest.raises(hosted_rooms.HostedRoomError, match="not paused"):
+        service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
+
+
 def test_continue_stops_at_the_continue_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(router, "MAX_DISCUSSION_CONTINUES", 1)
     service = _bounded_room(tmp_path)

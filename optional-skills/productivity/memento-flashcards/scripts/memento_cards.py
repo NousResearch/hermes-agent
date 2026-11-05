@@ -104,6 +104,16 @@ def cmd_add_quiz(args: argparse.Namespace) -> None:
         _out({"ok": False, "error": f"Invalid JSON for --questions: {exc}"})
         sys.exit(1)
 
+    if not isinstance(questions, list):
+        _out({"ok": False, "error": "--questions must be a JSON array of {question, answer} objects"})
+        sys.exit(1)
+    for qa in questions:
+        if not (isinstance(qa, dict)
+                and isinstance(qa.get("question"), str) and qa["question"].strip()
+                and isinstance(qa.get("answer"), str) and qa["answer"].strip()):
+            _out({"ok": False, "error": "each item needs non-empty string 'question' and 'answer'"})
+            sys.exit(1)
+
     # Dedup: skip if cards with this video_id already exist
     existing_ids = {c["video_id"] for c in data["cards"] if c.get("video_id")}
     if args.video_id in existing_ids:

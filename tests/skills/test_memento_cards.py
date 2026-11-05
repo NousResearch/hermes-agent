@@ -201,6 +201,30 @@ class TestCSV:
 
 # ── Edge Cases ───────────────────────────────────────────────────────────────
 
+class TestQuizBatchAdd:
+    def test_add_quiz_creates_cards(self, capsys):
+        questions = json.dumps([{"question": "Q1", "answer": "A1"}, {"question": "Q2", "answer": "A2"}])
+        result = _run(capsys, ["add-quiz", "--video-id", "v1", "--questions", questions])
+        assert result["ok"] is True
+        assert result["created_count"] == 2
+
+    @pytest.mark.parametrize("payload", [
+        json.dumps([{"question": "Q"}]),               # missing answer
+        json.dumps([{"answer": "A"}]),                 # missing question
+        json.dumps(["not-an-object"]),                 # non-dict item
+        json.dumps({"question": "Q", "answer": "A"}),  # not an array
+    ])
+    def test_add_quiz_rejects_malformed_items(self, capsys, payload):
+        """Malformed --questions must emit the JSON error contract, not crash."""
+        with mock.patch("sys.argv", ["memento_cards", "add-quiz",
+                                     "--video-id", "v1", "--questions", payload]):
+            with pytest.raises(SystemExit):
+                memento_cards.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["ok"] is False
+        assert memento_cards._load()["cards"] == []
+
+
 class TestEdgeCases:
 
     def test_corrupt_json_recovery(self, capsys):

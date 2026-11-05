@@ -1,0 +1,24 @@
+name: agentci
+repo: https://github.com/EikeAhlers/hermes-agentci
+sha: 28ad6969588c4be4f7daac069f48429c97d656e7
+description: "Tests for agents: prompt cases run in throwaway workspaces and judged on the
+  real session record (tokens, tools, file hashes), with CI exit codes, baseline diffs and a
+  model matrix."
+maintainer: EikeAhlers
+tier: community
+category: tools
+requires_hermes: ">=0.20.2"
+docs_url: https://github.com/EikeAhlers/hermes-agentci#readme
+image: https://raw.githubusercontent.com/EikeAhlers/hermes-agentci/28ad6969588c4be4f7daac069f48429c97d656e7/assets/catalog-banner.png
+version: "0.1.0"
+platforms: []
+title: agentci
+capabilities:
+  provides_tools:
+    - agentci_run
+    - agentci_matrix
+    - agentci_report
+    - agentci_init
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

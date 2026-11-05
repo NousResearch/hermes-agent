@@ -27,7 +27,7 @@ import pytest
 
 from persistence.sqlite import _registry as registry
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import StateDbReplacedError
+from persistence.sqlite._state.errors import StateDbReplacedError
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
 
 

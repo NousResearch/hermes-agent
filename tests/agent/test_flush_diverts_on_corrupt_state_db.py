@@ -11,16 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
-from hermes_state import SessionDB, StateDbCorruptError, StateDbReplacedError
 from persistence import StoreQuarantined
 from run_agent import AIAgent
 from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _flush_agent(db, session_id, persistence=None):
+def _flush_agent(db, session_id, persistence):
     agent = SimpleNamespace(
         _session_db=db,
         persistence=persistence,
@@ -72,33 +69,5 @@ def test_flush_diverts_batch_to_jsonl_when_handle_is_quarantined(
         jsonl = tmp_path / "sessions" / "live.jsonl"
         assert jsonl.is_file()
         assert "kept-on-disk-after-corruption" in jsonl.read_text(encoding="utf-8")
-    finally:
-        db.close()
-
-
-@pytest.mark.parametrize("error, cause", [
-    (StateDbCorruptError("database disk image is malformed (quarantined)"), "corrupt"),
-    (StateDbReplacedError("state.db was replaced"), "replaced"),
-])
-def test_flush_diverts_batch_to_jsonl_from_a_legacy_store_entry(tmp_path: Path, monkeypatch, error, cause) -> None:
-    """An agent given ``session_db=SessionDB(...)`` and no storage interface handle keeps the
-    batch on disk beside that store when the store refuses it for good."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        db.create_session("live", source="cli")
-        agent = _flush_agent(db, "live")
-
-        def _refused(self, *, session_id, messages, **kwargs):
-            raise error
-
-        monkeypatch.setattr(SessionDB, "append_messages_batch", _refused)
-        result = agent._flush_messages_to_session_db([{"role": "user", "content": "kept-on-disk"}], [])
-
-        assert result is False
-        assert agent._last_persistence_error_cause == cause
-        jsonl = tmp_path / "sessions" / "live.jsonl"
-        assert jsonl.is_file()
-        assert "kept-on-disk" in jsonl.read_text(encoding="utf-8")
     finally:
         db.close()

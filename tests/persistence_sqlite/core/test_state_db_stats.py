@@ -16,7 +16,7 @@ import sqlite3
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_dbfile import collect_state_db_stats, count_db_holders
+from persistence.sqlite._state.dbfile import collect_state_db_stats, count_db_holders
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
 

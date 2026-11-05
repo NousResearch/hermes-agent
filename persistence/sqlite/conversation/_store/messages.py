@@ -11,7 +11,7 @@ from session_rules.turns import (
     sanitize_context, MESSAGE_UID, TOOL_CALL_UIDS, index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid,
     mint_uid, coalesce_tool_call_id,
 )
-from hermes_state_common import _ended_by_compression, _json_or
+from persistence.sqlite._state.common import _ended_by_compression, _json_or
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import (
     _MERGE_DISPLAY_META, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _legacy_reset_child_sql, _sql_json_extract,
@@ -140,8 +140,8 @@ def _check_transcript_write_guards(holder: StoreHolder, conn, session_id: str, c
     #74478 patience note below). User-initiated transcript mutations may opt in to rejecting an active
     unowned turn lease in that same transaction.
     """
-    from hermes_state_errors import SessionCompressionInProgressError
-    from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
+    from persistence.sqlite._state.errors import SessionCompressionInProgressError
+    from persistence.sqlite._state.errors import CompressionSessionClosedError, SessionTurnLeaseLostError
     from persistence.sqlite.conversation._store.compression import _session_turn_lease_key_on_conn
     # NOTE (#75316 redesign): appends do NOT check compression_locks. The lock's job is to stop two
     # COMPRESSIONS colliding, not to fence ordinary transcript writes. Concurrent appends during a
@@ -689,7 +689,7 @@ def replace_messages_in_transaction(holder: StoreHolder, conn, session_id: str, 
     """:meth:`replace_messages` inside the caller's write transaction (the gateway ``/retry``
     rewrite commits in its re-send's own admission). ``expected_active_ids`` pins the active set
     the replacement was computed from: a row committed since refuses (``RuntimeError``)."""
-    from hermes_state_errors import CompressionSessionClosedError
+    from persistence.sqlite._state.errors import CompressionSessionClosedError
     if reject_active_turn_lease:
         _check_transcript_write_guards(holder,
             conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
@@ -899,7 +899,7 @@ def _archive_and_compact_on_conn(
         held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
     """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
     and the worker/canonical-mutation verbs share this one body so they cannot drift."""
-    from hermes_state_errors import SessionCompressionInProgressError
+    from persistence.sqlite._state.errors import SessionCompressionInProgressError
     from persistence.sqlite.conversation._store.coverage import (
         _carried_tail_ids, _carried_tail_slots, _proved_coverage, _resolve_carried_row_ids, _uncounted_merged_rows,
     )
@@ -921,7 +921,7 @@ def _archive_and_compact_on_conn(
     if held_for_cas:
         mismatches = partial(held_row_mismatches, holder)
         if callable(mismatches) and mismatches(conn, session_id, held_for_cas):
-            from hermes_state_errors import HeldRowRewrittenError
+            from persistence.sqlite._state.errors import HeldRowRewrittenError
             raise HeldRowRewrittenError(
                 f"a held row of session {session_id} was rewritten in place before the commit")
     proved = _proved_coverage(holder, conn, session_id, covered_ids, unresolved_held, watermark)

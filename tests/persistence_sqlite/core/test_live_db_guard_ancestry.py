@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_guard as state_guard
+from persistence.sqlite._state import guard as state_guard
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -38,10 +38,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 _CHILD_PROBE = """
 import sys
 sys.path.insert(0, {repo!r})
-import hermes_state_guard
+import persistence.sqlite._state.guard
 from persistence.sqlite import _holder
 
-root = hermes_state_guard._real_platform_state_root()
+root = persistence.sqlite._state.guard._real_platform_state_root()
 if root is None:
     print("NO-ROOT")
 else:

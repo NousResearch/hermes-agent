@@ -17,8 +17,9 @@ import time
 
 import pytest
 
-from hermes_state_errors import classify_persistence_error, is_sqlite_lock_error
-from hermes_state_write import WriterMutexTimeout
+from persistence.sqlite._state.errors import classify_persistence_error
+from persistence.sqlite._state.write import WriterMutexTimeout
+from storage_errors import is_sqlite_lock_error
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session, get_session, touch_session_activity
 from tests.waiting import wait_until

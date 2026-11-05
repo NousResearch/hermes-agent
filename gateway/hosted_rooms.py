@@ -762,9 +762,8 @@ def retire_room_link_records(
     now: float | None = None) -> int:
     """Drop one room's persisted peer routes and release the room's held owed revokes. With
     ``expiry`` (when a grant dies) each route's grant becomes an owed revoke in the same
-    transaction; without it the caller already revoked every route's scope at its member gateway,
-    which also revoked the older grants the held rows name, so those are forgotten. Returns the
-    routes dropped."""
+    transaction; without it the caller already revoked every route and every unexpired held grant
+    at its member gateway, so those are forgotten. Returns the routes dropped."""
     timestamp = _now(now)
     with _transaction(db_path, immediate=True) as conn:
         rows = conn.execute(
@@ -814,6 +813,15 @@ def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = N
     if expired is not None:
         with _transaction(db_path, immediate=True) as conn:
             conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (timestamp,))
+    return [dict(row) for row in rows]
+
+
+def held_room_grant_revokes(db_path: DbPath, *, room_id: str, now: float | None = None) -> list[dict[str, Any]]:
+    """Retained grants that must be revoked before Disband can forget them."""
+    with _transaction(db_path) as conn:
+        rows = conn.execute(
+            """SELECT target_url, grant FROM hosted_room_owed_revokes
+                WHERE room_id=? AND held=1 AND expires_at>?""", (room_id, _now(now))).fetchall()
     return [dict(row) for row in rows]
 
 

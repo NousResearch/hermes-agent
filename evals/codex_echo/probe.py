@@ -17,18 +17,19 @@ def main():
         from agent.message_metadata import append_message
         from agent.session_persistence import SessionPersistenceMixin
         from agent.transports.codex_app_server_session import CodexAppServerSession
-        from hermes_state import SessionDB
+        from persistence.conversation.sessions import NewSession
+        from persistence_assembly import open_persistence, profile_scope
 
         observations = []
         for mode in ["echo", "assistant_only", "different", "later_equal"]:
             for rich in [False, True]:
                 os.environ["ECHO_FIXTURE_MODE"] = mode
                 sid = f"{mode}-{rich}"
-                db = SessionDB(Path(tmp) / f"{sid}.db")
-                db.create_session(session_id=sid, source="telegram", model="fixture")
+                store = open_persistence(profile_scope(home=Path(tmp) / sid), eager=True)
+                store.sessions.create(NewSession(session_id=sid, source="telegram", model="fixture"))
                 agent = SessionPersistenceMixin()
                 agent.session_id = sid
-                agent._session_db = db
+                agent._session_db = agent.persistence = store
                 agent._session_db_created = True
                 agent._last_flushed_db_idx = 0
                 agent._session_persist_lock = threading.RLock()
@@ -47,13 +48,13 @@ def main():
                         assert turn.final_text == "fixture reply", turn
                         codex_runtime._persist_projected_messages(agent, turn, messages)
                         assert agent._flush_messages_to_session_db(messages)
-                    users = [m["content"] for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
+                    users = [m.content for m in store.messages.read_conversation(sid) if m.role == "user"]
                     expected_count = 4 if mode in {"different", "later_equal"} else 2
                     observations.append({"mode": mode, "rich_keyless": rich, "users": users,
                         "expected_user_rows": expected_count, "user_rows": len(users), "pass": len(users) == expected_count})
                 finally:
                     session.close()
-                    db.close()
+                    store.close()
         print(json.dumps({"module": codex_runtime.__file__, "cases": observations}, indent=2))
 
 

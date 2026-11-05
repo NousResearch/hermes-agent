@@ -93,3 +93,19 @@ def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
     assert lines == ['Drafting completion contract…']
     assert result.output.startswith('⊙ Goal set (20-turn budget): ship the API') and result.kickoff
     assert mgr.state.goal == 'ship the API'
+
+
+def test_goal_progress_asks_the_judge_on_the_gateway(cli, monkeypatch):
+    import time
+    from hermes_cli import goals
+    from hermes_cli.gateway_automation import dispatch_goal_command
+    monkeypatch.setattr(goals, 'judge_progress', lambda goal, response, **kw: f'{goal}: {response}')
+    mgr = cli.cli._get_goal_manager()
+    mgr.set('ship the API')
+    cli.db.create_session('sid-1', 'cli')
+    cli.db.append_message('sid-1', 'assistant', 'routes are done', timestamp=time.time() + 1)
+    lines = []
+    result = dispatch_goal_command(mgr, 'progress', authorize_gate=lambda: None, progress=lines.append)
+    assert result.output == 'ship the API: routes are done' and not result.error
+    assert ('goal', 'progress_report') in cli.conn.calls
+    assert lines == ['Asking the judge how far along the goal is…']

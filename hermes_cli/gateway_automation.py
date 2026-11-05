@@ -153,6 +153,11 @@ class GatewayGoalManager(_Remote):
             return False
         return bool(self._rpc("is_waiting"))
 
+    def progress_report(self):
+        """``/goal progress``: the judge's estimate, computed in the gateway (``auxiliary.goal_judge``)."""
+        report = self._rpc("progress_report")
+        return report if isinstance(report, str) else "Progress unavailable: the gateway did not answer."
+
     def command(self, arg, last_user_message=None):
         """The whole ``/goal <arg>`` run by the gateway (``/goal draft``: its contract drafter is a model call)."""
         from hermes_cli.goal_command import GoalCommandResult

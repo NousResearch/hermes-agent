@@ -1161,16 +1161,23 @@ def last_assistant_message_from_db(session_id: Optional[str], *, since: Optional
     """Newest assistant text of ``session_id`` from the SessionDB — the judge's progress input on
     surfaces with no live history object at slash-command time; ``""`` on any error.
 
-    Reads 50 rows rather than the newest few: a tool-heavy turn interleaves empty assistant rows
-    with tool results, so the newest assistant text can sit well behind the newest message."""
+    Pages back 50 rows at a time: a tool-heavy turn interleaves empty assistant rows with tool
+    results, so the newest assistant text can sit well behind the newest message. The first page
+    that reaches back past ``since`` ends the read."""
     if not session_id:
         return ""
     try:
         db = _get_session_db()
         if db is None:
             return ""
-        rows = db.get_messages(str(session_id), limit=50, latest=True)
-        return last_assistant_message_content(rows, since=since)
+        offset = 0
+        while rows := db.get_messages(str(session_id), limit=50, offset=offset, latest=True):
+            if content := last_assistant_message_content(rows, since=since):
+                return content
+            if since is not None and float(rows[0].get("timestamp") or 0) < since:
+                return ""
+            offset += 50
+        return ""
     except Exception as exc:
         logger.debug("goal progress: session read failed: %s", exc, exc_info=True)
         return ""

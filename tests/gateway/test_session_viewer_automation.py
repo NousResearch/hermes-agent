@@ -145,3 +145,15 @@ async def test_a_read_that_clears_a_goal_barrier_repaints_the_other_viewers(owne
     await owner.call(kind, call)
     assert len(updates) == 1 and 'wait_barrier' not in updates[0]['control']['goal']
     assert updates[0]['control']['loop']['deferred_by_goal'] is True
+
+
+@pytest.mark.asyncio
+async def test_goal_progress_is_judged_on_the_owner(owner, monkeypatch):
+    import time
+    from hermes_cli import goals
+    monkeypatch.setattr(goals, 'judge_progress', lambda goal, response, **kw: f'{goal}: {response}')
+    await owner.call('goal', 'set', 'write the report')
+    owner.db.append_message(owner.target, 'assistant', 'drafted the outline', timestamp=time.time() + 1)
+    reply = await owner.call('goal', 'progress_report')
+    assert reply.get('value') == 'write the report: drafted the outline', reply
+    assert json.loads(owner.db.get_meta('goal:' + owner.target))['turns_used'] == 0

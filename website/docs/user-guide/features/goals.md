@@ -61,7 +61,7 @@ What you'll see:
 | `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`pause`/`status`/`show`/`progress`/`unwait` followed by words run the control command and ignore the rest. |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
 | `/goal show` | Print the active goal's completion contract. |
-| `/goal progress` | Ask the judge how far along the goal is: a read-only estimate (`📊 Goal progress: 60% — halfway`), what is still left, and the evidence it saw. Never touches goal state, so it is safe mid-run. |
+| `/goal progress` | Ask the judge how far along the goal is: a state word (`📊 Goal progress — halfway`), what is still left, the evidence it saw, and a rough percentage last. Never touches goal state, so it is safe mid-run. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |

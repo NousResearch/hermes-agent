@@ -23,12 +23,13 @@ from hermes_state_runtime import RuntimeStoreError
 _CALLS = {
     "goal": frozenset({"state", "set", "pause", "resume", "clear", "mark_done", "add_subgoal", "remove_subgoal",
                        "clear_subgoals", "add_gate", "remove_gate", "clear_gates", "wait_on", "wait_on_session",
-                       "wait_for_seconds", "stop_waiting", "is_waiting", "evaluate_after_turn", "command"}),
+                       "wait_for_seconds", "stop_waiting", "is_waiting", "evaluate_after_turn", "command",
+                       "progress_report"}),
     "loop": frozenset({"state", "set", "pause", "resume", "clear", "fire_tick", "abandon_tick", "complete_tick",
                        "goal_blocks_tick"}),
     "heartbeat": frozenset({"state", "set", "pause", "resume", "clear", "due_prompt", "abandon_fire"}),
 }
-_READS = frozenset({"state", "is_waiting", "goal_blocks_tick"})
+_READS = frozenset({"state", "is_waiting", "goal_blocks_tick", "progress_report"})
 _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 

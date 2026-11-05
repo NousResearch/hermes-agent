@@ -222,16 +222,21 @@ def test_progress_reads_the_newest_assistant_text_from_the_db(monkeypatch):
     seen = []
     monkeypatch.setattr(goals, 'judge_progress', lambda goal, response, **kw: seen.append(response) or 'report')
 
+    db.append_message(session_id, 'assistant', 'reply from before the goal', timestamp=_time.time() - 600)
     mgr = goals.GoalManager(session_id=session_id)
     mgr.set('ship the widget')
-    base = _time.time()
-    db.append_message(session_id, 'assistant', 'reply from before the goal', timestamp=base - 600)
-    db.append_message(session_id, 'tool', 'tool output', timestamp=base - 500)
-    db.append_message(session_id, 'assistant', '', timestamp=base - 400)
+    assert 'No agent response to assess yet' in mgr.progress_report()
+    base = _time.time() + 1
     db.append_message(session_id, 'assistant', 'newest reply after the goal', timestamp=base)
+    db.append_message(session_id, 'tool', 'tool output', timestamp=base + 1)
+    db.append_message(session_id, 'assistant', '', timestamp=base + 2)
 
     assert mgr.progress_report() == 'report'
-    assert seen == ['newest reply after the goal']
+    for i in range(30):
+        db.append_message(session_id, 'assistant', '', timestamp=base + 3 + 2 * i)
+        db.append_message(session_id, 'tool', 'tool output', timestamp=base + 4 + 2 * i)
+    assert mgr.progress_report() == 'report'
+    assert seen == ['newest reply after the goal'] * 2
 
 
 def test_progress_without_any_assistant_text_never_calls_the_judge(monkeypatch):

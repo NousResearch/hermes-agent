@@ -97,7 +97,7 @@ def test_undo_by_row_reverts_its_conversation_only(project, tmp_path):
     assert (project / "keep.txt").read_text() == "original\n"
 
 
-def test_default_on_never_snapshots_home_or_its_parents_and_ignores_excluded_dirs(project, monkeypatch):
+def test_checkpoints_never_snapshot_home_or_its_parents_and_ignores_excluded_dirs(project, monkeypatch):
     home = project.parent / "fakehome"
     (home / "proj" / "node_modules").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: home)

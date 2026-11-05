@@ -174,8 +174,7 @@ def _checkpoint(home, cwd, reason):
 
 @pytest.mark.platforms("linux")
 def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_turn(tmp_path):
-    # Checkpoints default on: the profile turns them off so only the --checkpoints launch has them.
-    with owner(tmp_path, {'checkpoints': {'enabled': False}}) as (home, peer, desc):
+    with owner(tmp_path) as (home, peer, desc):
         work = tmp_path / 'work'
         work.mkdir()
         (work / 'a.txt').write_text('original\n')

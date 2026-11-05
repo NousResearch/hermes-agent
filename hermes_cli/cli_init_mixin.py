@@ -329,13 +329,11 @@ class CLIInitMixin:
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
-        defaults = DEFAULT_CONFIG["checkpoints"]
-        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", defaults["enabled"])
+        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self._explicit_checkpoints = bool(checkpoints)
-        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", defaults["max_snapshots"])
-        self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"])
-        self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])
+        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
+        self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
+        self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))

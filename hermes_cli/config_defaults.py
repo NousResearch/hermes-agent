@@ -480,11 +480,11 @@ DEFAULT_CONFIG = {
         "max_total_gb": 0,
         "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
-    # Filesystem checkpoints (on since v53; off: `hermes config set checkpoints.enabled false`): /undo reverts
-    # the undone turns' file writes, /rollback restores. Skips /, $HOME + parents, >50k entries, excluded dirs.
-    # Measured: 23.5k-file repo first snapshot 4 s / +108 MB store, unchanged turn 1 s; $HOME skipped (0 B).
+    # Filesystem checkpoints: snapshot the working directory once per turn (on the first
+    # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
+    # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.
     "checkpoints": {
-        "enabled": True,
+        "enabled": False,
         # Max checkpoints per working directory; enforced by ref rewrite + GC of older commits.
         "max_snapshots": 20,
         # Hard ceiling on total ~/.hermes/checkpoints/ size (MB); the oldest checkpoint per project
@@ -2706,7 +2706,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 53,  # Config schema version - bump this when adding new required fields
+    "_config_version": 52,  # Config schema version - bump this when adding new required fields
 }
 
 

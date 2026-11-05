@@ -873,16 +873,6 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
-    # 52 -> 53: filesystem checkpoints default on, so /undo can revert the files a turn wrote. A
-    # saved `enabled: false` equal to the old default flips; `hermes chat --checkpoints` users and
-    # anyone who already chose true are untouched, and turning it back off sticks (no re-run).
-    (53, _rewrite_stale_default(
-        section="checkpoints", key="enabled", old=False, new=True,
-        added="checkpoints.enabled: false -> true (the new default)",
-        message=(
-            "  ✓ Filesystem checkpoints are now on: /undo also reverts the files the undone turn "
-            "wrote, and /rollback lists snapshots. Turn off with "
-            "`hermes config set checkpoints.enabled false`."))),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

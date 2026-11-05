@@ -7,11 +7,24 @@ description: "使用影子 git 仓库和自动快照为破坏性操作提供文�
 
 # 检查点与 `/rollback`
 
-Hermes Agent 会在**破坏性操作**之前自动为你的项目创建快照，并通过单条命令恢复。检查点**默认开启**（配置 v53，v2 存储已具备真正的清理和容量上限），因此 `/undo` 不仅能撤销对话，还能还原该轮写入的文件。
+Hermes Agent 可以在**破坏性操作**之前自动为你的项目创建快照，并通过单条命令恢复。检查点在 v2 中为**按需启用**——大多数用户从不使用 `/rollback`，且影子存储（shadow-store）随时间增长不可忽视，因此默认关闭。
+
+在会话中通过 `--checkpoints` 启用检查点：
+
+```bash
+hermes chat --checkpoints
+```
+
+或在 `~/.hermes/config.yaml` 中全局启用（或执行 `hermes config set checkpoints.enabled true`）：
+
+```yaml
+checkpoints:
+  enabled: true
+```
 
 ### `/undo` 同时还原该轮的文件
 
-`/undo [N]` 会回退最近 N 个用户轮次，**并且**把 Hermes 在这些轮次中写入的每个文件恢复到其中第一轮之前的状态（TUI、经典 CLI、Desktop 后端和消息平台均如此），并报告结果：
+开启检查点后，`/undo [N]` 会回退最近 N 个用户轮次，**并且**把 Hermes 在这些轮次中写入的每个文件恢复到其中第一轮之前的状态（TUI、经典 CLI、Desktop 后端和消息平台均如此），并报告结果：
 
 ```
 ↶ Undid 1 turn (2 message(s)). Edit and resubmit, or send a new message.
@@ -24,21 +37,6 @@ Hermes Agent 会在**破坏性操作**之前自动为你的项目创建快照，
 - 撤销前会先保存一个快照，所以 `/rollback` 可以“撤销这次撤销”。
 - `/retry` 不会改动文件。关闭检查点时，`/undo` 与以前一样只回退对话。
 - `/undo` 回退的是 Hermes 文件工具（`write_file`、`patch`）写入的内容。只被终端命令（`sed -i`、`>`）改动的文件不按轮次跟踪；这类改动请用 `/rollback` 从命令执行前的检查点恢复。
-
-### 关闭检查点
-
-```bash
-hermes config set checkpoints.enabled false
-```
-
-或在 `~/.hermes/config.yaml` 中：
-
-```yaml
-checkpoints:
-  enabled: false
-```
-
-`hermes chat --checkpoints` 仍可为单次会话强制开启。
 
 ### 永远不会被快照的内容
 
@@ -112,7 +110,7 @@ flowchart LR
 
 ```yaml
 checkpoints:
-  enabled: true               # 主开关（自配置 v53 起默认 true；设为 false 即关闭）
+  enabled: false              # 主开关（默认：false — 按需启用）
   max_snapshots: 20           # 每个项目的最大检查点数（通过引用重写 + gc 强制执行）
   max_total_size_mb: 500      # 存储总大小硬上限；超出时丢弃最旧的提交
   max_file_size_mb: 10        # 跳过大于此值的单个文件

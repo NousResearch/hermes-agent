@@ -7,7 +7,7 @@ samples next to it stay byte-identical.
 
 import pytest
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_text, redact_terminal_output
 
 V = "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6J"
 SK = "sk-" + "q7Zr4Lm9Xc2Vb5Nw8Kd3Hf6Jt1Pa0Sg7Ye4Uo2"
@@ -76,6 +76,13 @@ class TestDatabaseClientCredentials:
     def test_masked(self, text, secret):
         _assert_masked(text, secret)
 
+    def test_braced_odbc_password_masked_in_a_file_read(self):
+        # ``cat`` output is read as code, where ``{pw}`` is a template; an ODBC brace is a literal.
+        out = redact_terminal_output("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core",
+                                     "cat appsettings.json", force=True)
+        assert "Zq7x" not in out
+        assert redact_terminal_output("Server=db;PWD={0};Database=x", "cat app.py", force=True).endswith("PWD={0};Database=x")
+
     @pytest.mark.parametrize("text", ["PWD=/home/app/project", "PGPASSFILE=/home/app/.pgpass",
                                       "the password= field", "the pwd= flag and host= flag",
                                       "host=db port=5432 dbname=x",
@@ -105,6 +112,7 @@ class TestUserinfoAndBasicPairs:
         # Colon values under names that never hold a Basic pair, and userinfo docs samples.
         "IMAGE=redis:7-alpine", "BRANCH=origin:feature-login2", "Server=tcp:db,1433;Initial Catalog=x",
         'url = f"https://{user}:{pw}@host"', "The format is https://user:password@host",
+        "PROXY_DEST=buildhost:Release2026/artifact.tar",
     ])
     def test_non_credentials_kept(self, text):
         _assert_unchanged(text)
@@ -116,6 +124,12 @@ class TestAffixedJsonKeys:
     @pytest.mark.parametrize("key", ["API_TOKEN", "DB_PASSWORD", "client_secret", "my_api_key_value"])
     def test_masked(self, key):
         _assert_masked(f'{{"{key}": "{V}"}}', V)
+
+    @pytest.mark.parametrize("text", [f'{{"output": "{{\\"DB_PASSWORD\\": \\"{V}\\"}}"}}',
+                                      f'{{"DB_PASSWORD": "{V[:8]}\\\\{V[8:]}"}}'])
+    def test_escaped_json_masked(self, text):
+        # A tool result wrapping a config dump escapes its quotes; a value may carry escapes too.
+        _assert_masked(text, V[8:])
 
     @pytest.mark.parametrize("text", ['{"token_count": 12}', '{"password_policy": "strict-min12"}',
                                       '{"passwordChanged": "2015-09-03T16:41:46.000Z"}', '{"has_password": "true"}',

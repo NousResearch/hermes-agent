@@ -39,6 +39,10 @@ _KV_SEMICOLON_FIELD_RE = re.compile(
     re.IGNORECASE)
 
 
+# ``{0}`` / ``{pw}`` / ``{db.password}``: a str.format or f-string slot, not an ODBC-braced literal.
+_FORMAT_SLOT_RE = re.compile(r"\{[A-Za-z_]?[A-Za-z0-9_.]*\}")
+
+
 def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     """End index of the value starting at ``line[i]``; the scan never backtracks."""
     n = len(line)
@@ -111,8 +115,11 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         if not value or (not semicolon and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"):
             continue
         bare = value.strip("\"'")
-        # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``.
-        if code_file and bare.startswith(("{", "${")) and bare.endswith("}"):
+        # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a
+        # literal value (``PWD={Zq7x;LmP2}``), so on a ``;`` line only a format slot or an identifier
+        # counts as a template; ``cat appsettings.json`` output is read as code_file.
+        if code_file and bare.startswith(("{", "${")) and bare.endswith("}") and (
+                not semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
             continue
         if value[0] == "{" and semicolon:
             masked = "{***}"

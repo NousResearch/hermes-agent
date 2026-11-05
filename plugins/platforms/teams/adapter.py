@@ -636,7 +636,7 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _on_card_action(
         self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
     ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import has_blocking_approval, resolve_gateway_approval_card
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
@@ -651,10 +651,10 @@ class TeamsAdapter(BasePlatformAdapter):
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
-        if not has_blocking_approval(session_key):
+        if not has_blocking_approval(session_key) or not resolve_gateway_approval_card(
+                session_key, choice, data.get("request_id")):
             body = _approval_body(cmd, desc)
             return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        resolve_gateway_approval(session_key, choice)
         body = _approval_body(cmd, desc)
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -696,6 +696,8 @@ class TeamsAdapter(BasePlatformAdapter):
         if len(self._approval_previews) > self._EA_PREVIEWS_KEPT:
             self._approval_previews.pop(next(iter(self._approval_previews)))
         btn_data_base = {"session_key": prompt.session_key, "prompt_id": prompt_id}
+        if prompt.request_id:
+            btn_data_base["request_id"] = prompt.request_id
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

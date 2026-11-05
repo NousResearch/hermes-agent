@@ -26,6 +26,8 @@ MAX_THREAD_TRANSCRIPT_EVENTS = 24
 _TRANSCRIPT_SCHEMA_VERSION = 4
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
+# What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
+_REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
 
 _SCHEMA_DDL = (
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_capacity (
@@ -255,6 +257,33 @@ class HostedRoomPolicyCheckpoint:
         conn.execute(_DELETE_ACTIVE_EVENTS_SQL, (room_id, _text(payload, "discussion_event_id")))
         conn.execute("DELETE FROM hosted_room_policy_threads WHERE room_id=? AND thread_id=?", (room_id, thread_id))
 
+    def _apply_continued(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+        """Continue reopens a discussion its cap completed: restore its thread row and active projection
+        from the room log (the cap's ``room.activity`` dropped both)."""
+        room_id, discussion_event_id = str(event["room_id"]), _text(payload, "discussion_event_id")
+        source = conn.execute(f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
+                              (room_id, discussion_event_id)).fetchone()
+        if source is None or source["kind"] != "message.user":
+            return
+        source_event = _event_from_room_row(source)
+        thread_id = _text(source_event["payload"], "thread_id")
+        conn.execute("""INSERT INTO hosted_room_policy_threads(
+                   room_id, thread_id, discussion_event_id, latest_user_seq, completed
+               ) VALUES (?, ?, ?, ?, 0)
+               ON CONFLICT(room_id, thread_id) DO UPDATE SET
+                   discussion_event_id=excluded.discussion_event_id,
+                   latest_user_seq=excluded.latest_user_seq, completed=0""",
+            (room_id, thread_id, discussion_event_id, int(source_event["seq"])))
+        self._store_active_event(conn, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
+        for row in conn.execute(f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
+                WHERE room_id=? AND seq>? AND seq<=? AND kind IN ({",".join("?" * len(_REOPENED_KINDS))})
+                  AND json_extract(payload_json, '$.discussion_event_id')=? ORDER BY seq""",
+                (room_id, int(source_event["seq"]), int(event["seq"]), *_REOPENED_KINDS,
+                 discussion_event_id)).fetchall():
+            self._store_active_event(conn, event=_event_from_room_row(row), thread_id=thread_id,
+                                     discussion_event_id=discussion_event_id)
+
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         conn.execute("""UPDATE hosted_room_policy_cursors
@@ -266,6 +295,7 @@ class HostedRoomPolicyCheckpoint:
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
         # The lead's assignment joins its discussion's projection so the planner sees who takes round 0.
         "room.assignment": _apply_discussion_event,
+        "room.routed": _apply_discussion_event, "room.continued": _apply_continued,
         "room.stop_requested": _apply_stop_requested}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:

@@ -19,6 +19,7 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.context_default_record import mark_context_defaulted, records_context_defaults
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 from agent.model_metadata_payload import _coerce_reasonable_int, _extract_first_int, _iter_nested_dicts
@@ -265,14 +266,12 @@ _FALLBACK_WARNED: set = set()  # the fallback is never cached, so dedupe its war
 def _warn_context_length_fallback(model: str, base_url: str) -> None:
     """Warn once per model+endpoint that detection failed and the hard default is used,
     so small-context models (8K, 32K) don't silently get 256K and fail at the API."""
+    mark_context_defaulted()  # the "fallback" label reads this, not a re-derivation (agent.context_default_record)
     key = (model, base_url or "")
     if key not in _FALLBACK_WARNED:
         _FALLBACK_WARNED.add(key)
-        logger.warning(
-            "Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
-            "Set model.context_length in config.yaml to override.",
-            model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
-        )
+        logger.warning("Could not determine context length for model %r (base_url=%s) — falling back to %s tokens. "
+                       "Set model.context_length in config.yaml to override.", model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}")
 
 
 # Sessions, model switches and cron jobs reject models below this (too little working memory).
@@ -2184,6 +2183,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     return None
 
 
+@records_context_defaults
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
     provider: str = "", custom_providers: list | None = None,

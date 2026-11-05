@@ -8,7 +8,13 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
-import type { AgentPluginUpdateResponse } from "./api-plugins";
+import type {
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
 import type {
   WhatsAppOnboardingApplyResponse,
   WhatsAppOnboardingStartRequest,
@@ -1140,6 +1146,21 @@ export const api = {
         body: JSON.stringify({ accept_capabilities: acceptCapabilities, force }),
       },
     ),
+
+  updateAllAgentPlugins: () =>
+    fetchJSON<AgentPluginsUpdateAllResponse>("/api/dashboard/agent-plugins/update-all", {
+      method: "POST",
+    }),
+
+  getPluginAutoUpdate: () =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update"),
+
+  setPluginAutoUpdate: (enabled: boolean) =>
+    fetchJSON<PluginAutoUpdateState>("/api/dashboard/plugins/auto-update", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
@@ -2495,7 +2516,17 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
-export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
+export type {
+  AgentPluginScanFinding,
+  AgentPluginUpdateResponse,
+  AgentPluginsUpdateAllResponse,
+  CatalogCapabilities,
+  CatalogEntry,
+  CatalogRemovedEntry,
+  CatalogResponse,
+  PluginAutoUpdateState,
+  PluginProvidersPutRequest,
+} from "./api-plugins";
 
 export interface MoaModelSlot {
   provider: string;
@@ -2688,51 +2719,4 @@ export interface AgentPluginInstallResponse {
   after_install_path?: string | null;
   enabled?: boolean;
   error?: string;
-}
-
-// ── Plugin catalog types ───────────────────────────────────────────────
-
-export interface CatalogCapabilities {
-  provides_tools: string[];
-  provides_hooks: string[];
-  provides_middleware: string[];
-  requires_env: string[];
-}
-
-export interface CatalogEntry {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  sha_short: string;
-  tier: "official" | "verified" | "community";
-  maintainer: string;
-  requires_hermes: string;
-  platforms: string[];
-  capabilities: CatalogCapabilities;
-  docs_url: string;
-  capability_summary: string;
-  /** Installed-state merge (computed server-side). */
-  installed: boolean;
-  installed_sha: string | null;
-  update_available: boolean;
-  runtime_status: "disabled" | "enabled" | "inactive" | null;
-}
-
-export interface CatalogRemovedEntry {
-  name: string;
-  repo: string;
-  reason: string;
-  date: string;
-}
-
-export interface CatalogResponse {
-  entries: CatalogEntry[];
-  removed: CatalogRemovedEntry[];
-  generated_at: string;
-}
-
-export interface PluginProvidersPutRequest {
-  memory_provider?: string;
-  context_engine?: string;
 }

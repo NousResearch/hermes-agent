@@ -1,6 +1,6 @@
 name: hermes-openready
 repo: https://github.com/socraticblock/hermes-openready
-sha: 145695d2c2c3280e2c0847bcdc7243945c0eaf4a
+sha: 9b661ad88a89edbaca3bfca2cfd639b564c30ced
 title: Open-Ready Publish Guard
 description: "Prepare an open-source release candidate from a private repository and refuse to publish it: five tools (status, doctor, candidate, verify, gate) plus a pre_tool_call hook that blocks or escalates any terminal command that would change a repository's visibility or create a public repository until the owner has approved that exact candidate digest. None of the tools can push, change visibility, or upload; candidate writes a local candidate directory and verify may emit a packet. The plugin shells out to the Open-Ready CLI, which is installed separately; the approval check runs from a temporary directory with GitHub tokens removed from its environment."
 maintainer: socraticblock

@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $cronJobs, beginCronJobsRequest, commitCronJobsRequest, setCronJobs, updateCronJobs } from './cron'
+import {
+  $cronJobs,
+  $cronJobsFailedScope,
+  $cronJobsSnapshotScope,
+  beginCronJobsRequest,
+  commitCronJobsRequest,
+  failCronJobsRequest,
+  setCronJobs,
+  updateCronJobs
+} from './cron'
 
 const oldJob = { id: 'old' } as never
 const newJob = { id: 'new' } as never
@@ -35,5 +44,35 @@ describe('cron jobs request fencing', () => {
 
     expect(commitCronJobsRequest(poll, [oldJob])).toBe(false)
     expect($cronJobs.get()).toEqual([newJob])
+  })
+})
+
+describe('cron jobs first-load outcome', () => {
+  beforeEach(() => {
+    setCronJobs([])
+  })
+
+  it('ignores a superseded failure and records the newest one', () => {
+    const older = beginCronJobsRequest('work')
+    const newer = beginCronJobsRequest('work')
+
+    expect(failCronJobsRequest(older)).toBe(false)
+    expect($cronJobsFailedScope.get()).toBe('')
+
+    expect(failCronJobsRequest(newer)).toBe(true)
+    expect($cronJobsFailedScope.get()).toBe('work')
+  })
+
+  it('clears a recorded failure when a new request starts or the cache is reset', () => {
+    failCronJobsRequest(beginCronJobsRequest('work'))
+    beginCronJobsRequest('work')
+
+    expect($cronJobsFailedScope.get()).toBe('')
+
+    failCronJobsRequest(beginCronJobsRequest('work'))
+    setCronJobs([])
+
+    expect($cronJobsFailedScope.get()).toBe('')
+    expect($cronJobsSnapshotScope.get()).toBe('')
   })
 })

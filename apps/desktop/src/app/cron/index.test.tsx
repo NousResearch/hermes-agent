@@ -7,7 +7,7 @@ import type * as HermesApi from '@/hermes'
 import type { CronJob, SessionInfo } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
-import { notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
+import { $cronChangeTick, notifyCronChanged, setChangeEventsAvailable } from '@/store/live-sync'
 
 import { CronView } from './index'
 
@@ -87,7 +87,45 @@ afterEach(() => {
   setCronJobs([])
   setCronFocusJobId(null)
   setChangeEventsAvailable(false)
+  $cronChangeTick.set(0)
   vi.clearAllMocks()
+})
+
+describe('CronView first load', () => {
+  // A profile with no jobs, opened after any earlier cron.changed event: the
+  // run-stop hook refreshes on mount and supersedes the overlay's own request.
+  const loader = () => screen.queryByRole('status', { name: 'Loading cron jobs...' })
+
+  beforeEach(() => {
+    setCronJobs([])
+    notifyCronChanged()
+  })
+
+  it('shows the empty state when the superseding request publishes the list', async () => {
+    getCronJobs.mockResolvedValue([])
+
+    await renderCron()
+
+    await screen.findByText('No scheduled jobs yet')
+    expect(loader()).toBeNull()
+  })
+
+  it('shows a retryable failure when the superseding request fails', async () => {
+    getCronJobs.mockRejectedValue(new Error('backend unavailable'))
+
+    await renderCron()
+
+    await screen.findByText('Failed to load cron jobs')
+    expect(loader()).toBeNull()
+    expect(screen.queryByText('No scheduled jobs yet')).toBeNull()
+
+    getCronJobs.mockResolvedValue([])
+    await act(async () => {
+      screen.getByRole('button', { name: 'Retry' }).click()
+    })
+
+    await screen.findByText('No scheduled jobs yet')
+  })
 })
 
 describe('CronView queued trigger feedback (#70826)', () => {

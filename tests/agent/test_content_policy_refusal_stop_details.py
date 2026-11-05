@@ -50,6 +50,11 @@ def test_has_explicit_refusal_distinguishes_stream_drop_from_real_refusal():
     provider_data_refusal = SimpleNamespace(provider_data={"stop_details": {"type": "refusal"}})
     assert has_explicit_refusal(drop_resp, provider_data_refusal) is True
 
+    responses_api_refusal = SimpleNamespace(
+        choices=None, stop_reason=None, status="incomplete", incomplete_details={"reason": "content_filter"},
+    )
+    assert has_explicit_refusal(responses_api_refusal, drop_norm) is True
+
 
 def test_empty_content_filter_without_explicit_refusal_does_not_leak_reasoning():
     agent = _agent()

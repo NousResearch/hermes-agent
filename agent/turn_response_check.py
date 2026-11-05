@@ -167,7 +167,12 @@ def check_api_response(
         except Exception as _cf_exc:  # never let the guard break the upstream refusal path
             logger.debug("content_filter guard could not inspect response: %s", _cf_exc)
             _cf_text, _cf_explicit = "", True
-        if not _cf_text and not _cf_explicit and retry_count + 1 < max_retries:
+        if (
+            getattr(agent, "api_mode", "chat_completions") == "chat_completions"
+            and not _cf_text
+            and not _cf_explicit
+            and retry_count + 1 < max_retries
+        ):
             retry_count += 1
             logger.warning(
                 "%sReceived finish_reason=content_filter with no refusal text or content — "

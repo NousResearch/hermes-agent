@@ -169,13 +169,18 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
 
 def has_explicit_refusal(response: Any, normalized: Any) -> bool:
     """True only when the provider flagged the refusal explicitly — ``provider_data.refusal`` /
-    ``provider_data.stop_details``, an OpenAI-style ``message.refusal``, or Anthropic's native
-    ``stop_reason == "refusal"``. OpenAI-compatible proxies may report
-    ``finish_reason=content_filter`` when the upstream stream drops; those carry none of these flags."""
+    ``provider_data.stop_details``, an OpenAI-style ``message.refusal``, Anthropic's native
+    ``stop_reason == "refusal"``, or Responses API ``incomplete_details.reason == "content_filter"``.
+    OpenAI-compatible Chat Completions proxies may report ``finish_reason=content_filter`` when the
+    upstream stream drops; those carry none of these flags."""
     provider_data = getattr(normalized, "provider_data", None) or {}
     if isinstance(provider_data, dict) and (provider_data.get("refusal") or provider_data.get("stop_details")):
         return True
     if getattr(response, "stop_reason", None) == "refusal":
+        return True
+    incomplete = getattr(response, "incomplete_details", None)
+    inc_reason = incomplete.get("reason") if isinstance(incomplete, dict) else getattr(incomplete, "reason", None)
+    if isinstance(inc_reason, str) and inc_reason.strip().lower() == "content_filter":
         return True
     choices = getattr(response, "choices", None)
     if isinstance(choices, (list, tuple)) and choices:

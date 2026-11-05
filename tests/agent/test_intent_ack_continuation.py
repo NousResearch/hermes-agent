@@ -298,3 +298,19 @@ def test_tool_rows_in_the_current_turn_still_end_it():
         assert not looks_like_codex_intermediate_ack(
             _agent(True), CODE_USER, CODE_ACK, msgs, require_workspace=require_workspace
         )
+
+
+def test_a_nudge_row_after_tool_work_does_not_reopen_the_guard():
+    """A synthetic user row (empty-response, stall or degenerate nudge) is not a new turn: the
+    model already acted, so the reply after it is still the final answer."""
+    msgs = [
+        {"role": "user", "content": CODE_USER},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "2"}]},
+        {"role": "tool", "tool_call_id": "2", "content": "listed files"},
+        {"role": "assistant", "content": "(empty)"},
+        {"role": "user", "content": "[System: process the tool results above and continue.]"},
+    ]
+    for require_workspace in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(True), CODE_USER, CODE_ACK, msgs, require_workspace=require_workspace
+        )

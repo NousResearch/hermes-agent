@@ -101,7 +101,7 @@ function buildExport(t) {
     writeFileSync(file, route.startsWith("/zh-Hans")
       ? PAGE_HTML.replace("/docs/opensearch.xml", "/docs/zh-Hans/opensearch.xml")
       : PAGE_HTML);
-    writeFileSync(path.join(path.dirname(file), "index.txt"), "RSC payload");
+    writeFileSync(rscPath(outDir, route), "RSC payload");
   }
   mkdirSync(path.join(outDir, "_next", "static"), { recursive: true });
   writeFileSync(path.join(outDir, "_next", "static", "app.css"), "body{}");
@@ -203,6 +203,11 @@ function runValidator(appDir, options = {}) {
 
 /** Remove a route from the manifest AND its page files from out/, as if the
  *  build dropped it — without touching sibling or child routes. */
+/** Next writes the RSC payload client navigation fetches at x.txt (index.txt at the root). */
+function rscPath(outDir, route) {
+  return route === "/" ? path.join(outDir, "index.txt") : path.join(outDir, ...route.split("/").filter(Boolean)) + ".txt";
+}
+
 function dropRoute(appDir, route) {
   const manifestFile = path.join(appDir, ".next", "prerender-manifest.json");
   const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
@@ -210,7 +215,7 @@ function dropRoute(appDir, route) {
   writeFileSync(manifestFile, JSON.stringify(manifest));
   const pageDir = path.join(appDir, "out", ...route.split("/").filter(Boolean));
   rmSync(path.join(pageDir, "index.html"), { force: true });
-  rmSync(path.join(pageDir, "index.txt"), { force: true });
+  rmSync(rscPath(path.join(appDir, "out"), route), { force: true });
 }
 
 /** Keep a generated fixture's source and published copies in sync. */
@@ -324,10 +329,10 @@ test("rejects an exported page whose HTML is missing", (t) => {
 
 test("rejects a page with an empty RSC payload", (t) => {
   const { appDir } = buildExport(t);
-  writeFileSync(path.join(appDir, "out", "index.txt"), "");
+  writeFileSync(path.join(appDir, "out", "getting-started", "quickstart.txt"), "");
   const result = runValidator(appDir);
   assert.notEqual(result.status, 0);
-  assert.ok(result.stderr.includes("/index.txt"), result.stderr);
+  assert.ok(result.stderr.includes("getting-started/quickstart.txt"), result.stderr);
 });
 
 test("rejects an export without 404.html", (t) => {
@@ -361,6 +366,14 @@ test("rejects a source document missing from the export", (t) => {
   const result = runValidator(appDir);
   assert.notEqual(result.status, 0);
   assert.ok(result.stderr.includes("/getting-started/new-page"), result.stderr);
+});
+
+test("rejects a flat x.html page, which would be a second URL for x/index.html", (t) => {
+  const { appDir, outDir } = buildExport(t);
+  writeFileSync(path.join(outDir, "getting-started", "quickstart.html"), PAGE_HTML);
+  const result = runValidator(appDir);
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes("getting-started/quickstart.html"), result.stderr);
 });
 
 test("rejects a revived catalog hub page, which the marketplace now owns", (t) => {

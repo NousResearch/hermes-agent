@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse } from 'parse5';
 import { parse as parseYaml } from 'yaml';
-import { exportedRoutes, htmlPath, redirectEntries, sitemapXml, redirectHtml, redirectScriptAsset } from './postbuild.mjs';
-import { LOCALES, SITE_URL, DOCS_BASE_PATH, localizedHref, publicHref, splitLocalePath } from '../src/lib/urls.ts';
+import { exportedRoutes, htmlPath, rscPath, redirectEntries, sitemapXml, redirectHtml, redirectScriptAsset } from './postbuild.mjs';
+import { LOCALES, SITE_URL, DOCS_BASE_PATH, canonicalUrl, localizedHref, publicHref, splitLocalePath } from '../src/lib/urls.ts';
 import { openSearchXml } from './opensearch.mjs';
 import { checkExportLinks } from './check-export-links.mjs';
 import { groupAuthors } from '../src/lib/plugin-pages.ts';
@@ -70,13 +70,19 @@ function checkExportedPages(appDir, fail, ctx) {
   }
   const routes = exportedRoutes(appDir);
   ctx.routes = routes;
+  const outDir = path.join(appDir, 'out');
   for (const route of routes) {
-    const pageDir = path.dirname(htmlPath(path.join(appDir, 'out'), route));
-    if (!isNonempty(path.join(pageDir, 'index.html'))) {
+    if (!isNonempty(htmlPath(outDir, route))) {
       fail(`the exported HTML for ${route} is missing or empty`);
     }
-    if (!isNonempty(path.join(pageDir, 'index.txt'))) {
-      fail(`the RSC payload ${route}/index.txt is missing or empty`);
+    const payload = rscPath(outDir, route);
+    if (!isNonempty(payload)) {
+      fail(`the RSC payload ${path.relative(outDir, payload)} for ${route} is missing or empty`);
+    }
+    // Pages live at x/index.html; a flat x.html would be a second URL for the page.
+    if (route !== '/') {
+      const flat = `${path.dirname(htmlPath(outDir, route))}.html`;
+      if (existsSync(flat)) fail(`${path.relative(outDir, flat)} duplicates ${route}; postbuild nests pages as x/index.html`);
     }
   }
 }
@@ -307,7 +313,8 @@ function checkHtmlAssets(appDir, fail, ctx) {
     collectAssetRefs(parse(readFileSync(file, 'utf8')), refs, searchLinks);
     const expectedSearch = publicHref(localizedHref('/opensearch.xml', splitLocalePath(route).locale));
     if (!searchLinks.includes(expectedSearch)) fail(`page ${route} is missing OpenSearch autodiscovery for ${expectedSearch}`);
-    const pageBase = publicHref(route === '/' ? '/' : `${route}/`);
+    // The browser's base: pages are served slashless, so `x` resolves beside the page.
+    const pageBase = new URL(canonicalUrl(route)).pathname;
     for (const ref of refs) {
       if (ref.startsWith('#')) continue;
       try {

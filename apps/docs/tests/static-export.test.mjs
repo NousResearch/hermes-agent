@@ -50,6 +50,41 @@ test('postbuild publishes the exported route set as a public bilingual sitemap',
   assert.ok(xml.includes('hreflang="x-default" href="https://hermes-agent.nousresearch.com/docs/getting-started/quickstart"'));
 });
 
+test('postbuild serves slashless pages from x/index.html and leaves RSC payloads at x.txt', (t) => {
+  // Next writes x.html with trailingSlash off; the production edge serves
+  // /docs/x from x/index.html and /docs/x.txt (client navigation) verbatim.
+  const appDir = exportFixture(t, []);
+  const flat = { '/': 'index', '/getting-started/quickstart': 'getting-started/quickstart', '/zh-Hans': 'zh-Hans' };
+  for (const [route, base] of Object.entries(flat)) {
+    const html = path.join(appDir, 'out', route === '/' ? 'index.html' : base + '.html');
+    mkdirSync(path.dirname(html), { recursive: true });
+    writeFileSync(html, `<!doctype html><title>${route}</title>`);
+    writeFileSync(path.join(appDir, 'out', base + '.txt'), 'RSC');
+  }
+  // Legacy-alias targets in both locales, so the redirect step has pages to point at.
+  const targets = bilingualPages.filter((route) => !(route in flat) && route !== '/zh-Hans/getting-started/quickstart');
+  for (const route of [...targets, '/zh-Hans/getting-started/quickstart']) {
+    mkdirSync(path.join(appDir, 'out', route), { recursive: true });
+    writeFileSync(path.join(appDir, 'out', route, 'index.html'), '<!doctype html>');
+  }
+  writeFileSync(path.join(appDir, 'out/_not-found.html'), '<!doctype html>');
+  writeFileSync(path.join(appDir, 'out/_not-found.txt'), 'RSC');
+  writeFileSync(path.join(appDir, '.next/prerender-manifest.json'), JSON.stringify({
+    version: 4, dynamicRoutes: {}, notFoundRoutes: [],
+    routes: Object.fromEntries([...Object.keys(flat), ...targets, '/zh-Hans/getting-started/quickstart', '/_not-found'].map((route) => [route, {}])),
+  }));
+  const result = runPostbuild(appDir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(path.join(appDir, 'out/getting-started/quickstart/index.html'), 'utf8'), '<!doctype html><title>/getting-started/quickstart</title>');
+  assert.equal(readFileSync(path.join(appDir, 'out/zh-Hans/index.html'), 'utf8'), '<!doctype html><title>/zh-Hans</title>');
+  assert.ok(!existsSync(path.join(appDir, 'out/getting-started/quickstart.html')), 'flat copy would be a second URL');
+  assert.ok(existsSync(path.join(appDir, 'out/getting-started/quickstart.txt')));
+  assert.ok(existsSync(path.join(appDir, 'out/index.html')) && existsSync(path.join(appDir, 'out/index.txt')));
+  for (const leftover of ['_not-found.html', '_not-found.txt']) assert.ok(!existsSync(path.join(appDir, 'out', leftover)), leftover);
+  // A second run is a no-op.
+  assert.equal(runPostbuild(appDir).status, 0);
+});
+
 test('legacy aliases preserve language, preview origin, query and fragment', (t) => {
   const appDir = exportFixture(t);
   const result = runPostbuild(appDir);

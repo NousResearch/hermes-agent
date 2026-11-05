@@ -159,4 +159,5 @@ class TeamsSummaryWriter:
 
     @classmethod
     def _bullet_lines(cls, values: Any) -> list[str]:
-        return [f"- {str(item).strip()}" for item in (values or []) if str(item).strip()] or ["- None"]
+        return [f"- {str(item).strip()}" for item in (values or []) if str(item).strip()] or [
+            f"- {t('platform.teams.summary.none_item')}"]

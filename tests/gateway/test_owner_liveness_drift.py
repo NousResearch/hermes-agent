@@ -9,6 +9,9 @@ dead/unknown under the same ~1 s same-host drift. All of them now share
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from gateway import status
@@ -38,7 +41,9 @@ def _async_delegation_alive(monkeypatch, tmp_path) -> bool:
     import tools.async_delegation as ad
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._ledger() as store:
+        store.ready()
+    with ad._DB_LOCK, closing(sqlite3.connect(ad._db_path())) as conn, conn:
         conn.execute(
             "INSERT INTO async_delegations (delegation_id, origin_session, state, dispatched_at, updated_at, "
             "delivery_state, delivery_attempts, owner_pid, owner_started_at, task_json) "

@@ -1,0 +1,33 @@
+name: proofchain
+title: Proofchain — tamper-evident evidence ledger
+repo: https://github.com/iamzulx/hermes-plugin-proofchain
+sha: 5a426eee2a279705024136bbdbef72125002e31c
+version: "1.0.0"
+description: "Tamper-evident evidence ledger for every tool call Hermes runs: each pre_tool_call and post_tool_call appends a row whose SHA-256 commits to the previous row, so editing, deleting or reordering one row makes proofchain_verify fail at exactly that sequence number; proofchain_seal HMAC-signs the head and row count with a per-profile key generated locally on first seal, and proofchain_export returns entries + chain status + head hash as JSON you can attach to an audit or pentest report, while proofchain_search finds every call that mentioned a URL, file or keyword, and a bundled proofchain:evidence skill plus /evidence (status | verify | export [N] | seal | search <text>) drive the same ledger from chat. Disclosure — it reads the hook payloads Hermes already emits (tool name, arguments, result, session/turn/tool-call ids, status) and writes one SQLite row per event to the active profile's plugin-data/proofchain/data.db (WAL), plus on first seal a 32-byte hex HMAC key at plugin-data/proofchain/hmac.key (chmod 0600); arguments and results are secret-redacted (api_key=, Bearer, gh tokens, sk- keys, JWTs, AWS key ids, Slack tokens, PEM blocks) and truncated to 2000 characters before they touch disk; a tool call is refused only when the tool can reach the network, the command carries an outbound upload shape (curl -d/-F/--data/-X POST, requests.post(, urlopen(data=)) together with a destination, and the payload holds a raw secret literal (authoring code that merely mentions curl is never blocked), unless block_on_raw_secret is turned off; ledger writes fail open (a stderr warning, the tool still runs); no network calls, no subprocesses, no telemetry, and it never reads .env, auth.json, browser profiles or any other credential store."
+maintainer: iamzulx
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/iamzulx/hermes-plugin-proofchain#readme
+platforms: []
+readme: true
+known_issues:
+  - "Evidence, not a control plane: a ledger write that fails is swallowed with a stderr warning and the tool still runs, so a full disk means missing rows rather than a blocked agent."
+  - "Arguments and results are truncated to 2000 characters per row — provenance of what ran and what came back, not a replayable transcript."
+  - "The max_rows setting is declared but pruning is not implemented yet; the ledger grows without bound until you delete the data directory."
+  - "verify() detects edits, deletions and reordering inside the ledger file, and compares against the last seal to catch rows removed from the end. It cannot stop someone who deletes the whole database and rebuilds a fresh chain from scratch — the seal is what pins a known-good head for that comparison, so export or record the seal after you take one."
+capabilities:
+  provides_tools:
+    - proofchain_status
+    - proofchain_verify
+    - proofchain_export
+    - proofchain_seal
+    - proofchain_search
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+  provides_commands:
+    - evidence
+  provides_middleware: []
+  requires_env: []

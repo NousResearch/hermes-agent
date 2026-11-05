@@ -410,6 +410,22 @@ compressor. Once the compacted history is committed, the engine receives
 twice for in-place compaction). A session with no live agent may get a fresh engine instance
 for that compression, which then also receives `on_session_end()`.
 
+The `on_session_start()` calls at agent start and at a compression boundary also carry
+`memory_manager`: the session's memory manager, or `None` when no external memory provider is
+active (and always `None` for a fresh engine built for a session with no live agent). The host
+already calls its `on_pre_compress()` for every span it hands to `compress()` and passes the
+result to `compress()` as `memory_context` when your signature accepts it. Call
+`memory_manager.on_pre_compress(messages)` yourself only for messages your engine drops outside
+`compress()`; otherwise providers see the span twice. The host doesn't see that call, so it is
+best effort and is not a checkpoint: it does not change your `compacts_outside_compress` answer.
+An engine that removes messages from the host transcript outside `compress()` still declares
+`True`, and is refused while `compression.checkpoint_required` is armed. On a gateway serving
+several profiles, a call from a thread your engine started itself names no profile and is refused
+with a warning; start such threads with `agent.memory_provider.spawn_context_thread`. At shutdown
+the providers stop before your `on_session_end()` runs, so don't use the manager there. Under
+`plugins.isolation: host` the manager can't cross into the plugin host: it arrives as an opaque
+placeholder whose attributes raise `AttributeError`.
+
 ## Configuration
 
 Users select your engine via `hermes plugins` → Provider Plugins → Context Engine, or by editing `config.yaml`:

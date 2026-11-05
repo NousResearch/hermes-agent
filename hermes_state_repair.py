@@ -749,7 +749,8 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
     try:
-        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=1.0)
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        conn = connect_tracked(read_only_db_uri(db_path), uri=True, timeout=1.0, tracking_path=db_path)
     except sqlite3.Error:
         return False
     try:

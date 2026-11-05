@@ -180,9 +180,9 @@ def _eager_reconcile_own_session_db() -> None:
     """Bring this process's own state.db schema current at startup — read-only first.
 
     The dashboard is a view layer; the gateway owns the writer. A healthy store
-    must never see a second writable ``SessionDB`` from this process (its
-    close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
-    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    must never see a second writer from this process (its close-time checkpoint
+    and a possible FTS rebuild are the two-writer corruption vector, #107688 /
+    #100896). Access-mode semantics
     (no bootstrap of a missing store; one additive catch-up of a store that lags
     SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
     :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
@@ -190,9 +190,8 @@ def _eager_reconcile_own_session_db() -> None:
     """
     try:
         from hermes_cli.web_server_sessions import _open_session_db_for_profile
-        from hermes_state_registry import release_or_close
 
-        release_or_close(_open_session_db_for_profile(None, read_only=True))
+        _open_session_db_for_profile(None, read_only=True).close()
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "

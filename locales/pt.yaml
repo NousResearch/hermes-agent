@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Somente um usuário autorizado do Matrix pode usar estes controles."
       not_requester: "Somente o usuário que solicitou esta ação pode usar estes controles."
   feishu:
+    clarify:
+      title: "O Hermes precisa da sua resposta"
+      other: "✏️ Outro (digitar resposta)"
+      awaiting_typed: "Aguardando resposta digitada de {user}…"
+    picker:
+      apply_error: "Erro ao aplicar a seleção: {error}"
     approval:
       action_session: "Sessão"
       action_always: "Sempre"
@@ -2164,6 +2170,7 @@ cli:
     images_attached_other: "📎 {count} imagens anexadas"
     command_interrupted: "Comando interrompido."
     welcome: "Bem-vindo ao Hermes Agent! Digite sua mensagem ou /help para ver os comandos."
+    vscode_images_hint: "O VS Code pode mostrar imagens em resolução total aqui: ative terminal.integrated.enableImages nas configurações."
     activated_skills_label: "Skills ativadas:"
     redaction_disabled_title: "⚠  A redação de segredos está DESATIVADA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Chaves de API e tokens podem aparecer sem máscara na saída do chat, nos JSONs de sessão e nos logs. Defina {setting} em config.yaml para reativar."
@@ -2618,6 +2625,7 @@ cli:
     goal_turns: "⊙ objetivo {used}/{max}"
     goal: "⊙ objetivo"
     ctx_pinned: " fixado"
+    ctx_fallback: " padrão"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Guardados ({count} item)"

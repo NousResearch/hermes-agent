@@ -677,10 +677,10 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:
-    """Parse JSON, returning *default* on any parse error."""
+    """Parse JSON, returning *default* on any parse error (a too-deeply nested body included)."""
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return default
 
 

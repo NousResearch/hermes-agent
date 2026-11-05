@@ -1,10 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 import { zhHantPluginPreviewAccess } from './zh-hant_plugin_preview_access'
+import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
     plugins: {
       ...zhHantPluginPreviewAccess,
+      ...zhHantPluginUpdateAll,
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。',
       folderAccess: {
         title: '資料夾存取',
@@ -79,6 +81,10 @@ export const zhHantCapabilities = {
     changesApplyNewSessions: '變更將套用至新工作階段。',
     skillUpdated: '技能已更新',
     edit: '編輯',
+    lock: '鎖定',
+    locked: '已鎖定',
+    lockHint: '鎖定期間，代理程式無法變更此技能。你仍可自行編輯。',
+    unlockedHint: '鎖定後，代理程式將無法變更此技能。你仍可自行編輯。',
     archive: '封存',
     skillArchivedTitle: '技能已封存',
     skillArchivedMessage: '可透過 hermes curator restore 還原。',

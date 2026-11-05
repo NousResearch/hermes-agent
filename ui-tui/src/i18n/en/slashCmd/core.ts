@@ -29,6 +29,7 @@ export const slashCmdCoreEn = {
       switchSessions: 'switch sessions',
       forgingSession: 'forging session…',
       newSessionStarted: 'new session started',
+      previousKeptRunning: 'new session started · the previous one keeps running in the background (Ctrl+X to switch)',
       cancelLabel: 'No, keep going',
       confirmNew: 'Yes, start a new session',
       confirmClear: 'Yes, clear the session',
@@ -108,6 +109,9 @@ export const slashCmdCoreEn = {
       noConversation: 'no conversation yet',
       noActiveSession: 'no active session — nothing to save',
       saved: (file: string) => `conversation saved to: ${file}`,
+      savedOnHost: (file: string) => `conversation saved as raw JSON on the gateway host: ${file}`,
+      legacyRefused:
+        'not saved: this gateway does not serve /save export (an older gateway, or a sidecar without the session authority), so it cannot write a redacted, named or md/html copy. Attach to the gateway that owns the session or update it, or run plain /save to write raw JSON on the gateway host.',
       failed: 'failed to save'
     },
     focus: {

@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Slegs 'n gemagtigde Matrix-gebruiker kan hierdie kontroles gebruik."
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
   feishu:
+    clarify:
+      title: "Hermes het jou insette nodig"
+      other: "✏️ Ander (tik antwoord)"
+      awaiting_typed: "Wag vir getikte antwoord van {user}…"
+    picker:
+      apply_error: "Fout met toepassing van keuse: {error}"
     approval:
       action_session: "Sessie"
       action_always: "Altyd"
@@ -2164,6 +2170,7 @@ cli:
     images_attached_other: "📎 {count} beelde aangeheg"
     command_interrupted: "Opdrag onderbreek."
     welcome: "Welkom by Hermes Agent! Tik jou boodskap of /help vir opdragte."
+    vscode_images_hint: "VS Code kan hier beelde in volle resolusie wys: skakel terminal.integrated.enableImages in die instellings aan."
     activated_skills_label: "Geaktiveerde vaardighede:"
     redaction_disabled_title: "⚠  Geheim-redigering is GEDEAKTIVEER"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-sleutels en tokens kan woordeliks in kletsuitvoer, sessie-JSON's en loglae verskyn. Stel {setting} in config.yaml om dit weer te aktiveer."
@@ -2618,6 +2625,7 @@ cli:
     goal_turns: "⊙ doelwit {used}/{max}"
     goal: "⊙ doelwit"
     ctx_pinned: " vasgepen"
+    ctx_fallback: " terugval"
     ctx_unknown: "ktx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Bergplek ({count} item)"

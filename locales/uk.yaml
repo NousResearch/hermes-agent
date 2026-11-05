@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Ці елементи керування доступні лише авторизованому користувачу Matrix."
       not_requester: "Ці елементи керування доступні лише користувачу, який запросив цю дію."
   feishu:
+    clarify:
+      title: "Hermes потребує вашої відповіді"
+      other: "✏️ Інше (ввести відповідь)"
+      awaiting_typed: "Очікуємо текстову відповідь від {user}…"
+    picker:
+      apply_error: "Помилка застосування вибору: {error}"
     approval:
       action_session: "На сеанс"
       action_always: "Завжди"
@@ -2164,6 +2170,7 @@ cli:
     images_attached_other: "📎 Прикріплено зображень: {count}"
     command_interrupted: "Команду перервано."
     welcome: "Вітаємо в Hermes Agent! Введіть повідомлення або /help для списку команд."
+    vscode_images_hint: "VS Code може показувати тут зображення в повній роздільній здатності: увімкніть terminal.integrated.enableImages у налаштуваннях."
     activated_skills_label: "Активовані навички:"
     redaction_disabled_title: "⚠  Приховування секретів ВИМКНЕНО"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Ключі API та токени можуть з'являтися у відкритому вигляді у виводі чату, JSON сеансів і журналах. Задайте {setting} у config.yaml, щоб увімкнути знову."
@@ -2618,6 +2625,7 @@ cli:
     goal_turns: "⊙ ціль {used}/{max}"
     goal: "⊙ ціль"
     ctx_pinned: " закріплено"
+    ctx_fallback: " за замовчуванням"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Схованка ({count} елемент)"

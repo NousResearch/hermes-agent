@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "これらの操作は、認可された Matrix ユーザーのみが使用できます。"
       not_requester: "これらの操作は、このアクションをリクエストしたユーザーのみが使用できます。"
   feishu:
+    clarify:
+      title: "Hermes が入力を求めています"
+      other: "✏️ その他（回答を入力）"
+      awaiting_typed: "{user} からの入力を待っています…"
+    picker:
+      apply_error: "選択の適用エラー: {error}"
     approval:
       action_session: "セッション中"
       action_always: "常に"
@@ -2164,6 +2170,7 @@ cli:
     images_attached_other: "📎 画像 {count} 件を添付しました"
     command_interrupted: "コマンドを中断しました。"
     welcome: "Hermes Agent へようこそ！メッセージを入力するか、/help でコマンド一覧を表示します。"
+    vscode_images_hint: "VS Code ではここで画像をフル解像度で表示できます。設定で terminal.integrated.enableImages をオンにしてください。"
     activated_skills_label: "有効化されたスキル:"
     redaction_disabled_title: "⚠  シークレットの秘匿化が無効です"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value})。API キーやトークンがチャット出力、セッション JSON、ログにそのまま表示される可能性があります。再度有効にするには config.yaml で {setting} を設定してください。"
@@ -2618,6 +2625,7 @@ cli:
     goal_turns: "⊙ 目標 {used}/{max}"
     goal: "⊙ 目標"
     ctx_pinned: " 固定"
+    ctx_fallback: " 既定値"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 スタッシュ（{count} 件）"

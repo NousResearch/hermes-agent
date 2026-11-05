@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "لا يمكن استخدام عناصر التحكم هذه إلا لمستخدم Matrix مصرّح له."
       not_requester: "لا يمكن استخدام عناصر التحكم هذه إلا للمستخدم الذي طلب هذا الإجراء."
   feishu:
+    clarify:
+      title: "Hermes يحتاج إلى ردّك"
+      other: "✏️ غير ذلك (اكتب الإجابة)"
+      awaiting_typed: "بانتظار رد مكتوب من {user}…"
+    picker:
+      apply_error: "خطأ في تطبيق الاختيار: {error}"
     approval:
       action_session: "الجلسة"
       action_always: "دائمًا"
@@ -2164,6 +2170,7 @@ cli:
     images_attached_other: "📎 {count} صور مرفقة"
     command_interrupted: "قُطع الأمر."
     welcome: "مرحبًا بك في Hermes Agent! اكتب رسالتك أو /help لعرض الأوامر."
+    vscode_images_hint: "يمكن لـ VS Code عرض الصور بدقة كاملة هنا: فعّل terminal.integrated.enableImages في الإعدادات."
     activated_skills_label: "المهارات المفعّلة:"
     redaction_disabled_title: "⚠  إخفاء الأسرار معطّل"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). قد تظهر مفاتيح API ورموز الوصول حرفيًا في مخرجات المحادثة وملفات JSON للجلسات والسجلات. اضبط {setting} في config.yaml لإعادة التفعيل."
@@ -2618,6 +2625,7 @@ cli:
     goal_turns: "⊙ الهدف {used}/{max}"
     goal: "⊙ الهدف"
     ctx_pinned: " مثبّت"
+    ctx_fallback: " احتياطي"
     ctx_unknown: "السياق --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 المخبأ ({count} عنصر)"

@@ -1431,6 +1431,12 @@ platform:
       not_requester: "Only the user who requested this action can use these controls."
 
   feishu:
+    clarify:
+      title: "Hermes needs your input"
+      other: "✏️ Other (type answer)"
+      awaiting_typed: "Awaiting typed response from {user}…"
+    picker:
+      apply_error: "Error applying selection: {error}"
     approval:
       # Feishu keeps shorter button words than the shared card (emoji prefixes are added in code).
       action_session: "Session"
@@ -2260,6 +2266,7 @@ cli:
     images_attached_other: "📎 {count} images attached"
     command_interrupted: "Command interrupted."
     welcome: "Welcome to Hermes Agent! Type your message or /help for commands."
+    vscode_images_hint: "VS Code can show full-resolution images here: turn on terminal.integrated.enableImages in settings."
     activated_skills_label: "Activated skills:"
     redaction_disabled_title: "⚠  Secret redaction is DISABLED"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API keys and tokens may appear verbatim in chat output, session JSONs, and logs. Set {setting} in config.yaml to re-enable."
@@ -2718,6 +2725,7 @@ cli:
     goal_turns: "⊙ goal {used}/{max}"
     goal: "⊙ goal"
     ctx_pinned: " pinned"
+    ctx_fallback: " fallback"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} item)"

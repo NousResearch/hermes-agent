@@ -21,11 +21,14 @@ test runner at ``scripts/run_tests.sh``.
 import asyncio
 import atexit
 import importlib
+import ipaddress
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -844,6 +847,12 @@ def _reset_tui_gateway_server_state():
         obj = getattr(mod, name, None)
         if isinstance(obj, dict):
             obj.clear()
+    # Addressed notifications parked for an absent session: a leak would let a
+    # later test's session claim a stale event, or spend the cap and refuse its
+    # own park.
+    park = sys.modules.get("tui_gateway.notification_park")
+    if park is not None:
+        park.clear()
 
     if snapshot is not None:
         mod._methods.clear()
@@ -1254,6 +1263,12 @@ def pytest_configure(config):
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
     )
+    config.addinivalue_line(
+        "markers",
+        "allow_network: let the test (and the module-scoped fixtures it sets up) "
+        "reach real hosts through the external network fence — only for PM "
+        "toolchain and wheel downloads; everything else is served by fixtures.",
+    )
     # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
@@ -1393,43 +1408,87 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
-# ── Live Nous services fence ─────────────────────────────────────────────────
-# A test home starts with no Nous identity, so any path that ends in a hosted
-# connector action (connect, rename, status, the tool's first call) mints a REAL
-# guest on the production Portal: up to GUEST_MINT_TIMEOUT_SECONDS per test,
-# red whenever the Portal is slow, and a new guest identity on production on
-# every CI run. The same holds for billing, plan limits, the dashboard OAuth
-# provider and every other client built on a Nous URL. Refusing the name lookup
-# covers all of them at once (httpx, urllib, aiohttp and asyncio all resolve
-# through socket.getaddrinfo), and fails exactly like an offline host, which is
-# the path production already handles. Tests of these clients stub the
-# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), so
-# they never reach the lookup. Live canaries opt in with ``@pytest.mark.live``.
-_NOUS_SERVICE_DOMAINS = ("nousresearch.com", "staging-nousresearch.com")
+# ── External network fence ───────────────────────────────────────────────────
+# Unit tests run against fixtures, never a live service. A lookup of any host off this
+# machine is refused the way an offline host refuses it, which is the path production
+# already handles. Every Python client (httpx, urllib, requests, aiohttp, asyncio)
+# resolves through socket.getaddrinfo, so the whole class closes in one place.
+#
+# The Nous domains were the first instance: a test home has no Nous identity, so a hosted
+# connector action minted a REAL guest on the production Portal on every CI run. Every
+# other host behaved the same way: building an agent fetched OpenRouter, models.dev and
+# model-catalog metadata live, a stand-in agent's title request went to openrouter.ai, and
+# verdicts followed whatever those services (or a filtering DNS resolver) answered that day.
+#
+# Serve what a test needs from a fixture instead: a server on 127.0.0.1, a stubbed
+# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), a seeded
+# cache, or a patched resolver seam (``tools.url_safety._getaddrinfo`` for the SSRF
+# guards). Address literals resolve without a lookup and stay allowed. Live canaries opt
+# in with ``@pytest.mark.live``, the PM tests that download real toolchains and wheels on
+# purpose with ``@pytest.mark.allow_network``. Processes a test spawns are outside the fence.
+#
+# Installed for the whole process at import, not per test: a background thread a test
+# started (inventory refresh, memory sync, a metadata probe) outlives the test, and a
+# per-test patch left it the gap between one test's teardown and the next one's setup.
+_LOCAL_HOST_NAMES = frozenset({"", "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
+                               socket.gethostname().lower()})
+_REAL_GETADDRINFO = socket.getaddrinfo
+_NETWORK_ALLOWED = threading.Event()
 
 
-def _is_nous_service_host(host) -> bool:
+def _is_external_host(host) -> bool:
     name = (host.decode() if isinstance(host, bytes) else str(host or "")).lower().rstrip(".")
-    return any(name == domain or name.endswith("." + domain) for domain in _NOUS_SERVICE_DOMAINS)
+    if name in _LOCAL_HOST_NAMES or name.endswith(".localhost"):
+        return False
+    try:
+        ipaddress.ip_address(name.strip("[]").split("%", 1)[0])
+    except ValueError:
+        return True
+    return False
 
 
-@pytest.fixture(autouse=True)
-def _no_live_nous_services(request, monkeypatch):
-    if request.node.get_closest_marker("live"):
-        return
-    import socket
+def _fenced_getaddrinfo(host, *args, **kwargs):
+    if _is_external_host(host) and not _NETWORK_ALLOWED.is_set():
+        raise socket.gaierror(
+            socket.EAI_NONAME,
+            f"test fence: {host!r} is off this machine; serve it from a fixture (local server, "
+            "stubbed transport, seeded cache) or mark the test live")
+    return _REAL_GETADDRINFO(host, *args, **kwargs)
 
-    real_getaddrinfo = socket.getaddrinfo
 
-    def fenced_getaddrinfo(host, *args, **kwargs):
-        if _is_nous_service_host(host):
-            raise socket.gaierror(
-                socket.EAI_NONAME,
-                f"test fence: {host!r} is a live Nous service; stub the HTTP layer "
-                "(tests/hermes_cli/anon_portal.py) or mark the test live")
-        return real_getaddrinfo(host, *args, **kwargs)
+socket.getaddrinfo = _fenced_getaddrinfo
 
-    monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Open the fence for ``live`` canaries and ``allow_network`` tests (PM toolchain and wheel
+    downloads, which run real installs on purpose). The whole protocol is wrapped, so a
+    module-scoped fixture the test sets up downloads under the same opening."""
+    if item.get_closest_marker("live") is None and item.get_closest_marker("allow_network") is None:
+        return (yield)
+    _NETWORK_ALLOWED.set()
+    try:
+        return (yield)
+    finally:
+        _NETWORK_ALLOWED.clear()
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    """The SSRF guard (``tools.url_safety``) resolves every hostname to a public address, and an
+    address literal to itself. Only the guard's lookup is served: a client that really connects
+    still meets the fence, so nothing leaves the machine."""
+    from tools import url_safety
+
+    def resolve(hostname, port=None):
+        try:
+            address = str(ipaddress.ip_address(hostname))
+        except ValueError:
+            address = "93.184.216.34"
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+    monkeypatch.setattr(url_safety, "_getaddrinfo", resolve)
 
 
 @pytest.fixture(autouse=True)
@@ -1452,6 +1511,35 @@ def _isolate_computer_use_approval_state():
         _cu_tool.set_approval_callback(None)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _restore_aux_runtime_main():
+    """Restore the auxiliary client's main-runtime binding after every test.
+
+    ``build_turn_context`` binds the turn's main route with
+    ``agent.auxiliary_client.set_runtime_main`` in a ContextVar. Production
+    turns each run in their own context; a single pytest process runs every
+    test in one, so a fake agent's route outlives its test and later tests'
+    auxiliary routing treats it as the main model. For example, after
+    ``test_api_content_row_addressed_backfill.py`` (which drives the prologue
+    with a fake ``test/model`` on OpenRouter), six tests in
+    ``test_auxiliary_main_first.py`` fail in the same process: a patched
+    custom vision main resolves to openrouter. Snapshot/restore keeps bindings
+    made by wider-scoped fixtures; a module first imported during the test
+    goes back to its import-time state; a near no-op otherwise. The binding is
+    compared by identity, so a test that mutates a wider fixture's runtime dict
+    in place (``rotate_runtime_main_api_key``) must restore it itself.
+    """
+    # Hold the real variable: a test may swap a stub into sys.modules for the
+    # module, and that swap is undone only after this teardown runs.
+    var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    before = var.get() if var is not None else None
+    yield
+    if var is None:
+        var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    if var is not None and var.get() is not before:
+        var.set(before)
 
 
 @pytest.fixture(autouse=True)

@@ -199,6 +199,19 @@ def _list_profiles(home):
         return asyncio.run(probe())
 
 
+def test_profiles_list_carries_each_sibling_profiles_saved_description(tmp_path, monkeypatch):
+    """Bot Mode reads every bot's Description from this roster (Edit profile, the avatar prompt,
+    role search, Duplicate). A sibling's saved description was blanked, so it looked unsaved."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profile.yaml').write_text('description: Project Manager\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text(
+        'display_name: Writer Bot\ndescription: Creative Director\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['default']['description'] == 'Project Manager'
+    assert rows['writer']['description'] == 'Creative Director'
+    assert rows['helper']['description'] == ''
+
+
 def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, monkeypatch, caplog):
     """@dokterdok on #140972: a sibling profile.yaml saved in a legacy Windows code page raised
     UnicodeDecodeError and failed the healthy default's whole roster. The roster still answers,

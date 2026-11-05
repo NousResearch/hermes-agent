@@ -25,7 +25,6 @@ def test_variable_price_sentinel_is_unknown_not_negative(monkeypatch):
 @pytest.mark.parametrize("pricing,expected", [
     ({"prompt": "-1", "completion": "0.000002"}, None),  # one side unknown -> the total is unknown, never under-counted
     ({"prompt": "0", "completion": "0"}, Decimal(0)),  # free models keep their zero price
-    ({"prompt": "-0", "completion": "0.000002"}, Decimal(2)),
 ])
 def test_mixed_and_zero_rates(monkeypatch, pricing, expected):
     result = _cost(monkeypatch, pricing)

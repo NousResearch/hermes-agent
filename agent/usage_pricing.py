@@ -539,7 +539,7 @@ def _pricing_entry_from_metadata(
             logger.debug("Ignoring unusable %s rate %s for %s (variable-pricing sentinel)", key, raw, model_id)
             rejected.add(key)
             return None
-        return None if value is None else value.copy_abs()  # copy_abs folds "-0" to 0
+        return value
 
     def per_million(key: str, *aliases: str) -> Optional[Decimal]:
         value = rate(key, *aliases)

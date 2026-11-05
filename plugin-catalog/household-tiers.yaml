@@ -1,0 +1,27 @@
+name: household-tiers
+repo: https://github.com/chevlume/household-tiers
+sha: "8beda6412117f7a77faeaf8ad0e104b3cb9b039f"
+description: "One shared Hermes bot for a household: per-person tiers, owner memory kept out of other prompts, bedtime hours with a parent alert, a homework note, and /family."
+maintainer: chevlume
+category: platform
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+known_issues:
+  - "Verified against Hermes commit ed1afb082eb3e46cf2edae9d8f68fb67b09ee4df, which reports base version 0.22.7. The >=0.22.7 floor is that release's SemVer (catalog rule 14). The v0.22.7 tag itself was not re-tested."
+  - "With plugins.isolation set to host the plugin host does not forward the per-turn sender, so household-tiers fails closed (everyone is a guest) and the parent alert is skipped. Use isolation in_process for per-person tiers."
+  - "Shared sessions (a thread with thread_sessions_per_user false, or a group with group_sessions_per_user false) carry replies to other people. Non-owner tiers are refused there by default (shared_threads refuse) and asked to use a direct message."
+  - "If household-tiers.json is unreadable, tool calls are blocked and memory blocks are withheld from every request, including the owner's, and every gateway turn gets a short error reply until the file is fixed."
+  - "HTTP redirects onto the local network, and DNS names that change address between check and connect, are not re-validated. A non-owner web tool resolves the hostname once with the system resolver and does not fetch the URL. See the README known issues."
+  - "Memory stripping and tool filtering were executed on chat_completions, anthropic_messages, codex_responses, and bedrock_converse payloads from Hermes commit ed1afb08, including multi-paragraph entries joined with §. The strip stops at the memory block; the date line and runtime block stay. A kid message that quotes an entry does not refuse the turn. Gemini conversion was not executed. Relative paths use Hermes _resolve_base_dir and os.path.realpath. Case-folding was tested with a monkeypatched normcase on Linux, not on macOS."
+  - "Context compaction's auxiliary summary (agent/context_compressor.py, MEMORY PROVIDER CONTEXT) does not pass through llm_request. post_compaction is observer-only and does not receive the summary. That path was not executed."
+  - "An external memory provider system_prompt_block() (byterover, retaindb, or another) is not removed. A simulated block still reached the kid. Pieces of 8 or more characters from MEMORY.md or USER.md are redacted anywhere in the injected system prompt, including SOUL, AGENTS.md, and skills text when they match."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - subagent_start
+    - pre_gateway_dispatch
+    - post_gateway_admission
+  provides_middleware:
+    - llm_request
+  requires_env: []

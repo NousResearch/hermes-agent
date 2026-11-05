@@ -116,14 +116,18 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     return kw
 
 
-def _wire_session_agent(sid: str, key: str, agent) -> bool:
+def _wire_session_agent(sid: str, key: str, agent, *, principal_id: str | None = None) -> bool:
     """Post-build wiring; returns whether the approval notify got registered. Approval prompts route to the
     client; the self-improvement "💾 …" summary is emitted as review.summary (no print surface), honoring
     display.memory_notifications."""
     notify_registered = False
     with contextlib.suppress(Exception):
         from tools.approval import load_permanent_allowlist, register_gateway_notify
-        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
+        register_gateway_notify(
+            key, lambda data: _emit_approval_request(sid, data),
+            recovery_db=getattr(agent, "session_db", None),
+            principal_id=principal_id or key,
+            durable_session_id=key)
         notify_registered = True
         load_permanent_allowlist()
     _wire_callbacks(sid)
@@ -279,7 +283,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 return
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
-            notify_registered = _wire_session_agent(sid, key, agent)
+            notify_registered = _wire_session_agent(
+                sid, key, agent, principal_id=current.get("auth_user_id") or key)
             _announce_built_agent(sid, key, current, agent)
         except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- reported as agent_error + error event
             from agent.auxiliary_unavailable import ProviderNotConfiguredError

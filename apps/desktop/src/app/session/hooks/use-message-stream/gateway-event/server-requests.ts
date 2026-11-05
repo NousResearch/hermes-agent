@@ -400,6 +400,10 @@ const approval: Handler = ctx => {
     description,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
     requestId: str(p.request_id) || undefined,
+    recoveryToken: str(p.recovery_token) || undefined,
+    commandDigest: str(p.command_digest) || undefined,
+    executionGeneration: typeof p.execution_generation === 'number' ? p.execution_generation : undefined,
+    turnId: str(p.turn_id) || undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
     smartDenied: p.smart_denied === true

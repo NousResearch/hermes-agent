@@ -178,6 +178,12 @@ workspace; absent or empty cwd remains unpinned.
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content, metadata=None)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+| `on_profile_created(profile_name, hermes_home)` | A profile selecting your provider was created (a clone carries `memory.provider`), from the CLI, dashboard or Desktop | Per-profile state: a peer, a host entry |
+| `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
+
+The two profile hooks run on an uninitialized instance with that profile's home and its own `.env`
+secrets bound (a key that `.env` lacks falls back to the process environment, as at runtime). An exception is logged and never fails the create or rename. They run inside the
+create/rename request on every surface, so do network work on a background thread.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
@@ -338,6 +344,25 @@ Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are pas
 :::tip Minimal vs Full Schema
 Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the [Supermemory provider](https://github.com/supermemoryai/hermes-supermemory) (a plugin catalog entry) for an example — it only prompts for the API key; all other options live in `supermemory.json`.
 :::
+
+### Provider-owned storage
+
+`config_schema.py` defaults to `storage=STORAGE_FLAT_JSON`: core reads and writes
+`$HERMES_HOME/<name>/config.json` for the panel. A provider whose config has its own layout
+(several profiles in one file, OAuth tokens beside settings) declares `storage=STORAGE_PROVIDER`
+and implements two methods; core never opens the file:
+
+```python
+def read_config_fields(self, hermes_home: str) -> dict:
+    # Stored natives by field key (absent = unset), plus what a blank field resolves to.
+    return {"values": {"workspace": "ws1"}, "placeholders": {"aiPeer": "hermes_coder"}}
+
+def write_config_fields(self, values: dict, hermes_home: str) -> None:
+    # Only submitted keys; None clears one. Non-blank secrets arrive here too; core saves them to
+    # .env under env_key only after this returns. Raise a plain ValueError to refuse the save
+    # (shown as a 400), e.g. when your file does not parse.
+    ...
+```
 
 ## Save Config
 

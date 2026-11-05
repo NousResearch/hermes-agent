@@ -90,7 +90,7 @@ class TestFinalizeSessionPersistE2E:
 
     The mock-based tests above assert that _persist_session is *called*, but a
     call whose arguments neuter the underlying flush persists nothing. These
-    tests drive the REAL AIAgent flush against a REAL SessionDB, reproducing
+    tests drive the REAL AIAgent flush against a REAL state.db store, reproducing
     the "conversation contains many events yet is absent from state.db across
     disconnect/restart" symptom.
     """
@@ -100,7 +100,7 @@ class TestFinalizeSessionPersistE2E:
         from run_agent import AIAgent
 
         agent = object.__new__(AIAgent)
-        agent._session_db = db
+        agent._session_db = agent.persistence = db
         agent._session_db_created = True
         agent.session_id = session_id
         agent.platform = "tui"
@@ -125,12 +125,14 @@ class TestFinalizeSessionPersistE2E:
         never written to the DB) must be flushed to state.db when the WS
         disconnect tears the session down."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import conversation
+        from tests.fixtures.storage_seed import seed_session
         import tui_gateway.server as srv
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         session_id = "sess-unflushed"
-        db.create_session(session_id=session_id, source="tui")
+        seed_session(db, session_id, "tui")
         monkeypatch.setattr(srv, "_get_db", lambda: db)
 
         # The live turn list that became session["history"] AND
@@ -144,11 +146,11 @@ class TestFinalizeSessionPersistE2E:
         agent = self._real_agent(db, session_id, turn)
         session = _make_session(agent=agent, history=turn, session_key=session_id)
 
-        assert db.get_messages_as_conversation(session_id) == []
+        assert conversation(db, session_id) == []
 
         srv._finalize_session(session, end_reason="ws_disconnect")
 
-        after = db.get_messages_as_conversation(session_id)
+        after = conversation(db, session_id)
         contents = [m.get("content") for m in after]
         assert len(after) == 4, after
         assert any("scan the repo" in (c or "") for c in contents), contents
@@ -158,18 +160,19 @@ class TestFinalizeSessionPersistE2E:
         """A resumed session torn down before any new turn (its transcript is
         already durable in the DB) must NOT re-append duplicate rows."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import conversation
+        from tests.fixtures.storage_seed import seed_messages, seed_session
         import tui_gateway.server as srv
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         session_id = "sess-resumed"
-        db.create_session(session_id=session_id, source="tui")
+        seed_session(db, session_id, "tui")
         loaded = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
         ]
-        for m in loaded:
-            db.append_message(session_id=session_id, role=m["role"], content=m["content"])
+        seed_messages(db, session_id, *loaded)
         monkeypatch.setattr(srv, "_get_db", lambda: db)
 
         # Resumed session: history hydrated from the DB, no turn ran, so the
@@ -179,7 +182,7 @@ class TestFinalizeSessionPersistE2E:
 
         srv._finalize_session(session, end_reason="ws_disconnect")
 
-        after = db.get_messages_as_conversation(session_id)
+        after = conversation(db, session_id)
         assert len(after) == 2, after
 
 

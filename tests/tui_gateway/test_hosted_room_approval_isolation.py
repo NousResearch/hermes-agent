@@ -18,12 +18,12 @@ def _local_approval(service):
         {'member_id': 'default', 'profile': 'default', 'handle': 'home'},
         {'member_id': 'ops', 'profile': 'ops', 'handle': 'ops'}])
     service.send(room_id='other', event_id='ask', payload={'text': '@ops run', 'thread_id': 'ask'})
-    task, = driver.list_tasks(service.db_path, room_id='other', status='queued')
+    task, = driver.list_tasks(service.store, placement=service.placement, room_id='other', status='queued')
     binding = next(b for b in service.bindings() if b.room_id == 'other')
     lease = service.runtime._ensure_lease(binding)
-    driver.start_task(service.db_path, task['identity'], lease,
+    driver.start_task(service.store, task['identity'], lease, placement=service.placement,
                       expected_cancel_generation=0, clock=service.runtime.clock)
-    task = driver.get_task(service.db_path, task['identity'])
+    task = driver.get_task(service.store, task['identity'], placement=service.placement)
     service.runtime._report_pending_action(task, session_id='local', info={
         'pending_approval': {'request_id': 'local-prompt', 'command': 'echo local', 'choices': ['once', 'deny']}})
     return task
@@ -53,7 +53,7 @@ def test_slow_lender_does_not_hold_another_room(tmp_path, slow_action, other_act
     try:
         client = PeerRunsHTTPClient(base_url=f'http://127.0.0.1:{server.server_port}', api_key='')
         service, db, identity = _deferred_peer_turn(tmp_path, client)
-        task = driver.get_task(db, identity)
+        task = driver.get_task(db, identity, placement='profile')
         route = service.peer_routes[('room-1', 'member-peer')]
         room = service._room('room-1')
         client.bind_room_scope(room_id='room-1', home_install_id=route.home_install_id,

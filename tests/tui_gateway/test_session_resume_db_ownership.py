@@ -1,17 +1,16 @@
-"""``session.resume`` must not abandon the profile-scoped SessionDB it opens.
+"""``session.resume`` must not abandon the profile-scoped store handle it opens.
 
 In app-global remote mode a resume for another local profile opens a DEDICATED
-``SessionDB(db_path=<profile>/state.db)`` handle (the ``session.resume`` handler
+``open_persistence`` handle on ``<profile>/state.db`` (the ``session.resume`` handler
 in tui_gateway/methods_session.py). That handle is the caller's to close until
 it is handed to the long-lived agent by ``_init_session`` — and
 ``_init_session`` never closes a caller-supplied ``session_db`` (its
 ``_init_owns_db`` stays False for that case).
 
 Every early return before that transfer used to drop the handle on the floor,
-so its SQLite fds stayed open for as long as anything kept the instance
-reachable — and a ``SessionDB`` pins ITSELF once its background token writer
-starts (``atexit.register(self._drain_token_queue_at_exit)``, which only
-``close()`` unregisters).
+so the profile's store (its SQLite fds and token-writer thread) stayed open for
+the life of the process: a handle releases its reference on the shared store
+only through ``close()``.
 
 Pinned here, in both directions:
 
@@ -37,7 +36,8 @@ from tui_gateway import server
 
 
 class _RecordingDB:
-    """Stand-in for ``hermes_state.SessionDB`` that counts ``close()`` calls.
+    """Stand-in for the profile store that counts ``close()`` calls; it is also the storage handle
+    beside itself (the fixture routes ``_persistence_beside`` to the store).
 
     Implements only the surface ``session.resume`` touches.
     """
@@ -46,37 +46,41 @@ class _RecordingDB:
         self.db_path = db_path
         self.closed = 0
         self.rows: dict = {}
-        self.reopen_error: Exception | None = None
         self.read_error: Exception | None = None
+        self.sessions = types.SimpleNamespace(
+            get=self._get, get_by_title=lambda _target: None, is_kanban_owned=lambda _target: False,
+            retire_undrained_queue_rows=lambda _target: 0)
+        self.lineage = types.SimpleNamespace(resolve_resume_target=lambda target: target,
+                                             ancestor_display_prefix=self._ancestor_display_prefix)
+        self.messages = types.SimpleNamespace(assert_resume_safe=lambda *_a, **_k: 0,
+                                              read_resume_conversations=self._read_resume_conversations,
+                                              read_conversation=lambda *_a, **_k: ())
 
     def close(self):
         self.closed += 1
 
-    def get_session(self, target):
-        return self.rows.get(target)
+    def _get(self, target):
+        row = self.rows.get(target)
+        if row is None:
+            return None
+        return types.SimpleNamespace(**{"git_branch": None, "git_repo_root": None, **row},
+                                     as_session_row=lambda: dict(row))
 
-    def get_session_by_title(self, _target):
-        return None
-
-    def resolve_resume_session_id(self, target):
-        return target
-
-    def reopen_session(self, _target):
-        if self.reopen_error is not None:
-            raise self.reopen_error
-
-    def get_resume_conversations(self, _target):
+    def _read_resume_conversations(self, _target):
         if self.read_error is not None:
             raise self.read_error
-        return ([], [])
+        return types.SimpleNamespace(model=(), display=())
 
-    def get_ancestor_display_prefix(self, _target):
+    def _ancestor_display_prefix(self, _target):
         if self.read_error is not None:
             raise self.read_error
-        return []
+        return ()
 
-    def get_messages_as_conversation(self, _target, **_kwargs):
-        return []
+
+def _route_profile_opens(monkeypatch, factory) -> None:
+    """Profile-scoped opens build ``factory(<profile>/state.db)``; the launch profile keeps ``_get_db()``."""
+    monkeypatch.setattr(server, "_profile_session_db",
+                        lambda home: (factory(db_path=home / "state.db"), True) if home else (server._get_db(), False))
 
 
 @pytest.fixture()
@@ -95,7 +99,9 @@ def profile_dbs(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
+    monkeypatch.setattr(server, "_persistence_beside", lambda store: store)
+    monkeypatch.setattr(server, "_release_persistence", lambda _handle: None)
     monkeypatch.setattr(
         server, "_profile_home", lambda profile: profile_home if profile else None
     )
@@ -151,7 +157,7 @@ def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
 
     resp = _resume(session_id="s1", profile="work", source="desktop")
     session = server._sessions[resp["result"]["session_id"]]
@@ -176,7 +182,7 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
 
     resp = _resume(session_id="s1", profile="work")
 
@@ -199,7 +205,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
     live_session = {}
     with server._sessions_lock:
         server._sessions["live-sid"] = live_session
@@ -235,7 +241,7 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
     resp = _resume(session_id="s1", profile="work")
@@ -245,8 +251,10 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
     assert profile_dbs[0].closed == 1
 
 
-def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeypatch):
+def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeypatch, tmp_path):
     """Incremental hydration owns the profile handle until its read completes."""
+    from persistence.conversation.messages import ResumeConversations
+
     history_started = threading.Event()
     release_history = threading.Event()
     close_completed = threading.Event()
@@ -256,19 +264,21 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
             super().close()
             close_completed.set()
 
-        def get_resume_conversations(self, _target):
-            history_started.set()
-            assert release_history.wait(timeout=2.0)
-            assert self.closed == 0
-            return ([], [])
+    def _read_resume_conversations(_target):
+        history_started.set()
+        assert release_history.wait(timeout=2.0)
+        assert profile_dbs[0].closed == 0
+        return ResumeConversations(model=(), display=())
 
     def _factory(db_path=None, **kwargs):
         db = _BlockingDB(db_path=db_path, **kwargs)
         db.rows["s1"] = {"id": "s1", "cwd": "", "message_count": 0}
+        # The worker reads through the storage interface handle beside the profile store.
+        db.messages.read_resume_conversations = _read_resume_conversations
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
 
@@ -310,7 +320,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
         captured["init_db"] = session_db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
     monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
@@ -355,7 +365,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
             server._sessions[sid] = {"agent": agent, "session_key": key}
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    _route_profile_opens(monkeypatch, _factory)
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )

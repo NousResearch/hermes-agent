@@ -389,7 +389,16 @@ def is_foreign_provider_endpoint(provider: Optional[str], base_url: Optional[str
     url = str(base_url or "").strip().rstrip("/")
     if pconfig is None or not url or url == (pconfig.inference_base_url or "").rstrip("/"):
         return False
-    return any(url == (other.inference_base_url or "").rstrip("/") for other in PROVIDER_REGISTRY.values())
+    return is_registered_provider_endpoint(url)
+
+
+def is_registered_provider_endpoint(base_url: Optional[str]) -> bool:
+    """Whether ``base_url`` matches a registered endpoint, including OpenRouter's special route."""
+    url = str(base_url or "").strip().rstrip("/")
+    return bool(url) and (
+        url == OPENROUTER_BASE_URL.rstrip("/")
+        or any(url == (p.inference_base_url or "").rstrip("/") for p in PROVIDER_REGISTRY.values())
+    )
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:

@@ -7,14 +7,43 @@ import logging
 import os
 from typing import Optional
 
+from agent.i18n import t
 from gateway.run_common import _UNSET
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
 
+class _STTTranscript(str):
+    """Transcript text with fallback metadata used only by user-facing echo paths."""
+
+    fallback_from: str | None
+    provider_used: str | None
+
+    def __new__(cls, transcript: str, *, fallback_from: str | None = None,
+                provider_used: str | None = None):
+        value = super().__new__(cls, transcript)
+        value.fallback_from = fallback_from
+        value.provider_used = provider_used
+        return value
+
+
 class GatewayInboundTranscriptionMixin:
     """STT enrichment and the once-only echo of pending voice transcripts."""
+
+    @staticmethod
+    def _format_stt_echo(transcript: str) -> str:
+        """Keep fallback details in the user-facing echo, not the stored transcript."""
+        transcript_echo = t("gateway.voice.transcript_echo_short", text=transcript)
+        fallback_from = getattr(transcript, "fallback_from", None)
+        if not fallback_from:
+            return transcript_echo
+        fallback_notice = t(
+            "gateway.voice.stt_fallback_notice",
+            fallback_from=fallback_from,
+            provider_used=getattr(transcript, "provider_used", None) or "local",
+        )
+        return f"{transcript_echo}\n\n{fallback_notice}"
 
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: list[str], clip_memo: Optional[dict] = None
@@ -163,7 +192,8 @@ class GatewayInboundTranscriptionMixin:
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
+        if not result.get("success") and not result.get("fallback_from"):
+            # Configured command fallback already tried the local backend; do not retry it.
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
                 logger.info("Configured STT failed for %s; recovered with local STT", path)
@@ -181,6 +211,13 @@ class GatewayInboundTranscriptionMixin:
                 "empty or inaudible — speech-to-text returned no "
                 "words. Do not guess at the content; ask the user "
                 "to resend or type it out.]"
+            )
+        fallback_from = result.get("fallback_from")
+        if fallback_from:
+            transcript = _STTTranscript(
+                transcript,
+                fallback_from=str(fallback_from),
+                provider_used=str(result.get("provider") or "local"),
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.

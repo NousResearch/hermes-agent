@@ -1,7 +1,7 @@
 ---
 name: multi-session-coordination
 description: "Coordinate concurrent sessions: claim shared resources."
-version: 2.5.0
+version: 2.6.1
 author: Tobias Musser (P2ppyJack), Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -143,11 +143,12 @@ roots such as `file:~`.
 
 TTL expiry or stale-session reaping is not proof that the real resource is idle.
 Inspect resource state before the first mutation after an expired or reaped
-holder. A session becomes stale after one hour of board silence; its held claims
-are marked `reaped` and waiters are warned. During long work that does not
-long work that does not otherwise touch the board, call `heartbeat --id <ID>`
-every few minutes. Use a longer `--ttl` for multi-hour work and refresh the same
-idempotent claim after long interruptions.
+holder. A session becomes stale after one hour of board silence
+(`HERMES_COORD_STALE_S` overrides the default); its held claims are marked
+`reaped` and waiters are warned. During long work that does not otherwise touch
+the board, call `heartbeat --id <ID>` every few minutes. Use a longer `--ttl`
+for multi-hour work and refresh the same idempotent claim after long
+interruptions.
 
 ### 3. Coordinate subagents and bots
 
@@ -260,8 +261,19 @@ retried. Details and recovery invariants are in
   validate a real process, file mutation, or remote job; verify state first.
 - Fail-open protects liveness but means a board outage is "flying blind". Report
   it before shared mutation.
+- A job's footprint is wider than the resource set it declares. Individual stages
+  can run their own guards over resources the job never declares (for example a
+  backup stage taking a `cron-guard --policy skip --timeout 0` over skill
+  directories). While a job you triggered is still running, claim nothing any of
+  its stages touch: a held `skill:<name>` can turn such a stage into a silent
+  exit-75 deferral while every other stage passes.
 - A `wait-for-cron` call while still holding the conflicting resource can
   deadlock against a wait-policy guard.
+- The post-turn background skill review does not consult the board. It can edit a
+  skill you hold `skill:<name>` on between your own turns, so a claim never
+  freezes a skill: re-read it immediately before every write, and treat a failed
+  exact-match patch as proof the file moved rather than a reason to widen the
+  match.
 - `coord_guard.sh` and the shell suites require Bash, so the skill platform gate
   is Linux/macOS even though the Python engine itself is portable.
 - Use the `github` skill for repository operations. Unreleased notes remain

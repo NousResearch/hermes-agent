@@ -152,12 +152,13 @@ MIGRATIONS = {
 DEFAULT_TTL_MIN = 90.0
 # v2.5: a session goes 'stale' after this much silence, and a stale holder's
 # claims are auto-reaped (released + waiters notified) so a session that
-# finished WITHOUT running `done` stops blocking co-workers. One hour balances
-# recall against safety: better than the old 24h for finished-but-unreleased
-# work, while a live session doing quiet work is not mistaken for dead unless it
-# stays silent a full hour. Long-running holders should call the new `heartbeat`
-# verb (every few minutes) so this never misfires on busy-but-silent work.
-STALE_SESSION_S = 60 * 60
+# finished WITHOUT running `done` stops blocking co-workers. Configurable via
+# HERMES_COORD_STALE_S. Default 60m balances recall against safety: better than
+# the old 24h for finished-but-unreleased work, while a live session doing
+# quiet work is not mistaken for dead unless it stays silent a full hour.
+# Long-running holders should call the new `heartbeat` verb (every few minutes)
+# so this never misfires on busy-but-silent work.
+STALE_SESSION_S = float(os.environ.get("HERMES_COORD_STALE_S", str(60 * 60)))
 EXPIRED_KEEP_S = 7 * 24 * 3600
 POLL_FRESH_S = 30               # a waiter fences only while actively polling
                                 # (claim --wait touches last_poll every ~4s);

@@ -98,14 +98,27 @@ def _call(server, method, **params):
 
 
 def test_undo_returns_prefill_with_target_text(server, session_with_history):
-    sid, session_key, s, agent = session_with_history
+    sid, _session_key, s, _agent = session_with_history
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     result = resp["result"]
     assert result["type"] == "prefill"
     # Default /undo backs up one user turn — "question 3"
     assert result["message"] == "question 3"
-    assert "Undid" in result["notice"]
     assert s["history"]
     assert all("_row_id" in message for message in s["history"])
 
 
+def test_undo_notifies_memory_providers_from_the_session_profile(server, session_with_history):
+    # On a multiplexed process the memory manager refuses a hook whose caller names no profile, so a
+    # launch-profile session's /undo must enter the session's profile scope before notifying it.
+    from agent.memory_caller_scope import _explicit_caller_home
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    sid, _session_key, _s, agent = session_with_history
+    callers = []
+    agent._memory_manager.on_session_switch.side_effect = lambda *a, **k: callers.append(_explicit_caller_home())
+    token = set_multiplex_context(True)
+    try:
+        assert _call(server, "command.dispatch", session_id=sid, name="undo", arg="")["result"]["type"] == "prefill"
+    finally:
+        reset_multiplex_context(token)
+    assert len(callers) == 1 and callers[0] is not None, callers

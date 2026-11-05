@@ -22,18 +22,6 @@ def wire_headers(client) -> dict:
 
 
 
-def test_api_key_client_and_its_copies_never_carry_the_env_bearer(monkeypatch):
-    """The guard is a copy-safe Omit() default header: ``with_options()`` re-runs the constructor
-    and re-reads ANTHROPIC_AUTH_TOKEN, so an attribute clear alone would re-leak on the copy."""
-    anthropic_sdk = pytest.importorskip("anthropic")
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", SENTINEL)
-    from agent.anthropic_adapter import _new_sdk_client
-
-    client = _new_sdk_client(anthropic_sdk, {"api_key": "provider-key", "base_url": "http://127.0.0.1:1"}, {})
-    for wire_client in (client, client.with_options(timeout=30)):
-        headers = wire_headers(wire_client)
-        assert headers.get("x-api-key") == "provider-key"
-        assert "authorization" not in headers
     # The bearer mirror (no env x-api-key beside a portal JWT) is owned by
     # tests/agent/test_nous_portal_anthropic_wire.py::TestClientShape.
 
@@ -77,3 +65,37 @@ def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):
 
     assert captured["headers"].get("x-api-key") == "third-party-provider-key"
     assert "authorization" not in captured["headers"]
+
+
+@pytest.mark.parametrize(("family", "oauth"), [("api03", False), ("usr01", False), ("svc01", False), ("admin01", False), ("oat01", True)])
+def test_console_key_families_carry_x_api_key_without_claude_code_identity(monkeypatch, family, oauth):
+    """#133856: Console key families must not ride Bearer + the Claude Code beta/user-agent (that request
+    shape bills the subscription bucket: 400 "credit balance too low"); OAuth setup tokens still do."""
+    pytest.importorskip("anthropic")
+    monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")  # skip the `claude --version` probe
+    key = "sk-" + "ant-" + family + "-" + "X" * 24
+    headers = {k.lower(): v for k, v in wire_headers(build_anthropic_client(key, "https://api.anthropic.com")).items()}
+    assert (headers.get("authorization") == "Bearer " + key) is oauth
+    assert (headers.get("x-api-key") == key) is (not oauth)
+    assert ("claude-code-20250219" in headers.get("anthropic-beta", "")) is oauth
+    assert ("claude-code/" in headers.get("user-agent", "")) is oauth
+
+
+@pytest.mark.parametrize(("base_url", "family", "expect"), [
+    ("https://api.anthropic.com", "usr01", "x-api-key"), ("https://api.anthropic.com", "api03", "x-api-key"),
+    ("https://api.anthropic.com", "oat01", "bearer"), ("https://gateway.invalid/anthropic", "usr01", "bearer"),
+    (None, "svc01", "x-api-key"),  # an empty base_url is the native default
+])
+def test_key_cmd_token_lands_in_the_header_its_family_needs(monkeypatch, base_url, family, expect):
+    """A key_cmd (callable) credential takes the per-request hook path: on the native host a Console key it
+    prints must go out as x-api-key like the static path; OAuth tokens and non-native gateways keep Bearer."""
+    pytest.importorskip("anthropic")
+    import httpx
+
+    monkeypatch.setattr("agent.anthropic_adapter._claude_code_version_cache", "0.0.0")
+    key = "sk-" + "ant-" + family + "-" + "X" * 24
+    client = build_anthropic_client(lambda: key, base_url)
+    request = httpx.Request("POST", (base_url or "https://api.anthropic.com") + "/v1/messages", headers={"Authorization": "Bearer entra-id-bearer-via-http-hook"})
+    client._client.event_hooks["request"][0](request)
+    sent = {"x-api-key": request.headers.get("x-api-key"), "bearer": request.headers.get("authorization")}
+    assert sent == ({"x-api-key": key, "bearer": None} if expect == "x-api-key" else {"x-api-key": None, "bearer": "Bearer " + key})

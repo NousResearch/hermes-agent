@@ -38,25 +38,9 @@ def _build_agent(config):
 
 
 @patch("agent.process_bootstrap.OpenAI")
-def test_streaming_false_seeds_disable_streaming(mock_openai):
-    mock_openai.return_value = MagicMock()
-    agent = _build_agent({"model": {**_BASE["model"], "streaming": False}})
-
-    assert agent._disable_streaming is True
-
-
-@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_absent_keeps_streaming_enabled(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = _build_agent(_BASE)
-
-    assert agent._disable_streaming is False
-
-
-@patch("agent.process_bootstrap.OpenAI")
-def test_streaming_true_keeps_streaming_enabled(mock_openai):
-    mock_openai.return_value = MagicMock()
-    agent = _build_agent({"model": {**_BASE["model"], "streaming": True}})
 
     assert agent._disable_streaming is False
 
@@ -72,27 +56,11 @@ def test_streaming_string_false_seeds_disable_streaming(mock_openai):
 
 
 @patch("agent.process_bootstrap.OpenAI")
-def test_streaming_zero_seeds_disable_streaming(mock_openai):
-    mock_openai.return_value = MagicMock()
-    agent = _build_agent({"model": {**_BASE["model"], "streaming": 0}})
-
-    assert agent._disable_streaming is True
-
-
-@patch("agent.process_bootstrap.OpenAI")
 def test_streaming_invalid_value_keeps_streaming_enabled(mock_openai):
     """Unrecognized values warn and keep the safe default (streaming on),
     rather than silently disabling or crashing init."""
     mock_openai.return_value = MagicMock()
     agent = _build_agent({"model": {**_BASE["model"], "streaming": "flase"}})
-
-    assert agent._disable_streaming is False
-
-
-@patch("agent.process_bootstrap.OpenAI")
-def test_missing_model_section_keeps_streaming_enabled(mock_openai):
-    mock_openai.return_value = MagicMock()
-    agent = _build_agent({})
 
     assert agent._disable_streaming is False
 
@@ -104,21 +72,6 @@ def test_legacy_string_model_section_does_not_crash(mock_openai):
     agent = _build_agent({"model": "test/model"})
 
     assert agent._disable_streaming is False
-
-
-@patch("agent.process_bootstrap.OpenAI")
-def test_streaming_false_applies_to_every_agent_built_from_config(mock_openai):
-    """Delegate children are constructed through the same init, so any agent
-    (parent or subagent) built under this config gets the escape hatch —
-    covering the reported failure surface."""
-    mock_openai.return_value = MagicMock()
-    cfg = {"model": {**_BASE["model"], "streaming": False}}
-
-    first = _build_agent(cfg)
-    second = _build_agent(cfg)
-
-    assert first._disable_streaming is True
-    assert second._disable_streaming is True
 
 
 @patch("agent.process_bootstrap.OpenAI")

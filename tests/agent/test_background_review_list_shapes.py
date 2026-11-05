@@ -23,44 +23,14 @@ C. ``summarize_background_review_actions`` no longer raises when
 D. ``summarize_background_review_actions`` no longer raises when
    ``call_details.get(tcid)`` returns a non-dict (e.g. None or a
    stray scalar).  It coerces to ``{}``.
-E. The caller in ``_run_review_in_thread`` no longer aborts the
-   whole review on an unrelated summarize exception; partial valid
-   actions are surfaced.
 
-The tests run without pytest (handoff from a prior pattern): they use
-plain ``assert`` and a small standalone runner.  Importing the module
-exercises the new code paths without booting the LLM stack — there
-are no I/O or model dependencies in the unit-of-work being tested.
 """
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
-import os
-import sys
-import types
 
-
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def _isolate_hermes_home():
-    os.environ.setdefault("HERMES_HOME", "/tmp/hermes-bg-review-test")
-
-
-def _load_module():
-    """Lazy import so a missing optional dep doesn't block the suite.
-
-    Returns the module or None if import failed.
-    """
-    if REPO_ROOT not in sys.path:
-        sys.path.insert(0, REPO_ROOT)
-    try:
-        return importlib.import_module("agent.background_review")
-    except Exception:
-        return None
+from agent import background_review as bg
 
 
 def _make_skill_tool_message(change, operations=None):
@@ -138,54 +108,13 @@ def _make_memory_tool_message(operations_field):
     ]
 
 
-class TestRunner:
-    def __init__(self):
-        self.passed = []
-        self.failed = []
-
-    def run(self, name, fn):
-        try:
-            fn()
-        except Exception as e:  # noqa: BLE001 — runner summary uses it
-            import traceback
-            self.failed.append((name, e, traceback.format_exc()))
-        else:
-            self.passed.append(name)
-
-    def summary(self):
-        total = len(self.passed) + len(self.failed)
-        print(f"\n{'=' * 70}\nResults: {len(self.passed)}/{total} passed")
-        if self.failed:
-            print(f"\n--- {len(self.failed)} failure(s) ---")
-            for n, _e, tb in self.failed:
-                print(f"\n[FAIL] {n}\n{tb}")
-        return 0 if not self.failed else 1
-
-
-# ---------------------------------------------------------------------------
-# A. _change as a list (the originally-reported crash class)
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # B. operations as a non-list (string / int / None)
 # ---------------------------------------------------------------------------
 
 
-
-
 def test_b_operations_as_none_treated_as_empty():
     """``operations = None`` (missing key, JSON null) is still safe."""
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
     msgs = _make_memory_tool_message(operations_field=None)
     actions = bg.summarize_background_review_actions(
         review_messages=msgs,
@@ -209,12 +138,6 @@ def test_c_operations_contains_non_dict_entries():
     so this test exercises the verbose branch where iteration over
     per-entry fields actually happens.
     """
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
     msgs = _make_memory_tool_message(
         operations_field=[
             "raw-string-no-fields",
@@ -246,12 +169,6 @@ def test_d_detail_non_dict_replaced_with_empty():
     """When ``call_details.get(tcid)`` returns None, summarize must coerce
     it to ``{}`` rather than calling ``.get(...)`` on ``None``.
     """
-    _isolate_hermes_home()
-    bg = _load_module()
-    if bg is None:
-        print("SKIP module not importable")
-        return
-
     # Build a tool-only message whose tcid does NOT have an assistant tool_call.
     msgs = _make_skill_tool_message(change={})
     # Drop the assistant message so call_details is empty for tcid=call_1.
@@ -263,47 +180,3 @@ def test_d_detail_non_dict_replaced_with_empty():
         notification_mode="verbose",
     )
     assert isinstance(actions, list)
-
-
-# ---------------------------------------------------------------------------
-# E. Caller defends against summarize raising
-# ---------------------------------------------------------------------------
-
-
-def test_e_call_does_not_unwind_module_callables():
-    """Structural: the new defensive try/except around the summarize
-    call is in place. Caught here rather than via a partial mocking
-    cascade because monkeypatching the AIAgent is too brittle for a
-    blind regression test — keeping it text-anchored guards the
-    ``_run_review_in_thread`` invariant without a real LLM.
-    """
-    src_path = os.path.join(REPO_ROOT, "agent", "background_review.py")
-    src = open(src_path, encoding="utf-8").read()
-    # The fix added: ``try: actions = summarize_background_review_actions(...)``
-    # followed by ``except Exception as e: ... actions = []``.
-    assert "actions = summarize_background_review_actions(" in src
-    assert (
-        "summarize_background_review_actions returned partial results"
-        in src
-    ), "expected partial-results guard message present"
-    # And the non-dict guards on free-form tool payload fields.
-    assert "if isinstance(ops_raw, list)" in src
-    assert "if isinstance(change_raw, dict)" in src
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-
-def main():
-    runner = TestRunner()
-    runner.run("b_operations_as_none_treated_as_empty", test_b_operations_as_none_treated_as_empty)
-    runner.run("c_operations_contains_non_dict_entries", test_c_operations_contains_non_dict_entries)
-    runner.run("d_detail_non_dict_replaced_with_empty", test_d_detail_non_dict_replaced_with_empty)
-    runner.run("e_call_defends_via_try_except", test_e_call_does_not_unwind_module_callables)
-    return runner.summary()
-
-
-if __name__ == "__main__":
-    sys.exit(main())

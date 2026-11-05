@@ -10,8 +10,10 @@ export const rejectUnownedSubagentRequest = async <T>(): Promise<T> => {
   throw new Error('Subagent owner unavailable')
 }
 
-/** Hydrate even an empty composer; live events remain authoritative over reads. */
-export function useSubagentSnapshot(sessionId: string | null) {
+/** Hydrate even an empty composer; live events remain authoritative over reads.
+ *  `poll` keeps the 5s safety-net refresh — off when nothing on screen shows
+ *  the answer, the one-shot hydrate still lands. */
+export function useSubagentSnapshot(sessionId: string | null, poll = true) {
   const gatewayState = useStore($gatewayState)
   const paneVisible = usePaneVisible()
   useEffect(() => {
@@ -34,12 +36,10 @@ export function useSubagentSnapshot(sessionId: string | null) {
       const owner = JSON.stringify(knownOwnerForSession(sessionId))
 
       try {
-        const snapshot = await requestForOwnedSession<{ subagents: SubagentPayload[] }>(
-          sessionId,
-          rejectUnownedSubagentRequest,
-          'subagent.list',
-          { session_id: sessionId }
-        )
+        const snapshot = await requestForOwnedSession<{
+          delegations?: SubagentPayload[]
+          subagents: SubagentPayload[]
+        }>(sessionId, rejectUnownedSubagentRequest, 'subagent.list', { session_id: sessionId })
 
         if (
           !cancelled &&
@@ -47,7 +47,7 @@ export function useSubagentSnapshot(sessionId: string | null) {
           before === $subagentsBySession.get()[sessionId] &&
           Array.isArray(snapshot.subagents)
         ) {
-          reconcileSubagentSnapshot(sessionId, snapshot.subagents)
+          reconcileSubagentSnapshot(sessionId, snapshot.subagents, snapshot.delegations ?? [])
         }
 
         failures = 0
@@ -60,6 +60,12 @@ export function useSubagentSnapshot(sessionId: string | null) {
     }
 
     void refresh()
+
+    if (!poll) {
+      return () => {
+        cancelled = true
+      }
+    }
 
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
@@ -79,5 +85,5 @@ export function useSubagentSnapshot(sessionId: string | null) {
       window.clearInterval(timer)
       window.removeEventListener('focus', retry)
     }
-  }, [sessionId, gatewayState, paneVisible])
+  }, [sessionId, gatewayState, paneVisible, poll])
 }

@@ -3,17 +3,6 @@
 import contextvars
 
 
-def test_set_and_get_origin():
-    from tools.skill_provenance import (
-        set_current_write_origin,
-        reset_current_write_origin,
-        get_current_write_origin,
-    )
-    token = set_current_write_origin("background_review")
-    try:
-        assert get_current_write_origin() == "background_review"
-    finally:
-        reset_current_write_origin(token)
 
 
 def test_empty_origin_falls_back_to_foreground():

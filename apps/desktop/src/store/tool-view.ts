@@ -1,6 +1,8 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, onStop, type ReadableAtom } from 'nanostores'
 
+import { persistStore } from '@/lib/persist-store'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { modeBound } from '@/store/interface-mode'
 
 export type ToolViewMode = 'product' | 'technical'
 
@@ -11,16 +13,30 @@ const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
-export const $toolViewMode = atom<ToolViewMode>(
+// Simple mode rests on product summaries, diffs folded, without touching either
+// preference.
+const $toolViewModePref = atom<ToolViewMode>(
   storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
 )
-export const $hideCodeDiffs = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
+
+const $hideCodeDiffsPref = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
+
+export const $toolViewMode = modeBound('toolViewMode', $toolViewModePref, mode => $toolViewModePref.set(mode))
+export const $hideCodeDiffs = modeBound('hideCodeDiffs', $hideCodeDiffsPref, hidden => $hideCodeDiffsPref.set(hidden))
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
-$toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
-$hideCodeDiffs.subscribe(hidden => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden))
+persistStore(
+  $toolViewModePref,
+  (mode, options) => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical', options),
+  'product'
+)
+persistStore(
+  $hideCodeDiffsPref,
+  (hidden, options) => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden, options),
+  false
+)
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {
@@ -36,6 +52,11 @@ export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefine
 
   if (!cached) {
     cached = computed($toolDisclosureStates, states => states[id])
+    onStop(cached, () => {
+      if (disclosureOpenCache.get(id) === cached) {
+        disclosureOpenCache.delete(id)
+      }
+    })
     disclosureOpenCache.set(id, cached)
   }
 
@@ -54,6 +75,11 @@ export function $anyToolDisclosureOpen(ids: readonly string[]): ReadableAtom<boo
 
   if (!cached) {
     cached = computed($toolDisclosureStates, states => ids.some(id => Boolean(states[id])))
+    onStop(cached, () => {
+      if (anyDisclosureOpenCache.get(key) === cached) {
+        anyDisclosureOpenCache.delete(key)
+      }
+    })
     anyDisclosureOpenCache.set(key, cached)
   }
 

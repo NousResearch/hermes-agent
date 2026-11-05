@@ -13,6 +13,12 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
   resolveRemote: () => Promise<Remote | null>
+  /**
+   * After update clearance and before any local attach/spawn. When launchMode
+   * is primary and the registry primary is non-local, this returns that
+   * remote so a stale pre-update resolve cannot boot an empty local backend.
+   */
+  selectRegistryPrimary?: () => Promise<Remote | null>
   waitForDecision: (backend: Backend) => Promise<FirstRunSetupDecision>
   waitForLocalStart: () => Promise<unknown>
 }
@@ -21,58 +27,6 @@ export type PrimaryBackendStartupResult<RuntimeBackend, Connection, Attached = n
   | { kind: 'attached'; attached: Attached }
   | { kind: 'local'; backend: RuntimeBackend }
   | { kind: 'remote'; connection: Connection }
-
-interface ResolvedPrimaryRemote {
-  authMode?: 'oauth' | 'token'
-  baseUrl: string
-  connectionId?: string
-  headers?: Record<string, string>
-  remoteHermesVersion?: string
-  remoteHost?: string
-  remoteKind?: 'cloud' | 'ssh' | 'url'
-  source?: string
-  ssh?: {
-    effectiveConfigFingerprint?: string
-    host?: string
-    keyPath?: string
-    port?: number
-    remoteHermesPath?: string
-    remoteProfile?: string
-    user?: string
-  }
-  token: unknown
-  wsUrl: string
-}
-
-/**
- * Build the renderer-facing primary remote descriptor without dropping route
- * identity. Tests cross this same seam, so adding a field to the resolved
- * remote cannot silently disappear during primary startup.
- */
-export function createPrimaryRemoteConnection<State extends object>(
-  remote: ResolvedPrimaryRemote,
-  logs: string[],
-  windowState: State
-) {
-  return {
-    baseUrl: remote.baseUrl,
-    mode: 'remote' as const,
-    source: remote.source,
-    authMode: remote.authMode || 'token',
-    remoteHost: remote.remoteHost,
-    remoteKind: remote.remoteKind,
-    remoteHermesVersion: remote.remoteHermesVersion,
-    ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
-    ...(remote.ssh ? { ssh: remote.ssh } : {}),
-    // fetchJsonForBackend reads descriptor.headers for every REST call; the
-    // WebSocket header store is keyed by exact URL and cannot stand in for it.
-    headers: remote.headers,
-    token: remote.token,
-    wsUrl: remote.wsUrl,
-    logs,
-    ...windowState
-  }
-}
 
 export class FirstRunSetupResetError extends Error {
   readonly firstRunSetupReset = true
@@ -95,6 +49,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
+  selectRegistryPrimary,
   waitForDecision,
   waitForLocalStart,
   signal
@@ -115,6 +70,17 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   }
 
   await step(waitForLocalStart)
+
+  // Update clearance can land after the first resolve saw a stale local route
+  // (legacy connection.json, a mid-update registry read). Re-select the
+  // registry primary before attaching to or spawning a local backend.
+  if (selectRegistryPrimary) {
+    const registryPrimary = await step(selectRegistryPrimary)
+
+    if (registryPrimary) {
+      return { kind: 'remote', connection: await step(() => connectRemote(registryPrimary)) }
+    }
+  }
 
   // Multiplex-only: one backend per HOST. Attach before resolving a runtime or
   // entering the first-run gate — a machine with a live backend is, by

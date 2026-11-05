@@ -15,9 +15,7 @@ import pytest
 
 from gateway.config import PlatformConfig, Platform
 from plugins.platforms.telegram.telegram_ids import (
-    looks_like_telegram_username,
     normalize_telegram_chat_id,
-    parse_telegram_username_target,
 )
 
 
@@ -41,8 +39,6 @@ def test_normalize_returns_int_or_passthrough_string(value, expected):
     assert normalize_telegram_chat_id(value) == expected
 
 
-def test_numeric_normalizes_to_int_type():
-    assert isinstance(normalize_telegram_chat_id("123"), int)
 
 
 # ---------------------------------------------------------------------------

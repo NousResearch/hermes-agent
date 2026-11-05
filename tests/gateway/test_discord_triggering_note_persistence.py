@@ -76,6 +76,7 @@ async def test_queued_followup_persists_authored_text():
     )
     pending_event = SimpleNamespace(
         source=source, message_id="6002", channel_prompt=None, message_type=None, internal=False, metadata={},
+        reply_expected=None,
     )
 
     await GatewayRunner._run_agent_queued_followup(

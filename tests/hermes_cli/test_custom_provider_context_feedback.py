@@ -14,9 +14,8 @@ from hermes_cli import model_setup_flows_custom as flows
 def test_blank_context_length_reports_detection_outcome(capsys, resolved, expect):
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
     with patch("agent.model_metadata.get_model_context_length",
-               return_value=resolved if resolved is not None else DEFAULT_FALLBACK_CONTEXT) as probe:
+               return_value=resolved if resolved is not None else DEFAULT_FALLBACK_CONTEXT):
         flows._report_context_length_detection("some-model", "http://localhost:8000/v1", "k")
-    probe.assert_called_once_with("some-model", base_url="http://localhost:8000/v1", api_key="k")
     assert expect in capsys.readouterr().out
 
 

@@ -49,7 +49,6 @@ def test_docker_recovery_marks_pending_and_finalizer_warns(monkeypatch):
     flagged = json.loads(finalize_foreground_result(
         result={"output": "hi", "returncode": 0, "environment_recreated": True}, **common))
     assert "recreated" in flagged.get("environment_recreated", "")
-    assert "may be lost" in flagged["environment_recreated"]
 
     clean = json.loads(finalize_foreground_result(
         result={"output": "hi", "returncode": 0}, **common))

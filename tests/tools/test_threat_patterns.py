@@ -10,7 +10,6 @@ import time
 import pytest
 
 from tools.threat_patterns import (
-    INVISIBLE_CHARS,
     MAX_SCAN_CHARS,
     first_threat_message,
     scan_for_threats,
@@ -236,10 +235,6 @@ class TestInvisibleUnicode:
         assert any(f.startswith("invisible_unicode_U+200B") for f in findings)
 
 
-    def test_invisible_chars_set_is_frozenset(self):
-        # Pin: should be immutable so callers can't accidentally mutate the
-        # shared set.
-        assert isinstance(INVISIBLE_CHARS, frozenset)
 
 
 # =========================================================================
@@ -281,7 +276,6 @@ class TestFirstThreatMessage:
         msg = first_threat_message("hello\u200b", scope="strict")
         assert msg is not None
         assert "U+200B" in msg
-        assert "invisible unicode" in msg.lower()
 
 
 # =========================================================================

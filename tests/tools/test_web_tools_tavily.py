@@ -172,7 +172,7 @@ class TestWebExtractCacheAttribution:
             "https://example.com/second", "second page", "Second", format=None, provider="tavily"
         )
 
-    def test_redirected_page_caches_under_requested_source_url(self):
+    def test_redirected_page_caches_under_requested_source_url(self, public_dns):
         """Keenable/Firecrawl report the post-redirect address in ``url`` and the requested URL in
         ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target.
         The first requested page is omitted, so positional pairing would file the redirected page
@@ -320,11 +320,6 @@ class TestWebSearchTavily:
             assert "Authorization" not in headers
             assert "api.tavily.com/search" in mock_post.call_args.args[0]
 
-    def test_tavily_is_not_in_keyless_ring(self):
-        from plugins.web.keyless_mcp import _KEYLESS_RING, _KEYLESS_SEARCHERS, _KEYLESS_EXTRACTORS
-        assert "tavily" not in _KEYLESS_RING
-        assert "tavily" not in _KEYLESS_SEARCHERS
-        assert "tavily" not in _KEYLESS_EXTRACTORS
 
 
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────

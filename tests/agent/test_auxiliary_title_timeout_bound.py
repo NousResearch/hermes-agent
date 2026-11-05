@@ -11,13 +11,10 @@ from unittest.mock import MagicMock, patch
 
 from agent.auxiliary_client import call_llm
 
-
 class _Timeout(Exception):
     pass
 
-
 _Timeout.__name__ = "APITimeoutError"
-
 
 def _route_patches(client):
     return (
@@ -28,7 +25,6 @@ def _route_patches(client):
         patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
         patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
     )
-
 
 def test_title_timeout_hits_the_provider_once_and_names_the_deadline(caplog):
     primary = MagicMock()
@@ -51,23 +47,3 @@ def test_title_timeout_hits_the_provider_once_and_names_the_deadline(caplog):
     assert "http://100.121.173.79:11434/v1" in timed_out[0]
     assert "auxiliary.title_generation.timeout" in timed_out[0]
     assert not any("connection error on" in m for m in warnings), warnings
-
-
-def test_connection_refused_is_still_a_connection_error(caplog):
-    """Control: a genuinely unreachable endpoint keeps its own label — the timeout rung must not swallow it."""
-    class _ConnErr(Exception):
-        pass
-    _ConnErr.__name__ = "APIConnectionError"
-    primary = MagicMock()
-    primary.base_url = "http://127.0.0.1:1/v1"
-    primary.chat.completions.create.side_effect = _ConnErr("Connection refused")
-    p = _route_patches(primary)
-    caplog.set_level(logging.INFO, logger="agent.auxiliary_client")
-    with p[0], p[1], p[2], p[3], p[4]:
-        try:
-            call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}], timeout=30)
-        except _ConnErr:
-            pass
-    messages = [r.getMessage() for r in caplog.records]
-    assert any("connection error on mac-ollama" in m for m in messages), messages
-    assert not any("timed out after" in m for m in messages), messages

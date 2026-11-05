@@ -57,7 +57,7 @@ def _run_sync(stage2_text: str, home: Path, env: dict[str, str | None]) -> subpr
         f"{_path_guard_functions(stage2_text)}\n"
         f"{_sync_block(stage2_text)}\n"
     )
-    return subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
+    return subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30, check=False)
 
 
 def _assignments(path: Path, name: str) -> list[str]:

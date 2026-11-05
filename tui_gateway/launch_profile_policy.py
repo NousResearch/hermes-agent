@@ -27,10 +27,10 @@ from typing import Dict, Iterator, Optional
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_snapshot: Optional[Dict[str, str]] = None
+_snapshot: Optional[dict[str, str]] = None
 
 
-def capture_launch_env() -> Dict[str, str]:
+def capture_launch_env() -> dict[str, str]:
     """Freeze the process env as the launch profile's own; the first capture wins.
 
     Called at activation, immediately before the first secondary home is registered as
@@ -62,7 +62,7 @@ def _servable_profile_homes() -> set:
     from hermes_constants import named_profile_has_servable_identity
     from hermes_cli.profiles import profiles_to_serve
 
-    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True)
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)
              if name == "default" or named_profile_has_servable_identity(home)}
     homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
     return homes
@@ -106,10 +106,15 @@ def activate_multi_profile_hosting_eagerly() -> bool:
         return False
     logger.info("Multi-profile hosting activated at startup (%d servable profile homes)", len(homes))
     activate_multi_profile_hosting()
+    # Route each home's records to its own logs/ now: the Desktop cron ticker used to be the only
+    # caller, and it stands down when a live gateway owns cron, leaving every secondary profile's
+    # model/cwd lines in the launch profile's agent.log.
+    from hermes_logging import enable_profile_log_routing
+    enable_profile_log_routing(sorted(homes))
     return True
 
 
-def _launch_env() -> Dict[str, str]:
+def _launch_env() -> dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
@@ -117,7 +122,7 @@ def _launch_env() -> Dict[str, str]:
     return capture_launch_env() if is_multiplex_active() else dict(os.environ)
 
 
-def launch_terminal_env() -> Dict[str, str]:
+def launch_terminal_env() -> dict[str, str]:
     """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
 
     Production always captured at activation; a first capture here only happens when the
@@ -126,7 +131,7 @@ def launch_terminal_env() -> Dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
+def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -148,8 +153,38 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     return scope
 
 
+
+def owner_secret_scope(home: str | Path) -> dict[str, str]:
+    """THE secret mapping for a body owned by *home*: ``launch_secret_scope`` when *home* is this
+    process's own (its env-only keys from docker ``-e`` / systemd ``Environment=`` / ``op run`` have
+    no file to rebuild from), else the profile's own files (``build_profile_secret_scope``). Every
+    per-home binding point (routed gateway turns, cron fires, kanban ticks) builds through here, so
+    the launch profile keeps its env-only credentials when a single-profile gateway starts
+    multiplexing in place."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    if _is_process_home(Path(home)):
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(Path(home))
+
+
 @contextlib.contextmanager
-def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
+def launch_body() -> Iterator[None]:
+    """Mark a standalone launch-profile body (a primary-adapter message) at ENTRY. Nothing is bound
+    while single-profile, so its reads keep the process-env semantics they always had; if a second
+    profile switches the gateway to fail-closed mid-body, an unscoped read resolves from
+    ``launch_secret_scope`` (frozen env + ``.env``) instead of raising ``UnscopedSecretError``."""
+    from agent.secret_scope import reset_launch_body_scope, set_launch_body_scope
+    from hermes_constants import get_process_hermes_home
+    home = get_process_hermes_home()
+    token = set_launch_body_scope(lambda: launch_secret_scope(home))
+    try:
+        yield
+    finally:
+        reset_launch_body_scope(token)
+
+
+@contextlib.contextmanager
+def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     """Bind the launch profile's own runtime scope for one body: HERMES_HOME override naming the
     launch home, ``launch_secret_scope``, and its terminal policy over the frozen launch
     ``TERMINAL_*`` overlay. For hosts whose launch-profile bodies are not RPC sessions (the
@@ -166,15 +201,19 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
-    home_token = set_hermes_home_override(str(home))
-    secret_token = set_secret_scope(launch_secret_scope(home))
-    terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
+    home_token = secret_token = terminal_token = None
     try:
+        home_token = set_hermes_home_override(str(home))
+        secret_token = set_secret_scope(launch_secret_scope(home))  # own home: no foreign stamp
+        terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
         yield
     finally:
-        reset_terminal_scope(terminal_token)
-        reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def launch_profile_scope_if_multiplexed():

@@ -44,6 +44,7 @@ const {
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dialedGatewayModeFor,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
@@ -73,8 +74,7 @@ function installDesktop(): void {
     getGatewayWsUrlFor: vi.fn(
       async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
         `wss://${connectionId}.invalid/api/ws?profile=${profile}`
-    ),
-    touchBackend: vi.fn(async () => undefined)
+    )
   }
 }
 
@@ -109,23 +109,49 @@ describe('primary gateway registry scope', () => {
     expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
   })
 
-  it('ignores primary connection-id writes while a secondary registry scope is active (#95628 hardening)', async () => {
+  // The recorded route (id AND mode) describes one socket: re-publishing that socket keeps it, a
+  // replacement socket starts unknown until its own route is recorded.
+  it.each(['local', 'remote'] as const)(
+    'keeps a %s primary route while the socket is reused and clears it when a new socket replaces it',
+    mode => {
+      const socket = { connectionState: 'open' } as never
+
+      setPrimaryGateway(socket, 'default')
+      setPrimaryGatewayConnectionId('primary-1', mode)
+      setPrimaryGateway(socket, 'default')
+
+      expect(dialedGatewayModeFor(null, 'default')).toBe(mode)
+      expect(dialedGatewayModeFor('primary-1', 'default')).toBe(mode)
+      expect(activeGatewayConnectionId()).toBe('primary-1')
+
+      setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+      expect(dialedGatewayModeFor(null, 'default')).toBeNull()
+      expect(dialedGatewayModeFor('primary-1', 'default')).toBeNull()
+      expect(activeGatewayConnectionId()).toBeNull()
+      expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
+    }
+  )
+
+  it('records a primary re-dial made while a secondary scope is foregrounded (#95628 keeps ambient routing)', async () => {
     setPrimaryGateway({ connectionState: 'open' } as never, 'default')
     setPrimaryGatewayConnectionId('primary-vps')
 
     // Foreground Gateway B's composite scope (connectionId 'homelab').
     await expect(ensureGatewayForAgent('homelab', 'default')).resolves.toBe(true)
+    vi.mocked(setApiRequestConnection).mockClear()
 
-    // Presentation-layer write while the secondary is foregrounded: the id
-    // describes the secondary, not the primary. It must be dropped — accepting
-    // it relabels the primary socket and poisons ambient routing.
-    setPrimaryGatewayConnectionId('homelab')
+    // A connection apply re-dials the PRIMARY socket to another machine while
+    // the secondary stays in front. Ambient requests still belong to the
+    // secondary, but the primary must stop claiming the machine it left —
+    // owner routing to 'primary-vps' would otherwise land on 'local'.
+    setPrimaryGatewayConnectionId('local')
+    expect(setApiRequestConnection).not.toHaveBeenCalled()
 
-    // Back on the primary route, its registry identity is intact.
     await ensureGatewayForProfile('default')
 
-    expect(activeGatewayConnectionId()).toBe('primary-vps')
-    expect(setApiRequestConnection).toHaveBeenLastCalledWith('primary-vps')
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect(setApiRequestConnection).toHaveBeenLastCalledWith('local')
   })
 })
 

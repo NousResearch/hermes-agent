@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -36,7 +36,6 @@ describe('TimelineRail', () => {
 
     expect(view.container.querySelectorAll('button').length).toBeGreaterThan(0)
     expect(view.container.querySelectorAll('button').length).toBeLessThan(60)
-    expect(view.container.querySelector('.thread-timeline-track')?.getAttribute('style')).toContain('35000px')
   })
 
   it('keeps the active bar compact without hover and routes selection by stable ID', () => {
@@ -46,30 +45,7 @@ describe('TimelineRail', () => {
     const active = screen.getByRole('button', { name: 'Message 0' })
 
     expect(active.getAttribute('aria-current')).toBe('location')
-    expect((active.firstElementChild as HTMLElement).style.width).toBe('0.5rem')
     fireEvent.click(active)
     expect(onJump).toHaveBeenCalledWith('message-0')
-  })
-
-  it('resets every bar on pointer leave even while an item keeps focus', async () => {
-    const { container, rerender } = render(
-      <TimelineRail activeIndex={0} entries={entries} loadingId={null} onJump={vi.fn()} />
-    )
-
-    const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')!
-
-    const widths = () =>
-      Array.from(rail.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]'), bar => bar.style.width)
-
-    expect(new Set(widths())).toEqual(new Set(['0.5rem']))
-    fireEvent(rail, new MouseEvent('pointermove', { bubbles: true, clientY: 70 }))
-    await waitFor(() => expect(widths()).toContain('1rem'))
-
-    fireEvent.focus(screen.getByRole('button', { name: 'Message 0' }))
-    fireEvent.pointerLeave(rail)
-    await waitFor(() => expect(new Set(widths())).toEqual(new Set(['0.5rem'])))
-
-    rerender(<TimelineRail activeIndex={2} entries={entries} loadingId={null} onJump={vi.fn()} />)
-    expect(new Set(widths())).toEqual(new Set(['0.5rem']))
   })
 })

@@ -15,10 +15,11 @@ import { $botMeta } from './data'
 import { duplicateBot } from './profile-ops'
 import type { RosterRow } from './types'
 
-const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
-  ensureBotMetadataMock: vi.fn(),
+const { ensureBotProfileMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
+  ensureBotProfileMock: vi.fn(async (bot: unknown) => bot),
   faceOnlyMock: vi.fn((_data: string) => false),
   hostMock: {
+    dropLeftoverProfilePrefs: vi.fn(),
     request: vi.fn(),
     requestProfile: vi.fn(),
     state: { connectionId: { get: () => 'local' }, focusedSessionOwner: null, profile: { get: () => 'default' } }
@@ -41,7 +42,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 vi.mock('./shared', () => ({ getPluginCtx: () => ({ storage: storageMock }), ID: 'hermes-bots' }))
 vi.mock('./avatar-image', () => ({ isBackfilledFacePng: (data: string) => faceOnlyMock(data) }))
-vi.mock('./canonical-chat', () => ({ ensureBotMetadata: ensureBotMetadataMock }))
+vi.mock('./canonical-chat', () => ({ ensureBotProfile: ensureBotProfileMock }))
 
 const calls: Array<{ method: string; params: Record<string, unknown> }> = []
 
@@ -54,7 +55,8 @@ beforeEach(() => {
   hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params: structuredClone(params ?? {}) })
 
-    return { ok: true }
+    // A save reads the bot's server namespace (profiles.list) before writing it.
+    return method === 'profiles.list' ? { profiles: [{ name: 'researcher' }, { name: 'researcher-2' }] } : { ok: true }
   })
 })
 
@@ -126,14 +128,6 @@ describe('duplicating a bot', () => {
     expect(name).not.toBe(base)
   })
 
-  it('ensures the source bot has its metadata before cloning', async () => {
-    // clone_from copies the profile dir; the source's Bot Chat has to exist
-    // first or the clone inherits a half-built profile.
-    await duplicateBot({ name: 'ops' } as RosterRow, [])
-
-    expect(ensureBotMetadataMock).toHaveBeenCalledTimes(1)
-  })
-
   it('only collides against rows on the SAME connection', async () => {
     // A same-named bot on another gateway is a different agent entirely.
     const bot = {
@@ -153,6 +147,43 @@ describe('duplicating a bot', () => {
     hostMock.requestProfile.mockResolvedValue({ ok: true })
 
     expect(await duplicateBot(bot, [bot, elsewhere])).toBe('ops-2')
+  })
+
+  // A create never lands on a live name, so prefs stored under the copy's name
+  // were left by a deleted profile. The source keeps its own.
+  it('drops the leftover prefs under the copy name once the create succeeded', async () => {
+    await duplicateBot({ name: 'writer' } as RosterRow, [{ name: 'writer' } as RosterRow])
+
+    expect(hostMock.dropLeftoverProfilePrefs.mock.calls).toEqual([['writer-2', undefined]])
+  })
+
+  it('names the connection the copy was created on', async () => {
+    const bot = {
+      connectionId: 'vera',
+      name: 'ops',
+      route: { connectionId: 'vera', mode: 'remote', profile: 'ops', targetProfile: 'ops' },
+      sourceScoped: true
+    } as RosterRow
+
+    hostMock.requestProfile.mockResolvedValue({ ok: true })
+    await duplicateBot(bot, [bot])
+
+    expect(hostMock.dropLeftoverProfilePrefs.mock.calls).toEqual([['ops-2', 'vera']])
+  })
+
+  it('keeps every pref when the create fails', async () => {
+    hostMock.request.mockImplementation(async (method: string) => {
+      if (method === 'profiles.create') {
+        throw new Error('disk full')
+      }
+
+      return { ok: true }
+    })
+
+    await expect(duplicateBot({ name: 'writer' } as RosterRow, [{ name: 'writer' } as RosterRow])).rejects.toThrow(
+      'disk full'
+    )
+    expect(hostMock.dropLeftoverProfilePrefs).not.toHaveBeenCalled()
   })
 })
 

@@ -38,7 +38,7 @@ def probe_with_rollback(
     if flow is not None:
         flow.backup = backup
     previous_entry = None
-    details: Dict[str, Any] = {}
+    details: dict[str, Any] = {}
     tools: list = []
     discovery_error = ""
 
@@ -57,9 +57,11 @@ def probe_with_rollback(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):
             details["initialized"] = False
-            raise RuntimeError(
+            no_token = RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
                 "this provider may require a manually-registered OAuth client.")
+            no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
+            raise no_token
     except Exception as exc:
         if not details.get("initialized"):
             undo()
@@ -91,7 +93,7 @@ class AttemptCanceled(RuntimeError):
 _COMMIT_GUARD = threading.Lock()
 # (hermes home, server) -> the newest card attempt. A retry or a new operation replaces an attempt
 # whose worker is still waiting on the browser; the older one is canceled so it cannot commit later.
-_ACTIVE: Dict[tuple, Any] = {}
+_ACTIVE: dict[tuple, Any] = {}
 
 
 def cancel_attempt(flow) -> bool:
@@ -148,7 +150,7 @@ def _reuse_saved_authorization(
 def run_worker(
         hermes_home: str, server_name: str, cfg: dict, reconnect_live: bool, *,
         flow, on_done: Optional[Callable[[], None]] = None,
-        env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+        env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
         reuse_saved: bool = False) -> None:
     """Drive the interactive MCP OAuth probe under the shared callback bridge.
 
@@ -162,18 +164,23 @@ def run_worker(
             build_profile_secret_scope, reset_secret_scope, set_secret_scope)
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import force_interactive_oauth
-        home_token = set_hermes_home_override(hermes_home)
-        secret_token = set_secret_scope({**build_profile_secret_scope(Path(hermes_home)), **(env or {})})
+        home_token = secret_token = None
         try:
+            home_token = set_hermes_home_override(hermes_home)
+            secret_token = set_secret_scope(
+                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})}, profile_home=hermes_home)
             if not (reuse_saved and flow is not None
                     and _reuse_saved_authorization(server_name, cfg, flow, on_commit)):
                 with force_interactive_oauth(), dashboard_oauth_flow(flow):
                     probe_with_rollback(
                         server_name, cfg, hermes_home, flow, reconnect_live, on_commit=on_commit)
         finally:
-            reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
     except Exception as exc:
+        from hermes_cli.mcp_config import probe_failure_class
         from tools.mcp_dashboard_oauth import exception_message
         msg = exception_message(exc)
         with suppress(Exception):
@@ -181,7 +188,12 @@ def run_worker(
             msg = humanize_oauth_registration_error(
                 server_name, exc, server_url=cfg.get("url") if isinstance(cfg, dict) else None
             ) or msg
+        failure_class = probe_failure_class(exc)
+        if failure_class == "connect_failed" and server_name not in msg:  # e.g. a bare "Not Found"
+            msg = f"Could not connect to '{server_name}' ({msg}). Check its URL and that this machine can reach it."
         if flow is not None:
+            # Read by ``start``: its error is rebuilt from text, so the class rides on the flow.
+            flow.failure_class = failure_class
             flow.mark_error(msg)
     finally:
         if flow is not None:
@@ -204,12 +216,12 @@ def _validate_client_redirect_uri(uri: str) -> str:
     return f"http://{'[' + host + ']' if ':' in host else host}:{parsed.port}{parsed.path or '/callback'}"
 
 
-def _start_loopback_receiver(flow) -> "http.server.HTTPServer":
+def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     """Bind the single backend-hosted one-shot receiver and feed its callback into ``flow``."""
     from tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path.rstrip("/") not in ("/callback", ""):
                 self.send_response(404)
@@ -278,7 +290,7 @@ class OAuthAttempt:
     flow: Any
     detail: str = ""
 
-    def poll(self) -> Dict[str, Any]:
+    def poll(self) -> dict[str, Any]:
         snapshot = self.flow.snapshot()
         raw = snapshot.get("status")
         status = raw if raw in ("approved", "error") else "pending"
@@ -292,7 +304,7 @@ class OAuthAttempt:
 def start(
     server_name: str, *, url_timeout: float = URL_TIMEOUT_SECONDS,
     client_redirect_uri: Optional[str] = None, cfg: Optional[dict] = None,
-    env: Optional[Dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
+    env: Optional[dict[str, str]] = None, on_commit: Optional[Callable[[], None]] = None,
 ) -> OAuthAttempt:
     """Start a card OAuth flow and wait until its authorization URL is published.
 
@@ -336,7 +348,9 @@ def start(
                 auth_url=snapshot["authorization_url"], flow=flow,
                 detail=_ssh_detail(flow.redirect_uri) if client_redirect_uri is None else "")
         if snapshot.get("status") == "error":
-            raise RuntimeError(snapshot.get("error") or "the OAuth flow failed before authorization")
+            failed = RuntimeError(snapshot.get("error") or "the OAuth flow failed before authorization")
+            failed.failure_class = getattr(flow, "failure_class", None)  # type: ignore[attr-defined]
+            raise failed
         time.sleep(0.05)
     flow.mark_error("Timed out waiting for MCP authorization URL")
     raise TimeoutError(f"timed out waiting for the authorization URL for '{server_name}'")

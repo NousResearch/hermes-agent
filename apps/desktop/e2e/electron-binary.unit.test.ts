@@ -2,22 +2,11 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { electronBinaryName, electronDistCandidates, pathLookupCommand } from './electron-binary'
+import { electronDistCandidates, pathLookupCommand } from './electron-binary'
 
 // Platform is a parameter everywhere below rather than read from
 // process.platform, so the Windows rules are pinned on the Linux CI runner too.
 // Reading the real platform would leave every Windows-only rule untested.
-
-describe('electronBinaryName', () => {
-  it('asks for electron.exe on Windows', () => {
-    expect(electronBinaryName('win32')).toBe('electron.exe')
-  })
-
-  it('asks for a bare electron everywhere else', () => {
-    expect(electronBinaryName('linux')).toBe('electron')
-    expect(electronBinaryName('darwin')).toBe('electron')
-  })
-})
 
 describe('electronDistCandidates', () => {
   const desktop = path.join('repo', 'apps', 'desktop')

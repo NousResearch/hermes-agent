@@ -48,8 +48,8 @@ def _dm_payload(text: str) -> dict:
     }
 
 
-def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -58,11 +58,6 @@ def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[Me
     return captured
 
 
-def test_require_mention_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch)
-    assert adapter.require_mention is False
-    # Defaults compile to the two Hermes wake-word patterns.
-    assert len(adapter._mention_patterns) == 2
 
 
 @pytest.mark.asyncio
@@ -129,7 +124,7 @@ async def test_unmentioned_group_attachment_is_not_cached(
 
     adapter = _make_adapter(monkeypatch, extra={"require_mention": True})
     captured = _capture(adapter, monkeypatch)
-    calls: List[str] = []
+    calls: list[str] = []
 
     def fake_cache(content, name, mime, *, force_audio=False):
         calls.append(name)

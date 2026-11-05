@@ -58,6 +58,11 @@ def plugin_update_lock(target: Path) -> Iterator[None]:
 HELD_WITH_REF = "held with --ref (installed off the catalog pin); `hermes plugins update {name}` moves it"
 
 
+class HeldWithRef(Exception):
+    """An unattended update found the plugin held with ``--ref`` once it owned the plugin's update lock
+    (the hold was recorded after the check that offered the update). Nothing was changed."""
+
+
 def held_with_ref(record: Any) -> bool:
     """A catalog install the user put on a commit of their choosing (``install <name> --ref <sha>``:
     ``pinned`` with an empty ``catalog.pin``). Only an explicit ``hermes plugins update <name>`` moves
@@ -66,16 +71,36 @@ def held_with_ref(record: Any) -> bool:
     return isinstance(block, dict) and record.get("pinned") is True and not block.get("pin")
 
 
+def unattended_gate(name: str, target: Path):
+    """The unattended-update policy, checked under the plugin's update lock: raise :class:`HeldWithRef`
+    when the CURRENT install record is held (an ``install --ref`` that finished during the check), else
+    return the ``surface_gate(manifest, tree)`` a Git update runs on its candidate before publication.
+    The gate raises ``RepinConsentRequired`` when the candidate adds tools, hooks, capabilities or
+    other surface the installed plugin lacks, the same review a widened catalog pin gets."""
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, plugin_surface, surface_delta
+    pc = _pc()
+    if held_with_ref(pc._read_install_metadata().get(target.name)):
+        raise HeldWithRef(HELD_WITH_REF.format(name=name))
+    installed = plugin_surface(pc._read_manifest(target), target)
+
+    def gate(manifest: dict, tree: Path) -> None:
+        delta = surface_delta(installed, plugin_surface(manifest, tree))
+        if delta:
+            raise RepinConsentRequired(name, "", delta)
+    return gate
+
+
 def apply_unattended(name: str) -> None:
     """The gateway auto-apply tick's update of one plugin: ``update_one`` with no terminal. Refusals
     raise (``RepinConsentRequired`` for a widened pin, ``PluginOperationError``) so the tick can tell
-    a pending review from a failure; ``cmd_update`` would turn both into an exit."""
+    a pending review from a failure; ``cmd_update`` would turn both into an exit. :class:`HeldWithRef`
+    when the install was held after the check."""
     from hermes_cli.plugins_cmd_update import update_one
     pc = _pc()
     target = pc._user_installed_plugin_dir(name)
     if target is None:
         raise pc.PluginOperationError(f"Plugin '{name}' is no longer installed.")
-    update_one(name, target, pc._console(), interactive=False)
+    update_one(name, target, pc._console(), interactive=False, unattended=True)
 
 
 # ── the auto-update switch ────────────────────────────────────────────────────────────────────
@@ -111,15 +136,18 @@ def _clear_check_marker(home: Path) -> None:
 # ── update all, unattended ────────────────────────────────────────────────────────────────────
 
 def _apply_one(name: str) -> dict[str, str]:
-    """One plan row through the dashboard's non-interactive update. A widened catalog pin or a
-    caution scan of a git update is NOT accepted on the user's behalf: the row comes back
-    ``needs_review`` (a catalog re-pin accepts caution: a reviewer read that pin at admission)."""
+    """One plan row through the dashboard's non-interactive update. A widened plugin (catalog pin or
+    Git update) or a caution scan of a git update is NOT accepted on the user's behalf: the row comes
+    back ``needs_review`` (a catalog re-pin accepts caution: a reviewer read that pin at admission).
+    An install held with ``--ref`` after the check comes back ``held``."""
     from hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
     try:
-        res = dashboard_update_user_plugin(name)
+        res = dashboard_update_user_plugin(name, unattended=True)
     except Exception as exc:  # per-plugin batch boundary: one crash must not stop the rest
         logger.warning("update of plugin %s failed", name, exc_info=True)
         return {"name": name, "status": "failed", "detail": f"{type(exc).__name__}: {exc}"}
+    if res.get("held"):
+        return {"name": name, "status": "held", "detail": str(res.get("error") or "")}
     if res.get("consent_required") or res.get("scan_blocked"):
         return {"name": name, "status": "needs_review", "detail": str(res.get("error") or "")}
     if not res.get("ok"):
@@ -143,11 +171,11 @@ def update_all_unattended() -> dict[str, Any]:
     checked = snapshot_installs(plugins_dir)
     results = run_checks(plugins_dir)
     record_check_results(results, checked)
-    plan = plan_update_all(results)
-    held = [row for row in plan.movable if held_with_ref(checked.get(row.name))]
-    return {"results": [_apply_one(row.name) for row in plan.movable if row not in held],
+    plan = plan_update_all(results, checked)
+    applied = [_apply_one(row.name) for row in plan.movable]
+    return {"results": [r for r in applied if r["status"] != "held"],
             "skipped": [{"name": row.name, "reason": reason} for row, reason in plan.skipped]
-                       + [{"name": row.name, "reason": HELD_WITH_REF.format(name=row.name)} for row in held],
+                       + [{"name": r["name"], "reason": r["detail"]} for r in applied if r["status"] == "held"],
             "current": plan.current}
 
 
@@ -174,6 +202,9 @@ def plugins_slash_action(parts: list[str]) -> list[str]:
     [on|off]`` for the classic CLI, and ``auto-update`` for the TUI's slash worker. The TUI sends
     ``/plugins update`` to ``plugins.manage update_all`` instead: the batch outlives the worker's 45 s."""
     if parts[0] == "update":
+        if len(parts) > 1:  # not `hermes plugins update <name>`: this form updates every plugin
+            return ["Usage: /plugins update (updates every plugin that has an update; "
+                    "update one with `hermes plugins update <name>` in a terminal)"]
         return ["Plugin updates:", *summary_lines(update_all_unattended())]
     arg = parts[1].lower() if len(parts) > 1 else ""
     if arg not in ("", "on", "off"):

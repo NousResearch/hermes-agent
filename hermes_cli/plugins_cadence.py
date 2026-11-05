@@ -194,7 +194,7 @@ def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callabl
     """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
     where the user put it. A widened catalog pin is a pending review, not a failure: one line naming
     the command that walks it, no traceback every tick; other refusals are one line too."""
-    from hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
+    from hermes_cli.plugins_auto_update import HELD_WITH_REF, HeldWithRef, held_with_ref
     from hermes_cli.plugins_cmd import PluginOperationError
     from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
 
@@ -206,6 +206,8 @@ def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callabl
             continue
         try:
             apply_updates_fn(r.name)
+        except HeldWithRef as exc:  # held with --ref while the check ran
+            log.info("plugin %s not auto-updated: %s", r.name, exc)
         except RepinConsentRequired:
             log.info("plugin %s has an update that needs your review: run `hermes plugins update %s`",
                      r.name, r.name)

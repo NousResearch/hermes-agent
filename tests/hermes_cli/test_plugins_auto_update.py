@@ -90,7 +90,7 @@ def test_rpc_switch_and_update_all_round_trip(home, monkeypatch):
     out = rpc(action="update_all")
     assert [(r["name"], r["status"]) for r in out["results"]] == [("fresh", "updated"), ("widened", "needs_review")]
     assert out["skipped"] == [{"name": "pinned", "reason": "pinned to an exact revision"}]
-    assert calls == [("fresh", {}), ("widened", {})]  # no accept_capabilities / force
+    assert calls == [("fresh", {"unattended": True}), ("widened", {"unattended": True})]  # no accept_capabilities / force
 
 
 def test_hermes_update_names_catalog_pins_it_moved_and_rearms_the_check(home, monkeypatch, capsys):
@@ -185,11 +185,11 @@ def test_gateway_tick_seam_raises_the_review_instead_of_exiting(home, monkeypatc
     (home / "plugins" / "wide").mkdir()
     calls = []
 
-    def update_one(name, target, console, *, interactive):
-        calls.append((name, target.name, interactive))
+    def update_one(name, target, console, *, interactive, unattended):
+        calls.append((name, target.name, interactive, unattended))
         raise RepinConsentRequired(name, "c" * 40, {"tools": ["new_tool"]})
 
     monkeypatch.setattr(plugins_cmd_update, "update_one", update_one)
     with pytest.raises(RepinConsentRequired):
         plugins_auto_update.apply_unattended("wide")
-    assert calls == [("wide", "wide", False)]
+    assert calls == [("wide", "wide", False, True)]

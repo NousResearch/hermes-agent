@@ -160,3 +160,12 @@ async def test_webhook_tap_answers_the_clarify_and_returns_the_settled_card(adap
     assert reply["card"]["type"] == "raw" and "blue" in reply["card"]["data"]["elements"][0]["content"]
     assert cg._entries["c1"].response == "blue"
 
+
+@pytest.mark.asyncio
+async def test_multi_select_card_accepts_a_typed_free_form_answer(adapter):
+    """The multi-select hint offers "your own answer"; typed prose must answer, not cancel."""
+    cg.register("m1", "sess", "Which envs?", ["staging", "prod"], multi_select=True)
+    assert (await adapter.send_clarify(CHAT, "Which envs?", ["staging", "prod"], "m1", "sess")).success
+    assert cg.attempt_text_response_for_session("sess", "use canary instead") == cg.TEXT_RESOLVED
+    assert cg._entries["m1"].response == "use canary instead"
+

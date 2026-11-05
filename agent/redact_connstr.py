@@ -41,6 +41,8 @@ _KV_CONNSTR_ASSIGNED_COMPANION_RE = re.compile(
 # Do not parse preceding fields: arbitrary options and quoted/braced values are legal.
 _KV_ASSIGNED_PW_RE = re.compile(
     r"(?<=;)[ \t]*(?:password|pwd)[ \t]*=[ \t]*", re.IGNORECASE)
+_NEXT_ASSIGNMENT_RE = re.compile(r"[ \t]+[A-Za-z_]\w*=")
+_PADDED_PROSE_RE = re.compile(r"[^\s;\"'{}]+[ \t]*$")
 # ``;``-delimited grammar (ADO.NET/ODBC/JDBC) when a ``;`` is followed by a known field.
 # libpq values may contain a bare ``;`` (``password=a;b dbname=x``), so a ``;`` alone
 # does not decide the grammar.
@@ -114,15 +116,15 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     return min(j, n)
 
 
-def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool]]:
-    """Quoting context at each ascending ``index``: (in ``"..."``, in ``'...'``, in a ``{...}``
-    ODBC value). One left-to-right walk over the whole list, so many candidates stay linear.
+def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool, int]]:
+    """Quote/ODBC context and assignment identity at ascending indexes, in one linear walk.
 
-    The quote kind that is not active is literal inside the active one, and ODBC braces a literal
-    value, so ``host="don't"`` and ``host={don't}`` do not open a string.
+    A top-level whitespace-separated assignment ends the preceding value, but whitespace in
+    a field name (``User Id=``) does not. Quotes inside another quote or ODBC brace are data.
     """
-    states, pos = [], 0
+    states, pos, assignment = [], 0, 0
     in_dq = in_sq = in_brace = False
+    in_value = value_padding = False
     for index in indexes:
         while pos < index:
             ch = line[pos]
@@ -134,15 +136,29 @@ def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool]
                     in_sq = False
             elif in_brace:
                 if ch == "}":
+                    if line[pos:pos + 2] == "}}":
+                        pos += 2
+                        continue
                     in_brace = False
-            elif ch == '"':
-                in_dq = True
-            elif ch == "'":
-                in_sq = True
-            elif ch == "{" and pos and line[pos - 1] == "=":
-                in_brace = True
+            else:
+                if (ch in " \t" and in_value and line[pos - 1] not in " \t"
+                        and _NEXT_ASSIGNMENT_RE.match(line, pos)):
+                    assignment += 1
+                    in_value = False
+                if ch == '"':
+                    in_dq = True
+                elif ch == "'":
+                    in_sq = True
+                elif ch == "{" and value_padding:
+                    in_brace = True
+                if ch == "=":
+                    in_value = value_padding = True
+                elif ch == ";":
+                    in_value = value_padding = False
+                elif ch not in " \t":
+                    value_padding = False
             pos += 1
-        states.append((in_dq, in_sq, in_brace))
+        states.append((in_dq, in_sq, in_brace, assignment))
     return states
 
 
@@ -170,6 +186,8 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         states = _quote_states(line, [m.start() for m in matches])
     else:
         companion_state, states = None, []
+    # Preserve rejection of incomplete padded ODBC values without scanning a suffix per match.
+    last_brace = line.rfind("}")
     out, pos = [], 0
     for i, m in enumerate(matches):
         if m.start() < pos:  # inside a value already masked
@@ -178,11 +196,15 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
             continue
         # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value
         # followed by the next word. Padding on both sides (``password = x``) is still a conninfo
-        # field. The guard is skipped only where a ``;`` already establishes the grammar on a
-        # plain line; ``X=host=db; password= field`` is prose, not an assigned connection string.
+        # field. An assigned semicolon field only keeps the guard for a final bare word:
+        # ``X=host=db; password= field`` is prose, but ``Password= x;`` is a connection field.
         # It runs before the value scan so a rejected candidate cannot rescan the rest of the line.
         eq = line.rindex("=", m.start(), m.end())
-        if (assigned or not semicolon) and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t":
+        if (line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"
+                and ((assigned and _PADDED_PROSE_RE.match(line, m.end()))
+                     or (assigned and line[m.end():m.end() + 1] == "{"
+                         and last_brace < m.end())
+                     or (not assigned and not semicolon))):
             continue
         # A semicolon-prefixed assigned field uses the ADO.NET/ODBC grammar, not libpq.
         field_semicolon = semicolon or assigned

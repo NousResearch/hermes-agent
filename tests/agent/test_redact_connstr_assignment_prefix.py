@@ -126,3 +126,27 @@ class TestAssignedConnectionStrings:
         started = time.perf_counter()
         assert redact_sensitive_text(line, force=True) == line
         assert time.perf_counter() - started < 3.0
+
+
+class TestAssignmentBlockingRegressions:
+    @pytest.mark.parametrize("text", [
+        "env X=host=db NOTE=foo;password=off",
+        "env X=host=db NOTE=foo;;password=off",
+        "env X=host=db NOTE=foo;Option=bar;password=off",
+        "X=host=db;Option={a}};password=off};",
+        "X=host=db;Option= {a}};password=off};",
+    ])
+    def test_unrelated_values_stay_visible(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+        assert redact_terminal_output(text, command="env") == text
+
+    @pytest.mark.parametrize(("text", "expected"), [
+        ("X=host={db}}'primary};Password=x", "X=host={db}}'primary};Password=***"),
+        ("X=host= {don't};Password=x;", "X=host= {don't};Password=***;"),
+        ("X=host=db;Password= x;", "X=host=db;Password= ***;"),
+        ("X=host=db;Password= x y", "X=host=db;Password= ***"),
+    ])
+    def test_password_fields_are_masked(self, text, expected):
+        assert redact_sensitive_text(text, force=True) == expected
+        assert redact_sensitive_text(text, force=True, file_read=True, secret_file=True) == expected
+        assert redact_terminal_output(text, command="env") == expected

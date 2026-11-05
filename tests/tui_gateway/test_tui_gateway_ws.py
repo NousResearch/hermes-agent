@@ -9,6 +9,7 @@ import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 
@@ -547,15 +548,16 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
     the authority holding a live session whose row is gone)."""
     from types import SimpleNamespace
     from gateway.session_authority import LiveSession, SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session("owned", source="tui")
-        revision = db.get_session("owned")["runtime_revision"]
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "owned", "tui")
+        revision = session_row(db, "owned")["runtime_revision"]
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
-                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
+                                     instance_id="current", persistence=storage_handle(tmp_path), epoch=db.runtime.begin_epoch(instance_id="current"))
         authority.sessions["owned"] = LiveSession(None, "route")
         monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
         sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
@@ -580,6 +582,6 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
         asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
         reply = next(frame for frame in sent if frame.get("id") == 1)
         assert reply["error"]["code"] == -32601, reply
-        row = db.get_session("owned")
+        row = session_row(db, "owned")
         assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
         assert "owned" in authority.sessions

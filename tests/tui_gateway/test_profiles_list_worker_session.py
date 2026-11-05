@@ -29,15 +29,17 @@ def home(tmp_path, monkeypatch):
     return h
 
 def _db(profile_dir):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    return SessionDB(db_path=profile_dir / "state.db")
+    return open_persistence(profile_scope(home=profile_dir))
 
 def _add_session(db, sid, *, source="cli", title="", ts, text):
-    db.create_session(sid, source)
-    db.append_message(sid, "user", text, timestamp=ts)
-    with db._lock:
-        db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, sid))
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+
+    seed_session(db, sid, source)
+    seed_messages(db, sid, {"role": "user", "content": text, "timestamp": ts})
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, sid)))
 
 def _profiles(params):
     envelope = srv._methods["profiles.list"](1, params)

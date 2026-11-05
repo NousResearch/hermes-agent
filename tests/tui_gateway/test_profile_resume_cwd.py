@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 
 from tui_gateway import server
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 from tests.tui_gateway.test_tui_gateway_server import _write_profile_cfg
 
 KEY = "20261005_120000_b07c4a7"
@@ -51,11 +53,11 @@ def resume(profile, monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: None)
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: None)
-    db = SessionDB(db_path=profile / "state.db")
+    db = open_persistence(profile_scope(home=profile))
     known = set(server._sessions)
 
     def run(stored: str | None) -> dict:
-        db.create_session(KEY, source="desktop", model="test-model", cwd=stored)
+        seed_session(db, KEY, "desktop", model="test-model", cwd=stored)
         resp = server.handle_request(
             {"id": "1", "method": "session.resume", "params": {"session_id": KEY, "profile": "austin"}}
         )
@@ -87,7 +89,7 @@ def test_resume_lands_in_the_profiles_own_home(resume, profile, stored):
     # The agent build's hydration repairs the row, so the sidebar and later resumes agree with the live session.
     sid = next(s for s, rec in server._sessions.items() if rec is live)
     server._hydrate_session_cwd(sid, KEY, resume.db, str(profile))
-    assert resume.db.get_session(KEY)["cwd"] == str(profile)
+    assert session_row(resume.db, KEY)["cwd"] == str(profile)
 
 
 def test_resume_keeps_a_folder_chosen_for_the_profile(resume, profile, tmp_path):

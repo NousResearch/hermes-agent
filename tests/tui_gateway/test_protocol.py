@@ -1,5 +1,6 @@
 """Tests for tui_gateway JSON-RPC protocol plumbing."""
 
+import contextlib
 import io
 import json
 import os
@@ -735,37 +736,51 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
 # ── session.resume payload ────────────────────────────────────────────
 
 
+def _messages(rows):
+    """Stored conversation messages whose replay dicts are ``rows``."""
+    return tuple(types.SimpleNamespace(as_openai_message=lambda row=row: dict(row)) for row in rows)
+
+
+def _resume_store(server, monkeypatch, *, row, messages=None, lineage=None, retire=None):
+    """Route ``session.resume``'s launch store to a storage handle double, which is also the handle beside it:
+    ``row(sid)`` is the stored row dict (None when absent); ``messages`` / ``lineage`` / ``retire`` replace
+    the reads the resume makes."""
+
+    def get(sid):
+        found = row(sid)
+        if found is None:
+            return None
+        return types.SimpleNamespace(cwd=found.get("cwd"), git_branch=None, git_repo_root=None,
+                                     as_session_row=lambda: dict(found))
+
+    store = types.SimpleNamespace(
+        sessions=types.SimpleNamespace(get=get, get_by_title=lambda _title: None,
+                                       is_kanban_owned=lambda _sid: False,
+                                       retire_undrained_queue_rows=retire or (lambda _sid: 0)),
+        lineage=lineage or types.SimpleNamespace(resolve_resume_target=lambda sid: sid, tip=lambda sid: sid,
+                                                 ancestor_display_prefix=lambda _sid: ()),
+        messages=messages or types.SimpleNamespace(
+            assert_resume_safe=lambda *_a, **_k: 0, read_conversation=lambda *_a, **_k: (),
+            read_resume_conversations=lambda _sid: types.SimpleNamespace(model=(), display=())))
+    monkeypatch.setattr(server, "_get_db", lambda: store)
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: db)
+    monkeypatch.setattr(server, "_release_persistence", lambda _handle: None)
+    return store
+
+
 def test_session_resume_returns_hydrated_messages(server, monkeypatch):
-    class _DB:
-        def get_session(self, _sid):
-            return {"id": "20260409_010101_abc123"}
-
-        def get_session_by_title(self, _title):
-            return None
-
-        def reopen_session(self, _sid):
-            return None
-
-        def get_resume_conversations(self, session_id):
-            return (
-                self.get_messages_as_conversation(session_id, repair_alternation=True),
-                self.get_messages_as_conversation(session_id, include_ancestors=True),
-            )
-
-        def get_ancestor_display_prefix(self, _sid):
-            return []
-
-        def get_messages_as_conversation(self, _sid, include_ancestors=False, repair_alternation=False):
-            return [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
-                {"role": "tool", "content": "searched"},
-                {"role": "assistant", "content": "   "},
-                {"role": "assistant", "content": None},
-                {"role": "narrator", "content": "skip"},
-            ]
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    stored = _messages([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "yo", "reasoning": "thoughts"},
+        {"role": "tool", "content": "searched"},
+        {"role": "assistant", "content": "   "},
+        {"role": "assistant", "content": None},
+        {"role": "narrator", "content": "skip"},
+    ])
+    _resume_store(server, monkeypatch, row=lambda _sid: {"id": "20260409_010101_abc123"},
+                  messages=types.SimpleNamespace(
+                      assert_resume_safe=lambda *_a, **_k: 0,
+                      read_resume_conversations=lambda _sid: types.SimpleNamespace(model=stored, display=stored)))
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
@@ -792,20 +807,18 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
 def test_session_resume_rejects_runaway_transcript_before_history_load(
     server, monkeypatch
 ):
-    class _DB:
-        def get_session(self, sid):
-            return {"id": sid, "message_count": 20_001}
+    from persistence.conversation.messages import ResumeTooLarge
 
-        def get_session_by_title(self, _title):
-            return None
+    def _too_large(_sid, **_kwargs):
+        raise ResumeTooLarge(20_001, 20_000)
 
-        def resolve_resume_session_id(self, sid):
-            return sid
+    def _history_read(*_args, **_kwargs):
+        raise AssertionError("oversized session must be rejected before the history read")
 
-        def reopen_session(self, _sid):
-            raise AssertionError("oversized session must be rejected before reopen")
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _resume_store(server, monkeypatch, row=lambda sid: {"id": sid, "message_count": 20_001},
+                  retire=_history_read, messages=types.SimpleNamespace(
+                      assert_resume_safe=_too_large, read_conversation=_history_read,
+                      read_resume_conversations=_history_read))
 
     response = server.handle_request(
         {
@@ -832,28 +845,19 @@ def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, mo
     """
     calls = []
 
-    class _DB:
-        def get_session(self, sid):
-            return {"id": sid, "message_count": 28_730}
+    from persistence.conversation.messages import ResumeTooLarge
 
-        def get_session_by_title(self, _title):
-            return None
+    def assert_resume_safe(sid, *, max_messages, tip_only=False):
+        calls.append(tip_only)
+        if not tip_only:
+            raise ResumeTooLarge(20_001, 20_000)
+        return 666
 
-        def resolve_resume_session_id(self, sid):
-            return sid
+    def stop(_sid):
+        raise RuntimeError("stop before history load")
 
-        def assert_resume_safe(self, sid, max_messages=None, *, tip_only=False):
-            calls.append(tip_only)
-            if not tip_only:
-                from hermes_state import SessionResumeTooLargeError
-
-                raise SessionResumeTooLargeError(20_001, 20_000)
-            return 666
-
-        def reopen_session(self, _sid):
-            raise RuntimeError("stop before history load")
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _resume_store(server, monkeypatch, row=lambda sid: {"id": sid, "message_count": 28_730}, retire=stop,
+                  messages=types.SimpleNamespace(assert_resume_safe=assert_resume_safe))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
 
     for params in (
@@ -887,31 +891,31 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     """The hydration worker never loads a lineage the guard would refuse."""
     import threading
 
-    from hermes_state import SessionResumeTooLargeError
+    from persistence.conversation.messages import ConversationMessage, ResumeTooLarge
 
     tip = [{"role": "user", "content": "tip"}]
     reads = []
 
-    class _DB:
-        def reopen_session(self, _sid):
-            return True
-
-        def assert_resume_safe(self, sid, max_messages=None, *, tip_only=False):
+    class _Repository:  # the messages and lineage repositories of the handle
+        def assert_resume_safe(self, sid, *, max_messages, tip_only=False):
             if not tip_only:
-                raise SessionResumeTooLargeError(20_001, 20_000)
+                raise ResumeTooLarge(20_001, 20_000)
             return 1
 
-        def get_resume_conversations(self, _sid):
+        def read_resume_conversations(self, _sid):
             reads.append("lineage")
             raise AssertionError("must not materialize the runaway lineage")
 
-        def get_ancestor_display_prefix(self, _sid):
+        def ancestor_display_prefix(self, _sid):
             reads.append("prefix")
             raise AssertionError("must not materialize the runaway lineage")
 
-        def get_messages_as_conversation(self, sid, **kwargs):
-            reads.append(("tip", kwargs.get("repair_alternation")))
-            return list(tip)
+        def read_conversation(self, sid, request):
+            reads.append(("tip", request.repair_alternation))
+            return tuple(ConversationMessage.from_openai_message(message) for message in tip)
+
+    persistence = types.SimpleNamespace(sessions=types.SimpleNamespace(retire_undrained_queue_rows=lambda _sid: 0),
+                                        messages=_Repository(), lineage=_Repository(), close=lambda: None)
 
     built = threading.Event()
     monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: built.set())
@@ -925,7 +929,7 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     session["resume_message_count"] = 28_730
     server._sessions["hyd"] = session
     try:
-        server._schedule_resume_hydration("hyd", "deep-lineage", _DB())
+        server._schedule_resume_hydration("hyd", "deep-lineage", None, persistence=persistence)
         assert session["resume_history_ready"].wait(timeout=5)
         assert built.wait(timeout=5)
         assert session.get("resume_history_error") is None
@@ -941,32 +945,27 @@ def test_session_resume_guard_failure_fails_open(server, monkeypatch):
     """A transient guard error must not block resume (fail open, log only)."""
     reads = []
 
-    class _DB:
-        def get_session(self, sid):
-            return {"id": sid}
+    def assert_resume_safe(_sid, **_kwargs):
+        raise RuntimeError("database is locked")
 
-        def get_session_by_title(self, _title):
-            return None
+    def read_conversation(_sid, _request):
+        reads.append("tip")
+        return ()
 
-        def resolve_resume_session_id(self, sid):
-            return sid
+    def read_resume_conversations(_sid):
+        reads.append("lineage")
+        return types.SimpleNamespace(model=(), display=())
 
-        def assert_resume_safe(self, _sid):
-            raise RuntimeError("database is locked")
+    def ancestor_display_prefix(_sid):
+        reads.append("prefix")
+        return ()
 
-        def get_messages_as_conversation(self, _sid, **_kwargs):
-            reads.append("tip")
-            return []
-
-        def get_resume_conversations(self, _sid):
-            reads.append("lineage")
-            return ([], [])
-
-        def get_ancestor_display_prefix(self, _sid):
-            reads.append("prefix")
-            return []
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _resume_store(server, monkeypatch, row=lambda sid: {"id": sid},
+                  messages=types.SimpleNamespace(assert_resume_safe=assert_resume_safe,
+                                                 read_conversation=read_conversation,
+                                                 read_resume_conversations=read_resume_conversations),
+                  lineage=types.SimpleNamespace(resolve_resume_target=lambda sid: sid,
+                                                ancestor_display_prefix=ancestor_display_prefix))
 
     response = server.handle_request(
         {
@@ -996,16 +995,6 @@ def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monk
         )
     )
 
-    class _DB:
-        def get_session(self, session_id):
-            return {"id": session_id}
-
-        def get_session_by_title(self, _title):
-            return None
-
-        def resolve_resume_session_id(self, session_id):
-            return session_id
-
     active_turn = {
         "assistant": "partial answer",
         "started_at": fixture["turn_started_at"],
@@ -1021,7 +1010,7 @@ def test_session_resume_active_turn_payload_matches_desktop_fixture(server, monk
         "running": True,
         "session_key": fixture["session_key"],
     }
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    _resume_store(server, monkeypatch, row=lambda session_id: {"id": session_id})
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: fixture["info"])
 
     # JSON round-trip the real RPC envelope: the desktop fixture must stay
@@ -2108,15 +2097,18 @@ def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
         def __exit__(self, *_args):
             return False
 
-    class _FakeDB:
-        def get_resume_conversations(self, key):
-            assert key == "parent"
-            return [], [
-                {"role": "user", "content": "first question", "timestamp": 1},
-                {"role": "assistant", "content": "first answer", "timestamp": 2},
-            ]
+    def read_resume_conversations(key):
+        assert key == "parent"
+        return types.SimpleNamespace(model=(), display=_messages([
+            {"role": "user", "content": "first question", "timestamp": 1},
+            {"role": "assistant", "content": "first answer", "timestamp": 2},
+        ]))
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+    store = types.SimpleNamespace(messages=types.SimpleNamespace(read_resume_conversations=read_resume_conversations))
+    real_persistence_for = server._persistence_for
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(store))
+    monkeypatch.setattr(server, "_persistence_for",
+                        lambda db: contextlib.nullcontext(db) if db is store else real_persistence_for(db))
 
     params = {
         "cols": 96,

@@ -12,7 +12,8 @@ ROUTE = "agent:main:telegram:dm:42"  # unmultiplexed / legacy route: identical i
 @pytest.fixture()
 def two_profiles(tmp_path, monkeypatch):
     from agent import secret_scope
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     from tools import delegate_tool_registry as reg
     from tools.process_registry import process_registry
     from tui_gateway import launch_profile_policy, server
@@ -27,11 +28,11 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setattr(server, "_served_profile_homes", set())
 
-    launch_db = SessionDB(db_path=launch / "state.db")
-    launch_db.create_session("default-conv", source="telegram", session_key=ROUTE)
-    bot2_db = SessionDB(db_path=bot2 / "state.db")
-    bot2_db.create_session("bot2-legacy", source="telegram", session_key=ROUTE)
-    bot2_db.create_session("bot2-conv", source="telegram", session_key="agent:bot2:telegram:dm:42")
+    launch_db = open_persistence(profile_scope(home=launch))
+    seed_session(launch_db, "default-conv", "telegram", session_key=ROUTE)
+    bot2_db = open_persistence(profile_scope(home=bot2))
+    seed_session(bot2_db, "bot2-legacy", "telegram", session_key=ROUTE)
+    seed_session(bot2_db, "bot2-conv", "telegram", session_key="agent:bot2:telegram:dm:42")
     bot2_db.close()
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(reg, "_active_subagents", {})

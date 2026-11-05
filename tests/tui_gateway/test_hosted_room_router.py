@@ -14,6 +14,7 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 from gateway.hosted_room_context import set_room_context
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import wait_until
 from tui_gateway import hosted_room_router_call as router_call
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -24,7 +25,7 @@ ROOM_ID = "router-room"
 
 def _service(root: Path) -> HostedRoomService:
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
-    service = HostedRoomService(server, db_path=root / "state.db")
+    service = HostedRoomService(server, store=storage_handle(root), placement="profile")
     service.local_profiles = lambda: PROFILES
     return service
 
@@ -33,7 +34,7 @@ def _room(service: HostedRoomService, routing: str = "auto") -> None:
     service.create_room(room_id=ROOM_ID, name="Router test", members=[
         {"member_id": profile, "profile": profile, "handle": profile} for profile in PROFILES])
     if routing != "everyone":
-        set_room_context(service.db_path, room_id=ROOM_ID, event_id="ctx", purpose="Ship releases", notes="",
+        set_room_context(service.store, placement=service.placement, room_id=ROOM_ID, event_id="ctx", purpose="Ship releases", notes="",
                          routing=routing, lead_member_id="research" if routing == "lead" else None)
 
 
@@ -50,7 +51,7 @@ def _wait_router(*services: HostedRoomService) -> None:
 
 def _queued(service: HostedRoomService) -> list[str]:
     return [task["payload"]["target_member_id"]
-            for task in driver.list_tasks(service.db_path, room_id=ROOM_ID, status="queued")]
+            for task in driver.list_tasks(service.store, placement=service.placement, room_id=ROOM_ID, status="queued")]
 
 
 def _kinds(service: HostedRoomService, kind: str) -> list[dict]:
@@ -59,12 +60,14 @@ def _kinds(service: HostedRoomService, kind: str) -> list[dict]:
 
 def _settle_queued(service: HostedRoomService, text: str, index: int) -> None:
     binding = service.bindings()[0]
-    task = driver.list_tasks(service.db_path, room_id=ROOM_ID, status="queued")[0]
-    lease = driver.acquire_lease(service.db_path, room_id=ROOM_ID, gateway_id=binding.gateway_id,
+    store, placement = service.store, service.placement
+    task = driver.list_tasks(store, placement=placement, room_id=ROOM_ID, status="queued")[0]
+    lease = driver.acquire_lease(store, placement=placement, room_id=ROOM_ID, gateway_id=binding.gateway_id,
                                  authority_epoch=binding.authority_epoch, process_generation="router-test",
                                  ttl_seconds=30, clock=time.time)
-    attempt = driver.start_task(service.db_path, task["identity"], lease, expected_cancel_generation=0, clock=time.time)
-    driver.settle_task(service.db_path, attempt, settlement_id=f"s-{index}", status="settled",
+    attempt = driver.start_task(store, task["identity"], lease, placement=placement, expected_cancel_generation=0,
+                                clock=time.time)
+    driver.settle_task(store, attempt, placement=placement, settlement_id=f"s-{index}", status="settled",
                        result={"text": text}, clock=time.time)
     service.prepare_room(binding)
 
@@ -169,10 +172,10 @@ def test_two_workers_on_one_store_make_one_router_call(tmp_path, answers):
 def test_a_router_claim_left_by_a_dead_worker_expires(tmp_path):
     now = [1000.0]
     key, asked = (ROOM_ID, "user:m1"), []
-    dead = router_call.RouterCalls(tmp_path / "state.db", clock=lambda: now[0])
+    dead = router_call.RouterCalls(storage_handle(tmp_path), "profile", clock=lambda: now[0])
     hung = threading.Event()
     assert dead.start(key, lambda: hung.wait(10) and None, lambda _picked: None)
-    live = router_call.RouterCalls(tmp_path / "state.db", clock=lambda: now[0])
+    live = router_call.RouterCalls(storage_handle(tmp_path), "profile", clock=lambda: now[0])
     done = threading.Event()
     assert not live.start(key, lambda: asked.append(1), lambda _picked: done.set())
     now[0] += router_call.CLAIM_TTL_SECONDS + 1
@@ -218,7 +221,7 @@ def test_stop_between_the_answer_check_and_its_write_records_no_route(tmp_path, 
         result = read(room)
         if threading.current_thread().name.startswith("hosted-room-router") and not stopped:
             stopped.append(hosted_rooms.request_room_stop(
-                service.db_path, room_id=ROOM_ID, cancel_id="stop-gap", expected_gateway_id=gateway_id,
+                service.store, placement=service.placement, room_id=ROOM_ID, cancel_id="stop-gap", expected_gateway_id=gateway_id,
                 expected_epoch=epoch))
         return result
     service._policy_snapshot = snapshot
@@ -312,7 +315,7 @@ def _land_in_the_continue_gap(service: HostedRoomService, monkeypatch, *appends)
 def _raw_user_message(service: HostedRoomService, event_id: str, thread_id: str):
     gateway_id, epoch = service._owned_authority(ROOM_ID)
     return lambda: hosted_rooms.append_event(
-        service.db_path, room_id=ROOM_ID, event_id=event_id, kind="message.user",
+        service.store, placement=service.placement, room_id=ROOM_ID, event_id=event_id, kind="message.user",
         actor={"kind": "user", "id": "desktop"}, payload={"text": "new ask", "thread_id": thread_id},
         authority_gateway_id=gateway_id, authority_epoch=epoch)
 
@@ -323,7 +326,8 @@ def test_stop_and_a_new_message_racing_continue_keep_the_new_message(tmp_path, m
     gateway_id, epoch = service._owned_authority(ROOM_ID)
     _land_in_the_continue_gap(
         service, monkeypatch,
-        lambda: hosted_rooms.request_room_stop(service.db_path, room_id=ROOM_ID, cancel_id="stop-gap",
+        lambda: hosted_rooms.request_room_stop(service.store, placement=service.placement, room_id=ROOM_ID,
+                                               cancel_id="stop-gap",
                                                expected_gateway_id=gateway_id, expected_epoch=epoch),
         _raw_user_message(service, "m2", "m1"))
     with pytest.raises(hosted_rooms.HostedRoomError, match="not paused"):
@@ -353,7 +357,8 @@ def test_a_stop_before_a_late_cap_notice_refuses_continue(tmp_path, monkeypatch)
     status = service._append_room_status
 
     def stop_first(room, decision):
-        hosted_rooms.request_room_stop(service.db_path, room_id=ROOM_ID, cancel_id="late", expected_gateway_id=gateway_id,
+        hosted_rooms.request_room_stop(service.store, placement=service.placement, room_id=ROOM_ID, cancel_id="late",
+                                       expected_gateway_id=gateway_id,
                                        expected_epoch=epoch)
         status(room, decision)
     monkeypatch.setattr(service, "_append_room_status", stop_first)

@@ -11,6 +11,7 @@ Covers:
 
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,13 +43,19 @@ sys.modules.pop("plugins.platforms.telegram.adapter", None)
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
-def _make_adapter(dm_topics_config=None, group_topics_config=None):
-    """Create a TelegramAdapter with optional DM/group topics config."""
+def _make_adapter(
+    dm_topics_config=None,
+    group_topics_config=None,
+    channel_skill_bindings=None,
+):
+    """Create a TelegramAdapter with optional topic and chat skill config."""
     extra = {}
     if dm_topics_config is not None:
         extra["dm_topics"] = dm_topics_config
     if group_topics_config is not None:
         extra["group_topics"] = group_topics_config
+    if channel_skill_bindings is not None:
+        extra["channel_skill_bindings"] = channel_skill_bindings
     config = PlatformConfig(enabled=True, token="***", extra=extra)
     adapter = TelegramAdapter(config)
     return adapter
@@ -402,6 +409,225 @@ def test_build_message_event_no_auto_skill_without_binding():
     assert event.source.chat_topic == "General"
 
 
+def test_build_message_event_inherits_chat_skill_for_unknown_topic():
+    """User-created DM topics should inherit their chat's skill binding."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        channel_skill_bindings=[{"id": "111", "skills": ["arxiv"]}]
+    )
+    adapter._reload_dm_topics_from_config = lambda: None
+
+    msg = _make_mock_message(chat_id=111, thread_id=999, is_topic_message=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == ["arxiv"]
+    assert event.source.thread_id == "999"
+    assert event.source.chat_topic is None
+
+
+def test_build_message_event_applies_chat_skill_to_root_dm():
+    """A DM chat binding should also apply outside a topic."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        channel_skill_bindings=[{"id": "111", "skill": "arxiv"}]
+    )
+
+    msg = _make_mock_message(chat_id=111, thread_id=None)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == ["arxiv"]
+
+
+def test_build_message_event_stacks_topic_skill_after_chat_skills():
+    """A topic-specific skill should stack after inherited chat skills."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        dm_topics_config=[
+            {
+                "chat_id": 111,
+                "topics": [
+                    {"name": "Project", "thread_id": 100, "skill": "project-work"},
+                ],
+            }
+        ],
+        channel_skill_bindings=[
+            {"id": "111", "skills": ["arxiv", "writing"]},
+        ],
+    )
+    adapter._dm_topics["111:Project"] = 100
+
+    msg = _make_mock_message(chat_id=111, thread_id=100)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == ["arxiv", "writing", "project-work"]
+
+
+def test_build_message_event_deduplicates_chat_and_topic_skill():
+    """The same chat and topic skill should only be loaded once."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        dm_topics_config=[
+            {
+                "chat_id": 111,
+                "topics": [
+                    {"name": "General", "thread_id": 100, "skill": "arxiv"},
+                ],
+            }
+        ],
+        channel_skill_bindings=[{"id": "111", "skills": ["arxiv"]}],
+    )
+    adapter._dm_topics["111:General"] = 100
+
+    msg = _make_mock_message(chat_id=111, thread_id=100)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == ["arxiv"]
+
+
+def test_build_message_event_does_not_inherit_other_chat_skill():
+    """A chat binding must not leak into another Telegram DM."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        channel_skill_bindings=[{"id": "111", "skills": ["arxiv"]}]
+    )
+    adapter._reload_dm_topics_from_config = lambda: None
+
+    msg = _make_mock_message(chat_id=222, thread_id=999, is_topic_message=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+
+
+@pytest.mark.parametrize("session_state", ["new", "manual-reset", "continuing"])
+@pytest.mark.asyncio
+async def test_chat_skill_reaches_gateway_session_start(
+    monkeypatch, tmp_path, session_state
+):
+    """A configured DM binding reaches the real gateway injection path when a session starts,
+    and a continuing session is left alone (its history already carries the skill)."""
+    import gateway.run as gateway_run
+    from agent import skill_commands
+    from gateway.config import Platform, load_gateway_config
+    from gateway.platforms.base import MessageType
+    from gateway.session import SessionEntry
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  channel_skill_bindings:\n"
+        '    - id: "111"\n'
+        "      skills:\n"
+        "        - arxiv\n"
+        "platforms:\n"
+        "  telegram:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+    adapter = TelegramAdapter(config.platforms[Platform.TELEGRAM])
+    adapter._reload_dm_topics_from_config = lambda: None
+    event = adapter._build_message_event(
+        _make_mock_message(chat_id=111, thread_id=999, is_topic_message=True),
+        MessageType.TEXT,
+    )
+    assert event.auto_skill == ["arxiv"]
+
+    runner = gateway_run.GatewayRunner(config)
+    runner.adapters = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._handle_active_session_busy_message = AsyncMock(return_value=False)
+    runner._session_db = MagicMock()
+    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._cache_session_source = lambda _key, _source: None
+    runner._is_session_run_current = lambda _key, _gen: True
+    runner._reply_anchor_for_event = lambda _event: None
+    runner._get_guild_id = lambda _event: None
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+
+    now = datetime.now()
+    created_at = now if session_state == "new" else now - timedelta(seconds=1)
+    session_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:111:999",
+        session_id="session-1",
+        created_at=created_at,
+        updated_at=now,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        is_fresh_reset=session_state == "manual-reset",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_platform_message_id.return_value = False
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100_000,
+    )
+    load_skill = MagicMock(
+        return_value=({"name": "arxiv"}, tmp_path, "arxiv")
+    )
+    monkeypatch.setattr(skill_commands, "_load_skill_payload", load_skill)
+    monkeypatch.setattr(
+        skill_commands,
+        "_build_skill_message",
+        lambda *_args, **_kwargs: "<skill>arxiv</skill>",
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        event,
+        event.source,
+        session_entry.session_key,
+        1,
+    )
+
+    message = runner._run_agent.await_args.kwargs["message"]
+    if session_state == "continuing":
+        assert not message.startswith("<skill>")
+        load_skill.assert_not_called()
+        return
+    assert message.startswith("<skill>arxiv</skill>\n\nhello")
+    load_skill.assert_called_once_with(
+        "arxiv", task_id=session_entry.session_key
+    )
+    assert session_entry.is_fresh_reset is False
+
+
 # ── _build_message_event: group_topics skill binding ──
 
 # The telegram mock sets sys.modules["telegram.constants"] = telegram_mod (root mock),
@@ -465,6 +691,30 @@ def test_group_topic_skill_binding_second_topic():
 
     assert event.auto_skill == "sales-framework"
     assert event.source.chat_topic == "Sales"
+
+
+def test_group_chat_binding_leaves_group_topics_unchanged():
+    """Chat-wide bindings apply to DMs only: a group keeps its group_topics skill."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter(
+        group_topics_config=[{
+            "chat_id": -1001234567890,
+            "topics": [{"name": "Engineering", "thread_id": 5, "skill": "software-development"}],
+        }],
+        channel_skill_bindings=[{"id": "-1001234567890", "skills": ["arxiv"]}],
+    )
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        is_topic_message=True,
+        is_forum=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "software-development"
 
 
 # ── _build_message_event: from_user=None fallback in DMs ──

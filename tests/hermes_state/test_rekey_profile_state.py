@@ -225,3 +225,51 @@ class TestRekeyProfileState:
             "SELECT obligation_id, session_key FROM delivery_obligations")}
         assert keys == {"ob_gone": "agent:newname:feishu:dm:chatA",
                         "ob_keep": "agent:keepme:feishu:dm:chatB"}
+
+    def test_rekeys_state_meta_local_policy_and_legacy_lineage(self, db):
+        from hermes_state_local import POLICY_PREFIX
+        from hermes_state_local_migration import LEGACY_PREFIX
+        from hermes_cli.profiles import get_profile_dir
+
+        old_dir = str(get_profile_dir("oldname"))
+        new_dir = str(get_profile_dir("newname"))
+        sid = "local-1234567890abcdef"
+        receipt = {
+            "session_id": sid,
+            "profile_id": old_dir,
+            "principal_id": "sid:userA",
+            "route": f"agent:oldname:local:dm:{sid}",
+            "entry": {
+                "session_id": sid,
+                "session_key": f"agent:oldname:local:dm:{sid}",
+                "origin": {"platform": "local", "chat_id": sid, "profile": "oldname"},
+            },
+        }
+        db._write_sql(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+            (POLICY_PREFIX + sid, json.dumps(receipt)),
+        )
+
+        counts = db.rekey_profile_state("oldname", "newname")
+        assert counts["state_meta_policies"] == 1
+
+        row = db._read_one("SELECT value FROM state_meta WHERE key = ?", (POLICY_PREFIX + sid,))
+        assert row is not None
+        updated = json.loads(row["value"])
+        assert updated["profile_id"] == new_dir
+        assert updated["legacy_session_id"] == sid
+        assert updated["route"] == f"agent:newname:local:dm:{sid}"
+        assert updated["entry"]["session_key"] == f"agent:newname:local:dm:{sid}"
+        assert updated["entry"]["origin"]["profile"] == "newname"
+        assert updated["lineage"] == [sid]
+
+        legacy_row = db._read_one("SELECT value FROM state_meta WHERE key = ?", (LEGACY_PREFIX + sid,))
+        assert legacy_row is not None
+        legacy = json.loads(legacy_row["value"])
+        assert legacy == {
+            "session_id": sid,
+            "profile_id": new_dir,
+            "principal_id": "sid:userA",
+            "legacy_session_id": sid,
+        }
+

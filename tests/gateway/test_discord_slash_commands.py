@@ -204,6 +204,26 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_registered_sessions_command_forwards_args(adapter):
+    """/sessions must forward its arguments: the gateway handler supports
+    `search <query>` / `full` / `all`, but _auto_register only adds an input
+    field (and an `{args}` template) when the CommandDef declares args_hint (#133404)."""
+    adapter._run_simple_slash = AsyncMock()
+
+    adapter._register_slash_commands()
+
+    sessions_cmd = adapter._client.tree.commands.get("sessions")
+    assert sessions_cmd is not None and hasattr(sessions_cmd, "callback"), (
+        "/sessions should be auto-registered from COMMAND_REGISTRY"
+    )
+    interaction = SimpleNamespace()
+    await sessions_cmd.callback(interaction, args="search foo")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/sessions search foo"
+    )
+
+
+@pytest.mark.asyncio
 async def test_plugin_command_name_conflict_skipped(adapter):
     """A plugin command that collides with a built-in must not override it."""
     adapter._run_simple_slash = AsyncMock()

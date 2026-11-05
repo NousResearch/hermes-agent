@@ -1,28 +1,34 @@
 name: ascii-worlds
 repo: https://github.com/dudicslevente/hermes-ascii-worlds
-sha: e5be8d2cc6602c67e296c60993557a7bdb02e71d
+sha: 069937d78d948a34e3f38a34877e7d92fb76bba1
 title: ASCII Worlds
 description: >-
-  Koi and jellyfish drawn live in text glyphs for Hermes Desktop. Choose how many and
-  their colours in Settings -> Plugins -> ASCII Worlds, and optionally let them swim
-  across the whole window. Desktop-only (desktop/plugin.js inside the plugin SDK
-  surface); no agent tools, hooks, middleware, env vars or network access.
+  Twenty quiet habitats drawn live in text glyphs for Hermes Desktop: koi, jellyfish,
+  mantas, sea turtles, seahorses, a fish school, a whale, an octopus, butterflies, luna
+  moths, dragonflies, swallows, a sleeping cat, an owl, falling leaves and petals,
+  fireflies, bubbles, dandelion seeds and a night sky. Choose a habitat and its controls
+  in Settings -> Plugins -> ASCII Worlds, and optionally let it animate across the whole
+  window. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools,
+  hooks, middleware, env vars or network access.
 maintainer: dudicslevente
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/dudicslevente/hermes-ascii-worlds#readme
-version: "1.1.0"
-image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/banner.png
+version: "1.2.0"
+image: https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/koi-whole-window-1.jpg
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/jellyfish-whole-window-1.jpg
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/settings-background.png
-  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/e5be8d2cc6602c67e296c60993557a7bdb02e71d/docs/images/settings-scene.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/overview.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/octopus-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/sea-turtles-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/sleeping-cat-dark.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/settings-catalog.png
+  - https://raw.githubusercontent.com/dudicslevente/hermes-ascii-worlds/069937d78d948a34e3f38a34877e7d92fb76bba1/docs/images/v1.2/whole-window-catalog.png
 platforms: []
 known_issues:
-  - Hand-tested on Hermes Desktop 0.22.6 on macOS only; Windows and Linux are untested.
-  - Fine glyph density at full speed, especially with several jellyfish, uses noticeable CPU. Battery saver and a bolder density turn the cost down.
+  - The author hand-tested the full 1.2.0 plugin on a Mac with Hermes Desktop and reports that everything worked (a general test; no Desktop version or per-scene results were recorded). This Whole-window-only catalog build is the same plugin without its second placement option; it was covered by automated tests, browser captures and the Hermes validator, not hand-tested. The screenshots are browser mock-host captures, not Mac screenshots. Windows and Linux are untested.
+  - Fine glyph density at full speed, high counts and the optional whole-window layer use noticeable CPU. Battery saver and a bolder density turn the cost down.
+  - Light-theme Cat and Owl faces, pale seeds, fish and swallows, and quiet halos or stars are lower-contrast. The whale deliberately leaves the frame for a while.
 capabilities:
   provides_tools: []
   provides_hooks: []

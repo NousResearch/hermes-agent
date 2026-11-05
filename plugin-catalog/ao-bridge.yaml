@@ -1,6 +1,6 @@
 name: ao-bridge
 repo: https://github.com/wesleymatosdev/hermes-ao-bridge
-sha: 06c223e4778b033cb0cd9735db990740bdb7f9e9
+sha: fb26915d84143ac8f689abf5dbac967857737962
 title: AO Bridge
 description: 'Agent Orchestrator bridge for the Hermes web dashboard: a Kanban board
   over the local AO daemon where every AO project''s sessions render as cards across
@@ -18,11 +18,11 @@ tier: community
 category: automation
 version: "0.2.0"
 screenshots:
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/06c223e4778b033cb0cd9735db990740bdb7f9e9/docs/screenshots/ao-bridge-board.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/06c223e4778b033cb0cd9735db990740bdb7f9e9/docs/screenshots/ao-bridge-spawn-form.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/06c223e4778b033cb0cd9735db990740bdb7f9e9/docs/screenshots/ao-bridge-message-sheet.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/06c223e4778b033cb0cd9735db990740bdb7f9e9/docs/screenshots/ao-bridge-detail.png
-  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/06c223e4778b033cb0cd9735db990740bdb7f9e9/docs/screenshots/ao-bridge-live-search.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-board.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-spawn-form.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-message-sheet.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-detail.png
+  - https://raw.githubusercontent.com/wesleymatosdev/hermes-ao-bridge/fb26915d84143ac8f689abf5dbac967857737962/docs/screenshots/ao-bridge-live-search.png
 platforms: []
 capabilities:
   provides_tools: []

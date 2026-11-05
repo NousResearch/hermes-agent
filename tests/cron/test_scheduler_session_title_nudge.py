@@ -9,12 +9,12 @@ class TestSetCronSessionTitle:
     def test_dedupes_on_duplicate_title(self):
         # First write collides (ValueError); helper falls back to lineage #N.
         from cron.scheduler import _set_cron_session_title
-        db = MagicMock()
-        db.set_session_title.side_effect = [ValueError("in use"), True]
-        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
-        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        sessions = MagicMock()
+        sessions.set_title.side_effect = [ValueError("in use"), True]
+        sessions.next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(sessions, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
-        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+        sessions.next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
 
 class TestFailureStreakNudge:
     """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""

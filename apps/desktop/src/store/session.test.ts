@@ -45,6 +45,7 @@ import {
   getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   getSessionOwnerHints,
+  getSessionViewOwnerHint,
   hydrateSessionOwnerHints,
   keepFailedProfileMeta,
   knownSessionOwner,
@@ -200,6 +201,42 @@ describe('session owner hints', () => {
     expect(getSessionOwnerHint('same-session', sourceA)).toEqual(sourceA)
     expect(getSessionOwnerHint('same-session', sourceB)).toEqual(sourceB)
     expect(getSessionOwnerHint('same-session')).toBeUndefined()
+  })
+
+  it('resolves a cross-profile chat through its single recorded owner on the connection', () => {
+    // A chat opened through a shared default connection records its hint
+    // under the session's own profile; the window still scopes its lookup by
+    // the active gateway profile, so the exact key misses after a relaunch.
+    const recorded = {
+      connectionId: 'primary-shared',
+      mode: 'remote' as const,
+      profile: 'worker',
+      targetProfile: 'worker'
+    }
+
+    setSessionOwnerHint('cross-profile', recorded)
+
+    expect(getSessionViewOwnerHint('cross-profile', { connectionId: 'primary-shared', profile: 'default' })).toEqual(
+      recorded
+    )
+    expect(getSessionViewOwnerHint('cross-profile', { connectionId: 'primary-shared', profile: 'worker' })).toEqual(
+      recorded
+    )
+  })
+
+  it('keeps an ambiguous cross-profile owner undefined instead of guessing', () => {
+    setSessionOwnerHint('ambiguous', { connectionId: 'primary-shared', profile: 'worker', targetProfile: 'worker' })
+    setSessionOwnerHint('ambiguous', { connectionId: 'primary-shared', profile: 'research', targetProfile: 'research' })
+
+    expect(getSessionViewOwnerHint('ambiguous', { connectionId: 'primary-shared', profile: 'default' })).toBeUndefined()
+  })
+
+  it('does not borrow a cross-profile owner from a different connection', () => {
+    setSessionOwnerHint('foreign-owner', { connectionId: 'other-conn', profile: 'worker' })
+
+    expect(
+      getSessionViewOwnerHint('foreign-owner', { connectionId: 'primary-shared', profile: 'default' })
+    ).toBeUndefined()
   })
 
   it('bounds owner hints and evicts the oldest scoped identity', () => {

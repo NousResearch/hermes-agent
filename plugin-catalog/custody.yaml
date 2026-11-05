@@ -1,0 +1,51 @@
+name: custody
+repo: https://github.com/Parker-Fawcett/custody
+sha: d4622ecfe791c6fc28ca5f800de5682df445a240
+version: "0.1.0"
+description: >-
+  Resolve what a destructive command will actually touch before Hermes asks you
+  to approve it, then escalate anything this session did not create. Approvals
+  judge a command by its text, and the shell runs it by its semantics: in the
+  PowerShell incident behind #147373, `,` bound tighter than `+`, so five written
+  paths became eight array elements and three of them were profile roots; 188,303
+  delete records, 21.4 GiB. Custody computes the semantics first. It reads the
+  command the way the shell does (tilde, allowlisted variables, quoting, PowerShell array
+  precedence, `find -delete`, redirects, `git clean`, `Remove-Item`, `osascript`,
+  `killall`/`pkill`/`taskkill`), resolves each target expression to concrete
+  paths with file and byte counts, and attributes every path against a
+  per-session provenance ledger: files the agent wrote, plus a baseline snapshot
+  of the working tree taken at session start. Anything that predates the session
+  belongs to the user, and it goes to Hermes's own approval gate with the real
+  numbers and the reason attached. Globs, command substitution and unknown
+  variables resolve to an unknown target, which escalates instead of guessing. A
+  GUI-app command that supplies its own answer (`close active presentation saving
+  no`, the #141346 shape) is blocked, because no approval prompt can be answered
+  for the user's unsaved state. The command is never executed and nothing is
+  auto-approved: custody adds a human step, it never removes one.
+  Disclosure — reads path metadata outside its own data directory (os.scandir and
+  os.stat only, file contents never opened, bounded to 120,000 entries and depth
+  8 per target, skipping node_modules, .git, virtualenvs and build output) to
+  count files and bytes. Writes a SQLite ledger of this session's tool writes,
+  the baseline snapshot and a decision log (command text, verb, verdict, counts)
+  under <HERMES_HOME>/plugin-data/custody/. Nothing is uploaded. No network
+  calls, no shell execution, no background processes, no dependencies. Reads
+  HOME, TMPDIR, TEMP, APPDATA, LOCALAPPDATA, USERPROFILE and WINDIR to expand
+  paths. Hooks pre_tool_call, post_tool_call and on_session_start, tools
+  custody_explain and custody_ledger, plus a bundled skill.
+maintainer: Parker-Fawcett
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Parker-Fawcett/custody#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - custody_explain
+    - custody_ledger
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

@@ -53,19 +53,15 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
 
   // A session kept running in the background (/new mid-turn, the switcher's `+ new`) still asks its
   // questions on this socket. Its card must not open over another session's view: the request stays
-  // open on the backend unanswered, and activating that session hands it back as `open_requests`
-  // (replayed), which opens it there. The status poll tells the user the session is waiting.
+  // open on the backend unanswered, and activating that session hands it back as `open_requests`,
+  // which the activation re-delivers once the view shows it (`hydrateSharedPrompts`, after the
+  // reset). The copy the channel replays before the activation resolves is still another
+  // session's, so it waits too. The status poll tells the user the session is waiting.
   const belongsElsewhere = (request: ServerRequest) => {
     const owner = request.params.session_id
     const focused = focusedSessionId()
 
-    return (
-      PROMPT_METHODS.has(request.method) &&
-      !request.replayed &&
-      typeof owner === 'string' &&
-      Boolean(focused) &&
-      owner !== focused
-    )
+    return PROMPT_METHODS.has(request.method) && typeof owner === 'string' && Boolean(focused) && owner !== focused
   }
 
   return request => {

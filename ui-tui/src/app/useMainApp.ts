@@ -755,7 +755,7 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            noteLiveSessions(gw, result.sessions, sys)
+            noteLiveSessions(gw, result.sessions, sys, () => !stopped)
             applyLiveSessionRoster(result.sessions)
           }
         })

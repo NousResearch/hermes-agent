@@ -1,36 +1,41 @@
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 25342ff7a529fc3113a6426a798dad0c49b9b84d
+sha: 6de2ea81bbbb5944a73d31b45e5b57381a114a3b
 description: >-
-  A memory of what the user has seen on screen. Screenshots in the folders the OS
-  already writes them to are read locally with Tesseract, deduplicated (SHA-256
-  plus a 64-bit dHash for near-copies) and indexed in SQLite/FTS5 with the time of
-  capture, a 360px thumbnail and the text on the image, and the agent gets four
-  tools: screen_recall (ranked search over the words that were on screen, with
-  since/until windows), screen_timeline (what was on screen over a period,
-  interleaved with the agent's own tool calls on one clock), screen_show (one
-  screen's full text plus its path for a vision tool) and screen_index. Ships a
-  /peripheral command (status, scan, search, open, forget, pause, resume) and a
-  bundled skill that teaches when screen memory beats asking the user to re-send a
-  screenshot. Incremental and bounded: only changed files are re-read, each scan
-  OCRs a capped batch, and every failure (no Tesseract, unreadable image, locked
-  database) is logged and skipped rather than raised. Disclosure — reads image
-  files under the configured watch_dirs (auto-detected screenshot folders plus
-  Hermes' own inbound media folder) and nothing else; writes one SQLite database
-  and WebP thumbnails under the profile's plugin-data/peripheral/; runs the local
-  tesseract binary as a subprocess with a 25-second timeout and one thread; makes
-  no network calls and has no telemetry; redacts API keys, JWTs, bearer headers,
-  private keys, card numbers and credentials inside connection URLs from stored
-  text and from stored tool-event details before writing (on by default); lists
-  the model-driven Q&A session it ships as a demonstration in a committed
-  transcript; '/peripheral forget' deletes both the row and the thumbnail this
-  plugin wrote; never captures the screen and never modifies or deletes the
-  user's files.
+  A memory of what the user has seen on screen. Peripheral captures the display
+  itself on request, optionally on change in the background, and indexes the
+  screenshots the OS already writes — read locally with Tesseract, deduplicated
+  (SHA-256 plus a 64-bit dHash change gate) and stored in SQLite/FTS5 with the time
+  they appeared. The agent gets six tools: screen_capture (photograph the screen now
+  and get it back), screen_recall (ranked search over the words that were on screen,
+  with since/until windows and a prefix fallback for OCR noise), screen_timeline
+  (what was on screen over a period, interleaved with the agent's own tool calls on
+  one clock), screen_show (one screen's full text plus the image itself, attached to
+  the result when the active model accepts images), screen_index, and screen_forget
+  (delete rows, thumbnails and captured frames on request). Ships a /peripheral
+  command (status, capture, watch on/off, scan, search, open, forget, pause, resume)
+  and a bundled skill that teaches when screen memory beats asking the user to
+  re-send a screenshot. Works without Tesseract: frames are still captured and can
+  be looked at, and the plugin says text search is unavailable rather than pretending.
+  Incremental and bounded: only changed files are re-read, each scan OCRs a capped
+  batch, background capture stores changed frames only under an hourly ceiling, and
+  every failure (no capture binary, no Tesseract, unreadable image, locked database)
+  is logged and skipped rather than raised. Disclosure — reads image files under the
+  configured watch_dirs and captures the display only when the user invokes
+  screen_capture or enables capture_enabled; writes one SQLite database, WebP
+  thumbnails and captured frames under the profile's plugin-data/peripheral/; runs
+  the local tesseract binary and a local capture binary (ffmpeg x11grab, grim,
+  screencapture, PowerShell, import, scrot or maim) as subprocesses with timeouts;
+  makes no network calls and has no telemetry; redacts API keys, JWTs, bearer
+  headers, private keys, card numbers and credentials inside connection URLs from
+  stored text and stored tool-event details before writing (on by default); 'forget'
+  deletes the row, the thumbnail and any frame the plugin captured, and never
+  modifies or deletes the user's own files.
 maintainer: okyssta
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-version: "1.0.1"
+version: "2.0.0"
 docs_url: https://github.com/okyssta/hermes-peripheral#readme
 platforms: []
 capabilities:
@@ -39,6 +44,8 @@ capabilities:
     - screen_timeline
     - screen_show
     - screen_index
+    - screen_capture
+    - screen_forget
   provides_hooks:
     - post_tool_call
   provides_middleware: []

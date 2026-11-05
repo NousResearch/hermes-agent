@@ -335,6 +335,46 @@ async def durable_session_run_claim_holds(
     return str(row.get("active_run_id") or "") == run_id
 
 
+async def settle_prelaunch_admission(
+    adapter: Any,
+    request: "web.Request",
+    session_id: str,
+    run_id: str,
+    run_key: str,
+    fingerprint: str,
+    *,
+    reserved: bool,
+) -> bool:
+    """Explicitly settle a pre-launch admission whose claim landed but whose
+    execution task was never created (review F1, landed-claim branch).
+
+    A matching durable ``active_run_id`` proves the CLAIM, not an executor: the
+    session-stream task is created only after admission returns, so a failure
+    in between leaves a phantom run that a later retry would 202-replay forever
+    with zero executions. "Queued replay with no executor" is not recovery.
+
+    Settling gives that state an owner: clear the phantom claim (guarded by the
+    run id), compensate the provisional receipt, and mark the run failed in
+    memory — so the retry re-enters admission and produces exactly ONE owned
+    execution.
+
+    Returns ``False`` without touching anything when an executor is already
+    registered for the run: that is genuine work and both its receipt and its
+    claim must survive. Unknown durability is never blind-deleted by callers.
+    """
+    if run_id in getattr(adapter, "_active_run_agents", {}):
+        return False
+    with suppress(Exception):
+        await adapter._clear_session_active_run_async(
+            session_id, expected_run_id=run_id)
+    if reserved:
+        release_header_run_reservation(
+            adapter, request, run_key, fingerprint, run_id)
+    with suppress(Exception):
+        adapter._set_run_status(run_id, "failed", last_event="admission.failed")
+    return True
+
+
 def run_already_active_error(run_id: str) -> Dict[str, Any]:
     """Deterministic conflict envelope for a duplicate session-stream start."""
     return {
@@ -530,12 +570,26 @@ async def admit_session_stream_run(
             adapter, session_id, run_id, run_key
         )
     except BaseException:
-        if reserved:
-            admitted = await durable_session_run_claim_holds(
-                adapter, session_id, run_id)
-            if admitted is False:
+        # Pre-launch failure: the execution task is created only AFTER this
+        # function returns, so whatever the failure, nothing is running yet.
+        # Reconcile the durable artifacts so a retry ends in exactly one owned
+        # execution or an explicit settled outcome — never a queued replay of
+        # a run nothing will ever execute (review F1).
+        admitted = await durable_session_run_claim_holds(
+            adapter, session_id, run_id)
+        if admitted is False:
+            # The claim never landed: the reservation is a false acceptance.
+            if reserved:
                 release_header_run_reservation(
                     adapter, request, run_key, request_fingerprint, run_id)
+        elif admitted is True:
+            # The claim landed but no executor exists: settle the phantom
+            # instead of leaving a receipt that replays forever.
+            await settle_prelaunch_admission(
+                adapter, request, session_id, run_id, run_key,
+                request_fingerprint, reserved=reserved)
+        # admitted is None -> unknown durability: keep everything. An
+        # ambiguous claim must never be blind-deleted.
         raise
     if conflict_run_id:
         # Pre-launch rejection: the claim is known NOT to have been taken by

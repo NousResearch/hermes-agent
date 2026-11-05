@@ -2354,22 +2354,29 @@ async def test_session_stream_claim_failure_releases_reserved_receipt(
 
 
 @pytest.mark.asyncio
-async def test_session_stream_claim_failure_after_claim_keeps_receipt(
+async def test_session_stream_claim_lands_then_fails_retry_executes_once(
     adapter, session_db,
 ):
-    """F1 (control): when the claim LANDED before the failure, the receipt is
-    ambiguous and must NOT be blindly deleted.
+    """F1 (landed-claim branch): a claim that lands before the failure must be
+    SETTLED, not left as a queued receipt that replays forever.
 
-    The claim is taken durably, then the seam raises. The session row names
-    this run, so admission reconciles instead of compensating: a later same-key
-    retry replays the recorded run and never starts a second execution.
+    Reviewer's witness: run the real durable claim, let it commit, then inject
+    an inert error before it returns. A durable ``active_run_id`` proves the
+    claim, not an executor — the execution task is created only after admission
+    returns. So the pre-launch state is a phantom: the retry must produce
+    exactly ONE owned execution, never a 202 ``queued``/``replayed`` ack with
+    zero executions.
     """
     session_id = session_db.create_session("claim-landed-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
     executed = {"count": 0}
 
     async def fake_run(**kwargs):
         del kwargs
         executed["count"] += 1
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
         return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
 
     real_claim = adapter._claim_session_active_run_async
@@ -2378,8 +2385,8 @@ async def test_session_stream_claim_failure_after_claim_keeps_receipt(
     async def claim_then_fail(*args, **kwargs):
         if state["fail"]:
             state["fail"] = False
-            await real_claim(*args, **kwargs)   # the durable claim LANDS first
-            raise OSError("injected failure AFTER the claim landed")
+            await real_claim(*args, **kwargs)   # the durable claim LANDS
+            raise OperationalError("injected failure AFTER the claim landed")
         return await real_claim(*args, **kwargs)
 
     from aiohttp.test_utils import TestClient, TestServer
@@ -2393,15 +2400,114 @@ async def test_session_stream_claim_failure_after_claim_keeps_receipt(
                 f"/api/sessions/{session_id}/chat/stream",
                 json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
             assert failed.status == 500, failed.status
+            assert executed["count"] == 0
 
+            # The phantom claim is settled, so this must EXECUTE (200 + SSE)
+            # rather than replay a queued run with no executor.
             retry = await cli.post(
                 f"/api/sessions/{session_id}/chat/stream",
                 json={"message": "G"}, headers={"Idempotency-Key": "key-claimlanded"})
-            assert retry.status == 202, (
-                f"an admitted (ambiguous) receipt must survive, got {retry.status}")
-            payload = json.loads(await retry.text())
-    assert payload.get("replayed") is True
-    assert executed["count"] == 0, "a replay must never start a second execution"
+            assert retry.status == 200, (
+                f"landed-claim retry must execute, got {retry.status} "
+                f"({(await retry.text())[:200]})")
+            body = await retry.text()
+            assert "replayed" not in body
+            assert "run.started" in body
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+    assert run_started.is_set(), "the retry must own a real execution"
+    assert executed["count"] == 1, (
+        f"exactly one execution expected, saw {executed['count']}")
+    allow_finish.set()
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_cancellation_after_commit_settles(
+    adapter, session_db,
+):
+    """F1 control: cancellation AFTER the durable claim commits settles the
+    same way, and the cancellation still propagates."""
+    from gateway.platforms import api_server_session_stream as _sess_stream
+
+    session_id = session_db.create_session("claim-cancel-commit", "api_server")
+    request = MagicMock()
+    request.headers = {"Idempotency-Key": "key-cancelcommit"}
+    ctx = {"body": {"message": "X"}, "runtime_request": None, "lock_active": False}
+    run_id = "run_cancel_commit"
+    adapter._set_run_status(run_id, "queued", session_id=session_id)
+
+    real_claim = adapter._claim_session_active_run_async
+
+    async def claim_then_cancel(*args, **kwargs):
+        await real_claim(*args, **kwargs)   # claim lands durably
+        raise asyncio.CancelledError
+
+    with patch.object(adapter, "_claim_session_active_run_async",
+                      side_effect=claim_then_cancel):
+        with pytest.raises(asyncio.CancelledError):
+            await _sess_stream.admit_session_stream_run(
+                adapter, request, ctx, session_id, "X", run_id)
+
+    # The phantom claim was cleared, so the session is not wedged.
+    assert not await _sess_stream.durable_session_run_claim_holds(
+        adapter, session_id, run_id), "phantom claim must be settled on cancel"
+
+    # And the receipt is gone, so the next attempt is admitted (not replayed).
+    # The handler registers the run's in-memory status before admission; mirror
+    # that for the follow-up attempt.
+    adapter._set_run_status("run_after_cancel", "queued", session_id=session_id)
+    admitted = await _sess_stream.admit_session_stream_run(
+        adapter, request, ctx, session_id, "X", "run_after_cancel")
+    assert admitted is None, f"retry must be admitted, got {admitted}"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_claim_unknown_reconciliation_keeps_receipt(
+    adapter, session_db,
+):
+    """F1 control: when durability cannot be read, nothing is deleted.
+
+    Unknown reconciliation is ambiguous by construction; the contract is to
+    preserve the receipt rather than blind-delete possibly-admitted work.
+    """
+    from gateway.platforms import api_server_session_stream as _sess_stream
+
+    session_id = session_db.create_session("claim-unknown", "api_server")
+    request = MagicMock()
+    request.headers = {"Idempotency-Key": "key-unknown"}
+    ctx = {"body": {"message": "U"}, "runtime_request": None, "lock_active": False}
+    run_id = "run_unknown"
+    adapter._set_run_status(run_id, "queued", session_id=session_id)
+
+    async def claim_raises(*args, **kwargs):
+        del args, kwargs
+        raise OSError("claim seam down")
+
+    async def db_unavailable(*args, **kwargs):
+        del args, kwargs
+        raise OSError("session db unavailable")
+
+    with patch.object(adapter, "_claim_session_active_run_async",
+                      side_effect=claim_raises), \
+            patch.object(adapter, "_ensure_session_db_async",
+                         side_effect=db_unavailable):
+        with suppress(Exception):
+            await _sess_stream.admit_session_stream_run(
+                adapter, request, ctx, session_id, "U", run_id)
+
+    scope = adapter._run_idempotency_scope(request)
+    run_key = _sess_stream.session_run_key(
+        session_id=session_id, user_message="U", system_prompt=None,
+        idempotency_header="key-unknown")
+    fingerprint = _sess_stream.session_request_fingerprint(
+        session_id=session_id, user_message="U", system_prompt=None,
+        runtime_request=None, lock_active=False)
+    outcome, _record = adapter._run_idempotency_store.lookup(
+        scope, run_key, fingerprint)
+    assert outcome == "reused", (
+        f"unknown durability must preserve the receipt, got {outcome}")
 
 
 @pytest.mark.asyncio

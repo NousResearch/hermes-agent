@@ -32,6 +32,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
             data[key] = getattr(exc, key)
     if getattr(exc, 'admitted', None) is False:
         data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
+    # Flat keys: the client keeps only scalar ``error.data`` values (``gateway_client._bounded_error_data``).
+    for key, value in (getattr(exc, 'holder', None) or {}).items():
+        data[f'holder_{key}'] = value
     return data
 
 

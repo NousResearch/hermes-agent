@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — changer de modèle"
     usage_switch_provider: "`/model <name> --provider <slug>` — changer de fournisseur"
     usage_persist: "`/model <name> --global` — conserver"
+    usage_reset: "`/model reset` — effacer l'override de cette session"
+    reset_done: "Override de modèle de session effacé — utilisation de `{model}` (valeur par défaut du canal/globale). Historique de conversation conservé."
+    reset_none: "Aucun override de modèle actif pour cette session — `{model}` (valeur par défaut du canal/globale) est déjà utilisé."
     err_skew: "Ce gateway exécute le code de {boot_rev}, mais le checkout sur disque est maintenant à {disk_rev}. Changer de modèle risquerait un plantage dû à des modules obsolètes — redémarrez le gateway pour charger le nouveau code : hermes gateway restart"
     err_switch_failed: "Le passage au modèle {model} a échoué ({error}) ; le modèle {current} est conservé."
     err_config_not_updated: "config.yaml non mis à jour ({error})"
@@ -808,6 +811,7 @@ gateway:
     no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `hermes doctor` sur l'hôte."
     cron_session_read_only: "⚠️ Cette conversation appartient à une tâche planifiée et n'exécute que cette tâche ; votre message n'a donc pas été exécuté. Démarrez une nouvelle conversation pour l'envoyer."
     workspace_unavailable: "⚠️ Le dossier de travail de cette conversation n'existe plus ({path}) ; votre message n'a donc pas été exécuté. Recréez le dossier ou déplacez la conversation vers un autre (`/worktree new` dans la CLI, « Déplacer vers un projet » dans l'application de bureau), puis renvoyez votre message."
+    launch_credentials_unavailable: "⚠️ Cette conversation ne peut plus utiliser la clé API avec laquelle elle a été démarrée{detail}, plus rien ne peut donc s'y exécuter. Une conversation ouverte ne passe jamais d'elle-même à une autre clé, donc /retry échoue de la même façon. Utilisez /new pour démarrer une nouvelle conversation avec votre clé actuelle."
   skills:
     disabled: |-
       La skill **{name}** est installée mais désactivée.
@@ -1200,6 +1204,8 @@ platform:
       confirm_title: "Confirmer"
       already_resolved: "Cette approbation a déjà été traitée~"
       expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà traitée ailleurs)"
+      no_longer_pending: "⌛ Cette approbation n'est plus en attente (expirée ou traitée ailleurs)"
+      click_failed: "⚠️ Impossible d'enregistrer ton choix. Clique à nouveau ou réponds avec /approve ou /deny."
       by_user: "{label} par {user}"
       resolved_once: "Approuvé une fois"
       resolved_session: "Approuvé pour la session"
@@ -1586,6 +1592,12 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    clarify:
+      title: "Hermes a besoin de votre réponse"
+      other: "✏️ Autre (saisir)"
+      awaiting_typed: "En attente de la réponse saisie par {user}…"
+    picker:
+      apply_error: "Erreur lors de l'application de la sélection : {error}"
     approval:
       action_session: "Session"
       action_always: "Toujours"
@@ -1720,6 +1732,8 @@ platform:
     prompt_other: "✏️ Autre (saisir)"
     prompt_expired: ⌛ Cette invite n'attend plus de réponse. Envoyez votre réponse comme un message normal.
 slash:
+  rewind:
+    description: "Rembobiner jusqu'à un prompt précédent pour le modifier et le renvoyer, ou bifurquer à partir de là (Esc Esc)"
   approve:
     description: "Approuver une commande dangereuse en attente"
   bg:
@@ -1947,6 +1961,20 @@ slash:
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
+  backtrack:
+    title: "↺ Rembobiner — choisir un prompt précédent"
+    keys_hint: "↑/↓ choisir · Enter modifier et renvoyer · f bifurquer d'ici · Esc fermer"
+    preview_label: "Prompt {number} sur {total} :"
+    more_lines: "… ({count} lignes de plus)"
+    editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
+    edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
+    rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
+    forked: "⑂ Bifurcation avant le prompt {number} ; la session d'origine {parent} est inchangée. Modifiez le prompt ci-dessous et appuyez sur Enter pour l'envoyer."
+    nothing: "(._.) Aucun prompt précédent vers lequel rembobiner."
+    target_changed: "(x_x) La session a changé depuis que vous avez choisi le prompt {number} ; rien n'a été supprimé. Votre modification est de retour dans la zone de saisie."
+    invalid: "(._.) Aucun prompt {value} — choisissez entre 1 et {total}."
+    usage: "Utilisation : /rewind [N | fork N]"
+    rewind_failed: "(x_x) Échec du rembobinage ; l'historique n'a pas été modifié : {error}"
   modern:
     thought_for: "Réflexion pendant {seconds}s"
     thought: "Réflexion"
@@ -2258,6 +2286,8 @@ cli:
     usage_switch_reasoning: "changer et définir l'effort de raisonnement"
     usage_switch_provider: "changer de fournisseur"
     usage_refresh: "recharger les listes de modèles en direct"
+    reset_none: "Déjà sur le modèle par défaut configuré ({model}) — rien à réinitialiser."
+    reset_no_default: "Aucun model.default dans config.yaml — rien vers quoi revenir."
     choice_switch_anyway: "Changer quand même"
     desc_switch_anyway: "Utiliser ce modèle pour la session Hermes en cours."
     choice_cancel: "Annuler"
@@ -2269,7 +2299,6 @@ cli:
     cleared_picker_cache: "Cache du sélecteur de modèles vidé. Actualisation..."
     moa_one_shot_queued: "MoA en une passe mis en file avec le preset {preset} ; le modèle précédent sera rétabli après ce tour."
     normalized_model: "Modèle '{old}' normalisé en '{new}' pour {provider}."
-    normalized_copilot_model: "Modèle Copilot '{old}' normalisé en '{new}'."
     stripped_provider_prefix: "Préfixe de fournisseur retiré de '{old}' ; utilisation de '{new}' pour {provider}."
     restored_from_session: "Modèle rétabli depuis la session : {model}"
     could_not_load_config: "❌ impossible de charger la configuration : {error}"
@@ -2421,6 +2450,7 @@ cli:
     images_attached_other: "📎 {count} images jointes"
     command_interrupted: "Commande interrompue."
     welcome: "Bienvenue dans Hermes Agent ! Tapez votre message ou /help pour les commandes."
+    vscode_images_hint: "VS Code peut afficher ici les images en pleine résolution : activez terminal.integrated.enableImages dans les paramètres."
     activated_skills_label: "Skills activées :"
     redaction_disabled_title: "⚠  La censure des secrets est DÉSACTIVÉE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."
@@ -2889,6 +2919,7 @@ cli:
     goal_turns: "⊙ objectif {used}/{max}"
     goal: "⊙ objectif"
     ctx_pinned: " épinglé"
+    ctx_fallback: " par défaut"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Réserve ({count} élément)"

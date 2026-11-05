@@ -248,6 +248,25 @@ def _declared_requirements(manifest: Any) -> tuple[str, ...]:
         return ()
 
 
+def hermes_fit_error(manifest: Any) -> Optional[str]:
+    """Why this Hermes is not one the plugin accepts: ``requires_hermes``, then the plugin's own
+    requirement on ``hermes-agent``. PM's build leaves such a plugin out by the same gate
+    (``pm.workspace.hermes_fit_error``), so it is skipped here rather than imported without its
+    dependencies, and loads again once Hermes fits."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
+    reason = requires_hermes_error(manifest)
+    path = getattr(manifest, "path", None)
+    if reason or not path or not Path(path).is_dir():
+        return reason
+    from pm.plugin_declarations import read_python_declaration
+    from pm.workspace import core_requirement_error
+    try:
+        return core_requirement_error(read_python_declaration(Path(path)))
+    except (OSError, ValueError):  # a declaration PM cannot read is refused at admission, not ours to report
+        return None
+
+
 def _applies_here(req: str) -> bool:
     if ";" not in req:
         return True
@@ -352,14 +371,13 @@ class PluginLoaderMixin:
         this a load that raised or overran its deadline at startup stays down until a forced re-discovery
         (#126356). True when a loader was re-armed."""
         from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
-        from hermes_cli.plugins_manifest import requires_hermes_error
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             failed = next((p.manifest for p in self._plugins.values()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
                            and self._platform_name_from_manifest(p.manifest) == platform_name), None)
             # Re-gate: a placeholder (disabled, not enabled, catalog-removed) or a requires_hermes mismatch
             # carries the same error-set shape as a failed load but must never be imported.
-            if failed is None or requires_hermes_error(failed) or gate_manifest(
+            if failed is None or hermes_fit_error(failed) or gate_manifest(
                     failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
                 return False
             with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
@@ -555,9 +573,8 @@ class PluginLoaderMixin:
         if manifest.portable:
             self._load_portable_plugin(manifest, loaded)
             return
-        # requires_hermes gate: skip cleanly (no import, no traceback) on a version mismatch.
-        from hermes_cli.plugins_manifest import requires_hermes_error
-        reason = requires_hermes_error(manifest)
+        # Version gate: skip cleanly (no import, no traceback) on a version mismatch.
+        reason = hermes_fit_error(manifest)
         if reason:
             loaded.error = reason
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
@@ -606,6 +623,7 @@ class PluginLoaderMixin:
         try:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)
+                self._publish_staged_registrations(ctx)
                 loaded.enabled = True
                 from hermes_cli.plugins_ledger import _hook_source_of
 
@@ -722,7 +740,7 @@ class PluginLoaderMixin:
         try:
             from hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
-                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.skill_namespace)
+                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.data_namespace)
             ctx = PluginContext(manifest, self)
             for diagnostic in package.diagnostics:
                 logger.warning("Agent Plugin '%s' [%s]: %s", lookup_key, diagnostic.scope, diagnostic.message)

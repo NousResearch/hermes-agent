@@ -377,6 +377,128 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
+def _recall_after_install(world, tmp_path, monkeypatch, name: str = "killed") -> Path:
+    """A URL install that lands on the kill list afterwards (offline: no cached live copy)."""
+    target = _install_url(tmp_path / f"later-{name}", name, {})
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name=name, reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    return target
+
+
+def test_plugin_pack_install_refuses_a_recalled_plugin(world):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, ResolvedPackPlugin, install_pack_plugins
+    world["state"]["removed"].append(
+        pc_cat.RemovedEntry(name="cat-plugin", repo=world["repo"].as_uri(), reason="malware"))
+    entry = PackPluginEntry(ref=world["sha1"], repo=world["repo"].as_uri())
+    pack = PluginPack(name="p", plugins=[entry])
+    results = install_pack_plugins(pack, [ResolvedPackPlugin(entry=entry, identifier=entry.install_identifier)],
+                                   pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
+def test_plugin_pack_refuses_a_bare_name_whose_catalog_name_is_recalled(world, monkeypatch):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, install_pack_plugins, resolve_pack_plugins
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [pc_cat.PluginCatalogEntry(
+        name="cat-entry", repo=world["repo"].as_uri(), sha=world["sha1"], description="d", maintainer="t")])
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="cat-entry", reason="malware"))
+    pack = PluginPack(name="p", plugins=[PackPluginEntry(ref=world["sha1"], name="cat-entry")])
+    results = install_pack_plugins(pack, resolve_pack_plugins(pack), pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
+def test_dashboard_enable_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    result = pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)
+    assert result["ok"] is False and "backdoor" in result["error"]
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_tui_plugin_toggle_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    from tui_gateway import server
+    _recall_after_install(world, tmp_path, monkeypatch)
+    reply = server.handle_request({"id": "1", "method": "plugins.manage",
+                                   "params": {"action": "toggle", "key": "killed", "enable": True}})
+    assert "backdoor" in json.dumps(reply.get("error"))
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    assert pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)["ok"] is True
+    assert "killed" in pc._get_enabled_set()
+
+
+@pytest.mark.parametrize("exempt", [True, False])
+def test_update_of_a_recalled_subdir_install_honours_its_allow_removed_exemption(world, tmp_path, monkeypatch,
+                                                                                 exempt):
+    """A subdirectory install (no .git) updates by re-cloning through the install core: the record's
+    --allow-removed exemption must reach that re-clone, and a non-exempt recalled install stays refused."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "killed"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: killed\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    _commit(mono, "v1")
+    target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/killed", force=False, allow_removed=exempt)[0]
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="killed", reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    (src / "plugin.yaml").write_text("name: killed\nversion: 2.0.0\ndescription: d\n")
+    _commit(mono, "v2")
+
+    result = pc.dashboard_update_user_plugin("killed")
+
+    if exempt:
+        assert result["ok"] is True, result
+        assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+        assert pc._read_install_metadata()["killed"]["allow_removed"] is True
+    else:
+        assert result["ok"] is False and "backdoor" in result["error"]
+        assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
+
+
+def _enabled_via(surface: str, key: str) -> bool:
+    if surface == "dashboard":
+        return pc.dashboard_set_agent_plugin_enabled(key, enabled=True)["ok"]
+    try:
+        pc.cmd_enable(key)
+    except SystemExit:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("surface", ["dashboard", "cli"])
+@pytest.mark.parametrize("case, refused", [("manifest_recalled", True), ("leaf_install_exempt", True),
+                                           ("leaf_install_recalled", False)])
+def test_enable_judges_a_nested_plugin_by_its_own_manifest_and_dir(world, tmp_path, monkeypatch, surface, case,
+                                                                   refused):
+    """The enable check reads the plugin the load-time gate reads: plugins/obs/zzprobe by its manifest name and
+    its own directory, never by the install record of a top-level plugins/zzprobe sharing its leaf."""
+    nested = world["plugins_dir"] / "obs" / "zzprobe"
+    nested.mkdir(parents=True)
+    (nested / "plugin.yaml").write_text("name: zz-nested\nversion: 1.0.0\ndescription: d\n")
+    (nested / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    recall = pc_cat.RemovedEntry(name="zz-nested", reason="backdoor")
+    if case != "manifest_recalled":
+        _install_url(tmp_path / "flat", "zzprobe", {})
+    if case == "leaf_install_exempt":  # the top-level install bypassed the list; the nested one did not
+        pc._update_install_record("zzprobe", lambda record: {**(record or {}), "allow_removed": True})
+        recall = pc_cat.RemovedEntry(name="zzprobe", reason="backdoor")
+    if case == "leaf_install_recalled":  # only the top-level install's source is recalled
+        recall = pc_cat.RemovedEntry(name="flat-entry", repo=(tmp_path / "flat").as_uri(), reason="backdoor")
+    world["state"]["removed"].append(recall)
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+
+    assert (cat.installed_plugin_removal("zz-nested", nested) is not None) is refused  # the load-time verdict
+    assert _enabled_via(surface, "obs/zzprobe") is not refused
+    assert ("obs/zzprobe" in pc._get_enabled_set()) is not refused
+
+
 _HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
 
 

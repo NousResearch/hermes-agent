@@ -12,6 +12,7 @@ import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
 
+import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -58,6 +59,14 @@ declare global {
         pluginId: string
         profile?: null | string
       }) => Promise<null | string | { refused: 'permission' }>
+      // One-use voice stream socket URL whose ticket opens that stream alone,
+      // for a host whose gateway ticket opens only `/api/ws` (the browser-hosted
+      // Desktop). Absent where the gateway URL's own credential opens the stream.
+      getAudioWsUrl?: (payload: {
+        connectionId?: null | string
+        path: '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
+        profile?: null | string
+      }) => Promise<string>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The
@@ -74,6 +83,10 @@ declare global {
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      // Browser host only: before a pick routes `profile`, re-read the served
+      // set when its cached answer does not serve that profile. Bounded, and
+      // never rejects: on a timeout or failure the cached set stands.
+      refreshServedProfile?: (profile: string) => Promise<void>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
@@ -85,7 +98,7 @@ declare global {
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
-      openSessionInTerminal: (
+      openSessionInTerminal?: (
         sessionId: string,
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
@@ -96,7 +109,7 @@ declare global {
       // Pop the in-app Browser (webview + address bar) into its own OS window.
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
-      openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      openBrowserWindow?: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
       // main relays opaque payloads to the other Hermes renderer windows;
       // renderer code keeps the destination exact and rejects anything not
@@ -105,7 +118,7 @@ declare global {
         send: (payload: unknown) => void
         onMessage: (callback: (payload: unknown) => void) => () => void
       }
-      onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
+      onBrowserPopoutClosed?: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
@@ -129,7 +142,7 @@ declare global {
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay: {
+      petOverlay?: {
         open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
         close: () => Promise<{ ok: boolean }>
         setBounds: (bounds: PetOverlayBounds) => void
@@ -176,7 +189,7 @@ declare global {
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
-      quickEntry: {
+      quickEntry?: {
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
@@ -216,11 +229,11 @@ declare global {
       // Opt-in OS-keychain encryption for stored gateway secrets (default
       // off). `get` never touches the OS keychain; `set` re-encodes stored
       // secrets and can throw when the keychain is unusable.
-      getSecretStorageEncryption: () => Promise<{ on: boolean }>
-      setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
+      getSecretStorageEncryption?: () => Promise<{ on: boolean }>
+      setSecretStorageEncryption?: (on: boolean) => Promise<{ on: boolean }>
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
-      connections: {
+      connections?: {
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -275,6 +288,10 @@ declare global {
         // Remembers last use without interrupting a live workspace switch or
         // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
+        // Main keeps each connection's last-used profile so it boots a remote primary on it:
+        // one-time import of this window's earlier record, then one change at a time.
+        importConnections?: (record: Record<string, string>) => Promise<void>
+        rememberConnection?: (connectionId: string, profile: string) => Promise<void>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -337,6 +354,14 @@ declare global {
         path?: string
         saved: boolean
       }>
+      /** Browser media elements need an authenticated HTTP source, not Electron's custom protocol. */
+      getGatewayFileStreamUrl?: (payload: {
+        connectionId?: null | string
+        path: string
+        profile?: null | string
+        /** The chat the clip belongs to: its `/workspace` is that session's sandbox. */
+        sessionId?: string
+      }) => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context
        *  menu's Cut/Copy/Paste/Select all). */
@@ -367,6 +392,13 @@ declare global {
       savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
+      /** Browser-hosted drag/drop stages File bytes in authenticated,
+       *  profile-scoped host storage. Native shells already expose real paths. */
+      stageFileForAttach?: (file: File) => Promise<string>
+      /** Source ownership returned when this browser stages a file on its host. */
+      getStagedFileForAttach?: (path: string) => HermesStagedUpload | undefined
+      /** Browser-picked display name; never replaces the host path or source identity. */
+      getStagedFileDisplayName?: (path: string) => string | undefined
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       /** Resolves to `HermesReadFileErrorResult` when the watched file was
        *  already gone at call time (a restored tab probing a deleted path) —
@@ -378,6 +410,9 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      /** Bounded functional stream deadlines; does not enable hidden-window painting. */
+      scheduleStreamWorkWake?: (token: string, delayMs: number | null) => void
+      onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -390,6 +425,9 @@ declare global {
       assumeFreshInstall?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
+      /** This machine's shared UI preferences store (#145213): preload IPC natively,
+       *  `/api/ui-preferences` on the Webapp. */
+      uiPreferences?: UiPreferencesBridge
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (mode: KeepAwakeMode) => void
       onKeepAwakeOffer?: (callback: () => void) => () => void
@@ -414,6 +452,10 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
+      /** Wake only this window's preview guest while an automation script is pending. */
+      beginPreviewGuestActivity?: (webContentsId: number) => Promise<number>
+      endPreviewGuestActivity?: (token: number) => Promise<void>
+      executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load
@@ -491,6 +533,11 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
+      /** The same refresh, also naming each package whose desktop half it refused and why. */
+      reconcileDesktopPluginsReport?: () => Promise<{
+        published: string[]
+        refused: { name: string; reason: string }[]
+      }>
       /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
        *  profile) — error card "Open Logs". */
       logsRoot?: (profile?: string) => Promise<string>
@@ -583,11 +630,24 @@ declare global {
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
         cwd: (id: string) => Promise<string | null>
+        /** Explicit close: terminate the shell, including a disconnected attachment. */
         dispose: (id: string) => Promise<boolean>
-        onData: (id: string, callback: (payload: string) => void) => () => void
+        /** Browser cleanup releases the viewer without terminating its shell. */
+        detach?: (id: string) => Promise<boolean>
+        closeSaved?: (restoreKey: string) => Promise<boolean>
+        onState?: (id: string, callback: (state: HermesTerminalState) => void) => () => void
+        onData: (id: string, callback: (payload: string, options?: { replay: boolean }) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
-        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        start: (options?: {
+          cols?: number
+          connectionId?: null | string
+          cwd?: string
+          profile?: string
+          rows?: number
+          restoreKey?: string
+          resumeOnly?: boolean
+        }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
@@ -614,13 +674,28 @@ declare global {
         desktopName?: string | null
         warnings?: string[]
         insecure?: boolean
+        /** The commit that was inspected; an install of this source is held to it. */
+        sha?: string
+        /** The backend read the catalog entry at its pin (`inspectAgentPlugin`); never set by Electron's probe. */
+        catalogPin?: boolean
+        /** Inspection itself is missing here (not a failed read): Retry cannot help. */
+        unavailable?: boolean
         error?: string
       }>
       installDesktopPlugin?: (payload: {
         identifier?: string
         repo?: string
         force?: boolean
-      }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+        /** The commit the dialog reviewed; Electron installs exactly that tree or refuses. */
+        sha?: string
+      }) => Promise<{
+        ok: boolean
+        pluginName?: string
+        path?: string
+        error?: string
+        /** The reviewed commit is gone from the source: the dialog reads it again. */
+        sourceMoved?: boolean
+      }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */
       removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -708,7 +783,7 @@ declare global {
       // Main-process `before-input-event` forwards Ctrl/Cmd+F here so the
       // renderer can still open the FindBar when the OS compositor has
       // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
-      onOpenFindBarRequested: (callback: () => void) => () => void
+      onOpenFindBarRequested?: (callback: () => void) => () => void
     }
   }
 }
@@ -721,8 +796,7 @@ export interface HermesPluginFolderGrant {
 }
 
 export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; message: string }
+  ({ ok: true } & T) | { ok: false; error: string; message: string }
 
 export interface DesktopMarketplaceSearchItem {
   extensionId: string
@@ -746,10 +820,19 @@ export interface DesktopMarketplaceThemeResult {
   themes: DesktopMarketplaceThemeFile[]
 }
 
+export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
+
 export interface HermesTerminalSession {
+  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  connectionId?: null | string
   cwd: string
   id: string
   shell: string
+  /** No shell was started: the tab's gateway was removed (`missing`) or has
+   *  no shell transport (`no-shell`). */
+  unavailable?: 'missing' | 'no-shell'
+  /** Server-owned process and replay; do not restore renderer scrollback. */
+  persistent?: boolean
 }
 
 export interface HermesTerminalExit {
@@ -790,6 +873,10 @@ export interface DesktopSyncReceipt {
 export interface DesktopVersionInfo {
   /** Packaged client version, or the runtime version for source installs. */
   appVersion: string
+  /** The active connection's backend runtime version ('' when unreachable). */
+  backendVersion?: string
+  /** This machine's install: the stamp for packages, `hermes --version` for source installs. */
+  clientVersion?: string
   /** Fixed release identity. Commit builds have no update channel. */
   channel?: string | null
   electronVersion: string
@@ -1064,6 +1151,8 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+  /** Speech output still consumes the frame-published transcript while streaming. */
+  voiceActive?: boolean
 }
 
 export interface HermesWindowState {
@@ -1257,10 +1346,16 @@ export interface DesktopRosterAgent {
   profile: string
   targetProfile?: string
   handle: string
+  // False when this source lists the profile but does not serve it.
+  // Absent means the source's own reachable flag.
+  reachable?: boolean
 }
 
 export interface DesktopAgentRoster {
   agents: DesktopRosterAgent[]
+  /** Registry source whose agents are already represented by the active
+   * gateway's rich profiles.list rows; mergers annotate instead of duplicate. */
+  primaryConnectionId?: string
   sources: {
     connectionId: string
     label: string
@@ -1759,6 +1854,13 @@ export interface HermesPreviewFileChanged {
   id: string
   path: string
   url: string
+}
+
+/** Backend-provided source identity, not an authorization token. */
+export interface HermesStagedUpload {
+  install_id: string
+  path: string
+  profile_home: string
 }
 
 export interface HermesSelectPathsOptions {

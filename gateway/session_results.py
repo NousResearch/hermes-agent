@@ -7,14 +7,20 @@ execution_result: ContextVar[dict | None] = ContextVar("execution_result", defau
 from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
-def record_unexecuted_failure(reply):
+def record_unexecuted_failure(reply, reason=None, error=None):
     """The admitted turn never ran because it failed (agent initialization raised, history
     unreadable): commit a failed result for the executing admission, so no surface settles it
-    ``completed`` with the apology as the turn's output. Returns ``reply`` unchanged."""
+    ``completed`` with the apology as the turn's output. A *reason* is stamped as the turn's
+    non-retryable failure code, so clients render that code's card. *error* replaces the reply
+    as the result's ``error`` (the raw cause a local client shows as its details line).
+    Returns ``reply`` unchanged."""
     captured = execution_result.get()
     if captured is not None and 'result' not in captured:
         captured['result'] = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
-                              'error': str(reply or 'The admitted turn failed.')}
+                              'error': str(error or reply or 'The admitted turn failed.')}
+        if reason:
+            from agent.turn_failure_copy import stamp_failure
+            stamp_failure(captured['result'], reason, False)
     return reply
 
 

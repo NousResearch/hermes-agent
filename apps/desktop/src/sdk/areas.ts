@@ -27,3 +27,11 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
+ *  built-in player (ownership is checked against the backend's tool registry). */
+export {
+  TOOL_MEDIA_RENDERER_AREA,
+  type ToolMediaFile,
+  type ToolMediaRendererContribution,
+  type ToolMediaRendererProps
+} from '@/lib/tool-media-renderers'

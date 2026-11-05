@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type CrossGatewayGroupMessages } from './cross-gateway-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** Group chats seating bots from more than one connected machine. */
+  crossGateway: { [K in keyof CrossGatewayGroupMessages]: CrossGatewayGroupMessages[K] }
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string
@@ -386,6 +389,7 @@ export type BotsMessages = {
     otherControls: string
     agentControls: string
     controlTaken: string
+    needsHttps: string
   }
 
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,

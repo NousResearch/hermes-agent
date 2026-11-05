@@ -20,6 +20,7 @@ import { jaNotices } from './ja_notices'
 import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginUpdateAll } from './ja_plugin_update_all'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
@@ -341,7 +342,7 @@ export const jaOverrides = {
       advancedOutput: '出力の制限',
       advancedDelegation: 'サブエージェント',
       advancedDesktop: 'デスクトップと起動',
-      gatewayConnection: 'このウィンドウ',
+      gatewayConnection: 'プライマリゲートウェイ',
       gatewayDevices: '保存済みの接続',
       gatewayManagedUpdates: 'リモート更新',
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
@@ -1320,7 +1321,7 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -1381,6 +1382,10 @@ export const jaOverrides = {
     changesApplyNewSessions: '変更は新しいセッションに適用されます。',
     skillUpdated: 'スキルを更新しました',
     edit: '編集',
+    lock: 'ロック',
+    locked: 'ロック中',
+    lockHint: 'ロック中はエージェントがこのスキルを変更できません。自分では引き続き編集できます。',
+    unlockedHint: 'ロックすると、エージェントはこのスキルを変更できなくなります。自分では引き続き編集できます。',
     archive: 'アーカイブ',
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。',
@@ -1612,6 +1617,32 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'ボットトークン不要',
+      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      link: (platform: string) => `${platform} をリンク`,
+      linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
+      linkedAccounts: 'リンク済みアカウント',
+      unlink: 'リンク解除',
+      unlinkFailed: 'アカウントのリンクを解除できませんでした',
+      stepOpen: (platform: string) => `1. スマートフォンでコードを読み取るか、${platform} でボットを開きます。`,
+      stepSend: '2. リンクしたいアカウントから、ボットに次のメッセージを送ります:',
+      open: (platform: string) => `${platform} を開く`,
+      copy: 'メッセージをコピー',
+      copied: 'コピーしました',
+      copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
+      waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
+      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
+      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
+      managed: 'Team Gateway が管理',
+      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+      managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
+      openPortal: 'Nous Portal でアカウントをリンク',
+      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+    },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
@@ -1795,10 +1826,7 @@ export const jaOverrides = {
     fleet: {
       localDevice:
         'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
-      switchDeviceTitle: 'このデバイスに切り替えますか？',
-      switchDeviceDesc: 'このコンピュータで新しいセッションを開きます。今の会話は別のゲートウェイに残ります。',
-      switchDeviceConfirm: '切り替える',
-      installDeviceTitle: 'このデバイスに切り替えますか？',
+      installDeviceTitle: 'このデバイスに Hermes をインストールしますか？',
       installDeviceDesc:
         'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
       installDeviceConfirm: 'ローカルにインストール',
@@ -2923,7 +2951,9 @@ export const jaOverrides = {
       ultra: 'ウルトラ',
       sendsOnRoute: (level: string) => `このルートでは ${level} を送信`,
       updateFailed: 'モデルオプションの更新に失敗しました',
-      fastFailed: '高速モードの更新に失敗しました'
+      fastFailed: '高速モードの更新に失敗しました',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
       gateway: 'ゲートウェイ',
@@ -3018,6 +3048,15 @@ export const jaOverrides = {
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        compact: {
+          action: '会話を圧縮',
+          busyHint: '先に実行中の応答を終了するか停止してください',
+          confirm: '圧縮',
+          hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
+          question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
+          working: '圧縮中…'
+        },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
@@ -3084,6 +3123,14 @@ export const jaOverrides = {
     terminalNew: '新しいターミナル',
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
+    terminalNewOn: '新しいターミナルを開く場所…',
+    terminalGatewayRemoved: '削除されたゲートウェイ',
+    terminalGatewayRemovedBody:
+      'このターミナルが動作していたゲートウェイは削除されたため、再度開けません。このタブを閉じてください。',
+    terminalGatewayNoShellBody:
+      'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
+    terminalDisconnectedBody:
+      'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
     addToChat: 'チャットに追加'
   },
 
@@ -3239,6 +3286,12 @@ export const jaOverrides = {
   },
 
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `実行: ${target}`,
+      launchRemote: target => `接続先: ${target}`,
+      launchEnv: keys => `環境変数: ${keys}`,
+      launchCwd: dir => `作業ディレクトリ: ${dir}`
+    },
     catalogInstall: {
       preparing: 'インストールを準備中…',
       install: 'インストール',

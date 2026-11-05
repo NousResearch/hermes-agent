@@ -40,10 +40,10 @@ test('postbuild publishes the exported route set as a public bilingual sitemap',
   assert.equal(result.status, 0, result.stderr);
   const xml = readFileSync(path.join(appDir, 'out/sitemap.xml'), 'utf8');
   const locations = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]);
-  assert.deepEqual(locations.sort(), bilingualPages.map((route) => 'https://hermes-agent.nousresearch.com/docs' + (route === '/' ? route : route + '/')).sort());
+  assert.deepEqual(locations.sort(), bilingualPages.map((route) => 'https://hermes-agent.nousresearch.com/docs' + (route === '/' ? '' : route)).sort());
   assert.ok(!xml.includes('_not-found'));
-  assert.ok(xml.includes('hreflang="zh-Hans" href="https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/quickstart/"'));
-  assert.ok(xml.includes('hreflang="x-default" href="https://hermes-agent.nousresearch.com/docs/getting-started/quickstart/"'));
+  assert.ok(xml.includes('hreflang="zh-Hans" href="https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/quickstart"'));
+  assert.ok(xml.includes('hreflang="x-default" href="https://hermes-agent.nousresearch.com/docs/getting-started/quickstart"'));
 });
 
 test('legacy aliases preserve language, preview origin, query and fragment', (t) => {
@@ -58,7 +58,7 @@ test('legacy aliases preserve language, preview origin, query and fragment', (t)
   };
   for (const prefix of ['', '/zh-Hans']) {
     for (const [from, to] of Object.entries(aliases)) {
-      const target = '/docs' + prefix + to + '/';
+      const target = '/docs' + prefix + to;
       const aliasFile = path.join(appDir, 'out', prefix + from, 'index.html');
       assert.ok(existsSync(aliasFile), `Missing legacy alias: ${prefix + from}`);
       const html = readFileSync(aliasFile, 'utf8');

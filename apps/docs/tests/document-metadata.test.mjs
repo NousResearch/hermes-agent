@@ -23,8 +23,8 @@ test('the official home-page SEO title survives the content schema and overrides
   assert.deepEqual(metadata.title, { absolute: officialTitle });
   assert.equal(metadata.openGraph.title, officialTitle);
   assert.equal(data.title, 'Hermes Agent Documentation', 'SEO must not change the visible/sidebar title');
-  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/');
-  assert.equal(metadata.alternates.languages['x-default'], 'https://hermes-agent.nousresearch.com/docs/');
+  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs');
+  assert.equal(metadata.alternates.languages['x-default'], 'https://hermes-agent.nousresearch.com/docs');
 });
 
 test('description fallback reaches the actual content schema and page metadata', (t) => {
@@ -48,7 +48,7 @@ test('ordinary documents retain their templated title and locale URL', () => {
   assert.equal(metadata.title, 'CLI');
   assert.equal(metadata.openGraph.title, 'CLI');
   assert.equal(metadata.description, 'CLI reference');
-  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/cli/');
+  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/cli');
   assert.equal(metadata.alternates.languages['x-default'], metadata.alternates.languages.en);
 });
 
@@ -57,8 +57,8 @@ test('the default-language alternate follows the English page without inventing 
   const chinese = { url: '/zh-Hans/guide', data: { title: '指南' } };
   for (const page of [english, chinese]) {
     const metadata = documentPageMetadata(page, { en: english, 'zh-Hans': chinese });
-    assert.equal(metadata.alternates.languages['x-default'], 'https://hermes-agent.nousresearch.com/docs/guide/');
-    assert.equal(metadata.alternates.languages['zh-Hans'], 'https://hermes-agent.nousresearch.com/docs/zh-Hans/guide/');
+    assert.equal(metadata.alternates.languages['x-default'], 'https://hermes-agent.nousresearch.com/docs/guide');
+    assert.equal(metadata.alternates.languages['zh-Hans'], 'https://hermes-agent.nousresearch.com/docs/zh-Hans/guide');
   }
   const localeOnly = documentPageMetadata(chinese, { 'zh-Hans': chinese });
   assert.equal(localeOnly.alternates.languages['x-default'], localeOnly.alternates.canonical);
@@ -75,7 +75,7 @@ test('page-level OpenGraph keeps the site banner and name the root layout set', 
   assert.deepEqual(metadata.openGraph.images, root.openGraph.images);
   assert.deepEqual(metadata.openGraph.images, [publicHref('/img/hermes-agent-banner.png')]);
   assert.equal(metadata.openGraph.title, 'Guide');
-  assert.equal(metadata.openGraph.url, 'https://hermes-agent.nousresearch.com/docs/guide/');
+  assert.equal(metadata.openGraph.url, 'https://hermes-agent.nousresearch.com/docs/guide');
 });
 
 test('the site root declares the large Twitter card and banner the pages inherit', () => {
@@ -100,5 +100,5 @@ test("the installation page's SEO title comes from seo_title, not a raw head blo
   assert.equal(metadata.openGraph.title, officialTitle);
   assert.equal(data.title, 'Installation', 'the visible H1/sidebar title stays authored');
   assert.equal(data.hasH1, true);
-  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/getting-started/installation/');
+  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/getting-started/installation');
 });

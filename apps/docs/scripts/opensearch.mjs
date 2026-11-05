@@ -14,7 +14,7 @@ function escapeXml(value) {
   return value.replace(/[&<>"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character]);
 }
 
-/** Locale-scoped home URL with a trailing slash, matching the site's trailingSlash routing. */
+/** Locale-scoped home URL, in the slashless form the production edge serves. */
 function searchForm(locale) {
   return canonicalUrl(localizedHref('/', locale));
 }

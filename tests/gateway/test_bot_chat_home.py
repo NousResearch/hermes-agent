@@ -79,6 +79,24 @@ async def _slash(desktop, command):
     return reply["result"]
 
 
+async def _rpc(desktop, method, **params):
+    reply = await desktop.connection.dispatch({"id": "1", "method": method, "params": {
+        "session_id": desktop.session_id, **params}})
+    assert "result" in reply, reply
+    return reply["result"]
+
+
+@pytest.mark.asyncio
+async def test_the_app_palette_offers_sethome(desktop):
+    catalog = await _rpc(desktop, "commands.catalog")
+    completions = await _rpc(desktop, "complete.slash", text="/seth")
+
+    assert "/sethome" in dict(catalog["pairs"])
+    assert catalog["canon"]["/set-home"] == "/sethome"
+    assert "/sethome" in [item["text"] for item in completions["items"]]
+    assert "/approve" not in dict(catalog["pairs"])
+
+
 @pytest.mark.asyncio
 async def test_sethome_in_a_desktop_chat_makes_the_bot_chat_the_home(desktop):
     from agent.i18n import t

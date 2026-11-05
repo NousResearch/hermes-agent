@@ -9,7 +9,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})
+_TUI_HIDDEN: frozenset[str] = frozenset({"commands", "approve", "deny"})
+# Gateway-only commands an app session runs too (gateway/session_commands.py); the other gateway-only
+# ones stay messaging-only, and /approve, /deny are answered on the app's approval card.
+_APP_GATEWAY_COMMANDS: frozenset[str] = frozenset({"sethome"})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/density", "Toggle compact display mode", "TUI"),
@@ -143,7 +146,7 @@ def _catalog_registry(cat: _Catalog, module_loader) -> None:
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
-        if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
+        if cmd.name in _TUI_HIDDEN or (cmd.gateway_only and cmd.name not in _APP_GATEWAY_COMMANDS):
             continue
         cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
         for a in cmd.aliases:
@@ -250,6 +253,11 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
         "plugin_commands": cat.plugin_commands}
 
 
+def _app_gateway_extras() -> list[tuple[str, str]]:
+    from hermes_cli.commands import COMMAND_REGISTRY, _build_description
+    return [(f"/{cmd.name}", _build_description(cmd)) for cmd in COMMAND_REGISTRY if cmd.name in _APP_GATEWAY_COMMANDS]
+
+
 def slash_completions(text: str = "", scope=None) -> dict:
     """``scope`` binds the calling session's profile and workspace around the skill/bundle lookups
     (home- and cwd-keyed) so the popup offers the project-local skills ``command.dispatch`` accepts
@@ -294,7 +302,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
     else:
         items = items[:_SLASH_COMPLETION_LIMIT]
     text_lower = text.lower()
-    for extra_text, extra_meta in _SLASH_EXTRAS:
+    for extra_text, extra_meta in [*_SLASH_EXTRAS, *_app_gateway_extras()]:
         if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
             items.append({**_item(extra_text, extra_meta), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:

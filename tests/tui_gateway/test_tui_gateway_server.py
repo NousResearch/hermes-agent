@@ -12137,7 +12137,7 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/topic" not in pairs
     assert "/approve" not in pairs
     assert "/deny" not in pairs
-    assert "/sethome" not in pairs
+    assert "/sethome" in pairs
 
     assert "/update" in pairs
     assert canon["/update"] == "/update"
@@ -12145,7 +12145,7 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/topic" not in canon
     assert "/approve" not in canon
     assert "/deny" not in canon
-    assert "/set-home" not in canon
+    assert canon["/set-home"] == "/sethome"
 
 
 def test_commands_catalog_includes_desktop_meta_without_skills():

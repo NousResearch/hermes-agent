@@ -29,7 +29,7 @@ async def test_repeated_alias_resumes_from_a_client_with_a_different_alias_map(t
     monkeypatch.setattr(run, '_load_gateway_config', lambda: alias_cfg('owner-model'))
     model_switch.DIRECT_ALIASES.clear()
     store = SessionStore(owner / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')

@@ -5,19 +5,19 @@ from fastapi import FastAPI
 
 from gateway.runtime_ownership import ProfileOwnership
 from hermes_cli.web_routers.sessions import manage_router
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.asyncio
 async def test_maintenance_routes_refuse_live_owner_without_changing_rows(tmp_path, monkeypatch):
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.include_router(manage_router)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('ended-empty', source='cli')
-        db.end_session('ended-empty', 'complete')
-        before = db.get_session('ended-empty')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'ended-empty', 'cli', end_reason='complete')
+        before = session_row(store, 'ended-empty')
         owner = ProfileOwnership()
         owner.reserve([tmp_path])
         try:
@@ -28,23 +28,22 @@ async def test_maintenance_routes_refuse_live_owner_without_changing_rows(tmp_pa
                     response = await client.request(method, '/api/sessions/' + path, json=body)
                     assert response.status_code == 409, (path, response.text)
                     assert 'maintenance' in response.json()['detail'].lower()
-                    assert db.get_session('ended-empty') == before
+                    assert session_row(store, 'ended-empty') == before
         finally:
             owner.close()
 
 
 @pytest.mark.asyncio
 async def test_exclusive_offline_maintenance_preserves_bulk_behavior(tmp_path, monkeypatch):
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     app = FastAPI()
     app.include_router(manage_router)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('parent', source='cli')
-        db.create_session('child', source='cli', parent_session_id='parent')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'parent', 'cli')
+        seed_session(store, 'child', 'cli', parent_session_id='parent')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost') as client:
             result = await client.post('/api/sessions/bulk-delete', json={'ids': ['parent', 'absent']})
             assert result.status_code == 200, result.text
             assert result.json() == {'ok': True, 'deleted': 1, 'skipped_active': []}
-            assert db.get_session('parent') is None
-            assert db.get_session('child')['parent_session_id'] is None
+            assert session_row(store, 'parent') is None
+            assert session_row(store, 'child')['parent_session_id'] is None

@@ -178,8 +178,8 @@ def test_recovery_output_exemption_excludes_canonical_activation(tmp_path):
     import pytest
     from gateway.runtime_ownership import ProfileOwnership
     from hermes_cli.session_recovery import recover_session_database, SessionRecoverySafetyError
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, admit_session_input
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     source_home, target_home = tmp_path / 'source', tmp_path / 'target'
     source_home.mkdir()
@@ -188,12 +188,12 @@ def test_recovery_output_exemption_excludes_canonical_activation(tmp_path):
     owner = ProfileOwnership()
     owner.reserve([source_home, target_home])
     try:
-        with SessionDB(db_path=source) as db:
-            db.create_session('retained', 'cli')
-            db.append_message('retained', 'user', 'retained content')
-            epoch = begin_runtime_epoch(db, instance_id='source-owner')
-            admit_session_input(db, epoch=epoch, principal_id='fixture', session_id='retained',
-                                request_id='pending', payload={'text': 'must not execute in salvage'})
+        with open_persistence(profile_scope(home=source_home)) as store:
+            seed_session(store, 'retained', 'cli')
+            seed_messages(store, 'retained', {'role': 'user', 'content': 'retained content'})
+            epoch = store.runtime.begin_epoch(instance_id='source-owner')
+            store.admissions.admit(epoch=epoch, principal_id='fixture', session_id='retained',
+                                   request_id='pending', payload={'text': 'must not execute in salvage'})
         before = hashlib.sha256(source.read_bytes()).hexdigest()
         with pytest.raises(SessionRecoverySafetyError, match='maintenance refused'):
             recover_session_database(source, target_home / 'state.db')

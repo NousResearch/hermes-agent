@@ -16,8 +16,10 @@ import hermes_cli.web_routers.cron as cron_routes
 import hermes_cli.web_routers.sessions as session_routes
 import hermes_time
 from cron import executions, jobs
-from hermes_state_runtime import claim_session_input, settle_session_input
+from persistence_assembly import close_stores_under
 from tests.fakes.cron_owner import admit_fire, cron_owner
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session, settle_claim
 
 
 @pytest.fixture()
@@ -37,7 +39,7 @@ def owner(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_time, 'get_timezone', lambda: utc)
     monkeypatch.setattr(cron_routes, '_get_timezone', lambda: utc)
     yield authority
-    authority.db.close()
+    close_stores_under(home)
 
 
 @pytest.fixture()
@@ -56,17 +58,16 @@ def clock(monkeypatch):
 async def _start_fire(authority, job_id):
     """A scheduler fire as it starts: its running ledger row, then the owner admits and claims it."""
     session_id, execution_id = await admit_fire(authority, job_id, running=True)
-    claim = claim_session_input(authority.db, epoch=authority.epoch, session_id=session_id)
+    claim = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=session_id)
     return session_id, execution_id, claim
 
 
 def _close_run(authority, session_id, claim):
     """The owner's run finishes: the answer is written, the admission settled, the session ended."""
-    authority.db.append_message(session_id, role='assistant', content='report done')
-    settle_session_input(authority.db, epoch=authority.epoch, admission_id=claim['admission_id'],
-                         generation=claim['generation'], outcome='completed',
-                         result={'result': {'cron_result': [True, 'doc', 'report done', None]}, 'usage': {}})
-    authority.db.end_session(session_id, 'cron_complete')
+    store = authority.persistence
+    seed_messages(store, session_id, {'role': 'assistant', 'content': 'report done'})
+    settle_claim(store, claim, result={'result': {'cron_result': [True, 'doc', 'report done', None]}, 'usage': {}})
+    store.sessions.end(session_id, 'cron_complete')
 
 
 def _runs(job_id):
@@ -108,9 +109,8 @@ async def test_unified_run_is_one_owned_session_row_and_detail_agrees(owner, clo
 async def test_detail_still_recognises_legacy_runs_and_leaves_other_sessions_alone(owner):
     job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
     legacy = f'cron_{job}_20261011_120000'
-    owner.db.create_session(legacy, source='cron')
-    owner.db.end_session(legacy, 'cron_complete')
-    owner.db.create_session('20261015_120000_abc123', source='cli')
+    seed_session(owner.persistence, legacy, 'cron', end_reason='cron_complete')
+    seed_session(owner.persistence, '20261015_120000_abc123', 'cli')
 
     assert (await _detail(legacy))['scheduler_owned'] is False
     assert 'scheduler_owned' not in await _detail('20261015_120000_abc123')
@@ -180,9 +180,9 @@ async def test_a_same_second_output_doc_is_not_pinned_on_the_earlier_execution(
     at(60.75)
     jobs.save_job_output(job, '# Cron Job: report\n\nreport done')  # filed as second 60
     executions.finish_execution(fire, success=True)
-    owner.db._conn.execute('UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?',
-                           (start.timestamp() + 60.6, start.timestamp() + 60.9, session_id))
-    owner.db._conn.commit()
+    raw_holder(owner.persistence)._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?',
+        (start.timestamp() + 60.6, start.timestamp() + 60.9, session_id)))
 
     runs = _runs(job)
 

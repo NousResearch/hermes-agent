@@ -232,11 +232,33 @@ class TestAgentCacheMemoryLifecycle:
         engine's own shutdown() — and never the other way round. Drives the real /new timeout
         path (worker still inside provider on_session_end when /new gives up and the agent is
         soft-evicted). The claim taken at the /new site is what makes the eviction defer the
-        engine shutdown; move that claim later (into _cleanup_agent_resources) or delete it and
-        the eviction shuts the engine down first, the guard then skips the notify, and this
-        assertion fails with events == ['engine:shutdown'] — the exact defect the reviewer named."""
+        engine shutdown, so DELETE it and the eviction shuts the engine down first, the guard then
+        skips the notify, and the ordering assertion below fails with events == ['engine:shutdown']
+        — the exact defect the reviewer named. MOVING it later (into the cleanup job, i.e. ahead of
+        _cleanup_agent_resources) is behaviourally identical whenever the job starts promptly —
+        that is why the suite was green under it — so the placement itself is pinned separately
+        below, and that pin goes red instead."""
         import gateway.slash_commands_session as session_cmds
         from tests.waiting import wait_until
+
+        # Placement pin: the claim is taken before the hard cleanup is QUEUED, and the job's own
+        # resource path never takes it. Read off the function objects production actually runs, so
+        # it cannot drift from what the ordering assertion above depends on.
+        import inspect
+
+        from gateway.run import GatewayRunner
+
+        reset_src = inspect.getsource(GatewayRunner._cleanup_old_agent_for_reset)
+        assert "claim_engine_session_end(" in reset_src, (
+            "/new no longer claims engine teardown before queueing its hard cleanup")
+        assert reset_src.index("claim_engine_session_end(") < reset_src.index("def _hard_cleanup"), (
+            "the session-end claim was moved into the queued cleanup job: a saturated housekeeping "
+            "pool then leaves the claim unheld until the job starts, and the queued-but-never-started "
+            "case leaks the engine to GC")
+        assert "claim_engine_session_end" not in inspect.getsource(
+            GatewayRunner._cleanup_agent_resources), (
+            "_cleanup_agent_resources took the claim: it runs inside the cancellable job, so a "
+            "timeout before the job starts leaves the engine's teardown owned by nobody")
 
         events = []
         agent, provider = self._agent_with_writer_provider("mem-engine-order-test", events)

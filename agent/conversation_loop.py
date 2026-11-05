@@ -1919,10 +1919,13 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
-    #1630 growth loop; their repair is rotation or a retry. ``content_policy_blocked`` too: that turn
-    is dropped whole (the gateway soft-deletes it owner-side; in-memory surfaces return the
-    pre-refusal history), so a closing boundary would only be written to be rewound, and a refused
-    turn ran no tool, so it has no side effect for the #107070 open-tail replay to carry. Idempotence
+    #1630 growth loop; their repair is rotation or a retry. ``content_policy_blocked`` too: the
+    WHOLE refused turn is erased from the conversation — the user message, any tool rounds that ran,
+    and the refusal (the owner rewinds it durably: the gateway owner-side for Bot Chat, the CLI/ACP
+    owner for their direct DB; in-memory surfaces return the pre-refusal history). Erasing the whole
+    turn (tool rounds included) is deliberate: the user keeps SEEING the message in the chat, but the
+    model is never re-sent the content that tripped the filter, so the chat is not locked. A closing
+    boundary would only be written to be rewound. Idempotence
     is keyed on the DURABLE tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail
     already closed by another writer is a no-op, and the gateway's own closer then no-ops in turn.
     """

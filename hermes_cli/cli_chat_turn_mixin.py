@@ -381,6 +381,15 @@ class CLIChatTurnMixin:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.
             self._flush_credit_notices()
+            # Safety refusal: erase the whole refused turn (user row + any tool rounds + the refusal)
+            # from this session's durable transcript so a later /resume isn't re-sent the blocked
+            # content and locked. The in-memory history (result["messages"]) is already the clean
+            # pre-refusal history; this makes the durable store match it. The message the user saw
+            # stays on screen — only the model-facing conversation loses it.
+            if (turn.result or {}).get("failure_reason") == "content_policy_blocked":
+                from hermes_state_rewind import erase_refused_turn_from_transcript
+                erase_refused_turn_from_transcript(
+                    getattr(self.agent, "_session_db", None), getattr(self.agent, "session_id", None))
             # A reused thread must never hold stale references to a disposed CLI instance.
             try:
                 set_sudo_password_callback(None)

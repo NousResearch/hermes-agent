@@ -41,6 +41,19 @@ class _LoopbackProvider:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
                 spec = provider.script.pop(0)
+                # A safety refusal that arrives as an HTTP error (400 / provider APIError) rather than
+                # an HTTP-200 finish_reason: return the error body with the flagged text so the agent
+                # classifies it as content_policy_blocked on the exception path.
+                if spec.get("status") and spec["status"] != 200:
+                    payload = json.dumps({"error": {
+                        "message": spec.get("error", "request flagged for possible cybersecurity risk"),
+                        "type": "invalid_request_error", "code": None}}).encode()
+                    self.send_response(spec["status"])
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 delta = {"role": "assistant", "content": spec["content"]}
                 usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
                 if body.get("stream"):
@@ -185,6 +198,61 @@ def test_acp_refusal_never_poisons_the_next_prompt(acp):
     response = prompt("stop")
     assert response.stop_reason == "cancelled"
     assert state.history[-1] == {"role": "user", "content": "stop"}
+
+
+def test_acp_refusal_is_erased_durably_and_survives_a_reload(acp):
+    """Finding #3: the refused turn must leave the DURABLE transcript too, not only live memory.
+
+    Standalone ACP owns its ``SessionDB``, so the agent flushed the refused turn's user row before
+    the refusal was known. If only the in-memory history is cleaned, a fresh session load (process
+    restart / reopening the chat) restores the refused request and the chat re-locks. The owner
+    erases the whole refused turn durably, so the reload is clean. The user still SAW the refusal
+    live (asserted in the test above); here we assert the model-facing transcript no longer carries
+    it.
+    """
+    provider, prompt, conversation_rows, db, sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    # The durable transcript holds only the prior accepted exchange — the refused turn is erased.
+    assert conversation_rows() == [("user", "hello"), ("assistant", "Hello there.")]
+    assert _REFUSED not in {content for _role, content in conversation_rows()}
+
+    # A fresh SessionManager (reopen / restart) loads the clean transcript, never the refused ask.
+    from acp_adapter.session import SessionManager
+
+    reloaded = SessionManager(db=db).get_session(sid)
+    assert reloaded is not None
+    assert _REFUSED not in {m.get("content") for m in reloaded.history}
+    assert reloaded.history[-1].get("content") == "Hello there."
+
+
+def test_acp_exception_shaped_refusal_is_also_erased(acp):
+    """Finding M1: some providers return a safety refusal as an HTTP 400 / APIError, not an HTTP-200
+    ``finish_reason``. That exception path must recover identically — not persist the refused turn
+    and hand back the pre-refusal history — or the exception shape re-poisons the next prompt while
+    the user is told the message was left out.
+    """
+    provider, prompt, conversation_rows, _db, _sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    # No fallback configured, so the 400 is terminal and classified content_policy_blocked.
+    provider.script = [{"status": 400, "error": "request flagged for possible cybersecurity risk"}]
+    prompt(_REFUSED)
+
+    # Durable transcript: only the prior accepted exchange; the refused ask is gone.
+    assert conversation_rows() == [("user", "hello"), ("assistant", "Hello there.")]
+
+    # Next prompt reaches the provider without the refused request.
+    provider.script = [{"finish_reason": "stop", "content": "Paris."}]
+    prompt(_NEW_REQUEST)
+    sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
+    assert [m["content"] for m in sent if m["role"] == "user"] == ["hello", _NEW_REQUEST]
+    assert _REFUSED not in {m.get("content") for m in sent}
 
 
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):

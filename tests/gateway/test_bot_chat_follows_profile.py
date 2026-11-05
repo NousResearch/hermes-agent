@@ -20,6 +20,8 @@ import pytest
 
 from tests.gateway.test_follow_profile_followups import _create_bot_chat, _profile
 from tests.gateway.test_session_follow_profile_config import _owner, _route
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -107,9 +109,8 @@ async def test_delivery_resumes_a_creation_staged_without_the_follow_flag(home):
     """An older build staged the delivery's Bot Chat and stopped before its title. The next
     delivery reuses that creation identity and must not be refused for a new flag."""
     from gateway.session_bot import _bot_chat_creation_id, _target
-    from gateway.session_local import stage_local_session
+    from gateway.session_local import commit_local_session, stage_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
@@ -117,11 +118,11 @@ async def test_delivery_resumes_a_creation_staged_without_the_follow_flag(home):
         request_id = _bot_chat_creation_id(authority, owner.actor)
         receipt = stage_local_session(authority, owner.actor, {
             'request_id': request_id, 'source': 'cli', 'cwd': str(Path.home())})
-        commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+        commit_local_session(authority.persistence, epoch=authority.epoch, receipt=receipt)
         staged = restore_local_session(authority, receipt['session_id'])
         ref, live, _entry = await _target(authority, owner.actor)
         assert ref.session_id == staged.session_id
-        assert authority.db.get_session_by_title('Bot Chat')['id'] == staged.session_id
+        assert authority.persistence.sessions.get_by_title('Bot Chat').session_id == staged.session_id
         assert not _follows(runner, live)
     finally:
         await owner.close()
@@ -133,22 +134,21 @@ async def test_cli_retries_a_titled_create_staged_without_the_follow_flag(home):
     """Same trap on ``session.create``: an exact retry of a request staged before the flag
     resumes that request instead of being refused. The CLI then opens its titled Bot Chat, which
     follows the profile; the request it was created with stays as staged."""
-    from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session, local_receipt
+    from gateway.session_local import commit_local_session, stage_local_session
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
     try:
         receipt = stage_local_session(authority, owner.actor, {
             'request_id': 'cli-retry', 'source': 'cli', 'cwd': str(home)})
-        commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+        commit_local_session(authority.persistence, epoch=authority.epoch, receipt=receipt)
         response = await owner.dispatch({'id': 'retry', 'method': 'session.create', 'params': dict(
             request_id='cli-retry', source='cli', cwd=str(home), title='Bot Chat')})
         assert 'result' in response, response
         assert response['result']['session_id'] == receipt['session_id']
         live = authority.sessions[receipt['session_id']]
-        assert authority.db.get_session_by_title('Bot Chat')['id'] == receipt['session_id']
-        stored = local_receipt(authority.db, receipt['session_id'])['policy']
+        assert authority.persistence.sessions.get_by_title('Bot Chat').session_id == receipt['session_id']
+        stored = authority.persistence.bindings.receipt(receipt['session_id']).policy
         assert stored['request_json'] == receipt['policy']['request_json']
         assert _follows(runner, live)
     finally:
@@ -157,11 +157,7 @@ async def test_cli_retries_a_titled_create_staged_without_the_follow_flag(home):
 
 
 def _legacy(db, profile, sid, **row):
-    title = row.pop('title', None)
-    db.create_session(sid, cwd=str(profile), **row)
-    if title:
-        db.set_session_title(sid, title)
-    db.end_session(sid, 'tui_close')
+    seed_session(db, sid, row.pop('source'), cwd=str(profile), end_reason='tui_close', **row)
 
 
 @pytest.mark.asyncio
@@ -172,7 +168,7 @@ async def test_adopted_legacy_bot_chat_keeps_following(home, marker):
     _profile(home, 'profile-model', 2, 'k2', agent={'reasoning_effort': 'low'})
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    db = authority.db
+    db = authority.persistence
     _legacy(db, home, 'old-tui', source='tui', model='saved-model', model_config={
         'provider': 'custom', 'base_url': 'http://127.0.0.1:1/v1', 'api_mode': 'chat_completions',
         'reasoning_config': {'enabled': True, 'effort': 'high'}})
@@ -211,7 +207,7 @@ async def test_adopted_desktop_chat_keeps_its_saved_route(home):
     _profile(home, 'profile-model', 2, 'k2', agent={'reasoning_effort': 'low'})
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    db = authority.db
+    db = authority.persistence
     _legacy(db, home, 'old-desktop', source='desktop', model='saved-model', model_config={
         'provider': 'custom', 'base_url': 'http://127.0.0.1:1/v1', 'api_mode': 'chat_completions',
         'reasoning_config': {'enabled': True, 'effort': 'high'}})
@@ -239,7 +235,6 @@ async def test_adopting_a_bot_chat_with_no_profile_model_stays_openable(home, sh
     chat follows once the profile has a default.
     """
     from gateway.session_local_migration import resolve_local_target
-    from hermes_state_local import local_receipt
     if shape == 'empty':
         (home / 'config.yaml').write_text('{}\n')
     else:
@@ -247,12 +242,12 @@ async def test_adopting_a_bot_chat_with_no_profile_model_stays_openable(home, sh
             'provider': 'custom', 'base_url': 'http://127.0.0.1:1/v1', 'api_key': 'sk-provider-only'}}))
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-bot', source='gui', model='saved-model', title='Bot Chat',
+    _legacy(authority.persistence, home, 'old-bot', source='gui', model='saved-model', title='Bot Chat',
             model_config={'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'})
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
         opened = resolve_local_target(authority, owner.actor, 'old-bot')
-        stored = local_receipt(authority.db, opened.session_id)['policy']['model']
+        stored = authority.persistence.bindings.receipt(opened.session_id).policy['model']
         assert isinstance(stored, str) and stored.strip()
         _profile(home, 'added-model', 2, 'sk-added')
         authority.sessions.pop(opened.session_id, None)
@@ -272,7 +267,7 @@ async def test_adopted_bot_chat_keeps_a_composer_pick_until_the_profile_moves(ho
     _profile(home, 'profile-model', 2, 'k2')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
+    _legacy(authority.persistence, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
         'composer_override_profile': {'model': 'profile-model', 'provider': 'custom'}})
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
@@ -290,13 +285,12 @@ async def test_adopted_bot_chat_keeps_a_composer_pick_until_the_profile_moves(ho
 
 def _frozen_bot_chat(authority, actor, home, title='Bot Chat', **extra):
     """A chat an earlier build committed without the flag (its delivery door, a CLI titled create)."""
-    from gateway.session_local import stage_local_session
+    from gateway.session_local import commit_local_session, stage_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
-    from hermes_state_local import commit_local_session
     params = {'request_id': 'earlier-build', 'source': 'cli', 'cwd': str(home), **extra}
     receipt = stage_local_session(authority, actor, dict(params))
-    commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+    commit_local_session(authority.persistence, epoch=authority.epoch, receipt=receipt)
     ref = restore_local_session(authority, receipt['session_id'])
     title_new_session(authority, ref, title)
     return ref, params
@@ -320,26 +314,25 @@ async def test_opening_a_frozen_bot_chat_makes_it_follow(home, moved):
     """A Bot Chat an earlier build froze kept its old route after any open. The open now adopts
     it once, durably, and the creation request stays the exact-retry identity."""
     from gateway.session_local import stage_local_session
-    from hermes_state_local import local_receipt
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
     try:
         ref, params = _frozen_bot_chat(authority, owner.actor, home)
         live = authority.sessions[ref.session_id]
-        request = local_receipt(authority.db, ref.session_id)['policy']['request_json']
+        request = authority.persistence.bindings.receipt(ref.session_id).policy['request_json']
         if moved == 'before-open':
             _profile(home, 'new-model', 2, 'new-key')
         await _open(authority, ref)
         if moved == 'after-open':
             _profile(home, 'new-model', 2, 'new-key')
         assert _route(runner, live) == ('new-model', 'http://127.0.0.1:2/v1', 'new-key')
-        stored = local_receipt(authority.db, ref.session_id)['policy']
+        stored = authority.persistence.bindings.receipt(ref.session_id).policy
         assert stored['request_json'] == request and 'follow_adopted' not in stored
         assert json.loads(stored['config_json'])['follow_adopted'] is True
-        generation = authority.db.get_session(ref.session_id)['runtime_generation']
+        generation = authority.persistence.sessions.get(ref.session_id).runtime_generation
         await _open(authority, ref)
-        assert authority.db.get_session(ref.session_id)['runtime_generation'] == generation
+        assert authority.persistence.sessions.get(ref.session_id).runtime_generation == generation
         assert stage_local_session(authority, owner.actor, params).session_id == ref.session_id
     finally:
         await owner.close()
@@ -353,7 +346,6 @@ async def test_a_flipped_bot_chat_never_sends_its_frozen_key_to_the_profiles_new
     open, the profile's new endpoint gets no key until the profile names one, and the private-value
     reference is re-derived: a fresh owner recovers the chat's other secrets, no frozen model key."""
     from gateway.session_policy import policy_for_source
-    from hermes_state_local import local_receipt
     aux = {'auxiliary': {'vision': {'provider': 'custom', 'api_key': 'aux-key'}}}
     _profile(home, 'old-model', 1, 'old-key', **aux)
     store, runner, authority, owner = _owner(home)
@@ -368,7 +360,7 @@ async def test_a_flipped_bot_chat_never_sends_its_frozen_key_to_the_profiles_new
         model, url, key = _route(runner, live)
         assert (model, url) == ('new-model', 'http://127.0.0.1:2/v1') and key not in ('old-key', 'sk-launch-for-one')
         assert _key(runner, authority, live) is None
-        ref_json = local_receipt(authority.db, ref.session_id)['policy']['config_secret_ref']
+        ref_json = authority.persistence.bindings.receipt(ref.session_id).policy['config_secret_ref']
         entries = [path for path, _ in json.loads(ref_json.split(':', 1)[1])['entries']]
         assert entries == [['auxiliary', 'vision', 'api_key']]
         config = policy_for_source(runner, live.source).config(authority)
@@ -383,7 +375,6 @@ async def test_a_flipped_bot_chat_never_sends_its_frozen_key_to_the_profiles_new
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['other-title', 'chose-frozen', 'safe-mode'])
 async def test_opening_leaves_other_chats_and_deliberate_freezes_frozen(home, kind):
-    from hermes_state_local import local_receipt
     extra = {'other-title': {'title': 'Notes'}, 'chose-frozen': {'follow_profile_config': False},
              'safe-mode': {'safe_mode': True, 'model': 'old-model', 'provider': 'custom',
                            'base_url': 'http://127.0.0.1:1/v1'}}[kind]
@@ -398,7 +389,7 @@ async def test_opening_leaves_other_chats_and_deliberate_freezes_frozen(home, ki
         assert not _follows(runner, live)
         assert _route(runner, live)[:2] == ('old-model', 'http://127.0.0.1:1/v1')
         # An older owner restores this receipt: it gains no field.
-        assert 'follow_adopted' not in local_receipt(authority.db, ref.session_id)['policy']
+        assert 'follow_adopted' not in authority.persistence.bindings.receipt(ref.session_id).policy
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -412,7 +403,7 @@ async def test_opening_a_frozen_adopted_bot_chat_holds_its_composer_pick_until_t
     _profile(home, 'profile-model', 2, 'k2')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
+    _legacy(authority.persistence, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
         'composer_override_profile': {'model': 'profile-model', 'provider': 'custom'}})
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
@@ -467,7 +458,7 @@ async def test_a_held_pick_never_sends_its_named_entrys_new_key_to_the_old_endpo
     _named_profile(home, monkeypatch, section, credential, 'http://127.0.0.1:5/v1', 'picked-key-one')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
+    _legacy(authority.persistence, home, 'old-bot', source='gui', model='picked-model', title='Bot Chat', model_config={
         'provider': 'custom:picked', 'base_url': 'http://127.0.0.1:5/v1',
         'composer_override_profile': {'model': 'profile-model', 'provider': 'custom:primary'}})
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
@@ -520,20 +511,20 @@ async def test_a_route_pick_without_a_model_holds_on_a_following_create(home, pi
 async def test_a_busy_first_open_leaves_adoption_to_the_next_open_on_that_connection(home, monkeypatch, by):
     """Desktop keeps its connection: a warm reopen (``session.activate`` is ``session.resume``) must still
     adopt a chat whose first open found a turn running."""
-    import hermes_state_mutation_guards as guards
+    from tests.fixtures.storage_holder import idle_guard
     from gateway.session_controls import AuthorityConnection
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    real, refused = guards.require_idle, []
+    real, refused = idle_guard(), []
 
-    def busy_once(db, conn, ids):
+    def busy_once(holder, conn, ids):
         if not refused:
             refused.append(ids)
-            raise RuntimeStoreError('session_busy')
-        return real(db, conn, ids)
-    monkeypatch.setattr(guards, 'require_idle', busy_once)
+            raise AuthorityRefusal('session_busy')
+        return real(holder, conn, ids)
+    monkeypatch.setattr('persistence.sqlite.authority._runtime_guards.require_idle', busy_once)
     desktop = AuthorityConnection(authority, object(), {'user_id': 'human'})
     try:
         ref, _params = _frozen_bot_chat(authority, owner.actor, home)
@@ -563,7 +554,7 @@ async def test_opening_a_frozen_bot_chat_keeps_its_committed_reasoning_choice(ho
     try:
         ref, _params = _frozen_bot_chat(authority, owner.actor, home)
         live = authority.sessions[ref.session_id]
-        snap = authority.db.get_session(ref.session_id)
+        snap = session_row(authority.persistence, ref.session_id)
         response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
             session_id=ref.session_id, request_id='high', operation='reasoning', payload={'effort': 'high'},
             expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})
@@ -597,7 +588,7 @@ async def test_a_reasoning_choice_after_the_follow_beats_the_profile_level(home,
             live = authority.sessions[ref.session_id]
             await _open(authority, ref)
         assert _follows(runner, live)
-        snap = authority.db.get_session(ref.session_id)
+        snap = session_row(authority.persistence, ref.session_id)
         response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
             session_id=ref.session_id, request_id='high', operation='reasoning', payload={'effort': 'high'},
             expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})
@@ -641,21 +632,21 @@ def test_follows_profile_parses_each_frozen_blob_once_per_policy(monkeypatch):
 async def test_an_mcp_reload_keeps_a_busy_first_opens_adoption_pending(home, monkeypatch):
     """``reload.mcp`` refreshes only the MCP section (it never runs ``follow_bot_chat``): it must not
     forget an adoption a busy first open left pending, or the warm reopen returns early on the old route."""
-    import hermes_state_mutation_guards as guards
+    from tests.fixtures.storage_holder import idle_guard
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy_refresh import commit_refresh
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     _profile(home, 'old-model', 1, 'old-key')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    real, refused = guards.require_idle, []
+    real, refused = idle_guard(), []
 
-    def busy_once(db, conn, ids):
+    def busy_once(holder, conn, ids):
         if not refused:
             refused.append(ids)
-            raise RuntimeStoreError('session_busy')
-        return real(db, conn, ids)
-    monkeypatch.setattr(guards, 'require_idle', busy_once)
+            raise AuthorityRefusal('session_busy')
+        return real(holder, conn, ids)
+    monkeypatch.setattr('persistence.sqlite.authority._runtime_guards.require_idle', busy_once)
     desktop = AuthorityConnection(authority, object(), {'user_id': 'human'})
     try:
         ref, _params = _frozen_bot_chat(authority, owner.actor, home)
@@ -708,7 +699,7 @@ async def test_a_deferred_model_pick_that_was_refused_is_no_pick_when_an_open_ad
             published.append(payload), publish(sid, payload, **kw))[1])
         await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
         await asyncio.wait_for(entered.wait(), 10)
-        snap = authority.db.get_session(ref.session_id)
+        snap = session_row(authority.persistence, ref.session_id)
         response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
             session_id=ref.session_id, request_id='pick', operation='model', payload={'model': 'gone-model'},
             expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})

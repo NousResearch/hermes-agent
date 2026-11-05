@@ -17,16 +17,15 @@ from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session_authority import initialize_session_authority
+from gateway.session_authority import admission_row, initialize_session_authority
 from gateway.session_ingress_burst import holds_busy_burst
 from gateway.session_results import execution_result
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 
 def _rows(authority):
-    return [row for sid in list(authority.sessions)
-            for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+    return [admission_row(row) for sid in list(authority.sessions)
+            for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
 
 async def _busy_owner(monkeypatch, adapter, source, **wiring):
@@ -59,7 +58,7 @@ async def _busy_owner(monkeypatch, adapter, source, **wiring):
         finish.set()
         await async_wait_until(lambda: not holds_busy_burst(adapter, key) and len(executed) >= turns and all(
             row['status'] == 'terminal' for row in _rows(authority)), timeout=15, what='the follow-ups to settle')
-        await asyncio.to_thread(authority.db.close)
+        await asyncio.to_thread(runner.session_store.close_all_db_handles)
         return executed[1:]
     return SimpleNamespace(runner=runner, authority=authority, key=key, settle=settle)
 
@@ -229,7 +228,7 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
     assert set((await recover_profile_native_sessions(runner, authority)).values()) <= {'ready'}
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(runner.session_store.close_all_db_handles)
 
 
 @pytest.mark.asyncio

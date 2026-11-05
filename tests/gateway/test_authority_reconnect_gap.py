@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
+
 
 def _drain(peer):
     frames = []
@@ -23,15 +25,14 @@ async def test_resume_after_replay_delivers_the_frames_published_in_between(tmp_
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
 
     async def answer(event):
         return f'reply to {event.text}'
-    runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id='gap', instance_id='owner')
     ref = SessionRef('gap', 'chat')
-    db.create_session('chat', source='telegram')
+    seed_session(store.persistence, 'chat', 'telegram')
     authority.sessions['chat'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='gap'), 'chat')
 
     class Peer:

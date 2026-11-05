@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.test_authority_cold_route_recovery import _Runner, _source
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.fixture(autouse=True)
@@ -23,14 +24,17 @@ def _home(tmp_path, monkeypatch):
 
 def _compress(authority, sid):
     """Two real compression splits of the local chat, as its turns publish them."""
-    db, live = authority.db, authority.sessions[sid]
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    db, live = authority.persistence, authority.sessions[sid]
     store = authority.runner.session_store
     for parent, child in ((sid, sid + '-c1'), (sid + '-c1', sid + '-c2')):
         store._record_gateway_session_peer(parent, live.route, live.source)
-        assert db.try_acquire_compression_lock(parent, 'fixture')
-        db.publish_compression_child(parent_session_id=parent, child_session_id=child, source='local',
-                                     messages=[{'role': 'user', 'content': 'kept'}], compression_lock_holder='fixture')
-        db.release_compression_lock(parent, 'fixture')
+        assert db.coordination.try_acquire_compression_lock(session_id=parent, holder='fixture')
+        db.lineage.publish_compression_child(parent, CompressionChild(child, 'local'),
+                                             [NewMessage.from_live({'role': 'user', 'content': 'kept'})],
+                                             compression_lock_holder='fixture')
+        db.coordination.release_compression_lock(session_id=parent, holder='fixture')
         store._record_gateway_session_peer(child, live.route, live.source)
 
 
@@ -38,9 +42,8 @@ async def _handoff(runner, authority, sid, source):
     """The handoff watcher's repoint (``GatewayStartupMixin._handoff_repoint``) on the real store."""
     from gateway.run_startup import GatewayStartupMixin
     from gateway.session import AsyncSessionStore
-    from hermes_state import AsyncSessionDB
     route = runner.session_store._generate_session_key(source)
-    gateway = SimpleNamespace(_session_db=AsyncSessionDB(authority.db), session_authority=authority,
+    gateway = SimpleNamespace(_session_db=authority.persistence, session_authority=authority,
                               async_session_store=AsyncSessionStore(runner.session_store))
     await GatewayStartupMixin._handoff_repoint(gateway, SimpleNamespace(source=source), route, sid)
     return route
@@ -48,9 +51,13 @@ async def _handoff(runner, authority, sid, source):
 
 def _as_an_older_build(monkeypatch):
     """An older build's repoint: the row's routing identity moves, its local receipt stays."""
-    import hermes_state_local
-    for name in ('hand_off_conversations', 'release_receipts'):
-        monkeypatch.setattr(hermes_state_local, name, lambda *_args: None, raising=False)
+    monkeypatch.setattr('persistence.sqlite.gateway.routing.hand_off_conversations', lambda *_args: None, raising=False)
+
+
+def _receipt_held(authority, sid):
+    """Whether *sid* holds a local creation receipt or a legacy binding."""
+    marks = authority.persistence.bindings.binding_marks(sid)
+    return marks.policy or marks.legacy
 
 
 @pytest.mark.asyncio
@@ -67,29 +74,26 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import POLICY_PREFIX, local_receipt
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from persistence.conversation.sessions import TitleSource
 
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                              'model': 'frozen', 'toolsets': []})
-    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    warm.persistence.sessions.set_title(ref.session_id, 'Bot Chat')
     if history == 'reset':
         runner.session_store.reset_session(warm.sessions[ref.session_id].route)
         # Its first turn there gets the segment a generated title of its own.
-        warm.db.set_auto_title(local_receipt(warm.db, ref.session_id)['entry']['session_id'], 'Generated', source='llm')
+        warm.persistence.sessions.set_auto_title(warm.persistence.bindings.receipt(ref.session_id).entry['session_id'], 'Generated', source=TitleSource.LLM)
     if history == 'compressed':
         _compress(warm, ref.session_id)
         runner = _Runner(tmp_path)  # a restart records the steps on the receipt (#140060)
         warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='adopted')
         warm.authorize(owner, ref, 'session:read')  # the receipt now names the tip
-    keys = (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)
-    with warm.db._read_ctx() as conn:
-        assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone()
+    assert _receipt_held(warm, ref.session_id)
     # The lane's conversation: the reset segment the receipt now names, else the chat itself.
-    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id']
+    head = SessionRef('fixture', warm.persistence.bindings.receipt(ref.session_id).entry['session_id']
                       if history == 'reset' else ref.session_id)
 
     telegram = _source()
@@ -115,9 +119,8 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
 
     live = cold.sessions[head.session_id]
     assert (live.source.platform, live.route) == (Platform.TELEGRAM, route)
-    with cold.db._read_ctx() as conn:
-        assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
-    tip = cold.db.get_session(cold.physical_target(head))
+    assert not _receipt_held(cold, ref.session_id)
+    tip = session_row(cold.persistence, cold.physical_target(head))
     assert json.loads(tip['origin_json'])['platform'] == 'telegram'
     if history == 'reset':  # the earlier segment opens off that lane
         cold.authorize(webapp, ref, 'session:read')
@@ -133,14 +136,13 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     ref = create_local_session(warm, owner, {'request_id': 'chat', 'source': 'gui', 'cwd': str(tmp_path),
                                              'model': 'frozen', 'toolsets': []})
     runner.session_store.reset_session(warm.sessions[ref.session_id].route)
-    head = local_receipt(warm.db, ref.session_id)['entry']['session_id']
+    head = warm.persistence.bindings.receipt(ref.session_id).entry['session_id']
     store, telegram = runner.session_store, _source()
     with monkeypatch.context() as patch:  # the older build's watcher: switch_session(route, <the id>)
         _as_an_older_build(patch)
@@ -148,8 +150,8 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
         store.switch_session(store._generate_session_key(telegram), ref.session_id, preserve_prompt_pin=False)
 
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
-    assert local_receipt(cold.db, ref.session_id)['entry']['session_id'] == head
-    assert cold.db.get_session(head)['source'] == 'gui'
+    assert cold.persistence.bindings.receipt(ref.session_id).entry['session_id'] == head
+    assert session_row(cold.persistence, head)['source'] == 'gui'
 
 
 async def _handed_off_bot_chat(tmp_path):
@@ -163,7 +165,7 @@ async def _handed_off_bot_chat(tmp_path):
                                                      'session:submit'}), 'socket')
     ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                              'model': 'frozen', 'toolsets': []})
-    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    warm.persistence.sessions.set_title(ref.session_id, 'Bot Chat')
     telegram = _source()
     route = await _handoff(runner, warm, ref.session_id, telegram)
     warm.authorize(owner, ref, 'session:control')
@@ -179,11 +181,11 @@ async def test_a_handed_off_bot_chat_stays_the_bots_chat_while_its_lane_holds_it
     from gateway.session_local_title import resolve_titled_session
     _runner, _warm, owner, ref, _telegram, route = await _handed_off_bot_chat(tmp_path)
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
-    assert displaceable_bot_chat(cold, cold.db.get_session_by_title('Bot Chat')) is None
+    assert displaceable_bot_chat(cold, cold.persistence.sessions.get_by_title('Bot Chat')) is None
     target, live, entry = await _target(cold, owner)
     assert target == ref and live.route == route == entry.session_key
     assert resolve_titled_session(cold, owner, 'Bot Chat') == ref
-    assert cold.db.get_session(ref.session_id)['title'] == 'Bot Chat'
+    assert session_row(cold.persistence, ref.session_id)['title'] == 'Bot Chat'
 
 
 async def _bot_row(authority, actor):
@@ -195,9 +197,10 @@ async def _bot_row(authority, actor):
     from gateway.session_controls import AuthorityConnection
     from tui_gateway.server import _profile_session_fields
     from tui_gateway.profile_roster_cache import invalidate
+    from persistence_assembly import store_location
     invalidate()
     roster = {}
-    _profile_session_fields(roster, Path(authority.db.db_path).parent)
+    _profile_session_fields(roster, Path(store_location(authority.persistence.scope)).parent)
     canonical = roster['canonical_session']
     listed = await AuthorityConnection(authority, object(), {'user_id': actor.subject}).list_sessions(
         None, {'title': 'Bot Chat', 'include_hidden': True, 'limit': 50})
@@ -241,7 +244,7 @@ async def test_a_handed_off_bot_chat_whose_lane_moved_on_is_moved_aside(tmp_path
         fresh = (await _target(cold, SessionActor(desktop.subject, 'fixture', owner.capabilities, 'socket')))[0].session_id
     assert fresh not in (ref.session_id, newer.session_id)
     assert await _bot_row(cold, owner) == fresh
-    moved = cold.db.get_session(ref.session_id)
+    moved = session_row(cold.persistence, ref.session_id)
     assert moved['title'] == f'Bot Chat (telegram {ref.session_id})' and not moved['hidden']
 
 
@@ -293,11 +296,11 @@ async def test_the_bots_own_bot_chat_after_a_reset_handoff_and_the_lanes_new_is_
     telegram = _source()
     route = await _handoff(runner, warm, first.session_id, telegram)
     head = runner.session_store.lookup_by_session_key(route).session_id
-    assert warm.db.get_session_by_title('Bot Chat')['id'] == head
+    assert warm.persistence.sessions.get_by_title('Bot Chat').session_id == head
     runner.session_store.reset_session(route)  # Telegram's /new
     fresh = (await _target(warm, owner))[0].session_id
     assert fresh not in (first.session_id, head)
-    assert warm.db.get_session_by_title('Bot Chat')['id'] == fresh
+    assert warm.persistence.sessions.get_by_title('Bot Chat').session_id == fresh
 
 
 @pytest.mark.asyncio
@@ -307,6 +310,7 @@ async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path
     outside the titled-create lock. A delivery it lands in the middle of still lands in exactly one
     canonical Bot Chat, a fresh one, instead of failing on the title that vanished under it."""
     from gateway import session_bot
+    from gateway.session_persistence import authority_persistence
     runner, warm, owner, ref, _telegram, route = await _handed_off_bot_chat(tmp_path)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     runner._cached_agent_for = lambda route: None
@@ -322,23 +326,28 @@ async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path
         if lands == 'after the title read' and len(seen) == 1:
             runner.session_store.reset_session(route)  # the lane held it when the delivery read it
         elif lands == 'before the displace write' and len(seen) == 2:  # under the lock
-            release(warm.db, runner.session_store, route, ref.session_id)
+            release(authority_persistence(warm), runner.session_store, route, ref.session_id)
         return found
     monkeypatch.setattr(session_bot, 'displaceable_bot_chat', racing)
     fresh = (await session_bot._target(warm, owner))[0].session_id
     assert fresh != ref.session_id
-    assert warm.db.get_session_by_title('Bot Chat')['id'] == fresh
-    assert warm.db.get_session(ref.session_id)['title'] == f'Bot Chat (telegram {ref.session_id})'
+    assert warm.persistence.sessions.get_by_title('Bot Chat').session_id == fresh
+    assert session_row(warm.persistence, ref.session_id)['title'] == f'Bot Chat (telegram {ref.session_id})'
 
 
 def _resume_gateway(runner, authority):
     """The platform's ``/resume`` handler (``GatewayRunner._handle_resume_command``) on the real store,
     run by an admin (``--all`` widens it to every titled conversation)."""
     from gateway.run import GatewayRunner
-    from hermes_state import AsyncSessionDB
-    gateway = object.__new__(GatewayRunner)
+    from gateway.session_persistence import authority_persistence
+
+    class _Gateway(GatewayRunner):
+        persistence = None  # the authority's storage interface handle, set below
+
+    gateway = object.__new__(_Gateway)
     gateway.adapters, gateway.config, gateway._voice_mode, gateway._running_agents = {}, runner.config, {}, {}
-    gateway._session_db, gateway.session_store = AsyncSessionDB(authority.db), runner.session_store
+    gateway._session_db, gateway.session_store = authority_persistence(authority), runner.session_store
+    gateway.persistence = authority_persistence(authority)
     gateway.session_authority = authority
     gateway._is_user_authorized = gateway._resume_caller_is_admin = lambda _source: True
     return gateway
@@ -355,15 +364,14 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
     ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                              'model': 'frozen', 'toolsets': []})
-    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    warm.persistence.sessions.set_title(ref.session_id, 'Bot Chat')
     runner.session_store.reset_session(warm.sessions[ref.session_id].route)
-    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id'])
+    head = SessionRef('fixture', warm.persistence.bindings.receipt(ref.session_id).entry['session_id'])
     telegram = _source()
     reply = await _resume_gateway(runner, warm)._handle_resume_command(
         MessageEvent(text='/resume --all Bot Chat', source=telegram))
@@ -393,17 +401,16 @@ async def test_a_moved_conversation_stays_writable_once_its_lane_is_taken_over(t
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
                                                      'session:submit'}), 'socket')
     ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                              'model': 'frozen', 'toolsets': []})
-    warm.db.set_session_title(ref.session_id, 'Bot Chat')
+    warm.persistence.sessions.set_title(ref.session_id, 'Bot Chat')
     if history == 'reset':
         runner.session_store.reset_session(warm.sessions[ref.session_id].route)
-    head = SessionRef('fixture', local_receipt(warm.db, ref.session_id)['entry']['session_id'])
+    head = SessionRef('fixture', warm.persistence.bindings.receipt(ref.session_id).entry['session_id'])
     telegram = _source()
     if door == '/handoff':
         route = await _handoff(runner, warm, ref.session_id, telegram)
@@ -456,7 +463,6 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_o
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
     monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', '42')
     monkeypatch.setattr('gateway.run._hermes_home', tmp_path)
-    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', tmp_path / 'state.db')
 
     def boot():
         runner = GatewayRunner(GatewayConfig(multiplex_profiles=False, sessions_dir=tmp_path / 'sessions'))
@@ -468,7 +474,7 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_o
     def chat(authority, title):
         ref = create_local_session(authority, owner, {'request_id': title, 'source': 'gui', 'cwd': str(tmp_path),
                                                       'model': 'frozen', 'toolsets': []})
-        authority.db.set_session_title(ref.session_id, title)
+        authority.persistence.sessions.set_title(ref.session_id, title)
         return ref
 
     runner, telegram = boot()
@@ -522,7 +528,7 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     def chat(title):
         ref = create_local_session(warm, owner, {'request_id': title, 'source': 'gui', 'cwd': str(tmp_path),
                                                  'model': 'frozen', 'toolsets': []})
-        warm.db.set_session_title(ref.session_id, title)
+        warm.persistence.sessions.set_title(ref.session_id, title)
         return ref
 
     first, second = _source(), _source(chat_id='77')
@@ -552,7 +558,7 @@ async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state_local import POLICY_PREFIX
+    from tests.fixtures.storage_holder import policy_key, raw_holder
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -561,20 +567,18 @@ async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp
     with monkeypatch.context() as patch:
         _as_an_older_build(patch)
         await _handoff(runner, warm, ref.session_id, _source())
-    key = POLICY_PREFIX + ref.session_id
-    warm.db._execute_write(lambda conn: conn.execute(
+    key = policy_key(ref.session_id)
+    raw_holder(warm.persistence)._execute_write(lambda conn: conn.execute(
         "UPDATE state_meta SET value=json_set(value, '$.lineage', json(?)) WHERE key=?",
         (json.dumps([ref.session_id, {}]), key)))
     cold = await initialize_session_authority(_Runner(tmp_path), profile_id='fixture', instance_id='cold')
-    with cold.db._read_ctx() as conn:
-        assert conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone()
+    assert cold.persistence.bindings.binding_marks(ref.session_id).policy
 
 
 def _serve(tmp_path, monkeypatch):
     """A multiplexed gateway's homes: the default profile and a named ``bot`` profile, each with its
     own ``state.db``; ``bot`` delivers to a Telegram home channel."""
     from pathlib import Path
-    import hermes_state
     root = tmp_path / '.hermes'
     bot = root / 'profiles' / 'bot'
     bot.mkdir(parents=True, mode=0o700)
@@ -583,7 +587,6 @@ def _serve(tmp_path, monkeypatch):
         '    home_channel: {platform: telegram, chat_id: "-1001", name: Bot Home}\n')
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)  # the profiles root is HOME-anchored
     monkeypatch.setenv('HERMES_HOME', str(root))
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     return root, bot
 
 
@@ -602,7 +605,7 @@ async def _boot(root, bot):
 
 def _shutdown(runner):
     for authority in list(runner.session_authorities):
-        authority.db.close()
+        authority.persistence.close()
     runner.session_store.close_all_db_handles()
     runner.close_all_session_db_handles()
 
@@ -624,8 +627,8 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_PREFIX
+    from persistence.sqlite.conversation._store.local_migration import LEGACY_PREFIX
+    from tests.fixtures.storage_holder import policy_key, raw_holder
 
     root, bot = _serve(tmp_path, monkeypatch)
     process_ownership.reserve([root, bot])
@@ -640,15 +643,15 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
             owner = SessionActor('owner', warm.profile_id, caps, 'socket')
             ref = create_local_session(warm, owner, {'request_id': 'bot-chat', 'source': 'gui', 'cwd': str(tmp_path),
                                                      'model': 'frozen', 'toolsets': []})
-            warm.db.set_session_title(ref.session_id, 'Bot Chat')
-            keys = (POLICY_PREFIX + ref.session_id, LEGACY_PREFIX + ref.session_id)
-            with warm.db._read_ctx() as conn:
+            warm.persistence.sessions.set_title(ref.session_id, 'Bot Chat')
+            keys = (policy_key(ref.session_id), LEGACY_PREFIX + ref.session_id)
+            with raw_holder(warm.persistence)._read_ctx() as conn:
                 receipt = conn.execute('SELECT key, value FROM state_meta WHERE key IN (?,?)', keys).fetchall()
             assert receipt
             await runner._process_handoff({'id': ref.session_id, 'title': 'Bot Chat', 'handoff_platform': 'telegram'},
                                           'bot')
             if handed_off_by == 'an older build':
-                warm.db._execute_write(lambda conn: conn.executemany(
+                raw_holder(warm.persistence)._execute_write(lambda conn: conn.executemany(
                     'INSERT OR REPLACE INTO state_meta(key, value) VALUES(?,?)', [tuple(row) for row in receipt]))
             else:
                 warm.authorize(owner, ref, 'session:control')  # the Desktop that ran /handoff
@@ -663,8 +666,7 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
             cold.authorize(webapp, ref, 'session:control')  # pin, rename, archive
             live = cold.sessions[ref.session_id]
             assert live.source.platform == Platform.TELEGRAM and live.route.startswith('agent:bot:telegram:')
-            with cold.db._read_ctx() as conn:
-                assert conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)', keys).fetchone() is None
+            assert not _receipt_held(cold, ref.session_id)
         _shutdown(runner)
         with sqlite3.connect(root / 'state.db') as conn:  # never the default profile's store
             assert conn.execute('SELECT 1 FROM sessions WHERE id=?', (ref.session_id,)).fetchone() is None

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.test_session_follow_profile_config import _create, _owner, _route
+from tests.fixtures.storage_read import session_row
 
 
 async def _create_bot_chat(owner, authority, home, request_id, **extra):
@@ -109,7 +110,7 @@ def _ref(authority, live):
 async def _pick_reasoning(owner, authority, live, effort):
     """Desktop's reasoning selector, Ink's and the classic CLI's ``/reasoning <level>``: the owner's verb."""
     sid = _ref(authority, live).session_id
-    row = authority.db.get_session(sid)
+    row = session_row(authority.persistence, sid)
     reply = await owner.dispatch({'id': 'r', 'method': 'session.mutate', 'params': {
         'session_id': sid, 'request_id': 'reasoning-' + effort, 'operation': 'reasoning', 'payload': {'effort': effort},
         'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})

@@ -63,16 +63,16 @@ def _make_runner(*, session_id: str = "parent-session") -> GatewayRunner:
     runner._busy_input_mode = "interrupt"
     session_key = build_session_key(_make_event().source)
     entry = SimpleNamespace(session_key=session_key, session_id=session_id)
+    coordination = MagicMock()
+    coordination.get_compression_lock_holder.return_value = None
     session_store = SimpleNamespace(
         _lock=threading.Lock(),
         _entries={session_key: entry},
         switch_session=MagicMock(),
+        persistence=SimpleNamespace(coordination=coordination),
     )
     session_store._ensure_loaded_locked = lambda: None
     runner.session_store = session_store
-    runner._session_db = MagicMock()
-    runner._session_db._db = MagicMock()
-    runner._session_db._db.get_compression_lock_holder.return_value = None
     return runner
 
 def _make_adapter() -> MagicMock:
@@ -105,7 +105,7 @@ class TestBusyHandlerDemotesInterruptForCompression:
         parent = _make_parent_no_subagents()
         runner._running_agents[sk] = parent
         runner.adapters[event.source.platform] = adapter
-        runner._session_db._db.get_compression_lock_holder.return_value = "compressing"
+        runner.session_store.persistence.coordination.get_compression_lock_holder.return_value = "compressing"
 
         handled = await runner._handle_active_session_busy_message(event, sk)
 

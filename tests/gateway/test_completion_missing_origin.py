@@ -3,6 +3,10 @@ import json
 
 import pytest
 
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_seed import seed_messages
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('platform', ['telegram', 'discord'])
@@ -17,7 +21,6 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     from gateway.session_automation import completion_admission
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from tests.gateway.test_completion_admission import pending
@@ -45,9 +48,10 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     target = root
     if compressed:
         target = root + '-child'
-        authority.db.append_message(root, 'user', 'human')
-        authority.db.publish_compression_child(parent_session_id=root, child_session_id=target, source=platform,
-                                              messages=[{'role': 'user', 'content': 'summary'}], require_compression_lease=False)
+        seed_messages(authority.persistence, root, {'role': 'user', 'content': 'human'})
+        authority.persistence.lineage.publish_compression_child(root, CompressionChild(session_id=target, source=platform),
+                                                                [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                                                require_compression_lease=False)
         assert runner.session_store.advance_compression_session(key, root, target) is not None
 
     store = runner.session_store
@@ -55,25 +59,25 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     if missing_origin:
         entry.origin = None
     store._save_entry(key)
-    stored = authority.db.load_gateway_routing_entries(scope=store._routing_scope())[key]
+    stored = authority.persistence.routing.load_routing_entries(routing_scope=store._routing_scope())[key]
     store._entries[key] = SessionEntry.from_dict(json.loads(stored))
     event = dict(pending(key, 'restored-completion'), parent_session_id=target)
 
     assert completion_admission(runner, event) is None
     assert await runner._deliver_async_delegation_group([event]) is True
-    rows = list_session_admissions(authority.db, session_id=root, pending_only=False)
-    assert len(rows) == 2 and 'restored-completion' in rows[-1]['payload']['text']
+    rows = authority.persistence.admissions.list(session_id=root, pending_only=False)
+    assert len(rows) == 2 and 'restored-completion' in rows[-1].payload['text']
     assert delegation.get_durable_delegation(event['delegation_id'])['delivery_state'] == 'delivered'
 
     # A lost acknowledgement must find the committed input under the logical root.
     if missing_origin:
         store._entries[key].origin = None
     runner._completion_deliveries_delivered.clear()
-    assert completion_admission(runner, event)['admission_id'] == rows[-1]['admission_id']
+    assert completion_admission(runner, event)['admission_id'] == rows[-1].admission_id
     assert await runner._deliver_async_delegation_group([event]) is None
-    assert len(list_session_admissions(authority.db, session_id=root, pending_only=False)) == 2
+    assert len(authority.persistence.admissions.list(session_id=root, pending_only=False)) == 2
     if compressed:
-        assert list_session_admissions(authority.db, session_id=target, pending_only=False) == []
+        assert authority.persistence.admissions.list(session_id=target, pending_only=False) == []
 
 
 @pytest.mark.asyncio
@@ -81,7 +85,6 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
 async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, monkeypatch, compressed):
     from gateway.session import SessionEntry
     from gateway.session_automation import completion_admission
-    from hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _compress
@@ -100,7 +103,7 @@ async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, mo
 
     store._entries[key].origin = None
     store._save_entry(key)
-    stored = authority.db.load_gateway_routing_entries(scope=store._routing_scope())[key]
+    stored = authority.persistence.routing.load_routing_entries(routing_scope=store._routing_scope())[key]
     store._entries[key] = SessionEntry.from_dict(json.loads(stored))
     assert store._entries[key].origin is None
     assert runner._get_cached_session_source(key) is None
@@ -111,9 +114,9 @@ async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, mo
     for _ in range(2):
         assert await runner._deliver_async_delegation_group([event]) is False
     durable = delegation.get_durable_delegation(event['delegation_id'])
-    assert list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False) == []
-    assert list_session_admissions(authority.db, session_id=wrong_owner, pending_only=False) == []
+    assert authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False) == []
+    assert authority.persistence.admissions.list(session_id=wrong_owner, pending_only=False) == []
     if compressed:
-        assert list_session_admissions(authority.db, session_id=target, pending_only=False) == []
+        assert authority.persistence.admissions.list(session_id=target, pending_only=False) == []
     assert (durable['delivery_state'], durable['delivery_attempts']) == ('pending', 0)
     assert not runner._completion_deliveries_delivered

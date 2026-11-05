@@ -38,15 +38,20 @@ def isolated_registry(tmp_path, monkeypatch):
     return registry
 
 
-class _SessionDB:
+class _StoreHandle:
+    """A storage interface handle whose session row and compression tip are fixed."""
+
     def __init__(self, row, tip=None):
         self._row = row
         self._tip = tip
+        self.aio = SimpleNamespace(sessions=SimpleNamespace(get=self._get), lineage=SimpleNamespace(tip=self._get_tip))
 
-    async def get_session(self, session_id):
-        return self._row
+    async def _get(self, session_id):
+        if self._row is None:
+            return None
+        return SimpleNamespace(**{"ended_at": None, "end_reason": None, "source": None, "model_config": {}, **self._row})
 
-    async def get_compression_tip(self, session_id):
+    async def _get_tip(self, session_id):
         return self._tip
 
 
@@ -67,7 +72,7 @@ def _runner(adapter, *, session_db=...):
     runner._completion_deliveries_delivered = OrderedDict()
     runner._completion_delivery_retention = 2048
     if session_db is not ...:
-        runner._session_db = session_db
+        runner.session_store.persistence = session_db
     return runner
 
 
@@ -191,7 +196,7 @@ def test_completion_from_user_closed_session_is_dropped(
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(
         adapter,
-        session_db=_SessionDB(
+        session_db=_StoreHandle(
             {"ended_at": 1786288000.0, "end_reason": "session_reset"}
         ),
     )
@@ -212,7 +217,7 @@ def test_completion_after_idle_end_still_delivers(
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(
         adapter,
-        session_db=_SessionDB(
+        session_db=_StoreHandle(
             {"ended_at": 1786288000.0, "end_reason": "idle_timeout"}
         ),
     )
@@ -227,7 +232,7 @@ def test_completion_after_idle_end_still_delivers(
 def test_completion_from_live_session_delivers(monkeypatch, isolated_registry):
     _finished_session(isolated_registry)
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB({"ended_at": None}))
+    runner = _runner(adapter, session_db=_StoreHandle({"ended_at": None}))
 
     _run_watcher(
         monkeypatch, runner, _watcher("proc_boundary", "sess-live"),
@@ -241,7 +246,7 @@ def test_unstamped_legacy_completion_delivers(monkeypatch, isolated_registry):
     session DB is present."""
     _finished_session(isolated_registry)
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_StoreHandle(None))
 
     _run_watcher(monkeypatch, runner, _watcher("proc_boundary"))
 
@@ -266,7 +271,7 @@ def test_retry_verdict_returns_false_for_watcher_repoll():
 
 def test_terminal_verdict_returns_none_without_injection():
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_StoreHandle(None))
 
     result = asyncio.run(
         runner._deliver_completion_notification(
@@ -287,7 +292,7 @@ def test_async_delegation_gate_unchanged():
     delegation-owned gate (terminal verdict -> None), proving the completion
     branch did not fork or shadow the delegation policy."""
     adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, session_db=_SessionDB(None))
+    runner = _runner(adapter, session_db=_StoreHandle(None))
 
     evt = {
         "type": "async_delegation",

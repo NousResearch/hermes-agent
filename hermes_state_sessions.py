@@ -1047,14 +1047,15 @@ class SessionSessionsMixin:
                     return False
                 if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
                     return False
-                if not self.set_session_archived(session_id, False):
-                    return False
-                # Clear the accidental end stamp, or a LATER deliberate archive (which never
-                # writes end_reason) would auto-resurrect on the next lookup.
-                self._write_sql(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
-                )
-                return True
+                def _recover(conn):
+                    if not self._set_lineage_column_in_transaction(conn, "archived", session_id, 0):
+                        return False
+                    # A later deliberate archive must not inherit the accidental end stamp.
+                    conn.execute(
+                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
+                    )
+                    return True
+                return self._execute_write(_recover)
         raise SessionLineageInventoryError("Compression tip changed during recovery; retry the operation.")
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:

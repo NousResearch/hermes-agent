@@ -92,6 +92,14 @@ export const ga: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Soláthraí cuimhne gníomhach",
+    noProvider: "dada — ionsuite amháin",
+    builtinLayer: "Ciseal ionsuite",
+    builtinNote: "Is iad MEMORY.md agus USER.md cuimhne Hermes féin, ar leith ó aon soláthraí seachtrach. Luchtaítear an dá cheann i seisiúin de réir réamhshocraithe; múchann na lasca cumraíochta (memory.memory_enabled / memory.user_profile_enabled) gach ceann acu. Cuireann soláthraí leo; ní chuireann sé ina n-áit riamh.",
+  },
+
   status: {
     actionFailed: "Theip ar an ngníomh",
     actionFinished: "Críochnaithe",
@@ -370,6 +378,13 @@ export const ga: Translations = {
     authRequired: "Fíordheimhniú riachtanach",
     authRequiredHint: "Rith an t-ordú seo chun fíordheimhniú a dhéanamh:",
     updateGit: "Git pull",
+    updateAll: "Nuashonraigh uile",
+    updatingAll: "Plugins á nuashonrú…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Nuashonraithe ${updated}, athbhreithniú ag teastáil ${needsReview}, theip ${failed}`,
+    autoUpdate: "Uath-nuashonrú",
+    autoUpdateDesc: (hours: number) =>
+      `Cuir nuashonruithe plugin i bhfeidhm go huathoibríoch nuair a sheiceálann an geata (gach ${hours} u). Lódáiltear an cód nuashonraithe i seisiúin nua.`,
     versionBadge: "Leagan",
     showInSidebar: "Taispeáin sa bharra taoibh",
     hideFromSidebar: "Folaigh ón mbarra taoibh",

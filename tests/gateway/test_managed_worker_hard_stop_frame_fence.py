@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from tests.gateway.test_managed_turn_contract import assignment
 
 
@@ -68,10 +68,11 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
 
 
 CHILD = """import json, os, sys, psutil
+from hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 send = lambda f: out.write((json.dumps(f) + '\\n').encode())
-send({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]})
+send({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]})
 for line in sys.stdin.buffer:
     for i in range(20):
         send({'type': 'delta', 'text': str(i)})
@@ -97,7 +98,7 @@ def test_worker_frames_read_no_ledger_per_frame(tmp_path, monkeypatch):
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
 

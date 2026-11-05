@@ -144,6 +144,11 @@ async def probe(mode):
                         entry.session_id = 'replacement-conversation'
                     rejected = await rpc(ws, 'subagent.list', session_id=sid)
                     assert rejected.get('error', {}).get('message') == 'stale_generation', rejected
+                    # The control card is this session's own persisted state, keyed by its id: it
+                    # stays readable after its chat moved on (a messaging /new), as before the
+                    # shared gateway; only the live owner objects above are fenced.
+                    moved = await rpc(ws, 'session.control.read', session_id=sid)
+                    assert 'result' in moved and set(moved['result']['control']) >= {'goal', 'loop', 'heartbeat'}, moved
                     with runner.session_store._lock:
                         entry.session_id = sid
                     # Identical durable session IDs cannot transfer old-object read authority.

@@ -113,13 +113,20 @@ interface OpenStoredBotChatOptions {
    *  only for explicit opens — a background wake resolves once the resume
    *  is requested, never blocking on a cold backend. */
   background?: boolean
+  /** `tab`: open BESIDE the current chat as a stacked tab instead of loading
+   *  into main. The default `in-place` spends main, so a second Bot Chat
+   *  always replaced the first; ⌘-click / "Open in new tab" on a bot row
+   *  pass `tab` so two Bot Chats can stay open side by side. */
+  intent?: BotChatOpenIntent
 }
+
+export type BotChatOpenIntent = 'in-place' | 'tab'
 
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,
   summary: CanonicalChatRow,
-  { background = false }: OpenStoredBotChatOptions = {}
+  { background = false, intent = 'in-place' }: OpenStoredBotChatOptions = {}
 ): Promise<string> {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
@@ -170,14 +177,9 @@ async function openStoredBotChat(
         }
       : {}),
     profile: name,
-    // Same intent a session row click uses. `tab` stacked a fresh tile every
-    // time focusOpenSession missed, so bot chats piled up beside each other and
-    // beside the untouched "New session" draft, which then kept focus —
-    // clicking a bot appeared to do nothing. `in-place` still fronts an
-    // already-open tile first, so Bot tabs survive owner lifecycles (#a81854a2,
-    // the reason this stopped being `main`); it just loads into main instead of
-    // minting a second tab when there is nothing to front.
-    intent: 'in-place',
+    // Default to the same in-place behavior as a session row. Explicit tab
+    // opens preserve main; either intent fronts an already-open session first.
+    intent,
     awaitHydration: !background,
     expectHistory,
     forceResume: true,
@@ -355,6 +357,9 @@ interface OpenCanonicalChatOptions {
    *  open degrades to the old navigating shape. */
   background?: boolean
   openingStillCurrent?: (() => boolean) | null
+  /** See OpenStoredBotChatOptions.intent. Only honored for an EXISTING Bot
+   *  Chat; a freshly minted one always lands in main. */
+  intent?: BotChatOpenIntent
 }
 
 /** The self-introduction a brand-new bot is born with (#91827).
@@ -609,7 +614,7 @@ export function createCanonicalChat(
  *  bot's chat opens without re-homing Desktop's chrome. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
-  { background = false, openingStillCurrent = null }: OpenCanonicalChatOptions = {}
+  { background = false, openingStillCurrent = null, intent = 'in-place' }: OpenCanonicalChatOptions = {}
 ): Promise<{ openedId: string; registryId: string } | null> {
   const existing = await findExistingCanonicalChat(owner)
 
@@ -619,7 +624,7 @@ export async function openBotCanonicalChat(
     }
 
     const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing, { background })
+    await openStoredBotChat(owner, openedId, existing, { background, intent })
 
     // Both identities matter downstream: the durable registry row names the
     // chat; the resolved lineage tip is what actually takes session focus.
@@ -677,20 +682,34 @@ export async function prepareBotSource(bot: RosterRow) {
 }
 
 export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
+  await readServerProfileRow(bot)
+
+  return botRosterMeta(bot, $botMeta.get()) || {}
+}
+
+/** The row with the description its own backend holds now. SSH rows never carry one (roster
+ *  polling must not dial them) and any row can be stale, so Edit and Duplicate read it here. */
+export async function ensureBotProfile(bot: RosterRow): Promise<RosterRow> {
+  const row = await readServerProfileRow(bot)
+
+  return typeof row?.description === 'string' ? { ...bot, description: row.description } : bot
+}
+
+async function readServerProfileRow(bot: RosterRow) {
   if (!bot?.sourceScoped) {
-    return botRosterMeta(bot, $botMeta.get()) || {}
+    return null
   }
 
   const route = botConnectionRoute(bot)
   const backendProfile = backendTargetProfile(route, bot.name)
 
-  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'name' | 'ui_meta'>> }>(
+  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'description' | 'name' | 'ui_meta'>> }>(
     bot,
     'profiles.list',
     {}
   )
 
-  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile)
+  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile) || null
   const server = row?.ui_meta?.['hermes-bots']
 
   if (server && typeof server === 'object') {
@@ -705,5 +724,5 @@ export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
     persistBotMetaSnapshot($botMeta.get(), true)
   }
 
-  return botRosterMeta(bot, $botMeta.get()) || {}
+  return row
 }

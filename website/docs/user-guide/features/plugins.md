@@ -40,6 +40,10 @@ Here is a complete plugin that adds a `hello_world` tool and logs every tool cal
 name: hello-world
 version: "1.0"
 description: A minimal example plugin
+provides_tools:
+  - hello_world
+provides_hooks:
+  - post_tool_call
 ```
 
 **`~/.hermes/plugins/hello-world/__init__.py`**
@@ -80,7 +84,7 @@ def register(ctx):
     )
 
     # --- Hook: log every tool call ---
-    def on_tool_call(tool_name, params, result):
+    def on_tool_call(tool_name, args, result, **kwargs):
         print(f"[hello-world] tool called: {tool_name}")
 
     ctx.register_hook("post_tool_call", on_tool_call)
@@ -115,6 +119,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Distribute via pip | `[project.entry-points."hermes_agent.plugins"]` |
 | Register a gateway platform (Discord, Telegram, IRC, …) | `ctx.register_platform(name, label, adapter_factory, check_fn, ...)` — see [Adding Platform Adapters](../../developer-guide/adding-platform-adapters.md) |
 | Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
+| Register a delegation strategy (how each `delegate_task` subagent is routed) | `ctx.register_delegation_provider(provider)` — see [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md) |
 | Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
 | Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
 | Register a terminal execution backend (cloud sandbox) | `ctx.register_terminal_environment_provider(provider)` — see [Terminal Environment Plugins](../../developer-guide/terminal-environment-plugin.md) |
@@ -158,6 +163,7 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/` (root) | General plugins — tools, hooks, slash commands, CLI commands, bundled skills | `PluginManager` (kind: `standalone` or `backend`) |
 | `plugins/platforms/<name>/` | Gateway channel adapters (`ctx.register_platform()`) | `PluginManager` (kind: `platform`, one level deeper) |
 | `plugins/image_gen/<name>/` | Image-generation backends (`ctx.register_image_gen_provider()`) | `PluginManager` (kind: `backend`, one level deeper) |
+| `plugins/delegation/<name>/` | Delegation strategies (`ctx.register_delegation_provider()`); `default` is today's routing | `PluginManager` (kind: `backend`, one level deeper) |
 | `plugins/memory/<name>/` | Memory providers (subclass `MemoryProvider`) | **Own loader** in `plugins/memory/__init__.py` (kind: `exclusive` — one active at a time) |
 | `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
 | `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
@@ -382,6 +388,7 @@ The table above shows the four plugin categories, but within "General plugins" t
 | A **memory backend** (Honcho, Mem0, Supermemory, …) | Memory plugin — subclass `MemoryProvider` in `plugins/memory/<name>/` | [Memory Provider Plugins](../../developer-guide/memory-provider-plugin.md) |
 | A **context-compression strategy** | Context-engine plugin — `ctx.register_context_engine()` | [Context Engine Plugins](../../developer-guide/context-engine-plugin.md) |
 | An **image-generation backend** (DALL·E, SDXL, …) | Backend plugin — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](../../developer-guide/image-gen-provider-plugin.md) |
+| A **delegation strategy** (a profile or named model per subagent) | Backend plugin — `ctx.register_delegation_provider()`, selected by `delegation.backend` | [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md) |
 | A **video-generation backend** (Veo, Kling, Pixverse, Grok-Imagine, Runway, …) | Backend plugin — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](../../developer-guide/video-gen-provider-plugin.md) |
 | A **computer-use driver** (desktop control behind the `computer_use` tool) | Single-select provider plugin — `ctx.register_computer_use_provider()`, selected by `computer_use.backend` | [Computer-use backend plugins](../../developer-guide/plugins/index.md#computer-use-backend-plugins) |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, xtts, voice-cloning scripts, …) | Config-driven (recommended) — declare under `tts.providers.<name>` with `type: command` in `config.yaml`. OR Python backend plugin — `ctx.register_tts_provider()` for Python-SDK / streaming engines that need more than a shell template. | [TTS Setup](./tts.md#custom-command-providers) · [Python plugin guide](./tts.md#python-plugin-providers) |
@@ -424,6 +431,9 @@ hermes plugins install user/repo             # install from Git, then prompt Ena
 hermes plugins install user/repo --enable    # request enable; dependency consent still applies
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
+hermes plugins update my-plugin --force      # same, accepting a caution security-scan verdict without the question
+hermes plugins update                        # list every plugin with an update, then "Update all N? [Y/n]"
+hermes plugins update --yes                  # same, without the question (scripts, cron; required without a terminal)
 hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
                                              # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
@@ -451,10 +461,58 @@ check runs when `plugins.auto_update_check_hours` is due: default 24 hours,
 desktop sync-status view. This is not a hard once-per-day limit if you configure
 a different interval.
 
-By default, updates require `hermes plugins update NAME`. Setting
-`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
-Both routes use the update security scan. Auto-apply does not manage pinned,
-manual, drifted, or pip-distribution rows.
+`hermes plugins update` with no name runs the same check and lists the
+plugins it can move: catalog installs (re-pinned to the reviewed catalog
+commit) and tracked Git installs (pulled). It names every plugin it skips and
+why: pinned, held with `--ref`, needs fixing, status unknown, or a pip
+distribution Hermes does not upgrade. In a terminal it asks once, then updates each plugin through the
+same path as `hermes plugins update NAME`, so new capabilities, a widened
+catalog pin and scan findings still prompt per plugin. One failure does not
+stop the rest; the summary lists what updated, what was already current and
+what failed with its reason (exit code 1 if any failed). Without a terminal
+it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
+consent prompts fail closed as in any non-interactive update (new
+capabilities stay ungranted, a widened catalog pin is not applied).
+
+By default, plugins only update when you run `hermes plugins update`. Turning
+on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
+apply the same catalog re-pins and tracked Git pulls on its own. Both routes
+use the update security scan, and an unattended update never accepts a widened
+catalog pin or Git update (new tools, hooks, capabilities), new capabilities or a caution scan verdict on a Git update: those
+wait for you to run the update yourself. (A catalog re-pin accepts a caution
+verdict, because a reviewer read that pin when it was admitted to the catalog.)
+Auto-update does not manage pinned, manual, drifted, or pip-distribution rows,
+nor a catalog plugin you installed with `--ref` at a commit other than its
+catalog pin: that stays on the commit you chose until you name it
+(`hermes plugins update <name>`); every Update all, `hermes plugins update`
+with no name included, skips it. A `--ref` equal to the catalog pin is recorded
+as an ordinary catalog install, so auto-update moves it with the catalog. It runs on the gateway's housekeeping thread, so it
+never delays starting a session, and an offline check costs one warning.
+Code the scheduled check updates loads in new sessions; a running session keeps
+the code it already imported. The setting is per profile.
+
+The same switch and an "Update all" action are on every surface:
+
+| Surface | Update all | Auto-update |
+|---|---|---|
+| CLI | `hermes plugins update` | `hermes plugins auto-update [on\|off]` |
+| Chat (classic CLI and TUI) | `/plugins update` | `/plugins auto-update [on\|off]` |
+| Desktop app | Plugins tab, **Update all** | Plugins tab, **Auto-update** switch |
+| Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
+
+`/plugins update`, Desktop and the dashboard update without asking per plugin,
+so a plugin that needs a review (widened pin or Git update, caution scan of a Git update) is
+listed as "needs review" with nothing changed; update it by name to review it.
+Each plugin they update is reloaded right away, as an update from the plugin's
+own Update action is: its MCP servers and skills reach open chats now, its
+Python tools load in new sessions. Two
+updates of the same plugin never run at once: the second one is refused and
+changes nothing.
+
+`hermes update` can move catalog pins. Installed catalog plugins stay on their
+old pin until updated, so the update names them for every profile and asks
+that profile's gateway to check again on its next tick (which applies them
+when auto-update is on).
 
 If a manifest changes or introduces `update_url`, Hermes refuses the new address
 until you approve it with `hermes plugins trust-update-url NAME`. This is a
@@ -557,7 +615,7 @@ granted, `hermes plugins update` surfaces the additions and asks again. New
 capabilities stay off until you consent — a plugin update can never silently
 widen its access. Catalog re-pins go one step further: when the new pin adds
 tools, hooks, Python dependencies, host capabilities, a provider sign-in
-(`requires_auth`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
+(`requires_auth`), a new or changed OAuth client (`oauth:`) or a Desktop UI half the installed version did not have, the CLI shows the delta and asks `y/N` before
 anything moves, and the Desktop / dashboard **Update** button opens the same
 confirmation. Declining (or a non-interactive session) leaves the plugin at
 the old pin.
@@ -588,6 +646,8 @@ working but are **deprecated** in favor of the consent flow:
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
+`llm.side_question` has no legacy key: it is open only when declared and
+granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as
@@ -767,6 +827,20 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
 | **dangerous** | Blocked. `--force` does **not** override |
 
+`hermes plugins update` scans the new code with the same rules before it
+replaces the installed copy, so a plugin that picks up risky code in an update
+is flagged before it runs. A caution verdict on a Git update asks
+`Update anyway? [y/N]`, and `hermes plugins update NAME --force` accepts it
+without the question. Hermes Desktop shows the same findings in a dialog with an
+**Update anyway** button. Catalog updates move to a reviewed pin, so a caution
+verdict there does not ask. In every case nothing changes until the update is
+accepted.
+
+Hermes Desktop shows an **Update** button on a Git-installed plugin when the
+last update check found a newer commit. The gateway runs that check every
+`plugins.auto_update_check_hours` (default 24), and `hermes plugins check-updates`
+runs it on demand.
+
 On `hermes plugins update`, a dangerous verdict on the updated tree
 disables the plugin until you review the findings and re-enable it. A
 dangerous block names the critical findings that caused it (e.g.
@@ -833,8 +907,9 @@ plugins:
 
 Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
 provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
-model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
-the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+secret sources, `@` context references, model-provider profiles) exactly as before; Hermes registers
+matching entries on its side that call into the host, and values cross as the types the provider base
+class declares (a secret source's `fetch()` gets a `Path` and returns a `FetchResult`). Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
 In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
 [Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
 
@@ -857,7 +932,8 @@ What changes in `host` mode:
   flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
 - **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
   gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), streaming and websocket
+  model-provider profiles that build their own SDK client (`create_client`), terminal backends (the
+  backend's commands fail with this reason; the `singularity` plugin is one), streaming and websocket
   dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can

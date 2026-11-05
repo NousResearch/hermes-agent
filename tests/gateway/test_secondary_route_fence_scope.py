@@ -32,7 +32,7 @@ async def _served(tmp_path, monkeypatch):
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -44,7 +44,7 @@ async def _served(tmp_path, monkeypatch):
         launch, home = runner.session_authority, homes[1][1]
         alpha = runner.session_authorities.for_home(home)
         assert runner.session_store._routing_db.db_path == launch.db.db_path != alpha.db.db_path
-        actor = Principal('owner', alpha.profile_id, frozenset(
+        actor = SessionActor('owner', alpha.profile_id, frozenset(
             {'session:create', 'session:read', 'session:control', 'session:operator'}), 'socket')
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         adapter._api_key, adapter.gateway_runner, adapter._session_db = _KEY, runner, launch.db

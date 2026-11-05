@@ -139,13 +139,15 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
     names none); other providers ignore it."""
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.config_backend import refusing_locked_omissions
     with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model, base_url)
     with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
-        save_config(cfg)
+        with refusing_locked_omissions("model"):
+            save_config(cfg)
 
 
 def _disable_unselected_skills(profile_dir: Path, keep: list[str]) -> int:
@@ -503,7 +505,14 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    if archived == "only":
+        # Pinned live chats back-fill this view, but cannot consume positions
+        # in its archived-only cursor (whose total counts only archived rows).
+        window = _pinned_window([s for s in merged if s.get("archived")], offset, limit)
+        # Keep backfill after the window: clients retain only limit rows plus pins.
+        window.extend(s for s in merged if s.get("pinned") and not s.get("archived"))
+    else:
+        window = _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
@@ -818,7 +827,10 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_config = clone
     with _profile_errors("POST /api/profiles failed", not_found=(),
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
-        path = profiles_mod.create_profile(
+        # Off the loop: creation asks a live multiplexer to serve the profile now over its control
+        # socket, and on the gateway's own listener (the Webapp) that socket answers on this loop.
+        path = await asyncio.to_thread(
+            profiles_mod.create_profile,
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
             clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))

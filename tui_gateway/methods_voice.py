@@ -22,6 +22,10 @@ _voice_wake_owner: Optional[Transport] = None
 # The transport that started the capture. A shared-owner (canonical) session is not in this process's
 # ``_sessions``, so ``write_json`` cannot route its voice events by sid; they go to this caller instead.
 _voice_event_transport: Optional[Transport] = None
+# The session whose push-to-talk capture is live, and a generation that invalidates its callbacks
+# when that session's voice mode goes off (a late transcript must not land after /voice off).
+_voice_capture_sid: str = ""
+_voice_capture_gen = 0
 
 
 def _caller_transport():
@@ -52,6 +56,61 @@ def _voice_mode_enabled() -> bool:
     return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
+def _session_voice_enabled(session_id) -> bool:
+    """Push-to-talk gate: a shared-owner local session's own gateway ``/voice`` mode (what Ink's
+    ``/voice on`` sets through slash.exec, T9); the sidecar's env flag for its own sessions."""
+    try:
+        from gateway.session_config import local_voice_enabled
+        held = local_voice_enabled(session_id)
+    except ImportError:
+        held = None
+    return _voice_mode_enabled() if held is None else held
+
+
+def _set_session_voice_off(session_id) -> bool:
+    """Turn a shared-owner session's own voice mode off (spoken stop, no-speech limit); False when
+    no owner in this process holds it (the sidecar's env flag is the state)."""
+    try:
+        from gateway.session_config import set_local_voice_mode
+        return set_local_voice_mode(session_id, "off") is True
+    except ImportError:
+        return False
+
+
+def _stop_session_voice_capture(session_id) -> None:
+    """End *session_id*'s live capture (not another session's) and drop its late text callbacks."""
+    global _voice_capture_gen
+    with _voice_sid_lock:
+        if not session_id or session_id != _voice_capture_sid:
+            return
+        _voice_capture_gen += 1
+    with contextlib.suppress(Exception):
+        from hermes_cli.voice import stop_continuous
+        stop_continuous()
+    _resume_voice_wake()
+
+
+def _capture_live() -> bool:
+    try:
+        from hermes_cli.voice import is_continuous_active
+    except ImportError:  # an older voice wrapper without the probe
+        return False
+    return bool(is_continuous_active())
+
+
+def _voice_capture_callback(fn):
+    """*fn* while the capture it was registered for is still current; a no-op once invalidated."""
+    with _voice_sid_lock:
+        gen = _voice_capture_gen
+
+    def call(*args):
+        with _voice_sid_lock:
+            current = gen == _voice_capture_gen
+        if current:
+            fn(*args)
+    return call
+
+
 def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
@@ -64,6 +123,16 @@ def _end_voice_chat(*, stop_loop: bool, stop_tts: bool) -> None:
             from hermes_cli.voice import stop_continuous
             stop_continuous()
     if stop_tts:
+        with contextlib.suppress(Exception):
+            _tts_stream_stop(user_barge=False)
+
+
+def _end_session_voice_chat(session_id, *, stop_loop: bool, stop_tts: bool) -> None:
+    """A stop phrase (spoken, typed or full-duplex) ends *session_id*'s voice chat: a shared-owner
+    session through its own mode (which ends only its capture); else the sidecar's env flags."""
+    if not _set_session_voice_off(session_id):
+        _end_voice_chat(stop_loop=stop_loop, stop_tts=stop_tts)
+    elif stop_tts:
         with contextlib.suppress(Exception):
             _tts_stream_stop(user_barge=False)
 
@@ -263,7 +332,9 @@ def _deliver_fd_transcript(text: str) -> None:
     except Exception:
         is_stop = False
     if is_stop:  # turn already interrupted / TTS cut at trip time; now end the chat
-        _end_voice_chat(stop_loop=True, stop_tts=False)
+        with _voice_sid_lock:
+            sid = _voice_event_sid
+        _end_session_voice_chat(sid, stop_loop=True, stop_tts=False)
     _voice_emit("voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
 
 
@@ -292,7 +363,7 @@ def _voice_cfg_dict() -> dict:
 
     ``_load_cfg()`` does not deep-merge DEFAULT_CONFIG, so both the root AND ``voice`` may be any YAML
     scalar / list / None. A hand-edit like ``voice: true`` or a malformed top-level config that parses to a
-    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (Copilot
+    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (review
     round-3..7 review on 19835). Coerce through ``isinstance`` at every level so malformed config falls back
     to an empty dict instead of crashing /voice. See #19835.
     """
@@ -433,6 +504,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
         try:
             _emit("wake.detected", sid, {
                 "phrase": matched_phrase or phrase, "profile": matched_profile or None,
+                # detached-spawn: ok — not a spawn: a wake.detected event field
                 "start_new_session": new_session})
         finally:
             reset_transport(token)
@@ -452,10 +524,21 @@ def _(rid, params: dict) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
+    from hermes_cli.process_identity import local_desktop_client
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
-    server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
-    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
+    transport = _caller_transport()
+    # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
+    # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
+    if "server_requests" in params:
+        server_requests.advertise(transport, bool(params.get("server_requests")))
+    if "desktop_local" in params and hasattr(transport, "auth_identity"):
+        transport.desktop_local = local_desktop_client(transport.auth_identity, params.get("desktop_local"))
+        if transport.desktop_local:
+            from tui_gateway import server
+            server.begin_local_desktop_boot()
+    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
+                     "canonical_clarify_batch": True})
 
 
 @method("ping")
@@ -709,8 +792,13 @@ def _vr_transcript(payload: dict) -> None:
 def _vr_on_stop_phrase(t):
     # A SPOKEN bare stop phrase: end the chat like /voice off and emit a distinct signal so
     # clients end the conversation instead of treating it as a no-speech timeout.
-    _end_voice_chat(stop_loop=False, stop_tts=True)
+    _end_session_voice_chat(_voice_capture_sid, stop_loop=False, stop_tts=True)
     _vr_transcript({"stop_phrase": True, "text": t})
+
+
+def _vr_on_silent_limit():
+    _set_session_voice_off(_voice_capture_sid)
+    _vr_transcript({"no_speech_limit": True})
 
 
 def _vr_on_status(state):
@@ -732,11 +820,14 @@ def _(rid, params: dict) -> dict:
     if wake_owner is not None and wake_owner is not transport:
         return _ok(rid, {"status": "busy", "reason": "wake_owned"})
     try:
-        global _voice_event_sid, _voice_event_transport, _voice_wake_owner
-        if action == "start" and not _voice_mode_enabled():
+        global _voice_event_sid, _voice_event_transport, _voice_wake_owner, _voice_capture_sid
+        if action == "start" and not _session_voice_enabled(params.get("session_id")):
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
+        sid = params.get("session_id") or ""
+        if _voice_capture_sid and sid != _voice_capture_sid and _capture_live():
+            return _err(rid, 4016, "voice capture is busy in another session")
         with _voice_sid_lock:
-            _voice_event_sid = params.get("session_id") or _voice_event_sid
+            _voice_event_sid = sid or _voice_event_sid
             _voice_event_transport = transport
         if action == "stop":
             from hermes_cli.voice import stop_continuous
@@ -759,7 +850,7 @@ def _(rid, params: dict) -> dict:
         # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list) must not crash /voice with a 5025
         # — fall back to VAD defaults. Exclude ``bool`` from the numeric check since Python's bool is a
         # subclass of int — a hand-edit like ``silence_threshold: true`` would otherwise forward as ``1``
-        # instead of falling back to the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
+        # instead of falling back to the documented 200 / 3.0 defaults (review round-12 on #19835).
         voice_cfg = _voice_cfg_dict()
         max_rec = _voice_cfg_number(voice_cfg.get("max_recording_seconds"), 120.0)
         # Hand the mic to STT if the wake detector holds it; a terminal capture event resumes it.
@@ -769,15 +860,20 @@ def _(rid, params: dict) -> dict:
         if wake_paused:
             with _voice_sid_lock:
                 _voice_wake_owner = transport
+        live = _voice_capture_callback
         started = start_continuous(
-            on_transcript=lambda t: _vr_transcript({"text": t}), on_status=_vr_on_status,
-            on_silent_limit=lambda: _vr_transcript({"no_speech_limit": True}),
+            on_transcript=live(lambda t: _vr_transcript({"text": t})), on_status=_vr_on_status,
+            on_silent_limit=live(_vr_on_silent_limit),
             silence_threshold=_voice_cfg_number(voice_cfg.get("silence_threshold"), 200),
             silence_duration=_voice_cfg_number(voice_cfg.get("silence_duration"), 3.0),
             auto_restart=False, max_recording_seconds=max_rec if max_rec > 0 else 0.0,
-            on_stop_phrase=_vr_on_stop_phrase, on_partial=lambda t: _voice_emit("voice.partial", {"text": t}))
+            on_stop_phrase=live(_vr_on_stop_phrase),
+            on_partial=live(lambda t: _voice_emit("voice.partial", {"text": t})))
         if started is False:
             _resume_voice_wake()
+        else:
+            with _voice_sid_lock:
+                _voice_capture_sid = sid
         return _ok(rid, {"status": "busy" if started is False else "recording"})
     except Exception as e:
         if wake_paused or action == "stop":

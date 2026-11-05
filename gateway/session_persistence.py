@@ -358,6 +358,9 @@ class SessionPersistenceMixin:
         mirror_retired = self._import_legacy_sessions_json(db_had_entries)
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
+        # Heal before the fallback baseline: a heal after it reads as a caller edit, and recovery
+        # would then keep the stale mirror entry over the newer DB row.
+        self._heal_missing_origins(self._entries.values())
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
         if mirror_retired and db_load_succeeded:
             # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
@@ -372,6 +375,30 @@ class SessionPersistenceMixin:
                     logger.warning("gateway.session: could not strip retired routes from sessions.json", exc_info=True)
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
+
+    def _heal_missing_origins(self, entries) -> None:
+        for entry in entries:
+            if entry.origin is None:
+                entry.origin = self._stored_origin(entry)
+
+    def _stored_origin(self, entry: SessionEntry) -> Optional[SessionSource]:
+        """*entry*'s messaging source rebuilt from its conversation row, if it still routes to the
+        entry's key. A routing entry persisted without an origin (#146696) otherwise leaves restart
+        resume, route recovery and wakes nothing to route by until the chat speaks again. Local and
+        API routes are left alone: their receipts, not the row, name their owner."""
+        import sqlite3
+
+        from gateway.session_route_recovery import _messaging_platform, _row_source
+        db = self._db_for_key(entry.session_key)
+        try:
+            row = db.get_session(entry.session_id) if db is not None else None
+        except sqlite3.Error:
+            return None
+        platform = row and _messaging_platform(entry.platform.value if entry.platform else row['source'])
+        source = _row_source(row, platform, self._named_profile_for_key(entry.session_key)) if platform else None
+        if source is None or source.platform != platform:
+            return None
+        return source if self._generate_session_key(source) == entry.session_key else None
 
     def _import_legacy_sessions_json(self, db_had_entries: bool) -> int:
         """Legacy import: sessions.json fills only keys the DB lacks. Lock held. Returns how many
@@ -449,6 +476,21 @@ class SessionPersistenceMixin:
         """For a routing entry whose row has ended: ``"prune"``, a replacement entry (repoint), or
         None (keep as-is)."""
         from gateway.session_lifecycle import _now
+        local_target = self._local_receipt_target(entry)
+        if local_target is not None:
+            # The authority's receipt names the route's target (a compression child after a
+            # split); its first admitted turn reopens a stamped row. A peer-row recovery here
+            # adopted an empty, never-admitted replacement instead (#140642).
+            if local_target == entry.session_id:
+                return None
+            import copy
+            repointed = copy.copy(entry)
+            repointed.session_id = local_target
+            logger.warning(
+                "gateway.session: repointing stale sessions.json entry %r from ended %s "
+                "(end_reason=%r) to its local receipt target %s", key, entry.session_id,
+                row["end_reason"], local_target)
+            return repointed
         recovered_entry = None
         if entry.origin is not None:
             try:
@@ -530,6 +572,7 @@ class SessionPersistenceMixin:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
+        self._heal_missing_origins(self._entries.values())
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
 

@@ -157,7 +157,7 @@ class FeishuChoiceCardsMixin:
             return SendResult(success=False, error="Not connected")
         if not choices:
             return SendResult(success=False, error="No choices")
-        from plugins.platforms.feishu.adapter import _card, _card_button
+        from plugins.platforms.feishu.adapter import _card_button
 
         picker_id = next(self._choice_picker_counter)
         actions = []
@@ -168,10 +168,11 @@ class FeishuChoiceCardsMixin:
                                         {"hermes_choice_picker_action": str(i), "picker_id": picker_id}))
         heading, _, rest = str(title or "").partition("\n")
         header = heading.replace("*", "").strip()
-        body = rest.strip() or header
+        # A one-line title (usage-limit offer) gets the full labels as body: buttons truncate them.
+        body = rest.strip() or "\n".join(f"• {c.get('label') or c.get('value') or ''}" for c in choices)
         try:
             result = await self._send_interactive_card(
-                chat_id, _card(header, "blue", body, actions=actions), metadata, "send_choice_picker failed",
+                chat_id, self._picker_card(header, "blue", body, actions=actions), metadata, "send_choice_picker failed",
                 state_map=self._choice_picker_state, state_id=picker_id, session_key=session_key,
                 extra_state={"header": header, "body": body, "choices": choices,
                              "on_choice_selected": on_choice_selected, "metadata": metadata})
@@ -179,7 +180,8 @@ class FeishuChoiceCardsMixin:
             logger.warning("[Feishu] send_choice_picker failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
         if result.success:
-            for stale in [k for k, v in self._choice_picker_state.items() if k != picker_id and v["chat_id"] == chat_id]:
+            # Snapshot: the SDK callback thread pops from this dict concurrently.
+            for stale in [k for k, v in list(self._choice_picker_state.items()) if k != picker_id and v["chat_id"] == chat_id]:
                 self._choice_picker_state.pop(stale, None)
         return result
 
@@ -203,9 +205,15 @@ class FeishuChoiceCardsMixin:
         if not self._submit_on_loop(loop, self._apply_choice_picker_selection(state, str(choice.get("value") or ""))):
             self._choice_picker_state[picker_id] = state
             return self._card_response()
-        from plugins.platforms.feishu.adapter import _card
         label = str(choice.get("label") or choice.get("value") or "")
-        return self._card_response(_card(state["header"], "green", f"{state['body']}\n\n✓ **{label}** — {checked[2]}"))
+        return self._card_response(self._picker_card(state["header"], "green", f"{state['body']}\n\n✓ **{label}** — {checked[2]}"))
+
+    @staticmethod
+    def _picker_card(header: str, template: str, body: str, *, actions: Optional[list] = None) -> dict[str, Any]:
+        from plugins.platforms.feishu.adapter import _card
+        card = _card(header, template, body, actions=actions)
+        card["config"]["update_multi"] = True  # shared: the inline settle reaches the whole group
+        return card
 
     def _on_webhook_card_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         """A card tap over HTTP, handled as the SDK delivers it: the button value stays a dict (the

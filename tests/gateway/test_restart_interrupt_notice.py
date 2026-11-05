@@ -20,6 +20,9 @@ from gateway.session_settlement_recovery import (
     _publish_completion,
 )
 from tui_gateway.contracts.registry import EVENTS
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_restart_drain_timeout_default_stays_zero():
@@ -90,23 +93,22 @@ def test_classic_cli_view_prints_the_restart_notice_for_an_interrupted_turn(caps
 async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlement(tmp_path):
     """A user Stop whose settlement a competing SQLite writer delays until after shutdown began is
     still the user's Stop: the notice follows the turn's recorded cause, not the runner's flags."""
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_results import admission_result
     from gateway.session_settlement_recovery import commit_and_publish
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
     runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=False)
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='owner')
-        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    with storage_handle(tmp_path) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='owner')
+        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', epoch=epoch,
+                                     persistence=storage_handle(tmp_path))
         live = authority.sessions['s'] = LiveSession(None, 'route')
         ref = SessionRef('owned', 's')
-        admit_session_input(db, epoch=epoch, principal_id='person', session_id='s', request_id='r',
+        db.admissions.admit(epoch=epoch, principal_id='person', session_id='s', request_id='r',
                             payload={'text': 'please work'})
-        row = claim_session_input(db, epoch=epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=epoch, session_id='s'))
         authority._stamp_claim(ref, live, row)
         frames = []
         live.event_stream.observers.add(frames.append)
@@ -141,7 +143,7 @@ async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlemen
             finally:
                 lock.close()
         complete = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
-        persisted = admission_result(db, row['admission_id'])
+        persisted = admission_result(authority.persistence, row['admission_id'])
         assert len(complete) == 1
         assert persisted['result']['interrupt_message'] == 'User requested stop'
         assert 'warning' not in complete[0], complete[0]
@@ -174,22 +176,22 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     import subprocess
 
     from gateway import session_managed_worker as managed
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
     from gateway.session_settlement_recovery import commit_and_publish
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from persistence_assembly import open_persistence, profile_scope
     from tests.gateway.restart_test_helpers import make_restart_runner
     from tests.waiting import async_wait_until
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     runner, _adapter = make_restart_runner()
     runner._restart_requested = True
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'),
+                                 persistence=open_persistence(profile_scope(home=tmp_path)))
     runner.session_authority = authority
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
@@ -204,7 +206,7 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         authority._stamp_claim(ref, live, row)
         task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
         await async_wait_until(lambda: (w := getattr(authority, '_managed_workers', {}).get('s')) is not None and w.writer.is_alive(),
@@ -215,7 +217,7 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
         async with asyncio.timeout(30):
             return row, await task
 
-    with db:
+    with authority.persistence:
         row, response = asyncio.run(scenario())
         frames = []
         live.event_stream.observers.add(frames.append)
@@ -328,27 +330,26 @@ def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cau
 
 
 def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
-    """One claimed admission on a real SessionDB settled through commit_and_publish (the owner's
+    """One claimed admission on a real store settled through commit_and_publish (the owner's
     worker-thread settlement) with *cause* recorded. Returns (db, row, frames, settlement)."""
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_settlement_recovery import commit_and_publish
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
     runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    epoch = db.runtime.begin_epoch(instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', epoch=epoch,
+                                 persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef('owned', 's')
-    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r',
+    db.admissions.admit(epoch=epoch, principal_id=principal, session_id='s', request_id='r',
                         payload=payload or {'text': 'please work'})
-    row = claim_session_input(db, epoch=epoch, session_id='s')
+    row = admission_row(db.admissions.claim(epoch=epoch, session_id='s'))
     authority._stamp_claim(ref, live, row)
-    db.append_message('s', 'user', 'please work')  # the turn's own rows, as the agent wrote them
-    db.append_message('s', 'assistant', 'partial reply')
+    seed_messages(db, 's', {'role': 'user', 'content': 'please work'})  # the turn's own rows, as the agent wrote them
+    seed_messages(db, 's', {'role': 'assistant', 'content': 'partial reply'})
     frames = []
     live.event_stream.observers.add(frames.append)
     result = {'final_response': 'partial reply', 'messages': [], 'interrupted': True, 'completed': False}
@@ -361,7 +362,7 @@ def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
 
 def _notices(db):
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
-    return [m['content'] for m in db.get_messages('s') if m.get('display_kind') == FAILED_TURN_DISPLAY_KIND]
+    return [m['content'] for m in transcript_rows(db, 's') if m.get('display_kind') == FAILED_TURN_DISPLAY_KIND]
 
 
 @pytest.mark.parametrize(('cause', 'notice'), [('Gateway restarting', RESTART_INTERRUPT_NOTICE),
@@ -378,7 +379,7 @@ def test_owner_stop_reason_is_in_the_transcript_for_a_viewer_that_reconnects(tmp
         (complete,) = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
         assert complete['warning'] == notice
         # A settlement retry that reads the committed row back never writes the notice again.
-        finish_result(db, epoch=authority.epoch, row=row, response='partial reply', outcome='interrupted',
+        finish_result(authority.persistence, epoch=authority.epoch, row=row, response='partial reply', outcome='interrupted',
                       result={'result': {'final_response': 'partial reply', 'messages': [], 'interrupted': True,
                                          'interrupt_message': cause}})
         assert _notices(db) == [notice]
@@ -407,29 +408,28 @@ def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_fail
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     from agent.conversation_loop import _close_durable_failed_turn
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
     from run_agent import AIAgent
 
     runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
     if earlier_failed:
-        db.append_message('s', 'user', 'earlier request')
-        db.append_message('s', 'assistant', FAILED_TURN_NOTICE, display_kind=FAILED_TURN_DISPLAY_KIND)
-    epoch = begin_runtime_epoch(db, instance_id='owner')
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+        seed_messages(db, 's', {'role': 'user', 'content': 'earlier request'})
+        seed_messages(db, 's', {'role': 'assistant', 'content': FAILED_TURN_NOTICE, 'display_kind': FAILED_TURN_DISPLAY_KIND})
+    epoch = db.runtime.begin_epoch(instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', epoch=epoch,
+                                 persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(None, 'route')
     ref = SessionRef('owned', 's')
     payload = {'text': 'please work'}
-    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r', payload=payload)
-    row = claim_session_input(db, epoch=epoch, session_id='s')
+    db.admissions.admit(epoch=epoch, principal_id=principal, session_id='s', request_id='r', payload=payload)
+    row = admission_row(db.admissions.claim(epoch=epoch, session_id='s'))
     authority._stamp_claim(ref, live, row)
     result = {'final_response': '', 'interrupted': True, 'completed': False, 'interrupt_message': 'Gateway restarting'}
     if not earlier_failed:
-        agent = AIAgent(session_db=db, session_id='s', model='test-model', provider='openai-compat', api_key='test',
+        agent = AIAgent(session_db=db, persistence=db, session_id='s', model='test-model', provider='openai-compat', api_key='test',
                         base_url='http://127.0.0.1:1/v1', quiet_mode=True, skip_context_files=True, skip_memory=True)
         messages = [{'role': 'user', 'content': 'please work'}]
         agent._flush_messages_to_session_db(messages)  # the turn-start flush of the accepted user row
@@ -451,7 +451,7 @@ def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(
         commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
         expected = RESTART_INTERRUPT_NOTICE if principal == 'person' else AUTOMATION_INTERRUPTED_NOTICE
         assert _notices(db) == [expected]
-        assert [m['role'] for m in db.get_messages('s')] == ['user', 'assistant']
+        assert [m['role'] for m in transcript_rows(db, 's')] == ['user', 'assistant']
 
 
 def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appended(tmp_path, monkeypatch):
@@ -475,20 +475,18 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
 
     from gateway import session_managed_worker as managed
     from gateway.run_runtime import stop_authority_turns
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
     from tests.gateway.restart_test_helpers import make_restart_runner
     from tests.waiting import async_wait_until
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     runner, _adapter = make_restart_runner()
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -506,7 +504,7 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         authority._stamp_claim(ref, live, row)
         task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
         await asyncio.to_thread(spawning.wait, 30)
@@ -539,19 +537,17 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
     from gateway import session_context_refs
     from gateway import session_managed_worker as managed
     from gateway.run_runtime import stop_authority_turns
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
     from tests.gateway.restart_test_helpers import make_restart_runner
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     runner, _adapter = make_restart_runner()
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i',
+                                 epoch=db.runtime.begin_epoch(instance_id='i'), persistence=storage_handle(tmp_path))
     live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
     actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
@@ -573,7 +569,7 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
 
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'look at @file:x'}, 'queue'))
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         authority._stamp_claim(ref, live, row)
         task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
         await asyncio.to_thread(expanding.wait, 30)

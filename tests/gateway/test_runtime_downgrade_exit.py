@@ -86,6 +86,18 @@ def test_the_tree_probe_reads_the_checkout_on_disk(tmp_path):
     assert rde.tree_predates_runtime(tmp_path / "missing") is False  # nothing readable proves nothing
 
 
+def test_the_tree_probe_reads_the_backend_schema(tmp_path):
+    """A checkout whose ledger DDL lives in ``persistence/sqlite/_schema_ddl.py`` beside a ``hermes_state.py``
+    stand-in without it has the runtime; the same checkout before the ledger does not."""
+    (tmp_path / "hermes_state.py").write_text("from persistence_assembly import open_persistence\n")
+    schema = tmp_path / "persistence" / "sqlite" / "_schema_ddl.py"
+    schema.parent.mkdir(parents=True)
+    schema.write_text('SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)"\n')
+    assert rde.tree_predates_runtime(tmp_path) is False
+    schema.write_text('SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS sessions (id TEXT)"\n')
+    assert rde.tree_predates_runtime(tmp_path) is True
+
+
 def test_the_downgrade_exit_code_reaches_the_process_exit():
     """The bootstrap's exit verdict raises the runner's code, so launchd (SuccessfulExit=false) sees 75."""
     import pytest

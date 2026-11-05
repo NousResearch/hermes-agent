@@ -16,6 +16,7 @@ from hermes_cli.backup import (
     create_quick_snapshot,
     list_quick_snapshots,
 )
+from tests.fixtures.storage_holder import store_copy_seam
 
 
 def test_backup_lock_rejects_a_second_operation(tmp_path) -> None:
@@ -135,6 +136,7 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     archive.write_bytes(b"previous-valid-backup")
 
     monkeypatch.setattr("hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
+    monkeypatch.setattr(*store_copy_seam(), lambda _src, _dst, **_kwargs: False)
 
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"

@@ -56,7 +56,7 @@ class _Owners:
 
     async def boot(self, instance_id):
         from gateway.session_authority import initialize_session_authority
-        owner = SimpleNamespace(session_store=self.store, _session_db=self.store._db, adapters={}, _draining=False,
+        owner = SimpleNamespace(session_store=self.store, _session_db=self.store.persistence, adapters={}, _draining=False,
                                 _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
         owner._adapter_for_source = lambda source: owner.adapters.get(source.platform)
         self.current = await initialize_session_authority(owner, profile_id=self.profile, instance_id=instance_id)
@@ -72,15 +72,14 @@ class _Owners:
         yield await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self._open(), self.loop))
 
     def rows(self):
-        from hermes_state_runtime import list_session_admissions
-        return [row for row in list_session_admissions(self.store._db, session_id=self.sid, pending_only=False)
-                if row['payload'].get('text') == TEXT]
+        return [row for row in self.current.persistence.admissions.list(session_id=self.sid, pending_only=False)
+                if row.payload.get('text') == TEXT]
 
     async def close(self, conn):
         await asyncio.to_thread(conn.close)
         for life in self.lives:
             await life.connection.close()
-        self.store._db.close()
+        self.store.close_all_db_handles()
 
 
 def _busy_cli(store, sid):
@@ -111,13 +110,13 @@ async def test_queue_while_busy_is_a_durable_admission_that_survives_an_owner_re
         await asyncio.to_thread(_command, cli, f"/queue {TEXT}")
         # Not held client-side: one queued admission in state.db, nothing for the CLI to send again.
         assert cli._pending_input.empty()
-        assert [row['status'] for row in owners.rows()] == ['queued']
+        assert [row.status for row in owners.rows()] == ['queued']
         listed = await asyncio.to_thread(_command, cli, "/queue list")
         assert TEXT in listed
 
         await owners.boot('restarted')  # the owner restarts; state.db keeps the FIFO
-        assert [row['status'] for row in owners.rows()] == ['queued']
-        assert len({row['admission_id'] for row in owners.rows()}) == 1  # exactly once, never re-submitted
+        assert [row.status for row in owners.rows()] == ['queued']
+        assert len({row.admission_id for row in owners.rows()}) == 1  # exactly once, never re-submitted
         # The restarted owner lists it to a viewer that attaches now: it is the next turn it runs.
         fresh = GatewayConnection(connect=owners.dial)
         try:
@@ -140,7 +139,7 @@ async def test_queue_rm_and_clear_retire_the_gateway_admissions(tmp_path, monkey
         await asyncio.to_thread(_command, cli, f"/queue {TEXT}")
         await asyncio.to_thread(_command, cli, "/queue second item")
         await asyncio.to_thread(_command, cli, "/queue rm 1")
-        assert [row['status'] for row in owners.rows()] == ['terminal']
+        assert [row.status for row in owners.rows()] == ['terminal']
         listed = await asyncio.to_thread(_command, cli, "/queue list")
         assert "second item" in listed and TEXT not in listed
         await asyncio.to_thread(_command, cli, "/queue clear")

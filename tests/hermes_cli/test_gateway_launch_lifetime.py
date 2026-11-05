@@ -41,7 +41,8 @@ def test_retained_tui_worktree_survives_stale_prune_while_its_session_resumes(tm
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _prune_stale_worktrees, _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     repo = tmp_path / 'repo'
     git = ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid']
@@ -61,11 +62,10 @@ def test_retained_tui_worktree_survives_stale_prune_while_its_session_resumes(tm
     monkeypatch.setattr(main_tui_launch, '_print_tui_exit_summary', lambda *_: None)
 
     def ink(_argv, cwd=None, env=None):
-        db = SessionDB(db_path=get_hermes_home() / 'state.db')
-        db.create_session('tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
-        if resumable:
-            db.append_message('tui-wt', 'user', 'keep my checkout')
-        db.close()
+        with open_persistence(profile_scope()) as store:
+            seed_session(store, 'tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
+            if resumable:
+                seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'keep my checkout'})
         _pending_turn(get_hermes_home() / 'state.db', 'tui-wt')
         Path(env['HERMES_TUI_ACTIVE_SESSION_FILE']).write_text(json.dumps({'session_id': 'tui-wt'}))
         ink.checkout = Path(env['HERMES_TUI_CWD'])
@@ -95,7 +95,8 @@ def test_retained_tui_worktree_kept_while_any_session_in_it_resumes(tmp_path, mo
 
     from hermes_cli import main_tui_launch, worktree_ops
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     home = tmp_path / ('Zoë "q" \\ home' if case == 'quoted_home' else 'home')
     home.mkdir()
@@ -114,13 +115,12 @@ def test_retained_tui_worktree_kept_while_any_session_in_it_resumes(tmp_path, mo
         monkeypatch.setattr(worktree_ops, '_retain_worktree_for_session', lambda *_: False)
 
     def ink(_argv, cwd=None, env=None):
-        db = SessionDB(db_path=get_hermes_home() / 'state.db')
-        db.create_session('tui-a', 'tui', cwd=env['HERMES_TUI_CWD'])
-        db.append_message('tui-a', 'user', 'keep my checkout')
-        attached = 'tui-a'
-        if case == 'after_new':  # /new: the attached session has nothing sent yet
-            db.create_session(attached := 'tui-b', 'tui', cwd=env['HERMES_TUI_CWD'])
-        db.close()
+        with open_persistence(profile_scope()) as store:
+            seed_session(store, 'tui-a', 'tui', cwd=env['HERMES_TUI_CWD'])
+            seed_messages(store, 'tui-a', {'role': 'user', 'content': 'keep my checkout'})
+            attached = 'tui-a'
+            if case == 'after_new':  # /new: the attached session has nothing sent yet
+                seed_session(store, attached := 'tui-b', 'tui', cwd=env['HERMES_TUI_CWD'])
         _pending_turn(get_hermes_home() / 'state.db', attached)
         Path(env['HERMES_TUI_ACTIVE_SESSION_FILE']).write_text(json.dumps({'session_id': attached}))
         ink.checkout = Path(env['HERMES_TUI_CWD'])

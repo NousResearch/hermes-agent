@@ -86,11 +86,15 @@ class TestExitSummaryResumeHint:
         assert " -p " not in out
 
 
-def _tui_session_db(*_args, **_kwargs):
-    db = MagicMock()
-    db.get_session.return_value = {"message_count": 3}
-    db.get_session_title.return_value = "My TUI Session"
-    return db
+def _tui_session_store():
+    """A TUI session with three messages and a title, in the test's home store."""
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "20260524_000001_abc123", "tui")
+        for role, content in (("user", "q"), ("assistant", "a"), ("user", "again")):
+            seed_messages(store, "20260524_000001_abc123", {"role": role, "content": content})
+        store.sessions.set_title("20260524_000001_abc123", "My TUI Session")
 
 
 class TestTuiExitSummaryResumeHint:
@@ -98,7 +102,8 @@ class TestTuiExitSummaryResumeHint:
     point from the classic CLI summary above and must carry the same ``-p`` flag (#125078)."""
 
     def test_tui_hints_include_profile_flag_for_named_profile(self, capsys):
-        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+        _tui_session_store()
+        with patch(
             "hermes_cli.profiles.get_active_profile_name", return_value="dev"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")
@@ -107,7 +112,8 @@ class TestTuiExitSummaryResumeHint:
         assert 'hermes --tui -c "My TUI Session" -p dev' in out
 
     def test_tui_hints_no_profile_flag_on_default(self, capsys):
-        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+        _tui_session_store()
+        with patch(
             "hermes_cli.profiles.get_active_profile_name", return_value="default"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")

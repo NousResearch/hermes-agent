@@ -182,3 +182,24 @@ class TestRealisticStreaming:
         s = StreamingThinkScrubber()
         deltas = ["Hello ", "world ", "how ", "are ", "you?"]
         assert _drive(s, deltas) == "Hello world how are you?"
+
+
+class TestChineseReasoningTags:
+    """MiniMax-M3 emits Chinese reasoning tags (#43827); both surfaces must hide them."""
+
+    def test_split_chinese_tag_scrubbed_in_stream(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = ["<思", "考>让我想想", "……</思考>", "\n答案是 42"]
+        assert _drive(s, deltas) == "\n答案是 42"
+
+    def test_final_response_strip_hides_chinese_tags(self) -> None:
+        from agent.agent_runtime_helpers import strip_think_blocks
+
+        out = strip_think_blocks(None, "<反思>内部推理</反思>最终答案\n<推理>未闭合的推理")
+        assert "内部推理" not in out and "未闭合" not in out
+        assert "最终答案" in out
+
+    def test_cli_replay_strip_hides_chinese_tags(self) -> None:
+        from cli import _strip_reasoning_tags
+
+        assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"

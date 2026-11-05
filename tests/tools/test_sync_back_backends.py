@@ -12,9 +12,7 @@ from tools.environments import modal as modal_env
 from tools.environments import daytona as daytona_env
 from tools.environments.ssh import SSHEnvironment
 
-
 # ── SSH helpers ──────────────────────────────────────────────────────
-
 
 @pytest.fixture
 def ssh_mock_env(monkeypatch):
@@ -33,9 +31,7 @@ def ssh_mock_env(monkeypatch):
     )
     return SSHEnvironment(host="example.com", user="testuser")
 
-
 # ── Modal helpers ────────────────────────────────────────────────────
-
 
 def _make_mock_modal_env():
     """Create a minimal ModalEnvironment without calling __init__."""
@@ -46,7 +42,6 @@ def _make_mock_modal_env():
     env._task_id = "test"
     env._sync_manager = None
     return env
-
 
 def _wire_modal_download(env, *, tar_bytes=b"fake-tar-data", exit_code=0):
     """Wire sandbox.exec.aio to return mock tar output for download tests.
@@ -78,9 +73,7 @@ def _wire_modal_download(env, *, tar_bytes=b"fake-tar-data", exit_code=0):
     env._worker.run_coroutine = real_run_coroutine
     return exec_calls
 
-
 # ── Daytona helpers ──────────────────────────────────────────────────
-
 
 def _make_mock_daytona_env():
     """Create a minimal DaytonaEnvironment without calling __init__."""
@@ -94,11 +87,9 @@ def _make_mock_daytona_env():
     env._daytona = MagicMock()
     return env
 
-
 # =====================================================================
 # SSH bulk download
 # =====================================================================
-
 
 class TestSSHBulkDownload:
     """Unit tests for _ssh_bulk_download."""
@@ -119,8 +110,6 @@ class TestSSHBulkDownload:
         assert "home/testuser/.hermes" in cmd_str
         assert "ssh" in cmd_str
         assert "testuser@example.com" in cmd_str
-
-
 
     def test_ssh_bulk_download_tolerates_only_socket_ignored_exit_2(self, ssh_mock_env, tmp_path):
         """Live sockets are excluded up front, and an rc=2 whose stderr is solely
@@ -151,10 +140,8 @@ class TestSSHBulkDownload:
                 with pytest.raises(EnvironmentConnectionError):
                     ssh_mock_env._ssh_bulk_download(dest)
 
-
 class TestSSHCleanup:
     """Verify SSH cleanup() calls sync_back() before closing ControlMaster."""
-
 
     def test_ssh_cleanup_calls_sync_back_before_control_exit(self, monkeypatch):
         """sync_back() must run before the ControlMaster exit command."""
@@ -196,11 +183,9 @@ class TestSSHCleanup:
 
         assert call_order.index("sync_back") < call_order.index("control_exit")
 
-
 # =====================================================================
 # Modal bulk download
 # =====================================================================
-
 
 class TestModalBulkDownload:
     """Unit tests for _modal_bulk_download."""
@@ -221,9 +206,6 @@ class TestModalBulkDownload:
         assert "-C / root/.hermes" in args[2]
         # Live sockets cannot be archived; exclude them like the SSH backend.
         assert "--exclude='*.sock'" in args[2]
-
-
-
 
 class TestModalCleanup:
     """Verify Modal cleanup() calls sync_back() before terminate."""
@@ -254,11 +236,9 @@ class TestModalCleanup:
         assert "sync_back" in call_order
         assert call_order.index("sync_back") < call_order.index("terminate")
 
-
 # =====================================================================
 # Daytona bulk download
 # =====================================================================
-
 
 class TestDaytonaBulkDownload:
     """Unit tests for _daytona_bulk_download."""
@@ -303,7 +283,6 @@ class TestDaytonaBulkDownload:
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
         assert "home/daytona/.hermes" in tar_cmd
 
-
 class TestDaytonaCleanup:
     """Verify Daytona cleanup() calls sync_back() before stop."""
 
@@ -323,9 +302,6 @@ class TestDaytonaCleanup:
         assert "stop" in call_order
         assert call_order.index("sync_back") < call_order.index("stop")
 
-
 # =====================================================================
 # FileSyncManager wiring: bulk_download_fn passed by each backend
 # =====================================================================
-
-

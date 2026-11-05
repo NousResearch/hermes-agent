@@ -16,7 +16,6 @@ import pytest
 
 import plugins.image_gen.deepinfra as deepinfra_plugin
 
-
 # 1×1 transparent PNG — valid bytes for save_b64_image()
 _PNG_HEX = (
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -24,12 +23,10 @@ _PNG_HEX = (
     "ae426082"
 )
 
-
 def _b64_png() -> str:
     import base64
 
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
-
 
 @pytest.fixture(autouse=True)
 def _isolation(tmp_path, monkeypatch):
@@ -39,12 +36,11 @@ def _isolation(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     yield
 
-
 def test_list_models_filters_by_image_gen_tag(monkeypatch):
     """Plugin-side wiring: list_models() returns only ``image-gen``-tagged
     catalog entries and surfaces pricing + default dims when present."""
     import json
-    import hermes_cli.models as models
+    from hermes_cli import models
 
     class _Resp:
         def __enter__(self): return self
@@ -67,7 +63,6 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
     assert ids == {"vendor/img"}
     img = next(row for row in rows if row["id"] == "vendor/img")
     assert "price" in img and img["default_width"] == 1024
-
 
 def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     """Happy path: pinned model → openai SDK called with DeepInfra
@@ -97,5 +92,3 @@ def test_generate_calls_openai_sdk_with_deepinfra_base_url(monkeypatch):
     assert "deepinfra" in captured["base_url"]
     assert captured["api_key"] == "test-key"
     assert captured["kwargs"]["model"] == "vendor/test-img"
-
-

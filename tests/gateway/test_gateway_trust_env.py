@@ -3,12 +3,10 @@ import pytest
 
 from gateway.platforms import base as gw_base
 
-
 def _write_config(tmp_path, monkeypatch, body: str) -> None:
     # load_config caches on (path, mtime) — a fresh tmp HERMES_HOME per test is a fresh cache key.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(body)
-
 
 @pytest.mark.parametrize(
     "yaml_body, expected",
@@ -25,7 +23,6 @@ def test_gateway_trust_env_reads_config(tmp_path, monkeypatch, yaml_body, expect
     assert (gw_base.resolve_proxy_url() is not None) is expected
     monkeypatch.setenv("X_PLATFORM_PROXY", "http://127.0.0.1:1080")
     assert gw_base.resolve_proxy_url("X_PLATFORM_PROXY") == "http://127.0.0.1:1080"
-
 
 class TestResolveProxyUrlMultiplexScope:
     """A secondary multiplex profile's own TELEGRAM_PROXY/DISCORD_PROXY/etc. must gate its
@@ -70,5 +67,3 @@ class TestResolveProxyUrlMultiplexScope:
         monkeypatch.delenv("NO_PROXY", raising=False)
         monkeypatch.delenv("no_proxy", raising=False)
         assert gw_base.resolve_proxy_url("DISCORD_PROXY") == "http://default-profile-proxy:8080"
-
-

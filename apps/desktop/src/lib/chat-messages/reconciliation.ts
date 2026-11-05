@@ -1,3 +1,4 @@
+import { attachmentTolerantUserText, sameAttachmentTurn } from './attachment-turn'
 import { chatMessageText } from './parts'
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -43,8 +44,13 @@ const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
 const userTurnMatch = (stored: ChatMessage, local: ChatMessage) =>
   stored.role === 'user' &&
   local.role === 'user' &&
-  normalizedTimelineText(stored) === normalizedTimelineText(local) &&
-  (stored.attachmentRefs ?? []).join('\n') === (local.attachmentRefs ?? []).join('\n')
+  ((normalizedTimelineText(stored) === normalizedTimelineText(local) &&
+    (stored.attachmentRefs ?? []).join('\n') === (local.attachmentRefs ?? []).join('\n')) ||
+    // A pasted attachment turn is rewritten on the durable side while the
+    // optimistic local row keeps the bare caption + a data: ref (#120978);
+    // the marker-gated tolerant compare bridges the two without ever
+    // matching a plain repeated prompt.
+    sameAttachmentTurn(stored, local))
 
 /**
  * Find the hydrated assistant representing a local failed tail turn.
@@ -97,6 +103,70 @@ const tailTurnAssistantMatchIndex = (
   }
 
   return storedMessages.findLastIndex(visibleAssistant)
+}
+
+/**
+ * #120978: find the hydrated assistant representing a rowId-less errored
+ * attachment turn whose user row cannot be matched exactly. The local user
+ * row directly before the errored assistant is compared tolerantly
+ * (attachment-rewrite gated) against every hydrated user row; the first
+ * settled assistant reply after the match is the durable twin of the failed
+ * turn. Returns -1 when no rewrite-marker pair exists — plain turns keep the
+ * conservative preserve path.
+ *
+ * #122079: two pastes of the SAME captioned screenshot strip to identical
+ * tolerant captions — the marker paths that tell them apart are removed by the
+ * compare — so a first-match fold pairs the second paste's error with the
+ * FIRST paste's settled reply. The pastes are ordered, so pair them by
+ * position: the n-th local captioned paste names the n-th stored one.
+ */
+const attachmentTurnAssistantMatchIndex = (
+  storedMessages: ChatMessage[],
+  localMessages: ChatMessage[],
+  localAssistantIndex: number
+) => {
+  const localUser = localMessages
+    .slice(0, localAssistantIndex)
+    .reverse()
+    .find(message => message.role === 'user' && !message.hidden)
+
+  if (!localUser) {
+    return -1
+  }
+
+  // How many same-tolerant-caption user rows precede the local one, prompt
+  // included: the ordinal of this paste among its caption twins.
+  const localCaption = attachmentTolerantUserText(chatMessageText(localUser))
+
+  const localCaptionOrdinal = localMessages
+    .slice(0, localMessages.indexOf(localUser))
+    .filter(
+      message => message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === localCaption
+    ).length
+
+  const matchingStoredUserIndices: number[] = []
+
+  storedMessages.forEach((stored, index) => {
+    if (stored.role === 'user' && sameAttachmentTurn(stored, localUser)) {
+      matchingStoredUserIndices.push(index)
+    }
+  })
+
+  if (matchingStoredUserIndices.length <= localCaptionOrdinal) {
+    return -1
+  }
+
+  const storedUserIndex = matchingStoredUserIndices[localCaptionOrdinal]
+
+  const reply = storedMessages
+    .slice(storedUserIndex + 1)
+    .find(message => message.role === 'assistant' && !message.hidden && !message.pending && !message.interim)
+
+  if (!reply) {
+    return -1
+  }
+
+  return storedMessages.indexOf(reply)
 }
 
 const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
@@ -183,14 +253,10 @@ interface PreservedRun {
   rows: ChatMessage[]
 }
 
-export function preserveLocalAssistantErrors(
-  nextMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
-): ChatMessage[] {
-  nextMessages = reconcileLocalAssistantTimeline(nextMessages, currentMessages)
+function mergeStoredAssistantErrors(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 
-  const mergedNextMessages = nextMessages.map(message => {
+  return nextMessages.map(message => {
     if (message.role !== 'assistant' || message.error || message.hidden) {
       return message
     }
@@ -208,32 +274,207 @@ export function preserveLocalAssistantErrors(
       pending: false
     }
   })
+}
 
-  const existingIds = new Set(mergedNextMessages.map(message => message.id))
+const normalizedMessageText = (message: ChatMessage): string => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
-  // Renderer ids are positional, so a hydrated page can carry a local row under
-  // a new id; its durable rowId still names the same row (#119326).
-  const hydratedIdByRowId = new Map(
+/**
+ * Older-rowId preserved runs (#120978): a kept run whose rows ALL carry
+ * rowIds older than every hydrated rowId belongs EARLIER in the transcript —
+ * the windowed page simply starts past them. Appending at the tail paints
+ * them below the newest turn; splice them in front of the first hydrated row
+ * newer than the whole run instead. Runs that do not qualify (rowId-less
+ * optimistic rows, rowIds interleaved with the hydrated page) keep the
+ * trailing behavior (#118002).
+ */
+export function spliceOlderPreservedRows(merged: ChatMessage[], preserved: ChatMessage[]): ChatMessage[] {
+  if (!preserved.length) {
+    return merged
+  }
+
+  const keptRowIds = preserved.map(row => row.rowId)
+
+  if (keptRowIds.some(id => id === undefined)) {
+    return [...merged, ...preserved]
+  }
+
+  const maxKept = Math.max(...(keptRowIds as number[]))
+  const hydratedRowIds = merged.flatMap(row => (row.rowId !== undefined ? [row.rowId] : []))
+
+  if (!hydratedRowIds.length || hydratedRowIds.some(id => id <= maxKept)) {
+    return [...merged, ...preserved]
+  }
+
+  const out = [...merged]
+  const at = out.findIndex(row => (row.rowId ?? -Infinity) > maxKept)
+
+  out.splice(at === -1 ? out.length : at, 0, ...preserved)
+
+  return out
+}
+
+// Renderer ids are positional, so a hydrated page can carry a local row under
+// a new id; its durable rowId still names the same row (#119326).
+function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMessage) => string | undefined {
+  const existingIds: Set<string> = new Set(mergedNextMessages.map(message => message.id))
+
+  const hydratedIdByRowId: Map<number, string> = new Map(
     mergedNextMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message.id] as const]))
   )
 
-  const hydratedIdFor = (message: ChatMessage): string | undefined =>
+  return (message: ChatMessage): string | undefined =>
     existingIds.has(message.id)
       ? message.id
       : message.rowId === undefined
         ? undefined
         : hydratedIdByRowId.get(message.rowId)
+}
+
+// A failed turn whose only user row is hidden (a scripted onboarding beat) has
+// no visible turn to anchor on, but its bubble still holds the tool calls the
+// store already has: the stored assistant sharing one is the bubble's copy.
+function toolCallTwinIndex(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  localIndex: number
+): number {
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+
+  const callIds = new Set(
+    currentMessages[localIndex].parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+  )
+
+  if (
+    !callIds.size ||
+    currentMessages.slice(localIndex + 1).some(visibleUser) ||
+    currentMessages.slice(0, localIndex).filter(visibleUser).length !== mergedNextMessages.filter(visibleUser).length
+  ) {
+    return -1
+  }
+
+  const turnStart = mergedNextMessages.findLastIndex(visibleUser) + 1
+
+  const twin = mergedNextMessages
+    .slice(turnStart)
+    .findLastIndex(
+      message =>
+        message.role === 'assistant' &&
+        !message.hidden &&
+        message.parts.some(part => part.type === 'tool-call' && callIds.has(part.toolCallId))
+    )
+
+  return twin === -1 ? -1 : turnStart + twin
+}
+
+// The refresh already carries this tail turn's error card, rebuilt from its
+// failed-turn boundary row (see hydration `failedTurnError`).
+function persistedTailErrorMatches(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  localIndex: number
+): boolean {
+  const local = currentMessages[localIndex]
+  const visibleUser = (message: ChatMessage) => message.role === 'user' && !message.hidden
+
+  if (currentMessages.slice(localIndex + 1).some(visibleUser)) {
+    return false
+  }
+
+  const storedUserIndex = mergedNextMessages.findLastIndex(visibleUser)
+
+  return mergedNextMessages
+    .slice(storedUserIndex + 1)
+    .some(
+      message =>
+        message.role === 'assistant' &&
+        !message.hidden &&
+        Boolean(message.error) &&
+        message.errorSurface?.code === local.errorSurface?.code
+    )
+}
+
+/**
+ * Where the refresh already holds a local failed assistant: the index of the
+ * stored assistant to fold its error onto, `represented` when the refresh
+ * carries the error card itself, or -1 when the turn is not stored.
+ */
+function storedFailedTurnIndex(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  index: number,
+  hydratedId: string | undefined
+): number | 'represented' {
+  const hydratedIndex =
+    hydratedId === undefined
+      ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+      : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
+
+  if (hydratedIndex !== -1) {
+    return hydratedIndex
+  }
+
+  // #120978: a rowId-less errored attachment turn cannot be matched by rowId
+  // and the tail-anchor match bails when newer turns already committed. The
+  // preceding local user row's caption, compared tolerantly against every
+  // hydrated user row, still names the turn: fold the error onto the first
+  // settled assistant reply after that row.
+  const attachmentIndex = attachmentTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+
+  if (attachmentIndex !== -1) {
+    return attachmentIndex
+  }
+
+  // #124379: the refresh already carries this tail turn's error card, rebuilt
+  // from its failed-turn boundary row — the local card is redundant, not missing.
+  if (persistedTailErrorMatches(mergedNextMessages, currentMessages, index)) {
+    return 'represented'
+  }
+
+  return toolCallTwinIndex(mergedNextMessages, currentMessages, index)
+}
+
+function localAssistantErrorIdsToPreserve(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): Set<string> {
+  const existingIds = new Set(mergedNextMessages.map(message => message.id))
+  const hydratedIdFor: (message: ChatMessage) => string | undefined = hydratedIdResolver(mergedNextMessages)
 
   const preserveIds = new Set<string>()
-  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
   const tailUserInNext = [...mergedNextMessages].reverse().find(message => message.role === 'user' && !message.hidden)
-  const tailUserText = tailUserInNext ? normalize(chatMessageText(tailUserInNext)) : ''
+  const tailUserText = tailUserInNext ? normalizedMessageText(tailUserInNext) : ''
   const tailUserRefs = tailUserInNext ? (tailUserInNext.attachmentRefs ?? []).join('\n') : ''
 
-  const matchesTailUserInNext = (candidate: ChatMessage) =>
+  // A pasted attachment is rewritten on the durable side (marker lines + injected
+  // memory-context) while the optimistic local row keeps the bare caption and a
+  // data: ref, with no rowId to bridge them (#120978). The tolerant arm is
+  // gated on rewrite markers + local attachment evidence so plain repeats are
+  // never swallowed.
+  //
+  // #122079: two pastes of the SAME caption strip to identical tolerant
+  // captions, so an untethered tolerant claim drops the SECOND paste's prompt
+  // as "already represented" by the FIRST paste's committed row — an orphaned
+  // error bubble. Only the same paste-ordinal is the same turn.
+  const tailUserTolerantText = tailUserInNext ? attachmentTolerantUserText(chatMessageText(tailUserInNext)) : ''
+
+  const captionOrdinal = (messages: ChatMessage[], target: ChatMessage): number =>
+    messages
+      .slice(0, messages.indexOf(target))
+      .filter(
+        message =>
+          message.role === 'user' && attachmentTolerantUserText(chatMessageText(message)) === tailUserTolerantText
+      ).length
+
+  const tailCaptionOrdinal = tailUserInNext ? captionOrdinal(mergedNextMessages, tailUserInNext) : 0
+
+  const matchesTailUserInNext = (candidate: ChatMessage): boolean =>
     Boolean(tailUserInNext) &&
-    normalize(chatMessageText(candidate)) === tailUserText &&
-    (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs
+    ((normalizedMessageText(candidate) === tailUserText &&
+      (candidate.attachmentRefs ?? []).join('\n') === tailUserRefs) ||
+      (tailUserInNext
+        ? sameAttachmentTurn(tailUserInNext, candidate) &&
+          captionOrdinal(currentMessages, candidate) === tailCaptionOrdinal
+        : false))
 
   for (let index = 0; index < currentMessages.length; index += 1) {
     const message = currentMessages[index]
@@ -244,14 +485,15 @@ export function preserveLocalAssistantErrors(
 
     const hydratedId = hydratedIdFor(message)
 
-    const hydratedAssistantIndex =
-      hydratedId === undefined
-        ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
-        : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
+    const twinIndex = storedFailedTurnIndex(mergedNextMessages, currentMessages, index, hydratedId)
 
-    if (hydratedAssistantIndex !== -1) {
-      mergedNextMessages[hydratedAssistantIndex] = {
-        ...mergedNextMessages[hydratedAssistantIndex],
+    if (twinIndex === 'represented') {
+      continue
+    }
+
+    if (twinIndex !== -1) {
+      mergedNextMessages[twinIndex] = {
+        ...mergedNextMessages[twinIndex],
         error: message.error,
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         pending: false
@@ -277,15 +519,25 @@ export function preserveLocalAssistantErrors(
     }
   }
 
+  return preserveIds
+}
+
+function insertPreservedErrorRuns(
+  mergedNextMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+  preserveIds: Set<string>
+): ChatMessage[] {
   if (preserveIds.size === 0) {
     return mergedNextMessages
   }
+
+  const hydratedIdFor: (message: ChatMessage) => string | undefined = hydratedIdResolver(mergedNextMessages)
 
   // Put each run of kept rows back after the refreshed row that preceded it
   // locally instead of below newer turns. When the refresh already fills that
   // gap with the same role/text sequence, the turn was stored under new ids.
   // A run with no refreshed successor stays trailing. #118002
-  const label = (message: ChatMessage) => `${message.role}:${normalize(chatMessageText(message))}`
+  const label = (message: ChatMessage): string => `${message.role}:${normalizedMessageText(message)}`
   const runs: PreservedRun[] = []
   let anchor: string | undefined
 
@@ -323,10 +575,88 @@ export function preserveLocalAssistantErrors(
     keptAfter.set(after, [...(keptAfter.get(after) ?? []), ...rows])
   }
 
-  return [
-    ...mergedNextMessages.flatMap(message => [message, ...(keptAfter.get(message.id) ?? [])]),
-    ...(keptAfter.get(undefined) ?? [])
-  ]
+  return spliceOlderPreservedRows(
+    mergedNextMessages.flatMap(message => [message, ...(keptAfter.get(message.id) ?? [])]),
+    keptAfter.get(undefined) ?? []
+  )
+}
+
+export function preserveLocalAssistantErrors(
+  nextMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const reconciled: ChatMessage[] = reconcileLocalAssistantTimeline(nextMessages, currentMessages)
+  const merged: ChatMessage[] = mergeStoredAssistantErrors(reconciled, currentMessages)
+  const preserveIds: Set<string> = localAssistantErrorIdsToPreserve(merged, currentMessages)
+
+  return insertPreservedErrorRuns(merged, currentMessages, preserveIds)
+}
+
+/**
+ * A transcript line only this window drew, never stored: every renderer-made
+ * `system` row (slash output and the /btw and /bg echoes, the btw.complete and
+ * background.complete answers, fallback-switch, deferred-compress,
+ * approval-timeout and self-improvement review notices). A stored row owns a
+ * `rowId`, so no page read can bring one of these back.
+ */
+export function isLocalSystemNotice(message: ChatMessage): boolean {
+  return message.role === 'system' && message.rowId === undefined
+}
+
+/** Index in `messages` of the row `held` is, by id or stored row. */
+function heldRowIndex(messages: ChatMessage[], held: ChatMessage): number {
+  return messages.findIndex(
+    message => message.id === held.id || (held.rowId !== undefined && message.rowId === held.rowId)
+  )
+}
+
+/**
+ * Re-graft client-local `system` notices (see `isLocalSystemNotice`):
+ * refreshes rebuild from stored rows, which never carry them, so the notice
+ * vanished on the next refresh (#126422). A notice keeps its place in front of
+ * the next row the refreshed transcript still holds, so a /btw answer that
+ * landed mid-turn survives the steer that puts later rows below it. Trailing
+ * notices go at the end; one whose later rows the refresh no longer holds at
+ * all (compaction, rewind) goes with them. Idempotent by id and text.
+ */
+export function preserveLocalSystemNotices(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const nextTexts = new Set(nextMessages.map(message => chatMessageText(message).trim()))
+
+  const missing = (message: ChatMessage) =>
+    isLocalSystemNotice(message) && !nextIds.has(message.id) && !nextTexts.has(chatMessageText(message).trim())
+
+  if (!currentMessages.some(missing)) {
+    return nextMessages
+  }
+
+  const merged = [...nextMessages]
+  let pending: ChatMessage[] = []
+  // Leading part of `pending` already followed by a row the refresh dropped.
+  let orphaned = 0
+
+  for (const message of currentMessages) {
+    if (missing(message)) {
+      pending.push(message)
+
+      continue
+    }
+
+    const at = pending.length ? heldRowIndex(merged, message) : -1
+
+    if (at >= 0) {
+      merged.splice(at, 0, ...pending)
+      pending = []
+      orphaned = 0
+    } else if (message.role !== 'system') {
+      orphaned = pending.length
+    }
+  }
+
+  const trailing = pending.slice(orphaned)
+  const preserved = trailing.length ? [...merged, ...trailing] : merged
+
+  return preserved.length === nextMessages.length ? nextMessages : preserved
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

@@ -23,7 +23,11 @@ def _make_phase_runner(monkeypatch, events):
 
     loop_thread = threading.current_thread()
 
-    def _fake_kill_all(task_id=None):
+    def _fake_kill_all(task_id=None, **kwargs):
+        # kwargs carry kill_all's keyword-only args (source, consume_output);
+        # the shutdown sweep passes source="gateway_shutdown" so a
+        # persist_on_release job (#41225) is still reached on host exit.
+        assert kwargs.get("source") == "gateway_shutdown", kwargs
         events.append(("kill_all", threading.current_thread()))
         return 2
 
@@ -39,7 +43,7 @@ def _make_phase_runner(monkeypatch, events):
         lambda: events.append(("cleanup_envs", threading.current_thread())),
     )
     monkeypatch.setattr(
-        "tools.browser_tool_lifecycle.cleanup_all_browsers",
+        "tools.browser_session_lifecycle.cleanup_all_browsers",
         lambda: events.append(("cleanup_browsers", threading.current_thread())),
     )
     return runner, loop_thread

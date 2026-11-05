@@ -6,8 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
-
+import hermes_yaml as yaml
 
 # ---------------------------------------------------------------------------
 # Shared fixture — isolate HERMES_HOME so save_config writes to tmp_path
@@ -20,16 +19,13 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     return tmp_path
 
-
 def _write_config(home: Path, data: dict) -> None:
     config_path = home / ".hermes" / "config.yaml"
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
-
 def _read_config(home: Path) -> dict:
     config_path = home / ".hermes" / "config.yaml"
     return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-
 
 # ---------------------------------------------------------------------------
 # _read_chain / _write_chain
@@ -50,14 +46,12 @@ class TestReadChain:
             {"provider": "nous", "model": "Hermes-4-Llama-3.1-405B"},
         ]
 
-
     def test_returns_copies_not_aliases(self):
         from hermes_cli.fallback_cmd import _read_chain
         cfg = {"fallback_providers": [{"provider": "nous", "model": "foo"}]}
         result = _read_chain(cfg)
         result[0]["provider"] = "mutated"
         assert cfg["fallback_providers"][0]["provider"] == "nous"
-
 
 # ---------------------------------------------------------------------------
 # _extract_fallback_from_model_cfg
@@ -72,11 +66,9 @@ class TestExtractFallback:
             "model": "anthropic/claude-sonnet-4.6",
         }
 
-
     def test_returns_none_without_model(self):
         from hermes_cli.fallback_cmd import _extract_fallback_from_model_cfg
         assert _extract_fallback_from_model_cfg({"provider": "openrouter"}) is None
-
 
 # ---------------------------------------------------------------------------
 # cmd_fallback_list
@@ -99,7 +91,6 @@ class TestListCommand:
         assert "Hermes-4" in out
         # Primary should be shown too
         assert "claude-sonnet-4-6" in out
-
 
 # ---------------------------------------------------------------------------
 # cmd_fallback_add — mock select_provider_and_model
@@ -141,7 +132,6 @@ class TestAddCommand:
                 "api_mode": "chat_completions",
             }
         ]
-
 
     def test_add_rejects_same_as_primary(self, isolated_home):
         _write_config(isolated_home, {
@@ -275,7 +265,6 @@ class TestAddCommand:
         assert persisted["model"] == primary_model
         assert persisted["theme"] == "midnight"
 
-
 # ---------------------------------------------------------------------------
 # cmd_fallback_remove
 # ---------------------------------------------------------------------------
@@ -302,7 +291,6 @@ class TestRemoveCommand:
             {"provider": "anthropic", "model": "claude-sonnet-4-6"},
         ]
 
-
 # ---------------------------------------------------------------------------
 # cmd_fallback_clear
 # ---------------------------------------------------------------------------
@@ -323,13 +311,11 @@ class TestClearCommand:
         cfg = _read_config(isolated_home)
         assert cfg.get("fallback_providers") == []
 
-
 # ---------------------------------------------------------------------------
 # cmd_fallback dispatcher
 # ---------------------------------------------------------------------------
 
 class TestDispatcher:
-
 
     def test_unknown_subcommand_exits(self, isolated_home):
         _write_config(isolated_home, {})
@@ -337,8 +323,6 @@ class TestDispatcher:
         with pytest.raises(SystemExit):
             cmd_fallback(types.SimpleNamespace(fallback_command="nope"))
 
-
 # ---------------------------------------------------------------------------
 # argparse wiring — verify the subparser is registered
 # ---------------------------------------------------------------------------
-

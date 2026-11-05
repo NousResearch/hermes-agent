@@ -23,14 +23,16 @@ import {
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
+import { recordAction } from '@/store/desktop-metrics'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -76,26 +78,26 @@ import {
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
+  $profileColors,
   $profiles,
   $profileScope,
+  type AgentProfileRoute,
   ALL_PROFILES,
   messagingTotalsKey,
   normalizeProfileKey,
   sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
   $projectOwnerBySessionId,
   $projects,
-  $projectScope,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
-  ALL_PROJECTS,
   enterProject,
-  exitProjectScope,
   followEnteredProjectCwd,
   openProjectCreate,
   refreshProjects,
@@ -120,18 +122,21 @@ import {
   $messagingTruncated,
   $sessionProfilesTruncated,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
   sessionPinId
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
+import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -149,14 +154,15 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
-import { useGatewaySessionGroups } from './gateway-group-model'
+import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
-import { resolveLiveProjectFilter } from './project-filter'
+import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
+  enteredProjectLiveRows,
   excludeProjectSessions,
   orderProjectsByIds,
   overlayLiveLanes,
@@ -165,7 +171,6 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
-  reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
@@ -173,10 +178,12 @@ import {
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useGatewayProjectTree,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
+  hasSessionArea,
   SidebarBlankState,
   SidebarLoadErrorState,
   SidebarPinnedEmptyState,
@@ -187,6 +194,7 @@ import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
+import { useServerSessionSearch } from './use-server-session-search'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
 // front, reveal more in larger steps on demand. Keeps a busy platform from
@@ -287,7 +295,13 @@ export function stripFtsMarkers(snippet: string): string {
   return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
 }
 
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
+// The backend already ships the real session title on every search hit
+// (web_routers/sessions.py add_lineage_result enriches each result via
+// get_session_rich_row). Map it onto the synthesized row so the sidebar
+// paints the actual name; the snippet stays as the preview. Untitled
+// sessions keep today's snippet fallback via sessionTitle().
+// Exported for tests.
+export function searchResultToSession(result: SessionSearchResult): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
@@ -305,7 +319,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
     source: result.source ?? null,
     started_at: ts,
-    title: null,
+    title: result.title?.trim() || null,
     tool_call_count: 0
   }
 }
@@ -364,12 +378,13 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
+  onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
-  onNewSessionInWorkspace: (path: null | string) => void
+  onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
    *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
@@ -385,6 +400,7 @@ export function ChatSidebar({
   currentView: routeView,
   onNavigate,
   onLoadMoreSessions,
+  onRetrySessions,
   onLoadMoreMessaging,
   onResumeSession,
   onDeleteSession,
@@ -429,9 +445,15 @@ export function ChatSidebar({
   const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
+  // Nav preferences (`sidebarNav.prefs` contributions): a plugin may hide rows
+  // or re-order them. Merged here, at render, from the registry — so the
+  // preference never mutates the default list, and a plugin's disable/reload
+  // disposes its contribution and the rows come straight back.
+  const navPrefs = useContributions(SIDEBAR_NAV_PREFS_AREA)
+
   const navItems = useMemo(
-    () => [...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)),
-    [contributedNav, interfaceMode]
+    () => applySidebarNavPrefs([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), navPrefs),
+    [contributedNav, interfaceMode, navPrefs]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -471,6 +493,7 @@ export function ChatSidebar({
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
+  const sessionsLoadError = useStore($sessionsLoadError)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
@@ -526,8 +549,6 @@ export function ChatSidebar({
   const newSessionCombo = useStore($bindings)['session.new']?.[0]
   const newSessionKbd = newSessionCombo ? comboTokens(newSessionCombo) : []
   const [searchQuery, setSearchQuery] = useState('')
-  const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
-  const [searchPending, setSearchPending] = useState(false)
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
   const [recentsLoadMorePending, setRecentsLoadMorePending] = useState(false)
@@ -723,41 +744,7 @@ export function ChatSidebar({
     [isPinnedSession, filtersNarrow, sessionMatchesFilters]
   )
 
-  // Full-text search across *all* sessions (not just the loaded page) so 699
-  // sessions stay findable. Debounced; loaded sessions are matched instantly
-  // client-side and merged ahead of the server hits.
-  useEffect(() => {
-    if (!trimmedQuery) {
-      setServerMatches([])
-      setSearchPending(false)
-
-      return
-    }
-
-    let cancelled = false
-
-    setSearchPending(true)
-
-    const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
-        .then(res => {
-          if (!cancelled) {
-            setServerMatches(res.results)
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled) {
-            setSearchPending(false)
-          }
-        })
-    }, 200)
-
-    return () => {
-      cancelled = true
-      window.clearTimeout(id)
-    }
-  }, [trimmedQuery])
+  const { searchPending, serverMatches } = useServerSessionSearch(trimmedQuery, profileScope)
 
   const searchResults = useMemo(
     () => mergeSearchResults(sortedSessions, trimmedQuery, serverMatches, sessionByAnyId, searchPending),
@@ -791,11 +778,11 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  // Recents render in recency order. The hand-picked order is layered on per
-  // date group inside the section (orderRowsWithinGroups) rather than baked
-  // into the list here, so a drag ranks a row among its own day's chats
-  // instead of flattening the whole sidebar into an undated manual mode.
+  // Recents render in recency order. The hand-picked order is layered on per date group inside the
+  // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
+  // among its own day's chats instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
+  const { owners, ownerKey, tree: gatewayProjectTree } = useGatewayProjectTree(projectTree, agentSessions)
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -999,10 +986,10 @@ export function ChatSidebar({
   // `projects.tree` already unifies explicit projects + auto repos and folds
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
-  // overview sort. Membership is the backend tree's — never re-derived here.
+  // overview sort. Membership is the backend tree's (plus other gateways' rows), never re-derived.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterVisibleProjects(projectTree, dismissedAutoProjects)
+      filterToSessionBearingProjects(filterVisibleProjects(gatewayProjectTree, dismissedAutoProjects))
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -1021,12 +1008,22 @@ export function ChatSidebar({
       activeProjectId
     )
 
-    // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
-    // keep their sorted position rather than jumping the hand-picked list.
-    return orderProjectsByIds(sorted, projectOrderIds)
+    // Manual drag-order over the sorted list; dedupe by id (Windows path casing across profiles).
+    const seen = new Set<string>()
+
+    const deduped = sorted.filter(project => {
+      if (seen.has(project.id)) {
+        return false
+      }
+
+      seen.add(project.id)
+
+      return true
+    })
+
+    return orderProjectsByIds(deduped, projectOrderIds)
   }, [
-    projectTree,
+    gatewayProjectTree,
     dismissedAutoProjects,
     orderRepos,
     activeProjectId,
@@ -1090,8 +1087,8 @@ export function ChatSidebar({
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
   const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
+    () => enteredProjectLiveRows(overviewEnteredProject, agentSessions, owners),
+    [agentSessions, overviewEnteredProject, owners]
   )
 
   // Overlay live `$sessions` onto the entered project so a just-created session
@@ -1104,9 +1101,9 @@ export function ChatSidebar({
   const enteredProjectContent = useMemo(
     () =>
       enteredProject
-        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners)
+        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey)
         : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners]
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1117,7 +1114,7 @@ export function ChatSidebar({
 
   // git worktree list is a VISUAL-only enhancer (empty lanes); never membership.
   const inEnteredProject = Boolean(enteredProject && !showAllProfiles)
-  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject)
+  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject, enteredProject)
 
   // Re-probe worktree lanes on out-of-band git changes the renderer can't see.
   // A turn can `git worktree add/remove` in the terminal (e.g. you ask Hermes to
@@ -1212,13 +1209,14 @@ export function ChatSidebar({
         projects,
         showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
         {
+          ownerKey,
           removed: removedSessionIds,
           // Rank before the trim, so "3 priciest in this project" isn't "3 most
           // recent, priciest first".
           rankIds: sortOrderIds
         }
       ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions, ownerKey]
   )
 
   // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —
@@ -1255,11 +1253,21 @@ export function ChatSidebar({
     [projectModel, syncProjectCwd]
   )
 
-  // The Sessions section is a project switcher in grouped mode: its label reads
-  // "Sessions" when flat, "Projects" at the overview, and the project's name
-  // once you've entered one.
+  // The section header must name what the section is showing. Grouped mode
+  // reads "Projects" only while there IS a project switcher to show: a real
+  // project row, or a tree still resolving (the loading state keeps the label
+  // stable instead of flapping to "Sessions" and back). The synthetic Home
+  // bucket alone is just the flat session list wearing a project costume —
+  // with no real projects the section lists plain chat sessions, so it keeps
+  // the "Sessions" label (#62537).
+  const hasProjectRows = projectModel.some(node => !node.isNoProject)
+
   const sessionsLabel =
-    inProject && enteredProject ? enteredProject.label : worktreeGroupingActive ? s.projects.sectionLabel : s.sessions
+    inProject && enteredProject
+      ? enteredProject.label
+      : worktreeGroupingActive && (hasProjectRows || projectTreeLoading)
+        ? s.projects.sectionLabel
+        : s.sessions
 
   // Mirror the section's skeleton gate (projectsLoading + nothing to show yet):
   // while the skeleton is up there's no point also spinning the header count.
@@ -1359,7 +1367,12 @@ export function ChatSidebar({
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
   }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
-  const profileGroups = useGatewaySessionGroups(agentSessions, profileScope === ALL_PROFILES && grouping === 'profile')
+  // Recents and every messaging platform resolve owner groups the same way
+  // ([connectionId, profile]), so a platform's groups line up with recents.
+  const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
+  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped, filtersNarrow)
+  const connectionsRegistry = useStore($connectionsRegistry)
+  const profileColors = useStore($profileColors)
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1496,10 +1509,14 @@ export function ChatSidebar({
   // every background refresh instead of the empty state.
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
 
-  // Filtered down to nothing still renders the section: the empty state is what
-  // tells you the filter — not an empty account — is why the list is bare.
-  const showSessionSections =
-    showSessionSkeletons || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
+  const showSessionSections = hasSessionArea({
+    cronJobs: showsAdvancedChrome ? cronJobs.length : 0,
+    loading: showSessionSkeletons || Boolean(sessionsLoadError) || filtersActive,
+    messaging: messagingGroups.length,
+    profileGroups: profileGroups?.length ?? 0,
+    projects: projectModel.length,
+    sessions: sortedSessions.length
+  })
 
   // The sidebar's session-area mode — exposed as data-attributes so custom
   // skins can target project mode (overview vs. entered), archived, or search
@@ -1595,6 +1612,10 @@ export function ChatSidebar({
                       // change which profile that is.
                       if (isNewSession) {
                         $newChatProfile.set(null)
+                      }
+
+                      if (item.keybindActionId) {
+                        recordAction(item.keybindActionId, 'click')
                       }
 
                       onNavigate(item)
@@ -1742,7 +1763,7 @@ export function ChatSidebar({
                 card={cardRows}
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
-                emptyState={<SidebarPinnedEmptyState />}
+                emptyState={<SidebarPinnedEmptyState archived={showArchived} filtered={filtersNarrow} />}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
@@ -1789,6 +1810,8 @@ export function ChatSidebar({
                 emptyState={
                   inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
+                  ) : !inProject && sessionsLoadError ? (
+                    <SidebarLoadErrorState onRetry={() => void onRetrySessions()} />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                       {inProject
@@ -1849,7 +1872,7 @@ export function ChatSidebar({
                     )}
                     {inProject && enteredProject ? (
                       <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                        {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
+                        {enteredProject.path && <StartWorkButton project={enteredProject} />}
                         {/* Home has no folder and no record to rename, theme, or delete. */}
                         {!enteredProject.isNoProject && (
                           <ProjectMenu
@@ -1966,10 +1989,20 @@ export function ChatSidebar({
                 // still has older threads on disk.
                 const canRevealMore = visible < group.sessions.length || group.hasMore
 
+                // Group only what the cap lets through, so the footer's count
+                // and load-more stay about the platform, not one of its groups.
+                const ownerGroups = ownerGrouped
+                  ? scopeGatewaySessionGroups(
+                      buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
+                      `messaging:${group.sourceId}`
+                    )
+                  : undefined
+
                 return (
                   <SidebarSessionsSection
                     activeSessionId={activeSidebarSessionId}
                     contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                    embeddedGroups
                     emptyState={null}
                     footer={
                       canRevealMore ? (
@@ -1980,6 +2013,7 @@ export function ChatSidebar({
                         />
                       ) : null
                     }
+                    groups={ownerGroups}
                     key={group.sourceId}
                     label={group.label}
                     labelIcon={
@@ -1999,6 +2033,7 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
+                    showProfileTags={showAllProfiles && !ownerGrouped}
                   />
                 )
               })}

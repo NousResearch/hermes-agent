@@ -21,10 +21,8 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
@@ -42,7 +40,6 @@ def _clear_caches():
     model_metadata._endpoint_model_metadata_cache_time.clear()
     model_metadata._LOCAL_CTX_PROBE_CACHE.clear()
 
-
 def _client_mock(side_effect):
     client = MagicMock()
     client.__enter__ = lambda s: client
@@ -51,9 +48,7 @@ def _client_mock(side_effect):
     client.post.side_effect = side_effect
     return client
 
-
 class TestBlackholeCache:
-
 
     def test_keyed_on_host_port_not_path(self):
         """Every probe path for one server shares a single entry."""
@@ -90,7 +85,6 @@ class TestBlackholeCache:
         _note_endpoint_blackholed("http://10.0.0.9:30080/v1")
         with patch.object(model_metadata, "_ENDPOINT_BLACKHOLE_TTL_SECONDS", 0.0):
             assert _endpoint_blackholed("http://10.0.0.9:30080/v1") is False
-
 
 class TestDetectLocalServerTypeBlackhole:
     URL = "http://10.0.0.9:30080/v1"
@@ -141,7 +135,6 @@ class TestDetectLocalServerTypeBlackhole:
 
         assert _endpoint_blackholed(self.URL) is False
 
-
 class TestFetchEndpointModelMetadataBlackhole:
     URL = "http://10.0.0.9:30080/v1"
 
@@ -151,8 +144,8 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.requests.get",
-                 side_effect=requests.exceptions.ConnectTimeout("timed out"),
+                 "agent.model_metadata.model_metadata_http.stream",
+                 side_effect=httpx.ConnectTimeout("timed out"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
 
@@ -164,8 +157,8 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch(
-                 "agent.model_metadata.requests.get",
-                 side_effect=requests.exceptions.ConnectionError("refused"),
+                 "agent.model_metadata.model_metadata_http.stream",
+                 side_effect=httpx.ConnectError("refused"),
              ) as get:
             assert fetch_endpoint_model_metadata(self.URL) == {}
 
@@ -178,11 +171,10 @@ class TestFetchEndpointModelMetadataBlackhole:
 
         _note_endpoint_blackholed(self.URL)
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("agent.model_metadata.requests.get") as get:
+             patch("agent.model_metadata.model_metadata_http.stream") as get:
             assert fetch_endpoint_model_metadata(self.URL, force_refresh=True) == {}
 
         get.assert_not_called()
-
 
 class TestQueryOllamaApiShowBlackhole:
     URL = "http://10.0.0.9:30080/v1"
@@ -214,7 +206,6 @@ class TestQueryOllamaApiShowBlackhole:
             assert _query_ollama_api_show_uncached("some-model", self.URL) is None
 
         assert _endpoint_blackholed(self.URL) is False
-
 
 class TestQueryLocalContextLengthBlackhole:
     URL = "http://10.0.0.9:30080/v1"
@@ -259,5 +250,3 @@ class TestQueryLocalContextLengthBlackhole:
             assert _query_local_context_length_uncached("some-model", self.URL) is None
 
         assert _endpoint_blackholed(self.URL) is False
-
-

@@ -24,7 +24,7 @@ from hermes_cli.web_server_memory import (
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
-    STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
+    STORAGE_HONCHO_HOST_BLOCK, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -36,7 +36,6 @@ get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
-_dependency_importable = late("_dependency_importable", "hermes_cli.web_server_memory")
 load_env = late("load_env", "hermes_cli.config")
 # Sentinel: remove this key so it falls back to the host or built-in default.
 _UNSET: Any = object()
@@ -103,12 +102,12 @@ def _coerce_field_value(field: ProviderField, raw: str) -> Any:
     return value
 
 
-def _read_json_dict(path: Path, what: str) -> Dict[str, Any]:
+def _read_json_dict(path: Path, what: str) -> dict[str, Any]:
     """Read a JSON object from ``path``; missing/unreadable/non-dict -> ``{}``."""
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         _log.warning("Failed to read %s from %s", what, path, exc_info=True)
         return {}
@@ -119,7 +118,7 @@ def _flat_json_path(provider: ProviderConfigSchema) -> Path:
     return get_hermes_home() / provider.name / "config.json"
 
 
-def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
+def _read_flat_json(provider: ProviderConfigSchema) -> dict[str, Any]:
     return _read_json_dict(_flat_json_path(provider), "memory provider config")
 
 
@@ -132,32 +131,43 @@ def _honcho_resolvers(name: str):
     return client.resolve_active_host, client.resolve_config_path, client._host_block
 
 
-def _save_submitted_secrets(provider: ProviderConfigSchema, values: Dict[str, str]) -> list:
+def _provider_instance(provider: ProviderConfigSchema):
+    """The loaded provider behind a ``STORAGE_PROVIDER`` schema (it owns its config layout)."""
+    instance = _load_memory_provider(provider.name, register_skills=False)  # the panel never registers skills
+    if instance is None:
+        raise _unknown_provider(provider.name)
+    return instance
+
+
+def _submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
+    """The ``(field, submitted)`` pairs of each non-blank secret submission."""
+    pairs = ((field, (values.get(field.key) or "").strip()) for field in provider.fields if field.is_secret)
+    return [(field, submitted) for field, submitted in pairs if submitted]
+
+
+def _save_submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
     """Persist each non-blank secret submission to the env store (when the field has an
     ``env_key``); return the ``(field, submitted)`` pairs for backend-specific handling."""
-    saved = []
-    for field in provider.fields:
-        submitted = (values.get(field.key) or "").strip() if field.is_secret else ""
-        if not submitted:
-            continue
+    saved = _submitted_secrets(provider, values)
+    for field, submitted in saved:
         if field.env_key:
             save_env_value(field.env_key, submitted)
-        saved.append((field, submitted))
     return saved
 
 
-def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
+def _apply_field_values(provider: ProviderConfigSchema, values: dict[str, str], target_for) -> None:
     """Apply submitted non-secret fields to their backend dict, in place.
 
     Only keys present in ``values`` are touched, so a partial save never
     clobbers fields owned by another surface. ``_UNSET`` clears the key (and
     its aliases) so it falls back to the host/default mapping.
     """
+    natives = _submitted_natives(provider, values)
     for field in provider.fields:
-        if field.is_secret or field.key not in values:
+        if field.key not in natives:
             continue
         target = target_for(field)
-        coerced = _coerce_field_value(field, values[field.key])
+        coerced = natives[field.key]
         if coerced is _UNSET:
             for key in (field.key, *field.aliases):
                 target.pop(key, None)
@@ -165,21 +175,37 @@ def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], 
             target[field.key] = coerced
 
 
-def _write_json_0600(path: Path, data: Dict[str, Any]) -> None:
+def _write_json_0600(path: Path, data: dict[str, Any]) -> None:
     from utils import atomic_json_write
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, mode=0o600)
 
 
-def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+def _submitted_natives(provider: ProviderConfigSchema, values: dict[str, str]) -> dict[str, Any]:
+    """The submitted non-secret fields as natives, ``_UNSET`` for a cleared one (only keys present in
+    ``values``, so a partial save never clobbers fields owned by another surface)."""
+    return {field.key: _coerce_field_value(field, values[field.key])
+            for field in provider.fields if not field.is_secret and field.key in values}
+
+
+def _write_provider_own(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
+    """Hand the submitted fields to the provider's ``write_config_fields`` (natives, ``None`` = clear,
+    non-blank secrets included); secrets reach ``.env`` only once the provider accepted the write."""
+    fields: dict[str, Any] = {field.key: submitted for field, submitted in _submitted_secrets(provider, values)}
+    fields.update({k: None if v is _UNSET else v for k, v in _submitted_natives(provider, values).items()})
+    _provider_instance(provider).write_config_fields(fields, str(get_hermes_home()))
+    _save_submitted_secrets(provider, values)
+
+
+def _write_provider_flat(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
     existing = _read_flat_json(provider)
     _save_submitted_secrets(provider, values)
     _apply_field_values(provider, values, lambda field: existing)
     _write_json_0600(_flat_json_path(provider), existing)
 
 
-def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+def _write_provider_honcho(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
     """Persist submitted fields to Honcho's real config for the active host (partial
     saves touch only submitted keys; blank text clears a key — see ``_apply_field_values``)."""
     from plugins.memory import import_provider_module
@@ -224,7 +250,7 @@ def _serialize_field_value(field: ProviderField, value: Any) -> str:
     return str(value)
 
 
-def _read_field(field: ProviderField, sources: tuple, env: Dict[str, str]) -> Any:
+def _read_field(field: ProviderField, sources: tuple, env: dict[str, str]) -> Any:
     """Stored native value from the first source holding it, else ``None``.
 
     Presence (``key in source``) decides, not truthiness, so a stored ``False``
@@ -240,49 +266,60 @@ def _read_field(field: ProviderField, sources: tuple, env: Dict[str, str]) -> An
     return None
 
 
-def _declared_field_is_set(field: ProviderField, sources: tuple, env: Dict[str, str]) -> bool:
+def _declared_field_is_set(field: ProviderField, sources: tuple, env: dict[str, str]) -> bool:
     if any(env_key and env.get(env_key) for env_key in (field.env_key, *field.env_fallbacks)):
         return True
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
-def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
+def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]:
     env = load_env()
     is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
-    if is_honcho:
+    # A provider-owned layout reports presence (a stored False/0 is set), like the host block.
+    own = provider.storage == STORAGE_PROVIDER
+    placeholders: dict[str, Any] = {}
+    if own:
+        stored = _provider_instance(provider).read_config_fields(str(get_hermes_home())) or {}
+        data = dict(stored.get("values") or {})
+        placeholders = dict(stored.get("placeholders") or {})
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (data,)
+    elif is_honcho:
         resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
         host = resolve_active_host()
+        # Blank fields surface the resolved host Honcho will actually use.
+        placeholders = {"workspace": host, "aiPeer": host}
         raw = _read_json_dict(resolve_config_path(), "Honcho config")
         host_block = host_block_of(raw, host)
 
         def sources_for(field: ProviderField) -> tuple:
             return (host_block, raw) if field.scope == "host" else (raw,)
     else:
-        host, data = "", _read_flat_json(provider)
+        data = _read_flat_json(provider)
 
         def sources_for(field: ProviderField) -> tuple:
             return (data,)
 
-    fields: List[Dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
     for field in provider.fields:
         entry = {k: getattr(field, k) for k in ("key", "label", "kind", "description", "info", "placeholder", "inline", "group")}
         entry["options"] = [{"value": o.value, "label": o.label, "description": o.description} for o in field.options]
         sources = sources_for(field)
+        if not field.placeholder and placeholders.get(field.key):
+            entry["placeholder"] = str(placeholders[field.key])
         if field.is_secret:
             entry["value"] = ""  # secrets are write-only over the API
             entry["is_set"] = _declared_field_is_set(field, sources, env)
             fields.append(entry)
             continue
         native = _read_field(field, sources, env)
-        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
-            # Blank fields surface the resolved host Honcho will actually use.
-            entry["placeholder"] = host
         value = _serialize_field_value(field, native)
         if field.kind == "select" and value not in field.allowed_values():
             value = field.default
         entry["value"] = value
         # Presence, not truthiness — a stored False/0 is still "set".
-        entry["is_set"] = native is not None if is_honcho else bool(value)
+        entry["is_set"] = native is not None if (is_honcho or own) else bool(value)
         fields.append(entry)
     return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
 
@@ -298,7 +335,7 @@ def _stringify_submitted(value: Any) -> str:
     return str(value)
 
 
-def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
+def _memory_section(config: dict[str, Any]) -> dict[str, Any]:
     """Return ``config["memory"]`` as a dict, creating/replacing a non-dict value."""
     memory_config = config.get("memory")
     if not isinstance(memory_config, dict):
@@ -306,8 +343,9 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
     return memory_config
 
 
-def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
-    writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
+    writer = {STORAGE_PROVIDER: _write_provider_own,
+              STORAGE_HONCHO_HOST_BLOCK: _write_provider_honcho}.get(provider.storage, _write_provider_flat)
     writer(provider, values)
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
@@ -327,7 +365,7 @@ def _trim_setup_output(value: Optional[str], limit: int = 4000) -> str:
 def _command_result(
     *, kind: str, name: str, status: str, command: str = "",
     completed: Optional[subprocess.CompletedProcess] = None, error: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "kind": kind, "name": name, "status": status, "command": command,
         "returncode": None if completed is None else completed.returncode,
@@ -336,30 +374,15 @@ def _command_result(
     }
 
 
-def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[Dict[str, Any]]:
-    if not dependencies:
-        return []
-    missing = [dep for dep in dependencies if not _dependency_importable(dep)]
-    if not missing:
-        return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Route through the lazy-install pipeline rather than pip against
-    # sys.executable: on hosted/immutable images the agent venv is sealed
-    # read-only and installs must go to HERMES_LAZY_INSTALL_TARGET, which
-    # install_specs also activates on sys.path so the recheck sees the packages.
-    name = ", ".join(missing)
+def _install_memory_provider_python_dependencies(name: str) -> list[dict[str, Any]]:
+    from hermes_cli.memory_setup import prepare_memory_provider_dependencies
+
+    command = "hermes pm install"
     try:
-        from tools.lazy_deps import install_specs
-        outcome = install_specs(missing, timeout=240)
+        _manifest, status = prepare_memory_provider_dependencies(name)
     except Exception as exc:
-        return [_command_result(kind="pip", name=name, status="failed", error=str(exc))]
-    if outcome.blocked:
-        return [_command_result(kind="pip", name=name, status="failed", command=outcome.command, error=outcome.reason)]
-    return [_command_result(
-        kind="pip", name=name, status="installed" if outcome.ok else "failed", command=outcome.command,
-        completed=subprocess.CompletedProcess(
-            args=outcome.command, returncode=0 if outcome.ok else 1, stdout=outcome.stdout, stderr=outcome.stderr,
-        ),
-    )]
+        return [_command_result(kind="pip", name=name, status="failed", command=command, error=str(exc))]
+    return [_command_result(kind="pip", name=name, status=status, command=command)] if status else []
 
 
 def _run_setup_step(results: list, kind: str, name: str, command: str, status_of, **kwargs) -> Optional[int]:
@@ -373,8 +396,8 @@ def _run_setup_step(results: list, kind: str, name: str, command: str, status_of
     return completed.returncode
 
 
-def _install_memory_provider_external_dependencies(dependencies: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    results: List[Dict[str, Any]] = []
+def _install_memory_provider_external_dependencies(dependencies: list[dict[str, str]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
     for dep in dependencies:
         name = dep.get("name") or "dependency"
         check_cmd = dep.get("check") or ""
@@ -397,13 +420,17 @@ def _install_memory_provider_external_dependencies(dependencies: List[Dict[str, 
     return results
 
 
-def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
+def _install_memory_provider_setup(name: str) -> dict[str, Any]:
     provider = _load_memory_provider(name)
     manifest = _memory_provider_manifest(name)
     if provider is None and not manifest:
         raise _unknown_provider(name)
-    setup = _memory_provider_setup_manifest(name)
-    results = _install_memory_provider_pip_dependencies(setup["pip_dependencies"])
+    results = _install_memory_provider_python_dependencies(name)
+    try:
+        setup, _inputs = _memory_provider_setup_manifest(name)
+    except Exception as exc:
+        results.append(_command_result(kind="setup", name=name, status="failed", error=str(exc)))
+        setup = {"external_dependencies": []}
     results.extend(_install_memory_provider_external_dependencies(setup["external_dependencies"]))
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))
@@ -414,7 +441,7 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
 
 # ── Legacy provider surface (provider.config_schema()) ────────────────────────
 
-def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
+def _memory_provider_payload(name: str, provider: Any) -> dict[str, Any]:
     data = _read_memory_provider_existing_values(name)
     fields = [
         {
@@ -431,7 +458,7 @@ def _memory_provider_payload(name: str, provider: Any) -> Dict[str, Any]:
     }
 
 
-def _coerce_schema_number(field: Dict[str, Any], raw: Any) -> "int | float":
+def _coerce_schema_number(field: dict[str, Any], raw: Any) -> int | float:
     value = raw if raw is not None and raw != "" else _field_default(field)
     try:
         if isinstance(value, bool) or not math.isfinite(result := float(value)):
@@ -450,7 +477,7 @@ def _coerce_schema_number(field: Dict[str, Any], raw: Any) -> "int | float":
     return result
 
 
-def _coerce_schema_field(field: Dict[str, Any], raw: Any) -> Any:
+def _coerce_schema_field(field: dict[str, Any], raw: Any) -> Any:
     kind = field["kind"]
     if kind == "boolean":
         return _coerce_bool(raw, default=_coerce_bool(_field_default(field), default=False))
@@ -465,7 +492,7 @@ def _coerce_schema_field(field: Dict[str, Any], raw: Any) -> Any:
     return value or _field_default(field)
 
 
-def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[str, Any]) -> None:
+def _save_memory_provider_native_config(name: str, provider: Any, values: dict[str, Any]) -> None:
     if provider is not None and hasattr(provider, "save_config"):
         try:
             from agent.memory_provider import MemoryProvider as _BaseMemoryProvider
@@ -482,12 +509,12 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
         save_config(cfg)
 
 
-def _write_memory_provider_config_values(name: str, provider: Any, values: Dict[str, Any]) -> None:
+def _write_memory_provider_config_values(name: str, provider: Any, values: dict[str, Any]) -> None:
     existing = _read_memory_provider_existing_values(name)
     fields = _normalize_memory_provider_schema(name, provider)
     fields_by_key = {field["key"]: field for field in fields}
-    config_values: Dict[str, Any] = {}
-    secrets: Dict[str, str] = {}
+    config_values: dict[str, Any] = {}
+    secrets: dict[str, str] = {}
     for field in fields:
         if not _field_visible(field, {**existing, **config_values}, fields_by_key):
             continue
@@ -534,7 +561,8 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
         return _memory_provider_payload(name, provider)
 
-    return await scoped_to_thread(profile, _run)
+    with _value_errors_as_http("GET /api/memory/providers/%s/config failed", name):
+        return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/providers/{name}/setup")

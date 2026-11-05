@@ -16,13 +16,12 @@ import time
 
 import pytest
 
-import agent.tool_executor as tool_executor
+from agent import tool_executor
 from agent.tool_executor import (
     _ManagedToolResult,
     _ToolCancelledResult,
     _run_sequential_tool_execution_middleware,
 )
-
 
 class _FakeAgent:
     def __init__(self):
@@ -34,11 +33,9 @@ class _FakeAgent:
     def _touch_activity(self, msg):
         self.activity.append(msg)
 
-
 @pytest.fixture()
 def fake_agent():
     return _FakeAgent()
-
 
 @pytest.fixture(autouse=True)
 def _fast_polls(monkeypatch):
@@ -51,7 +48,6 @@ def _fast_polls(monkeypatch):
         lambda agent, **kw: emitted.append(kw),
     )
     yield emitted
-
 
 def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_polls):
     """A blocking tool is abandoned within ~poll+grace once interrupted."""
@@ -99,7 +95,6 @@ def test_interrupt_abandons_noncooperative_tool(monkeypatch, fake_agent, _fast_p
     # The executor emitted the terminal post_tool_call itself.
     assert any(kw.get("status") == "cancelled" for kw in _fast_polls)
 
-
 def test_interrupt_prefers_real_result_from_cooperative_tool(
     monkeypatch, fake_agent, _fast_polls
 ):
@@ -132,7 +127,3 @@ def test_interrupt_prefers_real_result_from_cooperative_tool(
 
     assert managed.result == "real result"
     assert not isinstance(managed.result, _ToolCancelledResult)
-
-
-
-

@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -78,6 +78,7 @@ function view(sessionId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
@@ -136,6 +137,55 @@ describe('the MCP setup card', () => {
       owner: { session_id: SESSION_ID, type: 'session' },
       result: { targets: [{ env: { LINEAR_TEAM: 'workspace' }, name: 'linear', status: 'approved' }] }
     })
+  })
+
+  it('names what approving runs as plain text, and drops the line once the row resolves', () => {
+    const markup = 'npx <img src=x onerror=alert(1)> **bold** --api-key=***'
+    const pending = { ...LINEAR, launch: { kind: 'stdio' as const, target: markup } }
+
+    setConnectionRequest({ ...REQUEST, targets: [pending] })
+    const { container } = renderTool()
+
+    const line = container.querySelector('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${markup}`)
+    expect(line?.querySelector('img, strong')).toBeNull()
+
+    act(() => setConnectionRequest({ ...REQUEST, seq: 1, targets: [{ ...pending, state: 'skipped' }] }))
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')).toBeNull()
+  })
+
+  it('names the env vars and working directory a stdio server adds, never their values', () => {
+    const launch = {
+      cwd: '/srv/acme',
+      env: ['ACME_TOKEN', 'NODE_OPTIONS'],
+      kind: 'stdio' as const,
+      target: 'npx -y @acme/mcp'
+    }
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch }] })
+    const { container } = renderTool()
+
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')?.textContent).toBe(
+      'Runs: npx -y @acme/mcp' + 'Working dir: /srv/acme' + 'Env: ACME_TOKEN, NODE_OPTIONS'
+    )
+  })
+
+  it('shows the whole launch line without hover: no clamp, no tooltip, a long middle arg included', () => {
+    const pad = '--log-level=info '.repeat(15)
+    const target = `node server.js ${pad}--exec /tmp/steal.js ${pad}--quiet`
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch: { kind: 'stdio', target } }] })
+    const { container } = renderTool()
+
+    const line = container.querySelector<HTMLElement>('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${target}`)
+    expect(line?.textContent).toContain('--exec /tmp/steal.js')
+    // Bounded, but scrollable: the box may scroll, it never clips.
+    expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden|text-ellipsis/)
+    expect(line?.className).toMatch(/overflow-y-auto/)
+    // Two spaces inside a quoted arg are two arguments' difference: the box keeps them.
+    expect(line?.className).toMatch(/whitespace-pre-wrap/)
+    expect(line?.hasAttribute('title')).toBe(false)
   })
 
   it('lists every target once settled, in the same three words as the connector card', () => {

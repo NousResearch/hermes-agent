@@ -6,6 +6,7 @@ import {
   type JournalableSessionState,
   mergeInFlightMessages,
   persistInFlightTurnState,
+  purgeInFlightTurnJournals,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
@@ -148,6 +149,43 @@ describe('persistInFlightTurnState', () => {
     const entry = readInFlightTurnJournal('stored-1')
     const tail = entry?.messages.find(m => m.role === 'assistant')
     expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer grew' }])
+  })
+
+  it('checkpoints overdue commits without timer delivery and retains quiet-tail and settle behavior', () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+
+    const commit = (text: string) =>
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', 'do the thing'), assistant('assistant-stream-1', text, { pending: true })]
+        })
+      )
+
+    commit('first')
+    for (now = 1; now < 400; now += 1) {
+      commit(`progress-${now}`)
+    }
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    // Time passed, but Chromium has not delivered the trailing timer.
+    commit('checkpoint')
+    expect(recoverInFlightTurnJournal('stored-1', [user('u1', 'do the thing')]).messages.map(chatMessageText)).toEqual([
+      'do the thing',
+      'checkpoint'
+    ])
+
+    now = 401
+    commit('quiet tail')
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('checkpoint')
+    vi.advanceTimersByTime(400)
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('quiet tail')
+
+    commit('pending before settle')
+    persistInFlightTurnState(journalState({ busy: false, streamId: null }))
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
   it('preserves a long user prompt exactly so recovery still matches its transcript row', () => {
@@ -827,5 +865,42 @@ describe('mid-turn redirect corrections', () => {
     const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
 
     expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})
+
+describe('purgeInFlightTurnJournals', () => {
+  it("clears a busy session's journaled tail from localStorage (delete must reach the local copy)", () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+
+    expect(readInFlightTurnJournal('stored-1')?.messages.length).toBeGreaterThan(0)
+
+    purgeInFlightTurnJournals(['stored-1'])
+
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+  })
+
+  it('drains every id it is given, not just the stored tip', () => {
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-tip' }))
+    persistInFlightTurnState(journalState({ storedSessionId: 'lineage-root' }))
+    vi.advanceTimersByTime(400)
+
+    purgeInFlightTurnJournals(['stored-tip', 'lineage-root', null, undefined])
+
+    expect(readInFlightTurnJournal('stored-tip')).toBeNull()
+    expect(readInFlightTurnJournal('lineage-root')).toBeNull()
+  })
+
+  it('drops a pending throttled write so the tail cannot land after the purge', () => {
+    persistInFlightTurnState(journalState())
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    purgeInFlightTurnJournals(['stored-1'])
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 })

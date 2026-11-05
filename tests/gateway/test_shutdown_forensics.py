@@ -13,23 +13,15 @@ import pytest
 
 from gateway import shutdown_forensics as sf
 
-
 # ---------------------------------------------------------------------------
 # _signal_name
 # ---------------------------------------------------------------------------
-
-
 
 # ---------------------------------------------------------------------------
 # snapshot_shutdown_context
 # ---------------------------------------------------------------------------
 
 class TestSnapshotShutdownContext:
-
-
-
-
-
 
     def test_detects_takeover_marker_for_self(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -41,7 +33,6 @@ class TestSnapshotShutdownContext:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert "takeover_marker" in ctx
         assert ctx["takeover_marker_for_self"] is True
-
 
 # ---------------------------------------------------------------------------
 # format_context_for_log / context_as_json
@@ -57,13 +48,11 @@ class TestFormatters:
         assert decoded["signal"] == "SIGTERM"
         assert "weird" in decoded
 
-
 # ---------------------------------------------------------------------------
 # persisted snapshots must never include process argv (#112459)
 # ---------------------------------------------------------------------------
 
 _ARGV_CANARY = "lin_api_CANARY_SHUTDOWN_FORENSICS_9f3a2c"
-
 
 @pytest.fixture
 def child_with_secret_argv():
@@ -77,10 +66,9 @@ def child_with_secret_argv():
         proc.kill()
         proc.wait()
 
-
 class TestArgvFreePersistence:
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_snapshot_and_log_line_identify_process_without_argv(self, child_with_secret_argv):
         """/proc-backed summaries keep pid/name/ppid/state but never the command line, so neither
         the JSON snapshot nor the warning line can carry a credential from a parent's argv."""
@@ -95,17 +83,16 @@ class TestArgvFreePersistence:
         assert _ARGV_CANARY not in line and _ARGV_CANARY not in sf.context_as_json(ctx)
         assert f"parent_pid={child_with_secret_argv.pid}" in line
 
-
 # ---------------------------------------------------------------------------
 # spawn_async_diagnostic
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         self._assert_diagnostic_written(tmp_path)
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_spawns_without_gnu_timeout_on_macos(self, tmp_path):
         """Stock macOS has no ``timeout`` binary and BSD ``ps``; the diagnostic still lands."""
         self._assert_diagnostic_written(tmp_path)
@@ -140,7 +127,7 @@ class TestSpawnAsyncDiagnostic:
         assert ps_section and ps_section[0].split()[:2] == ["PID", "PPID"], \
             "ps column header must lead the listing, not sort as a 0.0-cpu row"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_diagnostic_log_omits_child_argv_and_is_owner_only(self, tmp_path, child_with_secret_argv):
         """The detached ps/pstree walk must not write any process's argv to disk, and the log
         (even one created 0644 by an earlier release) ends up owner-only."""
@@ -164,7 +151,6 @@ class TestSpawnAsyncDiagnostic:
         assert _ARGV_CANARY not in contents
         assert (log_path.stat().st_mode & 0o777) == 0o600
 
-
 # ---------------------------------------------------------------------------
 # parse_systemd_duration_to_us
 # ---------------------------------------------------------------------------
@@ -176,8 +162,6 @@ class TestParseSystemdDuration:
     def test_minutes(self):
         assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
-
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
-

@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import type { HermesConnection } from '@/global'
 import { saveHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, Globe } from '@/lib/icons'
@@ -22,6 +23,7 @@ import {
   claimRealProfilePrompt,
   releaseRealProfilePrompt
 } from '@/store/real-profile-consent'
+import { $connection } from '@/store/session'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
 
@@ -29,6 +31,39 @@ interface RealProfileConsentDialogProps {
   /** The Browser tab this pane renders — used only to claim the prompt so
    *  several mounted Browser panes never stack duplicate dialogs. */
   tabId: string
+}
+
+interface RealProfilePromptGate {
+  claim: null | string
+  configLoaded: boolean
+  connection: HermesConnection | null
+  dismissed: boolean
+  enabled: boolean
+  muted: boolean
+  tabId: string
+}
+
+/**
+ * Whether this pane should offer the real-profile consent prompt.
+ *
+ * Only for a backend on THIS machine: real-profile mode snapshots the
+ * backend host's default browser, and the prompt promises "your" profile and
+ * "nothing leaves this computer". Over a remote/SSH/cloud connection that is
+ * another machine's browser (often a headless box with none), and "Enable"
+ * would write `browser.use_real_profile` into the remote config.yaml — which
+ * unregisters its browser tools and re-appears after every reset (#119398).
+ * An unresolved connection fails closed. Remote users can still opt in from
+ * the Capabilities → Tools → Browser toggle.
+ */
+export function shouldOfferRealProfilePrompt(gate: RealProfilePromptGate): boolean {
+  return (
+    gate.connection?.mode === 'local' &&
+    gate.configLoaded &&
+    !gate.enabled &&
+    !gate.dismissed &&
+    !gate.muted &&
+    gate.claim === gate.tabId
+  )
 }
 
 /**
@@ -41,7 +76,8 @@ interface RealProfileConsentDialogProps {
  * query cache the toggle reads, so the Capabilities toggle flips on the spot
  * with no refetch. "Not now" mutes the prompt for this app run; "Don't show
  * again" persists the opt-out across launches. Turning the toggle off later
- * does NOT resurrect the prompt inside the same run.
+ * does NOT resurrect the prompt inside the same run. Never offered for a
+ * remote backend (see shouldOfferRealProfilePrompt).
  */
 export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProps) {
   const { t } = useI18n()
@@ -50,6 +86,7 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
   const dismissed = useStore($realProfilePromptDismissed)
   const muted = useStore($realProfilePromptMuted)
   const claim = useStore($realProfilePromptClaim)
+  const connection = useStore($connection)
   const { data: config, writeScope } = useHermesConfigRecord()
   const setConfig = hermesConfigCacheWriter()
   const [busy, setBusy] = useState(false)
@@ -91,10 +128,18 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     }
   }, [busy, config, copy, setConfig, writeScope])
 
-  // Config not loaded yet, feature already on, opted out, or another pane
-  // owns the prompt — render nothing. `enabled` flipping true after a
-  // successful save is also what closes the dialog.
-  const open = Boolean(config) && !enabled && !dismissed && !muted && claim === tabId
+  // Remote backend, config not loaded yet, feature already on, opted out, or
+  // another pane owns the prompt — render nothing. `enabled` flipping true
+  // after a successful save is also what closes the dialog.
+  const open = shouldOfferRealProfilePrompt({
+    claim,
+    configLoaded: Boolean(config),
+    connection,
+    dismissed,
+    enabled,
+    muted,
+    tabId
+  })
 
   if (!open) {
     return null

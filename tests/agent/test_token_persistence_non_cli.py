@@ -5,7 +5,6 @@ import sys
 
 from run_agent import AIAgent
 
-
 def _mock_response(*, usage: dict, content: str = "done"):
     msg = SimpleNamespace(content=content, tool_calls=None)
     choice = SimpleNamespace(message=msg, finish_reason="stop")
@@ -14,7 +13,6 @@ def _mock_response(*, usage: dict, content: str = "done"):
         model="test/model",
         usage=SimpleNamespace(**usage),
     )
-
 
 def _make_agent(session_db, *, platform: str):
     with (
@@ -42,7 +40,6 @@ def _make_agent(session_db, *, platform: str):
     )
     return agent
 
-
 def test_run_conversation_persists_tokens_for_telegram_sessions():
     session_db = MagicMock()
     agent = _make_agent(session_db, platform="telegram")
@@ -54,9 +51,6 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     # (queue_token_counts) rather than written inline on the turn thread.
     session_db.queue_token_counts.assert_called_once()
     assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
-
-
-
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
     sentinel_db = object()
@@ -94,5 +88,3 @@ def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeyp
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
     assert agent._session_db is sentinel_db
-
-

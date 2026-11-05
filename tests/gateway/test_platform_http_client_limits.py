@@ -12,15 +12,12 @@ behaviour is only observable at runtime under load.
 
 from __future__ import annotations
 
-
 import pytest
-
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
-
 
 def test_env_override_rejects_garbage(monkeypatch):
     """Malformed env values fall back to defaults rather than raising."""
@@ -34,3 +31,25 @@ def test_env_override_rejects_garbage(monkeypatch):
     assert limits.max_keepalive_connections > 0
 
 
+@pytest.mark.asyncio
+async def test_platform_http_client_is_ssrf_guarded_with_shared_limits():
+    """The public plugin client refuses private targets at connect time, re-checks redirects ahead of
+    caller hooks, and uses the shared keepalive limits."""
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from gateway.platforms.base import ssrf_redirect_guard
+    from gateway.platforms.helpers import platform_http_client
+
+    async def caller_hook(response):
+        return None
+
+    client = platform_http_client(event_hooks={"response": [caller_hook]})
+    try:
+        assert client.event_hooks["response"] == [ssrf_redirect_guard, caller_hook]
+        pool = client._transport._pool
+        limits = platform_httpx_limits()
+        assert (pool._max_keepalive_connections, pool._keepalive_expiry) == (
+            limits.max_keepalive_connections, limits.keepalive_expiry)
+        with pytest.raises(ValueError):
+            await client.get("http://169.254.169.254/latest/meta-data/")
+    finally:
+        await client.aclose()

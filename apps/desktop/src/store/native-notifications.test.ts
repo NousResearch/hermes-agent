@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $gateway } from './gateway'
+import { setHapticsMuted } from './haptics'
 import {
   clearPluginNotifyHandlers,
   dispatchNativeNotification,
@@ -16,7 +17,7 @@ import {
   setNativeNotifyKind
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
-import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
+import { $approvalRequest, APPROVAL_RESPOND_REQUEST_TIMEOUT_MS, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 import { setActiveSessionId } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
@@ -144,7 +145,9 @@ describe('dispatchNativeNotification preferences', () => {
   it('suppresses everything when the master switch is off', () => {
     setNativeNotifyEnabled(false)
     dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
-    dispatchNativeNotification({ kind: 'turnDone', sessionId: freshSession(), title: 'done' })
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
     expect(notify).not.toHaveBeenCalled()
   })
 
@@ -319,7 +322,13 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { all: false, choice: 'once', session_id: 'bg' },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
     expect($approvalRequest.get()).toBeNull()
   })
 
@@ -328,12 +337,18 @@ describe('respondToApprovalAction', () => {
     setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
     setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
     await respondToApprovalAction('bg', 'approve:r1')
-    expect(request).toHaveBeenCalledWith('approval.respond', {
-      all: false,
-      choice: 'once',
-      request_id: 'r1',
-      session_id: 'bg'
-    })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      {
+        all: false,
+        choice: 'once',
+        request_id: 'r1',
+        session_id: 'bg'
+      },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
     expect($approvalRequest.get()?.requestId).toBe('r2')
     await respondToApprovalAction('bg', 'approve:r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')
@@ -341,7 +356,13 @@ describe('respondToApprovalAction', () => {
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { all: false, choice: 'deny', session_id: 'bg' },
+      // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+      APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+      undefined
+    )
   })
 
   it('ignores unknown action ids', async () => {
@@ -361,5 +382,27 @@ describe('respondToApprovalAction', () => {
     await respondToApprovalAction('bg', 'approve')
 
     expect(request).not.toHaveBeenCalled()
+  })
+})
+
+describe('app sounds mute', () => {
+  afterEach(() => setHapticsMuted(false))
+
+  const fire = () => {
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+    dispatchPluginNativeNotification(freshSession(), { title: 'Opportunity' })
+
+    return notify.mock.calls.map(([payload]) => payload.silent)
+  }
+
+  it('sends OS notifications silently while app sounds are muted', () => {
+    setHapticsMuted(true)
+    expect(fire()).toEqual([true, true])
+  })
+
+  it('leaves OS notification sound alone when not muted', () => {
+    expect(fire()).toEqual([undefined, undefined])
   })
 })

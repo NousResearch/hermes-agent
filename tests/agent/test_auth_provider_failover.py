@@ -19,7 +19,6 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent
 from agent.error_classifier import classify_api_error, FailoverReason
 
-
 def _make_agent(fallback_model=None):
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -37,19 +36,16 @@ def _make_agent(fallback_model=None):
         agent.client = MagicMock()
         return agent
 
-
 def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     mock = MagicMock()
     mock.base_url = base_url
     mock.api_key = api_key
     return mock
 
-
 def _auth_error(status=401, msg="Your API key is invalid, blocked or out of funds."):
     err = Exception(f"Error code: {status} - {msg}")
     err.status_code = status
     return err
-
 
 class TestAuthErrorClassification:
     def test_401_is_auth(self):
@@ -57,15 +53,11 @@ class TestAuthErrorClassification:
         assert c.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
         assert c.is_auth is True
 
-
     def test_500_is_not_auth(self):
         err = Exception("Error code: 500 - internal server error")
         err.status_code = 500
         c = classify_api_error(err)
         assert c.is_auth is False
-
-
-
 
 class TestAuthFailoverActivation:
     """The decision the loop makes on a persistent auth failure: when a
@@ -82,6 +74,3 @@ class TestAuthFailoverActivation:
             advanced = agent._try_activate_fallback(reason=classified.reason)
         assert advanced is True
         assert agent._fallback_index == 1
-
-
-

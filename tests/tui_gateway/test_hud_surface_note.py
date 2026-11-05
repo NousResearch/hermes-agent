@@ -58,10 +58,33 @@ class TestNoteContents:
     def test_no_tools_at_all(self):
         assert hud_surface_note(None) == ""
 
+    def test_deferred_tools_count_and_are_routed_through_the_bridge(self):
+        """Tool search defers the desktop tools by default; the note must still fire and name the bridge."""
+        note = hud_surface_note({"tool_call"}, {"read_window_below", "computer_use"})
+        bridge_clause = note[note.index("Call "):]
+
+        assert "read_window_below identifies that app" in note
+        assert "read_window_below" in bridge_clause and "computer_use" in bridge_clause
+        mixed = hud_surface_note({"read_window_below"}, {"computer_use"})
+        assert "read_window_below" not in mixed[mixed.index("Call "):]  # a direct tool is never sent to the bridge
+
 
 class TestTurnRouting:
     def test_hud_turn_gets_the_note(self):
         assert server._hud_surface_note(_session(client_surface="hud")) == hud_surface_note(FULL_KIT)
+
+    def test_default_desktop_session_with_tool_search_gets_the_note(self):
+        """Real toolset resolution + real defer list: read_window_below is deferred, not dropped."""
+        from tools.registry import discover_builtin_tools
+
+        discover_builtin_tools()
+        enabled = server._load_enabled_toolsets("desktop")
+        agent = types.SimpleNamespace(enabled_toolsets=enabled, disabled_toolsets=None,
+                                      valid_tool_names={"tool_search", "tool_describe", "tool_call"})
+
+        note = server._hud_surface_note(_session(client_surface="hud") | {"agent": agent})
+
+        assert "read_window_below" in note and "through the tool_call bridge" in note
 
     def test_app_window_turn_gets_nothing(self):
         assert server._hud_surface_note(_session(client_surface="")) == ""

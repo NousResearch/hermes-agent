@@ -123,7 +123,7 @@ class GatewayProc:
             try:
                 conn, _ = listener.accept()
                 break
-            except socket.timeout:
+            except TimeoutError:
                 if self.proc.poll() is not None:
                     raise AssertionError(f"gateway exited during boot rc={self.proc.returncode}\n{self.log_tail()}")
                 if time.monotonic() >= deadline:

@@ -116,6 +116,38 @@ test('probes health on a short timeout but leaves the legacy fallback its own', 
   assert.deepEqual(timeouts, [DEFAULT_HEALTH_PROBE_TIMEOUT_MS, undefined])
 })
 
+function connectionRefused(port: number): Error {
+  return Object.assign(new Error(`connect ECONNREFUSED 127.0.0.1:${port}`), { code: 'ECONNREFUSED' })
+}
+
+async function probesUntilSettled(alreadyBound: boolean): Promise<number> {
+  let probes = 0
+  let currentTime = 0
+
+  await waitForHermesReady('http://127.0.0.1:2802', {
+    fetchPublicJson: async () => {
+      probes += 1
+      throw connectionRefused(2802)
+    },
+    fetchJson: async () => ({}),
+    sleep: async () => {},
+    now: () => (currentTime += 1),
+    timeoutMs: 1_000,
+    pollMs: 1,
+    alreadyBound
+  }).catch(() => undefined)
+
+  return probes
+}
+
+test('a refused port on a backend known to have bound fails at once; an unbound one keeps polling', async () => {
+  // A hard-killed backend leaves its ledger record and published token behind.
+  // Polling that dead port for the whole budget outlived the renderer's boot
+  // timeout and wedged every post-update launch.
+  assert.equal(await probesUntilSettled(true), 1)
+  assert.ok((await probesUntilSettled(false)) > 1)
+})
+
 test('aborts as superseded when the bootstrap signal fires', async () => {
   const controller = new AbortController()
   controller.abort()

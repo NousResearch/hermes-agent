@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 OLD_URL = "https://old-endpoint.invalid/v1"
 NEW_URL = "https://new-endpoint.invalid/v1"
@@ -81,7 +81,7 @@ def live_home(monkeypatch):
                     pass
 
     import hermes_state
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     # The launch DB handle and the module-level home snapshot are import-time
     # caches — repoint both at the isolated home for the duration of the test

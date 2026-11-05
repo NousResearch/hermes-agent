@@ -264,7 +264,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
 
 
 def _discover_repos_payload(
-    db, *, conn=None, backfill: bool = True, include_cached: bool = True) -> list[dict]:
+    db, *, conn=None, backfill: bool = True, include_cached: bool = True, persistence=None) -> list[dict]:
     """Merge cached filesystem-scanned repos with session-derived roots, junk-filtered, with
     session totals. ``backfill`` persists resolved roots onto session rows — kept OFF the
     per-turn tree path and done only on explicit refresh."""
@@ -273,31 +273,32 @@ def _discover_repos_payload(
     def _agg(root: str) -> dict:
         return repos.setdefault(
             root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
-    # ``db`` is None for a profile whose session store was never initialized (read-only foreign
-    # handles never bootstrap it): the scan cache in projects.db is still authoritative.
-    cwd_rows = list(db.distinct_session_cwds()) if db is not None else []
-    # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
-    git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
-    cwd_to_root: dict[str, str] = {}
-    for row in cwd_rows:
-        cwd = str(row.get("cwd") or "")
-        root = git_probe.common_repo_root(cwd)
-        if not root:
-            continue
-        cwd_to_root[cwd] = root
-        if _is_repo_junk(root):
-            continue
-        agg = _agg(root)
-        agg["sessions"] += int(row.get("sessions") or 0)
-        agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
-    # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
-    # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
-    # backfills on its own refreshes.
-    if backfill and db is not None and not getattr(db, "read_only", False):
-        try:
-            db.backfill_repo_roots(cwd_to_root)
-        except Exception:
-            logger.debug("failed to backfill repo roots", exc_info=True)
+    with contextlib.nullcontext(persistence) if persistence is not None else _persistence_for(db) as persistence:
+        # No handle for a profile whose session store was never initialized (read-only foreign
+        # handles never bootstrap it): the scan cache in projects.db is still authoritative.
+        cwd_rows = list(persistence.sessions.distinct_session_cwds()) if persistence is not None else []
+        # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
+        git_probe.warm_roots(str(r.cwd or "") for r in cwd_rows)
+        cwd_to_root: dict[str, str] = {}
+        for row in cwd_rows:
+            cwd = str(row.cwd or "")
+            root = git_probe.common_repo_root(cwd)
+            if not root:
+                continue
+            cwd_to_root[cwd] = root
+            if _is_repo_junk(root):
+                continue
+            agg = _agg(root)
+            agg["sessions"] += int(row.sessions or 0)
+            agg["last_active"] = max(agg["last_active"], float(row.last_active or 0))
+        # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
+        # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
+        # backfills on its own refreshes.
+        if backfill and persistence is not None and not persistence.read_only:
+            try:
+                persistence.sessions.backfill_repo_roots(cwd_to_root)
+            except Exception:
+                logger.debug("failed to backfill repo roots", exc_info=True)
     if include_cached:
         # `last_seen` is scan time, not user activity — never fold it into `last_active`.
         try:
@@ -321,34 +322,35 @@ def _discover_repos_payload(
 _PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
 
 
-def _project_tree_row(r: dict) -> dict:
-    """Project a SessionDB row to the minimal shape the sidebar renders (grouping fields +
+def _project_tree_row(entry) -> dict:
+    """Project a session listing entry to the minimal shape the sidebar renders (grouping fields +
     what ``SidebarSessionRow`` reads), minus the heavy columns."""
-    row = {k: r.get(k) for k in (
-        "id", "_lineage_root_id", "_lineage_ids", "parent_session_id",
-        "_reset_from", "_branched_from", "title", "preview")}
-    row.update(
-        started_at=r.get("started_at") or 0, ended_at=r.get("ended_at"),
-        last_active=r.get("last_active") or r.get("started_at") or 0,
-        source=r.get("source"), archived=bool(r.get("archived")),
-        **{k: r.get(k) or 0 for k in (
-            "message_count", "tool_call_count", "input_tokens", "output_tokens")},
-        **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
-        is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
-    return row
+    s = entry.session
+    return {
+        "id": s.session_id, "_lineage_root_id": entry.lineage_root_id,
+        "_lineage_ids": list(entry.lineage_ids) or None,
+        "parent_session_id": s.parent_session_id, "_reset_from": s.reset_from, "_branched_from": s.branched_from,
+        "title": s.title, "preview": entry.preview,
+        "started_at": s.started_at or 0, "ended_at": s.ended_at, "last_active": entry.last_active or s.started_at or 0,
+        "source": s.source, "archived": bool(s.archived),
+        "message_count": s.message_count or 0, "tool_call_count": s.tool_call_count or 0,
+        "input_tokens": s.input_tokens or 0, "output_tokens": s.output_tokens or 0,
+        "actual_cost_usd": s.actual_cost_usd, "estimated_cost_usd": s.estimated_cost_usd, "model": s.model,
+        "is_active": False, "cwd": s.cwd, "git_branch": s.git_branch, "git_repo_root": s.git_repo_root}
 
 
 def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
+    persistence, session_limit: int, *, include_discovered: bool
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
     ``include_discovered`` is the zero-session-repo overview tier; drill-in skips it (and
     the distinct-cwd scan + git probes) on that per-turn path."""
     # compact_rows: selecting the system-prompt blob only to drop it costs tens of MB of reads.
-    rows = db.list_sessions_rich(
-        limit=session_limit, offset=0, order_by_last_active=True, min_message_count=1,
-        include_children=False, exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
-        include_archived=False, compact_rows=True)
+    from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+    rows = persistence.sessions.list_sessions(
+        SessionQuery(order=SessionOrder.LAST_ACTIVE, min_message_count=1, include_children=False,
+                     exclude_sources=tuple(_PROJECT_TREE_EXCLUDED_SOURCES), include_archived=False),
+        SessionWindow(limit=session_limit, offset=0), compact_rows=True)
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.
     git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
@@ -365,7 +367,7 @@ def _project_tree_inputs(
         discovered = []
         if include_discovered:
             discovered = _discover_repos_payload(
-                db, conn=conn, backfill=False, include_cached=policy["enabled"])
+                None, conn=conn, backfill=False, include_cached=policy["enabled"], persistence=persistence)
     return sessions, projects, discovered, active_id
 
 
@@ -382,13 +384,14 @@ def _dir_exists_cached(path: str) -> bool:
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool, persistence=None
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
     _DIR_EXISTS_CACHE.clear()
-    sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered)
+    with contextlib.nullcontext(persistence) if persistence is not None else _persistence_for(db) as persistence:
+        sessions, projects, discovered, active_id = _project_tree_inputs(
+            persistence, session_limit, include_discovered=include_discovered)
     # build_tree also resolves declared project folders and discovered roots — warm them too.
     git_probe.warm_roots(
         [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]

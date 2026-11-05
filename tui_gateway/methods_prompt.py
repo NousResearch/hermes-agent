@@ -80,19 +80,18 @@ def _load_durable_truncation_history(
     session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
+    from persistence.conversation.messages import ConversationRequest
     try:
-        with _session_db(session) as db:
-            get_conv = getattr(db, "get_messages_as_conversation", None)
-            if not callable(get_conv):
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return None
-            history = get_conv(
-                session_key, repair_alternation=repair_alternation, include_row_ids=True)
+            return [message.as_openai_message() for message in persistence.messages.read_conversation(
+                session_key, ConversationRequest(repair_alternation=repair_alternation, include_row_ids=True))]
     except Exception:
         logger.debug(
             "prompt.submit: failed loading durable history for session %s", session_key,
             exc_info=True)
         return None
-    return history if isinstance(history, list) else None
 
 
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
@@ -214,18 +213,19 @@ def _pending_reaction_notes(session: dict) -> str:
     except Exception:
         return ""
     try:
-        with _session_db(session) as db:
-            pending = None if db is None else db.take_unseen_reactions(session_key, author="user")
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            pending = None if persistence is None else persistence.messages.take_unseen_reactions(
+                session_key, author="user")
     except Exception:
         logger.debug("Failed to read pending reactions", exc_info=True)
         return ""
     notes = []
     for entry in pending or ():
-        snippet = (entry.get("text") or "").strip().replace("\n", " ")
+        snippet = (entry.text or "").strip().replace("\n", " ")
         if len(snippet) > 120:
             snippet = snippet[:120] + "…"
-        emoji = entry.get("emoji") or ""
-        whose = "their own" if entry.get("role") == "user" else "your"
+        emoji = entry.emoji or ""
+        whose = "their own" if entry.role == "user" else "your"
         if snippet:
             notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
         else:
@@ -296,15 +296,16 @@ def _legacy_group_fence_error(rid, session, params):
     if not room_id:
         return None
     try:
-        from gateway.hosted_rooms import (
-            HostedRoomError, RoomProbeUnavailableError, default_db_path, probe_hosted_room,
-            probe_peer_room_reservation)
-        hosted = probe_hosted_room(default_db_path(), room_id=room_id)
+        from gateway.hosted_rooms import probe_hosted_room, probe_peer_room_reservation
+        from persistence.gateway.hosted_rooms import HostedRoomError, RoomProbeUnavailableError
+        from tui_gateway.methods_groups import _active_store
+        store = _active_store()
+        hosted = probe_hosted_room(store, placement="shared", room_id=room_id)
         peer = False
         if not hosted:
             from hermes_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
-                default_db_path(), room_id=room_id, target_profile=(
+                store, placement="shared", room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
                     or str(params.get("profile") or "").strip()
                     or str(_current_profile_name() or "default").strip()))
@@ -540,21 +541,22 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     # after the in-memory rewrite would stack the new exchange on the "undone" turns).
     # Writes through _session_db (profile sessions own their state.db).
     fields = {}
-    with _session_db(session) as db:
-        if db is not None:
+    from persistence.conversation.messages import ReplaceMode
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is not None:
             try:
                 # NULL session_key (old CLI-origin sessions) would trip an FK violation.
-                # active_only=True: replace only the live (active=1) rows. In-place compaction (#38763)
+                # ARCHIVE_DROPPED replaces only the live (active=1) rows. In-place compaction (#38763)
                 # keeps the pre-compaction transcript as active=0/compacted=1 rows under this same session
-                # key; a bare replace_messages() would DELETE that durable archive on every edit/regenerate
+                # key; a destructive replace would DELETE that durable archive on every edit/regenerate
                 # — the same bug class #80216 fixed for /retry. On an uncompacted session all rows are
-                # active=1, so this is behaviorally identical to the full replace. archive_dropped: a rewind
+                # active=1, so this is behaviorally identical to the full replace. Archiving: a rewind
                 # overwrites turns the user may not have meant to drop, and this write is the last step
                 # before they are gone — three reported incidents ended here with nothing to restore from
                 # (#70516, #80763, #82756). Soft-archiving keeps them on disk (active=0) and in the FTS
                 # index, so a mis-aimed cut is recoverable instead of terminal. The live transcript is
                 # unchanged. Fall back to session id when session_key is NULL — CLI-origin sessions created
-                # before the session_key default fix have no key, and replace_messages(None) triggers an FK
+                # before the session_key default fix have no key, and a replace under None triggers an FK
                 # violation.
                 truncation_key = session.get("session_key") or sid
                 old_active_row_ids = _row_ids_of(history)
@@ -567,17 +569,29 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                         raise RuntimeError("could not load durable row identities for truncation")
                     old_active_row_ids.update(_row_ids_of(durable_rebind_history))
                 old_survivor_row_ids = [_message_row_id(message) for message in truncated]
-                # active_only: a bare replace would DELETE the compaction archive (active=0
-                # rows) on every edit.  archive_dropped: a mis-aimed cut stays recoverable.
-                db.replace_messages(
-                    truncation_key, truncated, active_only=True, archive_dropped=True,
+                # Only the live rows: a bare replace would DELETE the compaction archive (active=0
+                # rows) on every edit.  Archived, not deleted: a mis-aimed cut stays recoverable.
+                replaced = persistence.messages.replace_transcript(
+                    truncation_key, [_new_message(message) for message in truncated], ReplaceMode.ARCHIVE_DROPPED,
                     reject_active_turn_lease=True)
+                # The row state the write gave each message: a kept row only its id and uid, an inserted row
+                # its stored timestamp, ownership version and tool-call uids as well.
+                for message, row in zip(truncated, replaced.rows):
+                    message["_row_id"] = int(row.id)
+                    if row.message_uid:
+                        message["message_uid"] = row.message_uid
+                    if row.db_row_snapshot is not None:
+                        message.update(timestamp=row.timestamp, _db_row_snapshot=row.db_row_snapshot)
+                        if row.tool_call_uids is not None:
+                            message["_tool_call_uids"] = dict(row.tool_call_uids)
+                        if row.tool_call_uid is not None:
+                            message["_tool_call_uid"] = row.tool_call_uid
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
-                return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
+                return _err(rid, 5008, f"failed to persist history truncation: {_store_error_text(exc)}"), {}
             # Surface the survivors' live ids so the client rebinds its cached rowIds
             # (a strict-prefix cut keeps them unchanged since #82956; a divergent
             # rewrite mints new rows).  None entries: the client must drop that turn's id.
@@ -600,7 +614,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
 
 def _storage_error_data(failure, raw) -> dict:
     """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
-    from hermes_state_user_copy import storage_failure_details
+    from storage_user_copy import storage_failure_details
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
@@ -614,20 +628,23 @@ def _reopen_if_finalized(db, session_id: str) -> None:
     live again. Best-effort: a failed read must not block the send."""
     if not session_id:
         return
-    try:
-        row = db.get_session(session_id)
-    except Exception:
-        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
-        return
-    if row is not None and row.get("ended_at") is not None:
-        db.reopen_session(session_id)
+    with _persistence_for(db) as persistence:
+        if persistence is None:
+            return
+        try:
+            row = persistence.sessions.get(session_id)
+        except Exception:
+            logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+            return
+        if row is not None and row.ended_at is not None:
+            persistence.sessions.reopen(session_id)
 
 
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
-    from hermes_state_user_copy import describe_storage_failure
+    from storage_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
             failure = describe_storage_failure(_db_error)
@@ -652,14 +669,14 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 rid, 5070,
                 "Session storage could not be written, so this message was not saved: the disk is full. "
                 "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=_storage_error_data(failure, _store_error_text(exc)))
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
             error = _err(
                 rid, 5071,
                 f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
                 f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=_storage_error_data(failure, _store_error_text(exc)))
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
@@ -1187,8 +1204,8 @@ def _(rid, params: dict) -> dict:
     def body():
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
-        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            agent = AIAgent(**{**kwargs, "session_db": session_db})
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db, _persistence_for(session_db) as persistence:
+            agent = AIAgent(**{**kwargs, "session_db": session_db, "persistence": persistence})
             try:
                 result = agent.run_conversation(user_message=text, task_id=task_id)
             finally:

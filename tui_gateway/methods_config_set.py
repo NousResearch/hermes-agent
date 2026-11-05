@@ -315,9 +315,9 @@ def _set_yolo(rid, params, key, value, session):
         row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
 
         def persist(on):
-            with _session_db(session) as db:
-                if db is not None:
-                    db.set_session_yolo(row_id, on)
+            with _session_db(session) as db, _persistence_for(db) as persistence:
+                if persistence is not None:
+                    persistence.sessions.set_yolo(row_id, on)
         enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
         _emit_session_info(params.get("session_id", ""), session)
     else:

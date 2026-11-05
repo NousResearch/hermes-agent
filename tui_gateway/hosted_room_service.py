@@ -19,7 +19,7 @@ from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
 from gateway.hosted_room_context import room_context
-from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
@@ -30,6 +30,10 @@ from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
 from tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
+from persistence.gateway.hosted_rooms import (
+    AuthorityConflictError, EventCursorConflictError, HostedPlacement, HostedTaskIdentity,
+    InvalidTaskTransitionError, PolicySnapshot)
+from persistence_assembly import Persistence, store_location
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
@@ -117,16 +121,18 @@ class HostedRoomService:
     """Own the hosted Discussion policy and its transport-free worker."""
 
     def __init__(
-        self, server: ModuleType, *, db_path: Path | str | None = None,
+        self, server: ModuleType, *, store: Persistence, placement: HostedPlacement = "shared",
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
-        self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        self.server, self.store, self.placement = server, store, placement
+        profile_db = Path(store_location(store.scope))
+        self.db_path = profile_db if placement == "profile" else hosted_rooms.default_db_path(profile_db.parent)
         self.discussion_limits = _discussion_limits(self.root)
-        hosted_rooms.prune_disbanded_rooms(self.db_path)
+        hosted_rooms.prune_disbanded_rooms(self.store, placement=self.placement)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
-            self.db_path,
+            self.store, placement=self.placement,
             max_active_events=1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds)
         self.rpc = self._make_rpc(server)
         self._link_load_error = None
@@ -145,7 +151,7 @@ class HostedRoomService:
             if client is not None:
                 self.peer_clients[key] = client
         self.runtime = HostedRoomRuntime(
-            db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
+            store=self.store, placement=self.placement, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action, task_progress=record_task_progress,
@@ -158,7 +164,7 @@ class HostedRoomService:
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
-        stored_links, load_errors = hosted_room_links.load_room_links_tolerant(self.db_path)
+        stored_links, load_errors = hosted_room_links.load_room_links_tolerant(self.store, placement=self.placement)
         errors = list(load_errors)
         for stored in stored_links:
             key, catalog = (stored.room_id, stored.member_id), stored.catalog
@@ -173,7 +179,8 @@ class HostedRoomService:
                 cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id,
                 grant=stored.grant)
             self.peer_clients[key] = PeerRunsHTTPClient(
-                base_url=stored.target_url, api_key="", receipt_db_path=self.db_path)
+                base_url=stored.target_url, api_key="", receipt_store=self.store,
+                receipt_placement=self.placement)
             self._peer_route_status[key] = stored.status
         if errors:
             self._link_load_error = ",".join(errors)
@@ -205,17 +212,17 @@ class HostedRoomService:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
         return tuple(
             HostedRoomBinding(str(room["room_id"]), *_authority(room))
-            for room in hosted_rooms.list_rooms(self.db_path)
+            for room in hosted_rooms.list_rooms(self.store, placement=self.placement)
             if str(room["authority_gateway_id"]) == local_gateway_id)
 
     def _room(self, room_id: str) -> dict[str, Any]:
-        return hosted_rooms.room_state(self.db_path, room_id=room_id)
+        return hosted_rooms.room_state(self.store, placement=self.placement, room_id=room_id)
 
     def _owned_authority(self, room_id: str) -> tuple[str, int]:
         """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
         gateway_id, epoch = _authority(self._room(room_id))
         if gateway_id != hosted_rooms.local_authority_gateway_id():
-            raise hosted_rooms.AuthorityConflictError(
+            raise AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
         return gateway_id, epoch
 
@@ -234,11 +241,12 @@ class HostedRoomService:
 
     def _list_tasks(self, room_id: str, statuses) -> Iterator[Mapping[str, Any]]:
         for status in statuses:
-            yield from driver.list_tasks(self.db_path, room_id=room_id, status=status)
+            yield from driver.list_tasks(self.store, placement=self.placement, room_id=room_id, status=status)
 
     def _save_link(self, **link: Any) -> None:
         """Persist one stored link (``make_stored_link`` keyword fields)."""
-        hosted_room_links.save_room_link(self.db_path, hosted_room_links.make_stored_link(**link))
+        hosted_room_links.save_room_link(
+            self.store, hosted_room_links.make_stored_link(**link), placement=self.placement)
 
     def register_peer_route(
         self, *, room_id: str, member_id: str, route: PeerMemberRoute,
@@ -247,7 +255,7 @@ class HostedRoomService:
         """Register one verified route and optionally persist its scoped grant."""
         bind_store = _hook(client, "bind_receipt_store")
         if bind_store is not None:
-            bind_store(self.db_path)
+            bind_store(self.store, placement=self.placement)
         if catalog is not None:
             if not route.execution_policy_digest:
                 route = replace(
@@ -287,7 +295,7 @@ class HostedRoomService:
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise
-        hosted_rooms.delete_room_link_records(self.db_path, room_id=room_id)
+        hosted_rooms.delete_room_link_records(self.store, placement=self.placement, room_id=room_id)
         with self._policy_lock:
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
@@ -310,7 +318,7 @@ class HostedRoomService:
         execution_generation = int(task.get("execution_generation") or 0)
         bind_observation = _hook(client, "bind_observation")
         if (
-            bind_observation is not None and isinstance(identity, driver.TaskIdentity)
+            bind_observation is not None and isinstance(identity, HostedTaskIdentity)
             and execution_generation > 0):
             bind_observation(task_id=identity.task_id, execution_generation=execution_generation)
 
@@ -336,7 +344,7 @@ class HostedRoomService:
         identity, payload = task.get("identity"), task.get("payload")
         execution_generation = int(task.get("execution_generation") or 0)
         if (
-            recover is None or not isinstance(identity, driver.TaskIdentity)
+            recover is None or not isinstance(identity, HostedTaskIdentity)
             or not isinstance(payload, Mapping) or execution_generation < 1
             or task.get("status") not in {"running", "indeterminate", "stopping"}):
             return
@@ -364,7 +372,7 @@ class HostedRoomService:
                 return
             self._peer_route_status[(room_id, member_id)] = status
         hosted_room_links.mark_room_link_status(
-            self.db_path, room_id=room_id, member_id=member_id, status=status)
+            self.store, placement=self.placement, room_id=room_id, member_id=member_id, status=status)
 
     def _set_pending_action(
         self, room_id: str, member_id: str, action: Mapping[str, Any] | None) -> None:
@@ -383,7 +391,7 @@ class HostedRoomService:
         if route is None:
             raise RuntimeError("peer room route is unavailable")
         stored = next((
-            l for l in hosted_room_links.load_room_links(self.db_path)
+            l for l in hosted_room_links.load_room_links(self.store, placement=self.placement)
             if (l.room_id, l.member_id) == key), None)
         if stored is None:
             raise RuntimeError("peer room route cannot be renewed before persistence")
@@ -419,7 +427,8 @@ class HostedRoomService:
         cursor = 0
         while True:
             page = hosted_rooms.read_events(
-                self.db_path, room_id=room_id, since_seq=cursor, limit=hosted_rooms.MAX_LOG_LIMIT)
+                self.store, placement=self.placement, room_id=room_id, since_seq=cursor,
+                limit=hosted_rooms.MAX_LOG_LIMIT)
             rows = page.get("events")
             if isinstance(rows, list):
                 events.extend(row for row in rows if isinstance(row, dict))
@@ -459,7 +468,8 @@ class HostedRoomService:
                 local_profiles=local_profiles)
             for event in publication.events:
                 appended = hosted_rooms.append_event(
-                    self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
+                    self.store, placement=self.placement, **event.append_kwargs(room_id),
+                    expected_latest_seq=cursor)
                 cursor = max(cursor, int(appended["seq"]))
             changed = True
         return changed
@@ -470,7 +480,7 @@ class HostedRoomService:
             return
         gateway_id, epoch = _authority(room)
         hosted_rooms.append_event(
-            self.db_path, room_id=str(room["room_id"]),
+            self.store, placement=self.placement, room_id=str(room["room_id"]),
             event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}",
             kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
             payload={
@@ -485,7 +495,7 @@ class HostedRoomService:
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
             try:
                 changed = self._publish_terminal_tasks(room)
-            except hosted_rooms.EventCursorConflictError:
+            except EventCursorConflictError:
                 # Rebuild publication next poll; the settled task is never readmitted.
                 return
             if changed:
@@ -493,7 +503,7 @@ class HostedRoomService:
                 snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
             driver.prune_published_terminal_tasks(
-                self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
+                self.store, placement=self.placement, room_id=binding.room_id, clock=self.runtime.clock)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             # The snapshot holds one active discussion; its latest user message opened it.
@@ -503,9 +513,9 @@ class HostedRoomService:
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
                 room_context=None if source_seq is None else room_context(
-                    self.db_path, room_id=binding.room_id, before_seq=source_seq))
+                    self.store, placement=self.placement, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
-                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                existing = driver.get_task_for_turn(self.store, decision.task.identity, placement=self.placement)
                 legacy_payload = dict(decision.task.payload)
                 legacy_payload.pop("input_context", None)
                 if existing is not None and "input_context" in existing["payload"]:
@@ -522,7 +532,8 @@ class HostedRoomService:
                     admitted = existing
                 else:
                     admitted = driver.admit_task(
-                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
+                        self.store, decision.task.identity, placement=self.placement,
+                        payload=decision.task.payload, clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
@@ -541,7 +552,7 @@ class HostedRoomService:
             self.prepare_room(binding)
         except Exception as exc:
             if stalls.failed(binding.room_id, exc):
-                prepare_stall.report_stall(self.db_path, binding.room_id, exc)
+                prepare_stall.report_stall(self.store, binding.room_id, exc, placement=self.placement)
             raise
         stalls.clear(binding.room_id)
 
@@ -550,17 +561,17 @@ class HostedRoomService:
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 
-    def create_room(self, *, room_id: str, name: str, members: Any, admit: Any = None) -> dict[str, Any]:
+    def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
         normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
         room = hosted_rooms.create_room(
-            self.db_path, room_id=room_id, name=name,
+            self.store, placement=self.placement, room_id=room_id, name=name,
             members=[
                 {
                     "member_id": member.member_id, "profile": member.profile,
                     "handle": member.handle, "target": dict(member.target or {}),
                     **({"display_name": member.display_name} if member.display_name else {})}
                 for member in normalized],
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id(), admit=admit)
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id())
         self.runtime.wakeup()
         return room
 
@@ -590,8 +601,8 @@ class HostedRoomService:
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         gateway_id, epoch = self._owned_authority(room_id)
         hosted_rooms.request_room_stop(
-            self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
-            expected_epoch=epoch)
+            self.store, placement=self.placement, room_id=room_id, cancel_id=cancel_id,
+            expected_gateway_id=gateway_id, expected_epoch=epoch)
         pending = 0
         with self._policy_lock:
             tasks = {
@@ -619,7 +630,7 @@ class HostedRoomService:
                      and member_id in (None, task_member_id(c))
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
-            raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+            raise InvalidTaskTransitionError("no retryable room task matches task_id")
         # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
         # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
         forget_task_progress(room_id, task_id, int(task["execution_generation"]))
@@ -631,14 +642,14 @@ class HostedRoomService:
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if (binding is None or task_id != f"{prepare_stall.RETRY_TASK_PREFIX}{room_id}"
                 or not self._prepare_stalls.stalled(room_id)):
-            raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+            raise InvalidTaskTransitionError("no retryable room task matches task_id")
         try:
             self._prepare_tracked(binding, retry_stalled=True)
         except Exception as exc:
             self._prepare_stalls.stall(room_id, exc)
             raise
         self.runtime.wakeup()
-        return {"identity": driver.TaskIdentity(room_id=room_id, task_id=task_id, thread_id=task_id, turn_id=task_id),
+        return {"identity": HostedTaskIdentity(room_id=room_id, task_id=task_id, thread_id=task_id, turn_id=task_id),
                 "status": "prepared", "execution_generation": 1, "cancel_generation": 0}
 
     def approve_room_task(
@@ -685,7 +696,7 @@ class HostedRoomService:
             runtime["link_load_error"] = self._link_load_error
         if room_id is None:
             return runtime
-        tasks = driver.list_tasks(self.db_path, room_id=room_id)
+        tasks = driver.list_tasks(self.store, placement=self.placement, room_id=room_id)
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
             attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]

@@ -194,8 +194,10 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 
-def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered: bool, scopes, session_db) -> None:
-    """Release build scopes and settle ownership of the late notify registration + dedicated db handle."""
+def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered: bool, scopes, session_db,
+                        persistence=None) -> None:
+    """Release build scopes and settle ownership of the late notify registration + dedicated db handle (and the
+    storage interface handle beside it)."""
     if scopes is not None:
         _release_build_profile_scopes(scopes)
     # Reaped after the agent was attached: _attach_worker closed the worker; only a late notify
@@ -211,6 +213,7 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     if session_db is not None and not _transfer_db_to_agent(None if replaced else current.get("agent"), session_db):
         with contextlib.suppress(Exception):
             session_db.close()
+        _release_persistence(persistence)
 
 
 def _start_agent_build(sid: str, session: dict) -> None:
@@ -241,7 +244,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             session["agent_error"] = AGENT_BUILD_ABANDONED
             ready.set()
             return
-        notify_registered, scopes, session_db = False, None, None
+        notify_registered, scopes, session_db, persistence = False, None, None, None
         profile_home = current.get("profile_home")
         try:
             if not _await_resume_history(sid, current):
@@ -256,13 +259,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
                 session_db = _open_profile_session_db(profile_home)
+                persistence = _persistence_beside(session_db)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()
             except Exception:
                 logger.warning("MCP discovery startup failed", exc_info=True)
             try:
-                agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
+                agent = _make_agent(sid, key, persistence=persistence, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
             # Attach atomically against session teardown: ``session.close`` may have popped this
@@ -292,7 +296,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
-                sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
+                sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db,
+                persistence=persistence)
             ready.set()
 
     build_thread = threading.Thread(target=_build, daemon=True)
@@ -553,35 +558,37 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
-def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
+def _load_resume_transcript(persistence, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
-    from hermes_state import SessionResumeTooLargeError
+    from persistence.conversation.messages import ConversationRequest, ResumeTooLarge
+    from storage_limits import resolved_max_resume_messages
+    tip = ConversationRequest(repair_alternation=True, include_row_ids=True)
     if model_history_only:
-        raw_history = db.get_messages_as_conversation(
-            stored_id, repair_alternation=True, include_row_ids=True)
+        raw_history = [m.as_openai_message() for m in persistence.messages.read_conversation(stored_id, tip)]
         return raw_history, [], []
     prefix_fits = True
-    guard = getattr(db, "assert_resume_safe", None)
-    if callable(guard):
-        try:
-            guard(stored_id)
-        except SessionResumeTooLargeError as exc:
-            prefix_fits = False
-            logger.info("resume %s: compression lineage exceeds the resume limit (%s); hydrating the tip segment only",
-                        stored_id, exc)
-        except Exception:
-            logger.debug("resume lineage guard failed; loading full lineage", exc_info=True)
+    try:
+        persistence.messages.assert_resume_safe(stored_id, max_messages=resolved_max_resume_messages())
+    except ResumeTooLarge as exc:
+        prefix_fits = False
+        logger.info("resume %s: compression lineage exceeds the resume limit (%s); hydrating the tip segment only",
+                    stored_id, exc)
+    except Exception:
+        logger.debug("resume lineage guard failed; loading full lineage", exc_info=True)
     if prefix_fits:
-        raw_history, display_history = db.get_resume_conversations(stored_id)
-        return raw_history, display_history, db.get_ancestor_display_prefix(stored_id)
-    raw_history = db.get_messages_as_conversation(stored_id, repair_alternation=True, include_row_ids=True)
+        resume = persistence.messages.read_resume_conversations(stored_id)
+        prefix = persistence.lineage.ancestor_display_prefix(stored_id)
+        return ([m.as_openai_message() for m in resume.model], [m.as_openai_message() for m in resume.display],
+                [m.as_openai_message() for m in prefix])
+    raw_history = [m.as_openai_message() for m in persistence.messages.read_conversation(stored_id, tip)]
     return raw_history, raw_history, []
 
 
-def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False,
+def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False, persistence=None,
                                model_history_only: bool = False) -> None:
-    """Load a cold resume's transcript off the JSON-RPC response path."""
+    """Load a cold resume's transcript off the JSON-RPC response path; releases ``persistence`` (the storage
+    interface handle beside ``db``) when done."""
 
     def _run() -> None:
         session = _sessions.get(sid)
@@ -589,16 +596,15 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if session is None:
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
-            # Read-only mount (#85303): hydration is a read; an ended row stays ended —
-            # the first real turn (prompt.submit) reopens it. But a restart discarded the
-            # busy-queue, so retire never-drained accept rows (#125577) before the read —
-            # with #128508 the reopen (and its retire) no longer runs on this path.
-            # Best-effort like the resume guard: a handle without the method skips it.
-            retire = getattr(db, "retire_undrained_queue_rows", None)
-            if callable(retire):
-                retire(stored_id)
-            raw_history, display_history, prefix = _load_resume_transcript(
-                db, stored_id, model_history_only=model_history_only)
+            with contextlib.nullcontext(persistence) if persistence is not None else _persistence_for(db) as handle:
+                # Read-only mount (#85303): hydration is a read; an ended row stays ended —
+                # the first real turn (prompt.submit) reopens it. But a restart discarded the
+                # busy-queue, so retire never-drained accept rows (#125577) before the read —
+                # with #128508 the reopen (and its retire) no longer runs on this path.
+                if handle is not None:
+                    handle.sessions.retire_undrained_queue_rows(stored_id)
+                raw_history, display_history, prefix = _load_resume_transcript(
+                    handle, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history uses the
             # same canonicalization as gateway resume and the send path.
             history = canonicalize_replay_history(raw_history)
@@ -636,6 +642,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                     db.close()
                 except Exception:
                     logger.debug("failed to close resume db for %s", sid, exc_info=True)
+            _release_persistence(persistence)
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -657,8 +664,8 @@ def _session_live_status(sid: str, session: dict) -> str:
 
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
-    with contextlib.suppress(Exception), _session_db(session) as db:
-        title = str(db.get_session_title(key) or title or "").strip() if db is not None else title
+    with contextlib.suppress(Exception), _session_db(session) as db, _persistence_for(db) as persistence:
+        title = str(persistence.sessions.get_title(key) or title or "").strip() if persistence is not None else title
     return title
 
 
@@ -773,17 +780,19 @@ def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) 
 def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> list[dict]:
     """User-visible DISPLAY projection for a live/warm session: the persisted display lineage (same read as
     resume/REST so the payloads agree) reconciled with the in-memory tail; in-memory when the DB is unavailable."""
+    from persistence.conversation.messages import ConversationRequest, TranscriptView
     key = session.get("session_key")
-    if db is not None and key:
-        try:
-            # include_compacted: a compacted session's archived turns are still the user's
-            # conversation; without them a warm switch repainted the chat as summary + tail only.
-            display = db.get_messages_as_conversation(
-                key, include_ancestors=True, include_row_ids=True, include_compacted=True)
-            # See #92080.
-            return _reconcile_display_with_live(display, in_memory_fallback)
-        except Exception:
-            logger.debug("live display projection read failed", exc_info=True)
+    with _persistence_for(db) as persistence:
+        if persistence is not None and key:
+            try:
+                # The DISPLAY view: a compacted session's archived turns are still the user's
+                # conversation; without them a warm switch repainted the chat as summary + tail only.
+                display = [m.as_openai_message() for m in persistence.messages.read_conversation(
+                    key, ConversationRequest(view=TranscriptView.DISPLAY, include_lineage=True, include_row_ids=True))]
+                # See #92080.
+                return _reconcile_display_with_live(display, in_memory_fallback)
+            except Exception:
+                logger.debug("live display projection read failed", exc_info=True)
     return in_memory_fallback
 
 

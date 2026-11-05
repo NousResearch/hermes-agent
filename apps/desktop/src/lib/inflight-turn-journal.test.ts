@@ -163,9 +163,11 @@ describe('persistInFlightTurnState', () => {
       )
 
     commit('first')
+
     for (now = 1; now < 400; now += 1) {
       commit(`progress-${now}`)
     }
+
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
 
     // Time passed, but Chromium has not delivered the trailing timer.

@@ -118,7 +118,9 @@ export function ConnectorsDirectory({
       ) : null}
 
       {loading ? (
-        <div className="mt-(--capabilities-gap-lead)"><ToolsWash label={copy.page.loading} rows={10} /></div>
+        <div className="mt-(--capabilities-gap-lead)">
+          <ToolsWash label={copy.page.loading} rows={10} />
+        </div>
       ) : groups.length > 0 ? (
         <div className="capabilities-sections min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4">
           {groups.map(group => (

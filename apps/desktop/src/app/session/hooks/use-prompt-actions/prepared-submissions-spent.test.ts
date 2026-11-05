@@ -2,7 +2,11 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { storageView } from './prepared-submissions-test-utils'
 
-afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); localStorage.clear() })
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.resetModules()
+  localStorage.clear()
+})
 
 // The native file journal of one origin, shared by every renderer load. Removal fails like
 // ENOSPC/EIO while `failing` is set; reads keep working.
@@ -13,10 +17,16 @@ function nativeJournal() {
   const native = {
     read: async () => file,
     update: async (key: string, entry: string | null) => {
-      if (state.failing) { throw new Error('ENOSPC: no space left on device') }
+      if (state.failing) {
+        throw new Error('ENOSPC: no space left on device')
+      }
       const journal = JSON.parse(file)
 
-      if (entry === null) { delete journal[key] } else { journal[key] = JSON.parse(entry) }
+      if (entry === null) {
+        delete journal[key]
+      } else {
+        journal[key] = JSON.parse(entry)
+      }
       file = JSON.stringify(journal)
     }
   }
@@ -28,7 +38,13 @@ test('an admitted identity whose journal removal failed stays spent across a rel
   const journal = nativeJournal()
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: journal.native })
   const intent = JSON.stringify(['local::default', 'stored', 'same text', [], null, false, null])
-  const entry = { id: 'admitted-id', text: 'same text', attachments: [], params: { submission_id: 'admitted-id' }, owner: { connectionId: 'local', profile: 'default' } }
+  const entry = {
+    id: 'admitted-id',
+    text: 'same text',
+    attachments: [],
+    params: { submission_id: 'admitted-id' },
+    owner: { connectionId: 'local', profile: 'default' }
+  }
 
   const first = await import('./prepared-submissions')
   await first.writePreparedSubmission(intent, entry)
@@ -50,7 +66,8 @@ test('an admitted identity whose journal removal failed stays spent across a rel
 
 test('two windows retiring different admitted entries keep both tombstones across a reload', async () => {
   const realStorage = window.localStorage
-  const inWindow = (storage: Storage) => Object.defineProperty(window, 'localStorage', { configurable: true, value: storage })
+  const inWindow = (storage: Storage) =>
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: storage })
   const journal = nativeJournal()
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: journal.native })
   const owner = { connectionId: 'local', profile: 'default' }

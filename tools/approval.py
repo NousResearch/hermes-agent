@@ -380,13 +380,25 @@ def _sync_permanent_from_disk(approved: set, key: str) -> None:
     _permanent_baseline_by_home[key] = on_disk
 
 
-def is_approved(session_key: str, pattern_key: str) -> bool:
-    """Session-scoped or permanent approval. Accepts the canonical key and the legacy
-    regex-derived key so existing command_allowlist entries survive key migrations."""
+def _approval_scope(session_key: str, pattern_key: str) -> str | None:
+    """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
+    decision and its provenance label cannot disagree when a grant is revoked concurrently.
+    Accepts the canonical key and the legacy regex-derived key so existing command_allowlist
+    entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_set() | _session_approved.get(session_key, set())
-    return any(alias in approved for alias in aliases)
+        permanent = _permanent_set()
+        session = _session_approved.get(session_key, set())
+        if any(alias in permanent for alias in aliases):
+            return "permanent"
+        if any(alias in session for alias in aliases):
+            return "session"
+    return None
+
+
+def is_approved(session_key: str, pattern_key: str) -> bool:
+    """Session-scoped or permanent approval (see :func:`_approval_scope`)."""
+    return _approval_scope(session_key, pattern_key) is not None
 
 
 def _is_permanently_approved(pattern_key: str) -> bool:
@@ -693,13 +705,13 @@ def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None
     return _pending_findings(_command_findings(command), approved)
 
 
-def _approved_with_provenance(findings: list[tuple[str, str]]) -> dict:
+def _approved_with_provenance(findings: list[tuple[str, str]], scopes: dict[str, str | None]) -> dict:
     """Approved result for a command whose *findings* (possibly none) an earlier answer covers.
-    Called only after the session/permanent check passed, so it only labels the decision."""
+    *scopes* are the :func:`_approval_scope` reads the approval check itself accepted; rereading the
+    stores here could label a grant revoked since the check as a session answer."""
     if not findings:
         return _approved()
-    return preapproved_result(
-        findings, lambda key: "permanent" if _is_permanently_approved(key) else "session")
+    return preapproved_result(findings, scopes.__getitem__)
 
 
 def _allowlisted(command: str) -> dict:
@@ -1168,9 +1180,10 @@ def check_dangerous_command(command: str, env_type: str,
         return _allowlisted(command)
     session_key = get_current_session_key()
     findings = _command_findings(command)
-    pending = _pending_findings(findings, lambda key: is_approved(session_key, key))
+    scopes = {key: _approval_scope(session_key, key) for key, _ in findings}
+    pending = _pending_findings(findings, lambda key: scopes[key] is not None)
     if pending is None:
-        return _approved_with_provenance(findings)
+        return _approved_with_provenance(findings, scopes)
     keys, description = pending
     return _run_approval_gate(
         pattern_key=keys[0], pattern_keys=keys, description=description, display_target=command,
@@ -1247,9 +1260,10 @@ def check_all_command_guards(command: str, env_type: str,
 
     session_key = get_current_session_key()
     findings = _command_findings(command)
-    pending = _pending_findings(findings, lambda key: is_approved(session_key, key))
+    scopes = {key: _approval_scope(session_key, key) for key, _ in findings}
+    pending = _pending_findings(findings, lambda key: scopes[key] is not None)
     if pending is None:
-        return _approved_with_provenance(findings)
+        return _approved_with_provenance(findings, scopes)
     keys, description = pending
     # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(

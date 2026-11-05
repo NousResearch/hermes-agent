@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import logging
 from pathlib import Path
-import sqlite3
 
 from acp.schema import (
     AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
@@ -149,13 +148,14 @@ def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict
     """``_meta.hermes.sessionProvenance`` for the editor's id, the logical session's current
     compression tip and its lineage (``acp_adapter/provenance.py``). Blocking."""
     from acp_adapter.provenance import session_provenance_meta
-    from hermes_state import SessionDB
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
     if not Path(db_path).exists():
         return None
     try:
-        with SessionDB(db_path=db_path, read_only=True) as db:
-            return session_provenance_meta(db, acp_session_id, db.get_compression_tip(session_id) or session_id)
-    except sqlite3.Error:
+        with open_persistence_reader(Path(db_path)) as persistence:
+            return session_provenance_meta(persistence, acp_session_id, persistence.lineage.tip(session_id))
+    except STORE_FAILURES:
         # Best-effort, as main's ``_provenance_meta``: an unreadable store must not fail the attach.
         logger.debug("Could not build ACP session provenance for %s", session_id, exc_info=True)
         return None

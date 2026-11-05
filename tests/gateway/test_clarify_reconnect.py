@@ -1,9 +1,12 @@
 """Reconnectable canonical batch-clarify snapshots, receipts and identity fences."""
 import asyncio
+import threading
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_clarify_lock_owner import QUESTIONS, _start_batch, _wait_for
+from tests.gateway.test_clarify_lock_owner import QUESTIONS, _Peer, _start_batch, _wait_for
 from tests.gateway.test_surface_admission import _authority
 
 
@@ -76,6 +79,55 @@ async def test_resume_replays_partial_batch_without_transcript(tmp_path, monkeyp
             _stop_batch(authority, worker)
         if fresh is not None:
             await fresh.close()
+        await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_metadata_resume_keeps_live_prompts_but_not_scalar_request_params(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_server_requests import ask_viewer, withdraw
+
+    async def answer(event):
+        return 'ok'
+
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    worker = None
+    batch_worker = None
+    try:
+        resumed = (await _resume(owner))['result']
+        original_handle = authority._handle
+        monkeypatch.setattr(authority, '_handle', lambda ref: replace(
+            original_handle(ref), execution_state='running'))
+        authority.sessions['s'].controls.pending['legacy'] = (SimpleNamespace(event=threading.Event()), {
+            'kind': 'clarify', 'prompt_id': 'legacy',
+            'execution_generation': resumed['execution_generation'],
+            'question': 'Keep live prompt?', 'choices': [], 'multi_select': False,
+        })
+        peer = _Peer()
+        stream = authority.sessions['s'].event_stream
+        stream.fanout.attach(peer)
+        worker = threading.Thread(target=lambda: ask_viewer(
+            stream, 's', 'secret', {'prompt': 'must-not-enter-monitor'}, timeout=5,
+        ), daemon=True)
+        worker.start()
+        await _wait_for(lambda: any(frame.get('method') == 'secret' for frame in peer.frames))
+        batch_peer, batch_worker, _out = _start_batch(authority)
+        await _wait_for(lambda: any(frame.get('method') == 'clarify' for frame in batch_peer.frames))
+        batch_request_id = _request_id(batch_peer)
+
+        restored = (await _resume(owner))['result']
+        assert [prompt['prompt_id'] for prompt in restored['prompts']] == ['legacy']
+        assert [entry['id'] for entry in restored['open_requests']] == [batch_request_id]
+        assert restored['open_requests'][0]['method'] == 'clarify'
+        assert 'must-not-enter-monitor' not in repr(restored)
+    finally:
+        if batch_worker is not None:
+            _stop_batch(authority, batch_worker)
+        if worker is not None:
+            withdraw(authority.sessions['s'].event_stream, 's', 'secret')
+            worker.join(5)
+            assert not worker.is_alive()
         await owner.close()
 
 

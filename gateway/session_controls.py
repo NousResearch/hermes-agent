@@ -710,7 +710,8 @@ class AuthorityConnection:
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [] if metadata_only else [asdict(r) for r in snapshot.pending],
-                'prompts': [] if metadata_only else list(snapshot.prompts), 'info': info,
+                # Live clarify/approval controls are not transcript history or scalar secret params.
+                'prompts': list(snapshot.prompts), 'info': info,
                 'open_requests': open_requests(
                     self.authority.sessions[ref.session_id].event_stream, ref.session_id,
                     batch_only=metadata_only),

@@ -19,6 +19,7 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { hasPasteChip } from '../domain/pasteExpand.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
@@ -1588,6 +1589,11 @@ export function useMainApp(gw: GatewayClient) {
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,
+      pasteHint: composerState.pasteExpanded
+        ? ('collapse' as const)
+        : hasPasteChip(composerState.input, composerState.tokens)
+          ? ('expand' as const)
+          : null,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,

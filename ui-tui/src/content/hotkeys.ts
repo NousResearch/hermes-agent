@@ -31,6 +31,7 @@ export function hotkeys(): [string, string][] {
     ['↑/↓', h.arrows],
     ['Ctrl+X', h.sessionSwitcher],
     ['Ctrl+T', h.expandAgents],
+    ['Ctrl+P', h.pasteExpand],
     ['Ctrl+R / F7', h.collapseAgents],
     ['Ctrl+O', h.modelPicker],
     [action + '+A/E', h.homeEnd],

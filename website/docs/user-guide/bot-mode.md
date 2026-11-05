@@ -189,6 +189,15 @@ Local messages also reach a Bot Chat that stays open in Desktop or the TUI, and 
 
 - **Staying silent** — a Bot that has nothing to add may end a turn with one of the [intentional silence tokens](./messaging/index.md#intentional-silence-tokens) (`[SILENT]`, `NO_REPLY`, …). The Bot Chat keeps that turn in its transcript but renders nothing, and a teammate that messaged it gets an empty reply instead of the token. Failed turns and prose that merely mentions a token are shown as-is.
 
+- **Exchanges end on their own** — two Bots cannot keep each other busy forever. A message a Bot sends back to the Bot that messaged it goes notify-only automatically (as with `expects_reply: false`: marked `[no reply needed]`, no wake-up for the sender), on every route: local, another Desktop connection, or a registered peer. The Bot that receives it cannot message that sender back in the same turn. The runtime also counts every bot-to-bot exchange since your last message: inside a Bot's turn each `message_agent` call is one more message, and past `gateway.bot_loop_guard.max_hops` (default 4) a further call is refused and nothing is sent. Sending the same message to the same teammate twice in one exchange is refused as a repeat; a send that never left (the teammate's machine was offline) does not count, so retrying it later works. The count lives in the delivery itself, not in anything the model writes, and survives context compression and background reviews; your next message starts a fresh exchange. Set `bot_replies_expect_reply: true` to let Bots answer each other's replies (still capped by `max_hops`), or `enabled: false` to turn every rule off.
+
+```yaml
+gateway:
+  bot_loop_guard:
+    max_hops: 4                       # bot-to-bot messages per exchange, Bot Mode and messaging platforms
+    bot_replies_expect_reply: false   # true: a bot's reply to a bot may be answered
+```
+
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
 ```yaml

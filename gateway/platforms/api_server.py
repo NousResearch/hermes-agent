@@ -130,10 +130,26 @@ from gateway.readiness import collect_runtime_readiness
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
-from hermes_state_errors import SessionActiveWriteGuardError
+from persistence import RetiredSessionError, SessionWriteGuarded
+from persistence.conversation.messages import NewMessage, ReplaceMode, TranscriptRead, TranscriptView
+from persistence.conversation.sessions import CanonicalTitleLocked, NewSession, RuntimeLock, SessionExists, \
+    SessionLineageKind, SessionOrder, SessionQuery, SessionWindow, TitleConflict
 
 
 logger = logging.getLogger(__name__)
+
+
+def _session_row(session, entry=None) -> dict[str, Any]:
+    """The session row fields the adapter reads, from a session record and, for a listing row, its entry."""
+    row = {key: getattr(session, key) for key in (
+        "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason", "message_count",
+        "tool_call_count", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd", "api_call_count", "parent_session_id", "pinned",
+        "archived", "hidden", "system_prompt")} | {"id": session.session_id, "model_config": dict(session.model_config)}
+    if entry is not None:
+        row.update(last_active=entry.last_active, preview=entry.preview)
+        row.update({"_lineage_root_id": entry.lineage_root_id} if entry.lineage_root_id is not None else {})
+    return row
 
 
 async def _call_verifier(verifier, *args, **kwargs):
@@ -1086,7 +1102,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._response_store_lock = threading.Lock()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
-        self._session_dbs: dict[str, Any] = {}  # per-profile-home SessionDB cache
+        self._home_stores: dict[str, Any] = {}  # per-profile-home storage interface handle cache
         self._session_db_cache_lock = threading.Lock()
         self._session_db_cache_closed = False
         # Last-known-good model per gateway_session_key ("*" = process-wide; never session_id,
@@ -1606,19 +1622,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         recovery as ``SessionStore._recover_session_for_peer``; concurrent first requests
         converge (later row wins). None when undeclared, no live row, or DB error."""
         key = (gateway_session_key or "").strip()
-        db = self._ensure_session_db() if key else None
+        db = self._ensure_store() if key else None
         if db is None:
             return None
         if getattr(self.gateway_runner, 'session_authority', None) is not None:
             from gateway.session_api import declared_api_session
-            return declared_api_session(db, key)
+            return declared_api_session(db, key, persistence=self._store_beside(db))
+        if (store := self._store_beside(db)) is None:
+            return None
         try:
-            row = db.find_latest_gateway_session_for_peer(
-                source=self._SESSION_SOURCE, session_key=key)
+            found = store.routing.latest_session_for_peer(source=self._SESSION_SOURCE, session_key=key)
         except Exception:
             logger.debug("[%s] declared-conversation lookup failed", self.name, exc_info=True)
             return None
-        return str(row["id"]) if row and row.get("id") else None
+        return str(found.session.session_id) if found and found.session.session_id else None
 
     def _bind_declared_conversation(
         self, session_id: Optional[str], gateway_session_key: Optional[str]) -> None:
@@ -1632,20 +1649,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """
         key = (gateway_session_key or "").strip()
         sid = str(session_id or "").strip()
-        db = self._ensure_session_db() if key and sid else None
-        if db is None:
+        store = self._store_beside(self._ensure_store()) if key and sid else None
+        if store is None:
             return
         try:
             # Never rewrite a row that already belongs to a different conversation
-            # (record_gateway_session_peer does SET session_key = ?).
-            existing = db.get_session(sid) or {}
-            current = str(existing.get("session_key") or "").strip()
+            # (record_session_peer does SET session_key = ?).
+            existing = store.sessions.get(sid)
+            current = str((existing.session_key if existing else None) or "").strip()
             if current and current != key:
                 logger.debug(
                     "[%s] refusing to rebind session %s from a different declared conversation",
                     self.name, sid)
                 return
-            db.record_gateway_session_peer(
+            store.routing.record_session_peer(
                 sid, source=self._SESSION_SOURCE, session_key=key,
                 include_compression_ancestors=True)
         except Exception:
@@ -1691,52 +1708,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Session DB -------------------------------------------------------------------
 
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
-        """Cached SessionDB for ``home`` (shared by both ``_ensure_session_db*``). Never writes
-        ``self._session_db`` (explicit override only), so no profile pins later requests."""
+        """Cached storage interface handle for ``home`` (shared by both ``_ensure_store*``), opened eagerly so an
+        unopenable store raises here. Never writes ``self._session_db`` (explicit override only), so no profile pins
+        later requests. A profile unserve/delete that force-closes the home's store leaves the handle cached: it opens
+        the store again here, and raises when it cannot."""
         if self.gateway_runner is not None:
             from gateway.platforms.api_server_store import selected_session_db
             return selected_session_db(self, home)
-        from hermes_state_registry import acquire
+        from persistence_assembly import open_persistence, profile_scope
         key = str(home)
         with self._session_db_cache_lock:
             if self._session_db_cache_closed:
                 return None
-            db = self._cached_session_db_locked(key)
-            if db is None:
-                db = acquire(home / "state.db")
-                self._session_dbs[key] = db
-            return db
-
-    def _cached_session_db_locked(self, key: str) -> Optional[Any]:
-        """Caller holds ``_session_db_cache_lock``. A profile unserve/delete tears the home's
-        generation down through ``hermes_state_registry.close_all_under`` (clearing
-        ``_shared_registry_owned``) without telling this cache; serving that handle would keep
-        raising ``StateDbReplacedError`` after a recreate, so drop it and let the caller reopen."""
-        db = self._session_dbs.get(key)
-        if db is not None and getattr(db, "_shared_registry_owned", True) is False:
-            del self._session_dbs[key]
-            return None
-        return db
+            store = self._home_stores.get(key)
+            if store is None:
+                store = self._home_stores[key] = open_persistence(profile_scope(home=home), eager=True)
+                return store
+        store.ready()
+        return store
 
     def _close_cached_session_dbs(self) -> None:
-        """Close SessionDB handles owned by this adapter's profile cache."""
-        with self._session_db_cache_lock:
-            self._session_db_cache_closed = True
-            cached = list(self._session_dbs.values())
-            self._session_dbs.clear()
-        shared_db = getattr(self, "_session_db", None)
-        for db in cached:
-            if db is shared_db:
-                continue
-            try:
-                from hermes_state_registry import release_or_close
-                release_or_close(db)
-            except Exception:
-                logger.debug("Failed to close API-server SessionDB", exc_info=True)
+        """Close the storage interface handles this adapter's profile cache holds and those beside its override."""
+        from gateway.platforms.api_server_store import close_cached_stores
+        close_cached_stores(self)
 
-    def _ensure_session_db(self):
-        """SessionDB for the active profile home (the runtime scope redirects ``get_hermes_home()``
-        per profile). Sync, for ``_create_agent``; handlers use ``_ensure_session_db_async``."""
+    def _ensure_store(self):
+        """The store of the active profile home (the runtime scope redirects ``get_hermes_home()`` per profile): the
+        reserving authority's storage interface handle under a runtime, else the explicit override or the cached handle.
+        Sync, for ``_create_agent``; handlers use ``_ensure_store_async``."""
         if self.gateway_runner is not None:
             from hermes_constants import get_hermes_home
             from gateway.platforms.api_server_store import selected_session_db
@@ -1747,10 +1746,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from hermes_constants import get_hermes_home
             return self._open_and_cache_session_db(get_hermes_home())
         except Exception as e:
-            logger.debug("SessionDB unavailable for API server: %s", e)
+            logger.debug("Session store unavailable for API server: %s", e, exc_info=True)
             return None
 
-    async def _ensure_session_db_async(self):
+    async def _ensure_store_async(self):
         """Async variant: the profile home is captured on the loop thread (its scope is invisible
         inside ``to_thread``), only the blocking open runs in the worker, single-flight locked."""
         if self.gateway_runner is not None:
@@ -1764,20 +1763,27 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             home = get_hermes_home()
             key = str(home)
             with self._session_db_cache_lock:
-                cached = self._cached_session_db_locked(key)
+                cached = self._home_stores.get(key)
             if cached is not None:
+                await asyncio.to_thread(cached.ready)
                 return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
                 with self._session_db_cache_lock:
-                    cached = self._cached_session_db_locked(key)
+                    cached = self._home_stores.get(key)
                 if cached is not None:
                     return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
-            logger.debug("SessionDB unavailable for API server: %s", e)
+            logger.debug("Session store unavailable for API server: %s", e, exc_info=True)
             return None
+
+    def _store_beside(self, db):
+        """The storage interface handle for ``db``, a store ``_ensure_store*`` answered (without a runtime, the
+        cached handle itself); None without one."""
+        from gateway.platforms.api_server_store import adapter_persistence
+        return None if db is None else adapter_persistence(self)
 
     # -- Agent creation ---------------------------------------------------------------
 
@@ -1912,15 +1918,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model, provider = self._requested_ids(runtime_request.get("requested"))
         if not model and not provider:
             return False
-        db = self._ensure_session_db()
-        if db is None:
+        if (store := self._store_beside(self._ensure_store())) is None:
             return False
         try:
-            db.update_session_runtime_lock(
-                session_id, model=model or None, provider=provider or None,
+            store.sessions.set_runtime_lock(session_id, RuntimeLock(
+                model=model or None, provider=provider or None,
                 model_options=runtime_request.get("model_options") or {},
                 route_source=runtime_request.get("route_source") or "",
-                confirmed=bool(runtime_request.get("require_model_lock")))
+                confirmed=bool(runtime_request.get("require_model_lock"))))
             return True
         except Exception:
             logger.warning("[%s] failed to persist session runtime lock for %s", self.name, session_id, exc_info=True)
@@ -2227,6 +2232,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:
             request_reasoning_config = GatewayRunner._load_reasoning_config(model)
+        from gateway.platforms.api_server_store import adapter_persistence
         agent_kwargs = {
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
@@ -2240,7 +2246,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "interim_assistant_callback": interim_assistant_callback,
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
-            "session_db": self._ensure_session_db(),
+            "session_db": self._ensure_store(), "persistence": adapter_persistence(self),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
@@ -2490,20 +2496,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return body, None
 
     async def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[dict[str, Any]], Optional[web.Response]]:
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return None, self._session_db_unavailable()
-        session = await asyncio.to_thread(db.get_session, session_id)
-        if not session:
+        session = await store.aio.sessions.get(session_id)
+        if session is None:
             return None, _error_response(f"Session not found: {session_id}", 404, code="session_not_found")
-        return session, None
+        return _session_row(session), None
 
     async def _conversation_history_for_session(self, session_id: str) -> list[dict[str, Any]]:
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            return [message.as_openai_message() for message in await store.aio.messages.read_conversation(session_id)]
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -2519,8 +2525,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/sessions — list persisted Hermes sessions."""
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return self._session_db_unavailable()
         limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
@@ -2535,15 +2541,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         async def _list() -> list:
             # include_pinned back-fills pins past the recency window; search_query pushes the
             # title needle into SQL (substring) so a hidden/old row is found, exact match below.
-            rows = await asyncio.to_thread(
-                db.list_sessions_rich, source=source, limit=limit, offset=offset,
-                include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
+            entries = await store.aio.sessions.list_sessions(SessionQuery(
+                sources=(source,) if source else None, include_children=include_children,
+                order=SessionOrder.LAST_ACTIVE, include_pinned=True, search_text=title_filter,
+                include_hidden=include_hidden), SessionWindow(limit=limit, offset=offset))
             if title_filter:
-                rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
-            return rows
+                entries = [e for e in entries if (e.session.title or "").strip() == title_filter]
+            return [_session_row(e.session, e) for e in entries]
 
-        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
+        sessions = await _list() or (await reset_local_title_owner(store, title_filter, include_hidden, source))
         if title_filter and not sessions:
             # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
             # mint transient sessions: resurrect and re-list; deliberate archives stay put.
@@ -2557,8 +2563,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 def _resurrect() -> bool:
                     # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
                     # hop: a contended lock parks this thread, never the event loop (#113772).
-                    stale = db.get_session_by_title(title_filter)
-                    return bool(stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]))
+                    stale = store.sessions.get_by_title(title_filter)
+                    return bool(stale and stale.archived and store.sessions.unarchive_recoverable(stale.session_id))
 
                 if title_filter == BOT_CHAT_TITLE and await asyncio.to_thread(_resurrect):
                     sessions = await _list()
@@ -2580,8 +2586,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.platforms.api_server_bot_chat import create_peer_bot_chat
         if (bot_chat := await create_peer_bot_chat(self, body)) is not None:
             return bot_chat  # the owner minted the canonical Bot Chat (#139370)
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return self._session_db_unavailable()
         raw_id = body.get("id") or body.get("session_id")
         session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -2610,35 +2616,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "route_source": runtime_request.get("route_source") or "",
                 "confirmed": bool(runtime_request.get("require_model_lock")),
                 "updated_at": time.time()}}
-        title = body.get("title")
-
-        def _atomic(conn):
-            from hermes_state_mutation_retirement import create_conflict
-            if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
-                return None, conflict
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
-                (session_id, source, model_name, json.dumps(model_config) if model_config else None,
-                 system_prompt, time.time()))
-            if title is not None:
-                clean_title = db.sanitize_title(str(title))
-                if clean_title:
-                    try:
-                        db._resolve_title_conflict(conn, session_id, clean_title)
-                    except ValueError as exc:  # the DB's uniqueness rule; undo the INSERT
-                        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                        return None, f"title:{exc}"
-                conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
-            session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            return (dict(session_row) if session_row else {
-                "id": session_id, "source": source, "model": model_name, "title": title}), None
-        session, err = await asyncio.to_thread(db._execute_write, _atomic)
-        if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
-            return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
-        if err and err.startswith("title:"):
-            return _error_response(err[len("title:"):], 400, code="invalid_title")
+        try:  # one write: a racing create sees the row, and a held title keeps nothing
+            session = _session_row(await store.aio.sessions.create_exclusive(
+                session_id, source=source, model=model_name, model_config=model_config, system_prompt=system_prompt,
+                title=None if (title := body.get("title")) is None else str(title)))
+        except SessionExists as exc:  # a live row, or a deleted id's fence: refused now, not on every turn
+            return _error_response(f"{exc}: {session_id}", 409, code=exc.code)
+        except RetiredSessionError:
+            return _error_response(
+                f"Session was deleted; its id cannot be reused: {session_id}", 409, code="session_deleted")
+        except (TitleConflict, CanonicalTitleLocked) as exc:
+            return _error_response(str(exc), 400, code="invalid_title")
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     @_require_auth
@@ -2667,26 +2655,30 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return _error_response(f"'{flag}' must be a boolean", 400, code="invalid_session_field")
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return self._session_db_unavailable()
+        sessions = store.aio.sessions
         if "title" in body:
             try:
-                await asyncio.to_thread(
-                    db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
+                await sessions.set_title(session_id, "" if body["title"] is None else str(body["title"]))
             except ValueError as exc:
                 return _error_response(str(exc), 400, code="invalid_title")
-        # Pinned last: set_session_pinned clears hidden, so a pin in the same request
+        # Pinned last: set_pinned clears hidden, so a pin in the same request
         # wins over an explicit hidden (same order as the dashboard's _RENAME_FLAG_SETTERS).
-        for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
-                             ("pinned", db.set_session_pinned)):
+        if "archived" in body:
+            change = await sessions.set_archived(session_id, body["archived"])
+            from session_retention import emit_session_deleted
+            await asyncio.to_thread(emit_session_deleted, store.scope.profile_dir, change.archived_ids,
+                                    reason="archive", primary=session_id)
+        for flag, setter in (("hidden", sessions.set_hidden), ("pinned", sessions.set_pinned)):
             if flag in body:
-                await asyncio.to_thread(setter, session_id, body[flag])
+                await setter(session_id, body[flag])
         if "unread" in body:
-            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
+            await sessions.set_read(session_id, read=not body["unread"])
         if body.get("end_reason"):
-            await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
-        session = await asyncio.to_thread(db.get_session, session_id) or session
+            await sessions.end(session_id, str(body["end_reason"]))
+        session = _session_row(updated) if (updated := await sessions.get(session_id)) is not None else session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth
@@ -2696,8 +2688,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         _session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return self._session_db_unavailable()
         # Same profile home the DB was resolved from (the profile middleware scopes
         # get_hermes_home() for this request) — without it the transcript/dump scrub is skipped.
@@ -2707,23 +2699,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             sessions_dir = Path(get_hermes_home()) / "sessions"
         except Exception:
             logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
+        from gateway.platforms.api_server_store import delete_session
         try:
-            deleted = await asyncio.to_thread(
-                db.delete_session, session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
-        except SessionActiveWriteGuardError as exc:
+            deleted = await asyncio.to_thread(delete_session, store, session_id, sessions_dir)
+        except SessionWriteGuarded as exc:
             return _error_response(str(exc), 409, code="session_active_turn")
         if deleted:
             # A hard delete must also drop the gateway's durable channel→session routing entries
             # for the id, or the next inbound message resolves the SAME id and run_agent's
             # INSERT OR IGNORE resurrects the deleted row (#42422).
             runner = self.gateway_runner or request.app.get("gateway_runner")
-            store = getattr(runner, "session_store", None)
-            if store is not None:
-                await asyncio.to_thread(store.remove_by_session_id, session_id)
+            session_store = getattr(runner, "session_store", None)
+            if session_store is not None:
+                await asyncio.to_thread(session_store.remove_by_session_id, session_id)
             # Retirement erased the chat's image references; bytes nothing else holds go too. Off the
             # loop like every other media release: its holder check and unlink are one write txn.
             from gateway.session_ingress_media import collect_unheld_api_images
-            await asyncio.to_thread(collect_unheld_api_images, db)
+            await asyncio.to_thread(collect_unheld_api_images, store)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth
@@ -2733,8 +2725,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
-        db = await self._ensure_session_db_async()
-        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        store = self._store_beside(await self._ensure_store_async())
+        resolved_id = await store.aio.lineage.resolve_resume_target(session_id)
         raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
         order = request.query.get("order")
         if order not in (None, "oldest", "latest"):
@@ -2751,12 +2743,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         limit = 500 if default_page else min(requested_limit, 500)
         include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
         # Compression lineage: return root→tip messages, matching the REST router (#51058).
-        messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
-            include_compacted=include_compacted, include_ancestors=True)
+        messages = await store.aio.messages.read_transcript(resolved_id, TranscriptRead(
+            view=TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE, limit=limit, offset=offset,
+            latest=latest_page, include_lineage=True))
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m.as_wire_row()) for m in messages],
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),
@@ -2764,7 +2756,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:
-        """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
+        """POST /api/sessions/{session_id}/fork: branch through the storage interface."""
         source_id = request.match_info["session_id"]
         source, err = await self._get_existing_session_or_404(source_id)
         if err:
@@ -2772,11 +2764,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        db = await self._ensure_session_db_async()
+        sessions = (store := self._store_beside(await self._ensure_store_async())).aio.sessions
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return _error_response("Invalid session ID", 400, code="invalid_session_id")
-        if await asyncio.to_thread(db.get_session, fork_id):
+        if await sessions.get(fork_id) is not None:
             return _error_response(f"Session already exists: {fork_id}", 409, code="session_exists")
 
         # CLI /branch semantics: create the child, then end the original as branched (child first, so
@@ -2784,24 +2776,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
         # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
         # longer holds, and an unmarked child would vanish from default session listings.
-        await asyncio.to_thread(
-            db.create_session, fork_id, "api_server", model=source.get("model"),
+        await sessions.create(NewSession(
+            session_id=fork_id, source="api_server", model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
-            model_config={"_branched_from": source_id})
-        await asyncio.to_thread(db.end_session, source_id, "branched")
-        messages = await asyncio.to_thread(db.get_messages, source_id)
-        await asyncio.to_thread(db.replace_messages, fork_id, messages)
+            lineage_kind=SessionLineageKind.BRANCH))
+        await sessions.end(source_id, "branched")
+        rows = await store.aio.messages.read_transcript(source_id)
+        await store.aio.messages.replace_transcript(
+            fork_id, [NewMessage.from_live(row.as_wire_row()) for row in rows], ReplaceMode.DESTRUCTIVE)
         title = body.get("title")
         if title is None:
             base = source.get("title") or "fork"
             title = f"{base} fork"
             with suppress(Exception):
-                title = await asyncio.to_thread(db.get_next_title_in_lineage, base)
+                title = await sessions.next_title_in_lineage(base)
         try:
-            await asyncio.to_thread(db.set_session_title, fork_id, str(title))
+            await sessions.set_title(fork_id, str(title))
         except ValueError as exc:
             return _error_response(str(exc), 400, code="invalid_title")
-        fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
+        fork = _session_row(f) if (f := await sessions.get(fork_id)) else {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
     async def _prepare_session_chat(self, request: web.Request) -> tuple:
@@ -2931,10 +2924,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if getattr(self.gateway_runner, "session_authority", None) is not None:
             from gateway.platforms.api_server_bot_chat import admit_peer_turn
             return await admit_peer_turn(self.gateway_runner, session_id, message, author)
-        db = await self._ensure_session_db_async()
-        if db is None:
+        store = self._store_beside(await self._ensure_store_async())
+        if store is None:
             return None
-        home = Path(db.db_path).parent
+        home = store.scope.profile_dir
         from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
 
         def _admit() -> Optional[dict[str, Any]]:
@@ -2944,7 +2937,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # No reachable profile authority to hand the chat to: this process runs the turn.
                 return None
             # Only the canonical Bot Chat's own lineage: a peer turn into any other session runs here.
-            if owner is None or db.get_compression_tip(session_id) != owner["session_id"]:
+            if owner is None or store.lineage.tip(session_id) != owner["session_id"]:
                 return None
             return deliver_to_live_owner(home, owner, message, author=author)
 

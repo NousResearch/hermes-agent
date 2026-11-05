@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 if importlib.util.find_spec("lark_oapi") is None and "lark_oapi" not in sys.modules:
     _lark = MagicMock()
@@ -81,8 +82,67 @@ async def _press_feishu_card(request_id):
         await adapter._resolve_approval(next(iter(adapter._approval_state)), "once", "Alice", open_id="ou_1", chat_id="oc_1")
 
 
+async def _press_matrix_card(request_id):
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._user_id, adapter._client = "@bot:example.org", MagicMock()
+    adapter.set_authorization_check(lambda *_a, **_k: True)
+    with patch.object(adapter, "send", new=AsyncMock(return_value=SendResult(success=True, message_id="$card"))), \
+            patch.object(adapter, "_send_reaction", new=AsyncMock(return_value=None)):
+        await adapter.send_exec_approval(chat_id="!room:x", command="rm -rf build", session_key=SESSION, request_id=request_id)
+        await adapter._on_reaction(SimpleNamespace(
+            sender="@alice:x", event_id="$react", room_id="!room:x",
+            content={"m.relates_to": {"event_id": "$card", "key": "✅"}}))
+
+
+async def _press_whatsapp_card(request_id):
+    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+    adapter = WhatsAppCloudAdapter(PlatformConfig(enabled=True, extra={"phone_number_id": "1", "access_token": "t"}))
+    with patch.object(adapter, "_post_message_result", new=AsyncMock(return_value=SendResult(success=True, message_id="w1"))), \
+            patch.object(adapter, "send", new=AsyncMock()):
+        await adapter.send_exec_approval(chat_id="15551234567", command="rm -rf build", session_key=SESSION, request_id=request_id)
+        await adapter._handle_approval_tap("15551234567", {}, ["appr", next(iter(adapter._exec_approval_state)), "approve"])
+    return "approve"  # Approve / Deny only: WhatsApp's 3-button cap leaves no room for the tiers
+
+
+async def _press_teams_card(request_id):
+    from tests.gateway.test_teams import TeamsAdapter  # installs the Teams SDK stand-in the adapter renders with
+    adapter = TeamsAdapter(PlatformConfig(enabled=True, extra={"client_id": "bot", "client_secret": "s", "tenant_id": "t"}))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter._card_action_denied, adapter._invoke_card = (lambda _from: None), (lambda body: body)
+    buttons = []
+    with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
+        await adapter.send_exec_approval(chat_id="c1", command="rm -rf build", session_key=SESSION, request_id=request_id)
+    ctx = MagicMock()
+    ctx.activity.value.action.data = next(b["data"] for b in buttons if b["data"]["hermes_action"] == "approve_once")
+    await adapter._on_card_action(ctx)
+
+
+async def _press_relay_card(request_id):
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+    from gateway.session import SessionSource
+    from tests.gateway.relay.stub_connector import StubConnector
+    desc = CapabilityDescriptor(
+        contract_version=CONTRACT_VERSION, platform="telegram", label="Telegram", max_message_length=4096,
+        supports_draft_streaming=False, supports_edit=True, supports_threads=True, markdown_dialect="markdown_v2",
+        len_unit="utf16", supported_ops=("send", "edit", "typing", "get_chat_info", "send_media", "prompt", "react"))
+    stub = StubConnector(desc)
+    adapter = RelayAdapter(PlatformConfig(), desc, transport=stub)
+    await adapter.send_exec_approval("c1", "rm -rf build", SESSION, request_id=request_id)
+    await adapter._consume_prompt_response(MessageEvent(
+        text="/once", message_type=MessageType.COMMAND,
+        source=SessionSource(platform="telegram", chat_id="c1", chat_type="dm", user_id="u1"),
+        prompt_response={"prompt_id": stub.sent[-1]["prompt_id"], "option_id": "once"}))
+
+
+_PRESSES = [_press_telegram_card, _press_slack_card, _press_feishu_card, _press_matrix_card, _press_whatsapp_card,
+            _press_teams_card, _press_relay_card]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("press", [_press_telegram_card, _press_slack_card, _press_feishu_card])
+@pytest.mark.parametrize("press", _PRESSES)
 async def test_settled_card_does_not_resolve_the_next_request(newer_request_pending, press):
     await press("req-old")
 
@@ -91,9 +151,9 @@ async def test_settled_card_does_not_resolve_the_next_request(newer_request_pend
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("press", [_press_telegram_card, _press_slack_card, _press_feishu_card])
+@pytest.mark.parametrize("press", _PRESSES)
 async def test_card_resolves_its_own_request(newer_request_pending, press):
-    await press("req-new")
+    pressed = await press("req-new") or "once"
 
     assert newer_request_pending.event.is_set()
-    assert newer_request_pending.result == "once"
+    assert newer_request_pending.result == pressed

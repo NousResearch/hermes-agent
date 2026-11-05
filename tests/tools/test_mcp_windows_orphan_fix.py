@@ -141,3 +141,21 @@ class TestWindowsTreeKillHelpers:
                 raise OSError("gone")
 
         _kill_process_tree_windows(Boom())  # must not raise
+
+    def test_ledger_tree_kill_helper_tolerates_missing_psutil(self, monkeypatch):
+        """Without psutil the helper returns quietly, like the module's other psutil sites."""
+        from hermes_cli.process_identity import _kill_process_tree_windows
+
+        monkeypatch.setitem(__import__("sys").modules, "psutil", None)
+        touched = []
+
+        class Proc:
+            def children(self, recursive=True):
+                touched.append("children")
+                return []
+
+            def terminate(self):
+                touched.append("terminate")
+
+        _kill_process_tree_windows(Proc())  # must not raise
+        assert touched == []

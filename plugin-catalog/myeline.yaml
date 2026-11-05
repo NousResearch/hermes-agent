@@ -1,0 +1,16 @@
+name: myeline
+repo: https://github.com/Sandbox-Group-LLC/myeline-hermes
+sha: df6b3c81fb74261c6e7693f905ad9a5d1e73270f
+description: "Myeline is a remote MCP memory server: every memory is a single fact with its source attached, AI proposals land in a human review queue, and removing a fact takes a written reason kept in an audit log. One retraction stops a stale fact in every connected assistant at once. Maintained by Sandbox Group, the Myeline vendor. Disclosure: the package registers one remote MCP server, cortex.myeline.si/mcp, reached over the user's own Myeline account via Hermes's native remote MCP OAuth flow; tool-call payloads (queries and facts the user asks to save) go to that server under that account and nowhere else. The package carries no secrets, no telemetry, and no executable code: two manifests and a skill."
+maintainer: sandbox-group
+tier: community
+category: memory
+requires_hermes: ">=0.22"
+docs_url: "https://myeline.si/docs"
+version: "1.0.0"
+title: "Myeline"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

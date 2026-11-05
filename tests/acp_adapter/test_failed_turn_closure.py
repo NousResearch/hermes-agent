@@ -280,6 +280,48 @@ def test_acp_refused_turn_stays_in_the_display_tagged_content_refused(acp):
     assert CONTENT_REFUSED_METADATA_KEY in (refused_row.get("display_metadata") or {})
 
 
+def test_acp_reload_replays_the_refused_ask_and_notice_to_the_editor(acp):
+    """Finding #4486245780: reopening the editor must still SHOW the refused turn.
+
+    The refused turn leaves the MODEL context (``state.history`` is active-only) but is RETAINED in
+    the display projection. A reopened editor replays history via ``load_session``; if that replays
+    only the clean model history the user's refused ask and notice vanish on every reopen even though
+    SQLite keeps them. This drives a REAL ``load_session`` through a FRESH server (process-restart
+    fidelity) sharing the same DB and asserts the replayed ``session/update`` stream — not just the
+    DB rows — carries the refused ask plus the refusal notice, and still the prior clean exchange.
+    """
+    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+    from acp_adapter.server import HermesACPAgent
+    from acp_adapter.session import SessionManager
+
+    provider, prompt, _rows, db, sid, _conn, server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    cwd = server.session_manager.get_session(sid).cwd
+
+    # Reopen from a fresh process: a new server + manager on the same DB cold-restores the session,
+    # then replays it to the editor.
+    reopened_conn = _RecordingConn()
+    reopened = HermesACPAgent(session_manager=SessionManager(db=db))
+    reopened.on_connect(reopened_conn)
+    resp = asyncio.run(reopened.load_session(cwd=cwd, session_id=sid))
+    assert resp is not None
+
+    texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None)
+             for u in reopened_conn.updates]
+    # The refused ask is shown again (model history alone would hide it).
+    assert any(_REFUSED in (t or "") for t in texts), f"refused ask hidden on reload: {texts}"
+    # The refusal notice rides along so the editor shows "you asked X -> refused".
+    assert any(CONTENT_REFUSED_NOTICE in (t or "") for t in texts), f"refusal notice missing: {texts}"
+    # The prior accepted exchange is still replayed.
+    assert any((t or "") == "hello" for t in texts)
+    assert any("Hello there." in (t or "") for t in texts)
+
+
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):
     """Keyed on ``SessionDB.latest_conversation_role``: a redelivery of an already-closed turn
     writes no second row, an assistant tail is left alone, and the context-overflow class

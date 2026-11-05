@@ -57,7 +57,7 @@ directory of the hermes-agent repository, declaring:
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
 | `image` | Banner image for the catalog card and the plugin page hero, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 | `screenshots` | Up to 6 images shown as a gallery on the plugin page, same host rule as `image` (optional). Pin them to the entry's commit too |
-| `readme` | The plugin page renders the repository README (the entry's `subdir` first, else the repo root) by default. It is fetched **from the pinned commit** at docs build time — never from a branch — so the page shows the README the reviewer read and changes only when the pin does. Set `false` to hide it. GitHub and GitLab repos (optional, default `true`) |
+| `readme` | The plugin page renders the repository README (the entry's `subdir` first, else the repo root) by default. It is fetched **from the pinned commit** — never from a branch — so the page shows the README the reviewer read and changes only when the pin does. Set `false` to hide it. GitHub and GitLab repos (optional, default `true`) |
 
 ## Trust model
 

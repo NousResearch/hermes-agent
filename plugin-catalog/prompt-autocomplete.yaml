@@ -1,10 +1,10 @@
 name: prompt-autocomplete
 repo: https://github.com/bystac/hermes-prompt-autocomplete
-sha: 7b0ffb16ccbf4466ba5b7ab176c77ba33d2db7ad
+sha: f813f665e0b313370a008f359e72cbe2a24df1cd
 title: Inline Prompt Autocomplete
 description: 'Inline sentence completion for the Hermes Desktop prompt composer: the bar above the input finishes the
-  sentence you are already typing, and the key that accepts it is the arrow for your language — ArrowRight in English,
-  ArrowLeft in Hebrew/Arabic, Ctrl+Arrow for one word, Tab for the whole line, no toggle to flip. Builtin bilingual phrases
+  sentence you are already typing, and the legend names the direction it detected — LTR with ArrowRight, RTL with
+  ArrowLeft, Ctrl+Arrow for one word, Tab for the whole line, no toggle to flip. Builtin bilingual phrases
   match locally in under a millisecond, a worker trie refines from your own prompt history, and a novel prefix falls back to
   a small model via agent.plugin_llm.PluginLlm (max_tokens=10). The editor DOM is never mutated — the bar renders in
   COMPOSER_AREAS.top and acceptance commits through host.composer.setDraft. Disclosure: reads up to 400 recent prompt phrases
@@ -16,7 +16,7 @@ category: desktop
 requires_hermes: ">=0.21.0"
 version: "2.0.1"
 docs_url: https://github.com/bystac/hermes-prompt-autocomplete#readme
-image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/7b0ffb16ccbf4466ba5b7ab176c77ba33d2db7ad/docs/banner.png
+image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/f813f665e0b313370a008f359e72cbe2a24df1cd/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

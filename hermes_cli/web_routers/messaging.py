@@ -270,6 +270,8 @@ def _messaging_platform_payload(
         # must not project Disabled over the live mirror (#121125). A mirrored Relay keeps the
         # profile's own verdict: Relay has a per-profile opt-out, and a disabled one stays Disabled.
         enabled, configured = True, True
+    elif runtime_platform.get("mirrored_from") and not (enabled and configured):
+        runtime_platform = {}  # the default's Relay is not this profile's channel: none of its errors either
 
     state = runtime_platform.get("state")
     if not enabled:

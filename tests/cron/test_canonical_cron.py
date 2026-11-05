@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from cron import scheduler
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_agent_cron_is_transport_only_and_refuses_without_owner(monkeypatch):
@@ -30,7 +31,8 @@ def test_owner_ticker_uses_direct_admission_without_loopback(monkeypatch):
     import threading
 
     async def probe():
-        authority = SimpleNamespace(db=SimpleNamespace(db_path=str(get_hermes_home() / 'state.db')))
+        authority = SimpleNamespace(db=SimpleNamespace(db_path=str(get_hermes_home() / 'state.db')),
+                                    persistence=storage_handle(get_hermes_home()))
         session_cron.bind_owner(authority)
         calls = []
 

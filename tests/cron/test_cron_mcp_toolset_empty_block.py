@@ -14,21 +14,22 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cron.jobs as cron_jobs
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _run_owned_job(job, tmp_path):
     """Run through the production owner bridge: cron turns execute inside the gateway owner."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from tests.fixtures.storage_seed import seed_session
 
     ref = SessionRef("test-profile", "cron-owner-session")
     admission_id = "cron-owner-admission"
     request_id = "cron-owner-request"
-    db = acquire(tmp_path / "state.db")
-    db.create_session(ref.session_id, source="cron")
+    persistence = storage_handle(tmp_path)
+    seed_session(persistence, ref.session_id, "cron")
     authority = SimpleNamespace(
-        db=db,
+        persistence=persistence,
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
         pending_results={},
     )
@@ -49,10 +50,7 @@ def _run_owned_job(job, tmp_path):
         assert current_execution() is previous
         return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
 
-    try:
-        return asyncio.run(run())
-    finally:
-        release(db)
+    return asyncio.run(run())
 
 _RUNTIME = {"api_key": "k", "base_url": "https://example.invalid/v1", "provider": "openrouter",
             "api_mode": "chat_completions"}

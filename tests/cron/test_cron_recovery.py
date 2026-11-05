@@ -8,8 +8,7 @@ from gateway import run, session_cron
 from gateway.session import SessionStore
 from gateway.session_authority import SessionAuthority
 from gateway.config import GatewayConfig
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
+from persistence_assembly import open_persistence, profile_scope
 
 
 def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
@@ -18,17 +17,17 @@ def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='original', schedule='every 1h', deliver='telegram:123')
-        db = SessionDB(tmp_path / 'state.db')
+        db = open_persistence(profile_scope(home=tmp_path))
         runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()), adapters={})
-        authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                     epoch=begin_runtime_epoch(db, instance_id='test'))
+        authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=db,
+                                     epoch=db.runtime.begin_epoch(instance_id='test'))
         monkeypatch.setattr(authority, '_schedule', lambda ref: None)
         runner.session_authority = authority
         async def probe():
             params = {'job_id': job['id'], 'request_id': 'fire', 'extra_prompt': None}
             receipt = await session_cron.operation(authority, 'submit', params)
-            row = claim_session_input(db, epoch=authority.epoch, session_id=receipt['session_id'])
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed',
+            row = db.admissions.claim(epoch=authority.epoch, session_id=receipt['session_id'])
+            db.admissions.settle(epoch=authority.epoch, admission_id=row.admission_id, generation=row.generation, outcome='completed',
                                  result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
             root = tmp_path / 'cron' / 'admissions'; root.mkdir()
             journal = scheduler_authority.journal_path(job['id'], 'fire')
@@ -46,10 +45,9 @@ def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
                 assert delivery_queue.claim_next() is None
                 unknown = dict(params, request_id='unknown')
                 accepted = await session_cron.operation(authority, 'submit', unknown)
-                claim_session_input(db, epoch=authority.epoch, session_id=accepted['session_id'])
-                from hermes_state_runtime import recover_session_inputs
-                authority.epoch = begin_runtime_epoch(db, instance_id='restart')
-                recover_session_inputs(db, epoch=authority.epoch)
+                db.admissions.claim(epoch=authority.epoch, session_id=accepted['session_id'])
+                authority.epoch = db.runtime.begin_epoch(instance_id='restart')
+                db.admissions.recover(epoch=authority.epoch)
                 unknown_journal = scheduler_authority.journal_path(job['id'], 'unknown')
                 unknown_journal.write_text(json.dumps({'params': unknown, 'receipt': None}))
                 await asyncio.to_thread(scheduler_authority.reconcile_pending)
@@ -73,10 +71,10 @@ def test_failed_manual_run_exits_nonzero(monkeypatch):
 def _owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
-    db = SessionDB(tmp_path / 'state.db')
+    db = open_persistence(profile_scope(home=tmp_path))
     runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()), adapters={})
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=db,
+                                 epoch=db.runtime.begin_epoch(instance_id='test'))
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     runner.session_authority = authority
     return authority, db
@@ -105,8 +103,8 @@ def test_recovered_receipt_settles_the_departed_firers_execution_row(tmp_path, m
         async def probe():
             params = {'job_id': job['id'], 'request_id': fire, 'extra_prompt': None}
             receipt = await session_cron.operation(authority, 'submit', params)
-            row = claim_session_input(db, epoch=authority.epoch, session_id=receipt['session_id'])
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed',
+            row = db.admissions.claim(epoch=authority.epoch, session_id=receipt['session_id'])
+            db.admissions.settle(epoch=authority.epoch, admission_id=row.admission_id, generation=row.generation, outcome='completed',
                                  result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
             journal = scheduler_authority.journal_path(job['id'], fire)
             journal.parent.mkdir(parents=True)

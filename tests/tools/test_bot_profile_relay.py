@@ -14,7 +14,7 @@ def test_named_sender_uses_own_remote_roster_and_outbox(tmp_path, monkeypatch):
     other = dict(profile='remote', handle='remote', connection_id='foreign', title='Foreign remote')
     bot_relay.write_remote_roster(sender, [own])
     bot_relay.write_remote_roster(root, [other])
-    agent = SimpleNamespace(_session_db=SimpleNamespace(db_path=str(sender / 'state.db')),
+    agent = SimpleNamespace(persistence=SimpleNamespace(scope=SimpleNamespace(profile_dir=sender)),
                             _session_title_hint='Bot Chat')
     commands = []
     monkeypatch.setattr(bot_mode_dm, '_spawn_delivery', lambda command, *a, **kw:

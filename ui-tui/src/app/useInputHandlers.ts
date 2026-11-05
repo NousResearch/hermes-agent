@@ -14,7 +14,7 @@ import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
-import { $backtrackPrime, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack } from './backtrackStore.js'
+import { $backtrackPrime, $pendingRewind, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack } from './backtrackStore.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type ComposerActions,
@@ -201,16 +201,26 @@ function runBacktrackEsc(o: {
   }
 
   const prime = $backtrackPrime.get()
+  // An armed edit whose text was erased: the second Esc cancels it, never opens browsing (the
+  // next ordinary message would otherwise still rewind). Its hint stays up meanwhile.
+  const armed = Boolean($pendingRewind.get())
 
   if (prime?.sid !== live.sid) {
     // Counted from the transcript already on screen (no RPC on a reflex key), so the hint only
     // shows with an earlier prompt to go back to; browsing itself still reads the owner's rows.
-    primeBacktrack(live.sid, actions.countPrompts())
+    primeBacktrack(live.sid, armed ? 0 : actions.countPrompts())
 
     return true
   }
 
   cancelBacktrackPrime()
+
+  if (armed) {
+    cancelPendingRewind(actions.sys)
+
+    return true
+  }
+
   // `/rewind` reads the owner's rows and says `No previous message to edit.` when there are none.
   actions.openBacktrack()
 
@@ -940,6 +950,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           sid: live.sid,
           sys: actions.sys
         })
+      }
+
+      // An armed edit whose text was erased: this press cancels it and never exits.
+      if (cancelPendingRewind(actions.sys)) {
+        return
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

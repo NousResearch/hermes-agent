@@ -115,3 +115,21 @@ def test_alt_enter_inserts_a_newline_when_nothing_is_primed(cli, draft):
         await _until(lambda: editor.text == draft + "\n")
         assert cli._backtrack_state is None and cli._backtrack_primed is None
     _drive(cli, script)
+
+
+@pytest.mark.parametrize("gap", [True, False])
+def test_esc_esc_on_an_erased_edit_cancels_it_and_never_opens_browse(cli, gap):
+    """The edit's prefill erased, Esc Esc (slow or in one read) disarms it: the next message is plain."""
+    async def script(pipe, editor):
+        cli._backtrack_begin_edit(1, "BETA")
+        editor.buffer.text = ""
+        if gap:
+            pipe.send_text("\x1b")
+            await _until(lambda: cli._backtrack_primed is not None)
+            pipe.send_text("\x1b")
+        else:
+            pipe.send_text("\x1b\x1b")
+        await _until(lambda: cli._backtrack_edit is None)
+        assert cli._backtrack_state is None
+    cli._prefill_input_buffer = lambda text: None
+    _drive(cli, script)

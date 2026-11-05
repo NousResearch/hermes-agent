@@ -12,7 +12,6 @@ import math
 import os
 import re
 import shlex
-import sqlite3
 import tempfile
 import threading
 import time
@@ -105,20 +104,17 @@ def referenced_spillover_names(spill_dir) -> set | None:
 
     ``set()`` when no database exists (no sessions → nothing references anything), ``None``
     when the reference set is UNKNOWN (unreadable / truncated query) so callers fail closed
-    and keep the files; a plain read-only connection is enough, the write path owns the locks."""
+    and keep the files; a read-only handle is enough, the write path owns the locks."""
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
+
     db_path = spill_dir.parent.parent / "state.db"
     if not db_path.exists():
         return set()
     try:
-        # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
-        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
-        try:
-            rows = conn.execute(
-                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
-            ).fetchall()
-        finally:
-            conn.close()
-    except (sqlite3.Error, OSError):
+        with open_persistence_reader(db_path) as store:
+            rows = store.messages.spillover_reference_rows()
+    except (OSError, *STORE_FAILURES):
         return None
     if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
         return None

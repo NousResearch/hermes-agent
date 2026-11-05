@@ -541,7 +541,11 @@ function ConfigSettingsInner({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                  <DelegationRouteRow
+                    config={config}
+                    onConfigChange={updateConfig}
+                    scope={writeScope ?? scopeProfile}
+                  />
                 </SubagentModelGate>
               ) : (
                 <ConfigField

@@ -86,7 +86,8 @@ describe('touch styles', () => {
   // span) is part of the control in native Desktop, as on main: the rule that
   // makes paragraphs and code selectable even there is the browser host's.
   it('makes paragraphs and code inside clickable assistant rows selectable only in the browser-hosted Desktop', () => {
-    const messageText = /\[data-slot='aui_assistant-message-content'\]\s+(?::is\([^)]*\b(?:p|pre|code)\b[^)]*\)|(?:p|pre|code)\b)/
+    const messageText =
+      /\[data-slot='aui_assistant-message-content'\]\s+(?::is\([^)]*\b(?:p|pre|code)\b[^)]*\)|(?:p|pre|code)\b)/
     const selectors = ruleSelectors(STYLES).filter(selector => messageText.test(selector))
 
     expect(selectors.length).toBeGreaterThan(0)

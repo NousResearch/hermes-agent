@@ -2314,6 +2314,14 @@ export const csOverrides = {
           blockedNotLoaded: 'Subagenti se nespustí, dokud Hermes nenačte Rozšířenou delegaci. Restartujte Hermes.',
           blockedPill: 'Neběží',
           createRoute: 'Přidat trasu',
+          daybreakHint: 'Důvěryhodný přístup OpenAI se sníženými pojistkami, pouze pro tuto trasu.',
+          daybreakLabel: 'Daybreak',
+          daybreakNeedsPlugin:
+            'Váš plugin Rozšířená delegace zatím trasy Daybreak neumí. Aktualizujte ho, nebo to vypněte.',
+          daybreakOff: 'Vypnuto',
+          daybreakOn: 'Zapnuto',
+          daybreakUnlisted:
+            'Tento model není pro Daybreak na vašem účtu v nabídce. Vypněte ho, nebo zvolte jiný model.',
           defaultBadge: 'Výchozí',
           deleteConfirmAction: 'Smazat trasu',
           deleteConfirmBody: 'Subagenti už ji nebudou moci zvolit.',

@@ -596,7 +596,7 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
     or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
     other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
     from hermes_cli.model_switch import model_derived_api_mode
-    from hermes_cli.models import normalize_opencode_base_url
+    from hermes_cli.models_opencode import normalize_opencode_base_url
     provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
     api_mode = model_derived_api_mode(provider, model)
     if api_mode is None:

@@ -1389,7 +1389,7 @@ def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="opencode-go")
 
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert resolved["base_url"] == "https://opencode.ai/inference/go/openai/v1"
 
 
 @pytest.mark.parametrize("model", ["qwen3.8-flash", "glm-5.3-flash"])

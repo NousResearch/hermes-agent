@@ -1035,8 +1035,9 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     )
 
 
-@pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
-def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
+@pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1", "https://opencode.ai/inference/go/anthropic"])
+def test_run_doctor_opencode_go_probes_the_go_catalog(monkeypatch, tmp_path, base_url):
+    """The Go catalog lives at /inference/go/v1/models, never under a per-API base."""
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
@@ -1082,12 +1083,8 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
-    assert any(
-        "OpenCode Go" in line and "(key configured)" in line
-        for line in out.splitlines()
-    )
-    assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
-    assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+    assert any("OpenCode Go" in line and "✓" in line for line in out.splitlines())
+    assert [url for url, _, _ in calls if "opencode" in url] == ["https://opencode.ai/inference/go/v1/models"]
 
 
 class TestGitHubTokenCheck:

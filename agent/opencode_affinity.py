@@ -41,7 +41,8 @@ def opencode_transport(provider: Optional[str], model: Optional[str], base_url: 
     Built-in families, custom entries named after one (``opencode-go-bridge``, #85589) and opencode.ai
     hosts all count.
     """
-    from hermes_cli.models import normalize_opencode_base_url, normalize_opencode_model_id, opencode_model_api_mode
+    from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+    from hermes_cli.models_opencode import normalize_opencode_base_url
     from hermes_cli.runtime_provider_custom import _get_named_custom_provider, _opencode_family_for_custom
 
     url = str(base_url or "")

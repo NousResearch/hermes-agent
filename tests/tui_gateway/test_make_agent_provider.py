@@ -114,7 +114,7 @@ def test_resumed_row_cannot_pin_stale_wire_onto_per_model_provider():
 
     def fake_resolve(**kwargs):
         provider = kwargs["requested"]
-        fresh = {"opencode-go": ("chat_completions", "https://opencode.ai/zen/go/v1"),
+        fresh = {"opencode-go": ("chat_completions", "https://opencode.ai/inference/go/openai/v1"),
                  "anthropic": ("anthropic_messages", "https://api.anthropic.com")}[provider]
         return {"provider": provider, "requested_provider": provider, "api_mode": fresh[0], "base_url": fresh[1],
                 "api_key": "k", "source": "config"}
@@ -124,7 +124,7 @@ def test_resumed_row_cannot_pin_stale_wire_onto_per_model_provider():
             _, runtime = server._resolve_agent_model_runtime(
                 {"model": "deepseek-v4-flash-vision-exp", "provider": "opencode-go",
                  "base_url": stale_url, "api_mode": "anthropic_messages"}, None)
-            assert (runtime["api_mode"], runtime["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+            assert (runtime["api_mode"], runtime["base_url"]) == ("chat_completions", "https://opencode.ai/inference/go/openai/v1")
         _, runtime = server._resolve_agent_model_runtime(
             {"model": "claude-opus-4-6", "provider": "anthropic",
              "base_url": "https://my-proxy.example", "api_mode": "anthropic_messages"}, None)

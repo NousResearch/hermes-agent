@@ -265,58 +265,75 @@ class TestModelApiModeNormalization:
         assert opencode_model_api_mode("OpenCode-Zen-Custom", "claude-3-7-sonnet") == "anthropic_messages"
 
 
-class TestNormalizeOpencodeBaseUrl:
-    """Symmetric /v1 normalization for OpenCode Zen / Go base URLs.
+GO_CHAT = "https://opencode.ai/inference/go/openai/v1"
+GO_ANTHROPIC = "https://opencode.ai/inference/go/anthropic"
+ZEN_CHAT = "https://opencode.ai/inference/openai/v1"
+ZEN_ANTHROPIC = "https://opencode.ai/inference/anthropic"
 
-    Regression for the 'only minimax works on opencode-go' bug: switching into
-    an anthropic-routed model strips /v1 from the base URL and that stripped
-    URL gets persisted to model.base_url; every later chat_completions model
-    (glm, deepseek, kimi) then POSTed to https://opencode.ai/zen/go/chat/completions
-    — a 404 (the marketing site).  The normalizer must heal a stripped URL.
+
+class TestNormalizeOpencodeBaseUrl:
+    """OpenCode serves each wire API under its own base, so the base URL follows the api_mode.
+
+    Regression for the 'only minimax works on opencode-go' bug: switching into an anthropic-routed
+    model persists that model's base URL to model.base_url, and every later chat_completions model
+    (glm, deepseek, kimi) then POSTed to the wrong base — a 404. The normalizer must heal it.
     """
 
-    def test_strips_v1_for_anthropic_messages(self):
-        from hermes_cli.models import normalize_opencode_base_url
-        assert normalize_opencode_base_url(
-            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/go/v1"
-        ) == "https://opencode.ai/zen/go"
-        assert normalize_opencode_base_url(
-            "opencode-zen", "anthropic_messages", "https://opencode.ai/zen/v1/"
-        ) == "https://opencode.ai/zen"
+    @pytest.mark.parametrize("provider, api_mode, url, expected", [
+        ("opencode-go", "anthropic_messages", GO_CHAT, GO_ANTHROPIC),
+        ("opencode-zen", "anthropic_messages", ZEN_CHAT + "/", ZEN_ANTHROPIC),
+        ("opencode-go", "chat_completions", GO_ANTHROPIC, GO_CHAT),
+        ("opencode-zen", "codex_responses", ZEN_ANTHROPIC, ZEN_CHAT),
+    ])
+    def test_base_follows_the_api_mode(self, provider, api_mode, url, expected):
+        from hermes_cli.models_opencode import normalize_opencode_base_url
+        assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
+    @pytest.mark.parametrize("provider, api_mode, url, expected", [
+        ("opencode-go", "chat_completions", "https://opencode.ai/zen/go/v1", GO_CHAT),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/go", GO_ANTHROPIC),
+        ("opencode-zen", "codex_responses", "https://opencode.ai/zen/v1", ZEN_CHAT),
+        ("opencode-zen", "anthropic_messages", "https://opencode.ai/inference/v1", ZEN_ANTHROPIC),
+        ("opencode-go", "chat_completions", "https://opencode.ai/inference/go/v1", GO_CHAT),
+    ])
+    def test_deprecated_bases_move_to_the_per_api_base(self, provider, api_mode, url, expected):
+        """Saved ``/zen`` alias and shared ``/inference(/go)/v1`` URLs from older configs."""
+        from hermes_cli.models_opencode import normalize_opencode_base_url
+        assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
     def test_non_opencode_provider_untouched(self):
-        from hermes_cli.models import normalize_opencode_base_url
+        from hermes_cli.models_opencode import normalize_opencode_base_url
         assert normalize_opencode_base_url(
             "openrouter", "chat_completions", "https://openrouter.ai/api"
         ) == "https://openrouter.ai/api"
 
 
 class TestNormalizeOpencodeBaseUrlFamilyPath:
-    """A carried-over base_url is healed on the FAMILY path segment (``/zen`` vs ``/zen/go``), not
-    just ``/v1`` (#112600): ``model.base_url`` pinned to the Zen relay survived a switch to
-    ``opencode-go`` and every request 401'd ("Model mimo-v2.5 is not supported")."""
+    """A carried-over base_url is healed on the FAMILY path segment (``/inference`` vs
+    ``/inference/go``), not just the API (#112600): ``model.base_url`` pinned to the Zen relay
+    survived a switch to ``opencode-go`` and every request 401'd ("Model mimo-v2.5 is not supported")."""
 
     @pytest.mark.parametrize("provider, api_mode, url, expected", [
-        ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
-        ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
-        # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
-        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
-        ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
-        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite.
+        ("opencode-go", "chat_completions", ZEN_CHAT, GO_CHAT),
+        ("opencode-zen", "chat_completions", GO_CHAT, ZEN_CHAT),
+        # Family and API both follow the provider and mode.
+        ("opencode-go", "anthropic_messages", ZEN_CHAT, GO_ANTHROPIC),
+        ("opencode-zen", "anthropic_messages", GO_ANTHROPIC, ZEN_ANTHROPIC),
+        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite; Messages only drops /v1.
         ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
-        # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
+        ("opencode-go", "anthropic_messages", "https://gateway.internal.example/zen/go/v1", "https://gateway.internal.example/zen/go"),
+        # Non-OpenCode paths on the real host keep the pre-existing /v1 behaviour.
         ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
-        # A custom provider merely NAMED after a family declared its relay explicitly: no family
-        # heal, but still the family's /v1 handling.
-        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1"),
-        ("opencode-go-bridge", "chat_completions", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1"),
+        # A custom provider merely NAMED after a family keeps the family its URL declares, but
+        # still gets the per-API base.
+        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", GO_CHAT),
+        ("opencode-go-bridge", "anthropic_messages", ZEN_CHAT, ZEN_ANTHROPIC),
         # The host check is on the hostname, so a port does not defeat the heal; query survives.
-        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/zen/go/v1"),
-        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
+        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/inference/go/openai/v1"),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", GO_ANTHROPIC + "?x=1"),
     ])
     def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
-        from hermes_cli.models import normalize_opencode_base_url
+        from hermes_cli.models_opencode import normalize_opencode_base_url
         assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
 

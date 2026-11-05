@@ -7,6 +7,8 @@ is stale for every other model.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from openai import OpenAI
 
@@ -57,10 +59,10 @@ def test_named_custom_opencode_family_entry_follows_the_model(model, expected):
     assert resolved == model
     assert type(client) is expected
     if expected is aux.AnthropicAuxiliaryClient:
-        assert str(client._real_client.base_url).rstrip("/") == "https://opencode.ai/zen/go"
+        assert str(client._real_client.base_url).rstrip("/") == "https://opencode.ai/inference/go/anthropic"
     else:
         base = client._real_client.base_url if expected is aux.CodexAuxiliaryClient else client.base_url
-        assert str(base).rstrip("/") == "https://opencode.ai/zen/go/v1"
+        assert str(base).rstrip("/") == "https://opencode.ai/inference/go/openai/v1"
 
 
 def test_named_custom_opencode_family_entry_with_declared_api_mode_is_honoured():
@@ -69,3 +71,25 @@ def test_named_custom_opencode_family_entry_with_declared_api_mode_is_honoured()
     assert resolved == "gpt-5.6-luna"
     assert type(client) is OpenAI
     assert str(client.base_url).rstrip("/") == "https://opencode.ai/zen/go/v1"
+
+
+@pytest.mark.parametrize("provider, runtime_base, expected", [
+    ("opencode-go", "https://opencode.ai/inference/go/openai/v1", "https://opencode.ai/inference/go/v1/models"),
+    ("opencode-zen", "https://opencode.ai/inference/anthropic", "https://opencode.ai/inference/v1/models"),
+])
+def test_fast_model_catalog_is_read_from_the_family_catalog(provider, runtime_base, expected):
+    """OpenCode's catalog has no per-API path, so it is never under the runtime base."""
+    urls = []
+
+    def _get_json(url, headers, timeout):
+        urls.append(url)
+        price = {"prompt": "0.000001", "completion": "0.000002"}
+        return {"data": [{"id": "glm-5.3", "pricing": price}, {"id": "gemini-3.8-flash", "pricing": price}]}
+
+    with patch(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        return_value={"api_key": "sk-test", "base_url": runtime_base},
+    ), patch("hermes_cli.models_pricing._get_json", side_effect=_get_json):
+        assert aux._fast_model_from_catalog(provider) == "gemini-3.8-flash"
+
+    assert urls == [expected]

@@ -22,7 +22,8 @@ def _bridge_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("OPENCODE_GO_BRIDGE_API_KEY", "sk-test-bridge")
 
-    def write_config(provider_name: str, extra: str = "", default: str = "grok-4.5"):
+    def write_config(provider_name: str, extra: str = "", default: str = "grok-4.5",
+                     base_url: str = "https://opencode.ai/zen/go/v1"):
         (hermes_home / "config.yaml").write_text(
             f"""
 model:
@@ -30,7 +31,7 @@ model:
   default: {default}
 providers:
   {provider_name}:
-    base_url: https://opencode.ai/zen/go/v1
+    base_url: {base_url}
     key_env: OPENCODE_GO_BRIDGE_API_KEY
 {extra}"""
         )
@@ -50,20 +51,20 @@ class TestCustomOpencodeFamilyRuntime:
         _bridge_env("opencode-go-bridge")
         r = _resolve("opencode-go-bridge", "grok-4.5")
         assert r["api_mode"] == "codex_responses"
-        assert r["base_url"].rstrip("/").endswith("/zen/go/v1")
+        assert r["base_url"].rstrip("/").endswith("/inference/go/openai/v1")
 
     def test_family_provider_routes_minimax_to_messages_and_strips_v1(self, _bridge_env):
         _bridge_env("opencode-go-bridge")
         r = _resolve("opencode-go-bridge", "minimax-m2.7")
         assert r["api_mode"] == "anthropic_messages"
         # /v1 stripped so the Anthropic SDK's own /v1/messages doesn't double up
-        assert r["base_url"].rstrip("/").endswith("/zen/go")
+        assert r["base_url"].rstrip("/").endswith("/inference/go/anthropic")
 
     def test_family_provider_keeps_chat_models_on_v1(self, _bridge_env):
         _bridge_env("opencode-go-bridge")
         r = _resolve("opencode-go-bridge", "deepseek-v4-flash")
         assert r["api_mode"] == "chat_completions"
-        assert r["base_url"].rstrip("/").endswith("/zen/go/v1")
+        assert r["base_url"].rstrip("/").endswith("/inference/go/openai/v1")
 
     def test_explicit_transport_in_config_wins(self, _bridge_env):
         """A user-declared transport is authoritative — no family override."""
@@ -77,3 +78,10 @@ class TestCustomOpencodeFamilyRuntime:
         _bridge_env("my-oc-proxy", default="gpt-5.6-luna")
         r = _resolve("my-oc-proxy", "gpt-5.6-luna")
         assert r["api_mode"] == "codex_responses"
+
+    def test_arbitrary_name_on_the_go_inference_path_derives_go(self, _bridge_env):
+        """``/inference/go`` marks the Go family like ``/zen/go`` did: minimax is Anthropic-wire on Go only."""
+        _bridge_env("my-oc-proxy", default="minimax-m2.7", base_url="https://opencode.ai/inference/go/openai/v1")
+        r = _resolve("my-oc-proxy", "minimax-m2.7")
+        assert r["api_mode"] == "anthropic_messages"
+        assert r["base_url"] == "https://opencode.ai/inference/go/anthropic"

@@ -345,7 +345,7 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
 
     assert runtime is not None
     assert shell.model == "mimo-v2.5"
-    assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert runtime["base_url"] == "https://opencode.ai/inference/go/openai/v1"
 
 
 def _quota_auth_error():

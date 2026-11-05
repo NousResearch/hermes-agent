@@ -147,6 +147,21 @@ rows in the same transaction and refuses while work is live or `unknown`. An inp
 was `started` when its owner died becomes `unknown` at the next owner start and is never
 replayed; its later inputs wait until it is resolved (`prompt.resolve_unknown`).
 
+Both retry caches behind a settled turn are bounded by the same prune pass, not by the
+transcript's own lifetime:
+
+- `worker_receipts` — a terminal execution keeps its newest 32 receipts (a re-sent
+  publication is the one still in flight; the closing `execution.finish` above all), and
+  an execution whose session has been inactive past the prune's retention window keeps
+  none. A `registered`/`running`/`unknown` execution is never swept.
+- `state_meta` `gateway.admission.result.v1.*` — a settled turn's stored result is a retry
+  cache: the newest 16 per session survive, and nothing for a session quiet past the
+  exact-retry horizon (`RETRY_HORIZON_S`, 7 days). A deleted session's compacted copy stays
+  until `prune_retired_tombstones` closes that same horizon, so an exact retry after a
+  delete still replays its answer. Past the bound, an API/bot/cron retry reads a definitive
+  "no result" (never a second execution), and `gateway.local_policy.v1:*` receipts are
+  deleted with the session they were created for.
+
 `hermes sessions recover` copies the row-bearing tables above into the
 recovered database (FTS indexes and `schema_version` are regenerated), including
 the lazily-created `delivery_obligations` ledger when the source has one — its

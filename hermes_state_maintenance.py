@@ -385,8 +385,17 @@ class SessionMaintenanceMixin:
             if exclude_active_write_guards:
                 session_ids -= self._guarded_ids(conn, session_ids)
             from hermes_state_mutation_retirement import prune_retired_tombstones, retire_prunable
+            from hermes_state_local import reclaim_stranded_policies
+            from hermes_state_runtime_workers import reclaim_worker_receipts
+            from hermes_state_terminal import reclaim_admission_results
             session_ids = retire_prunable(conn, sorted(session_ids))
             prune_retired_tombstones(conn)  # every prune pass also reclaims expired deletion tombstones
+            # The retry caches behind settled turns follow the same clock: retirement only reaches
+            # the executions of a session it is deleting, so everything older than the retention
+            # window (and every receipt past a terminal execution's newest few) is reclaimed here.
+            reclaim_worker_receipts(conn, older_than_days=older_than_days)
+            reclaim_admission_results(conn)
+            reclaim_stranded_policies(conn)
             if not session_ids:
                 return 0
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.

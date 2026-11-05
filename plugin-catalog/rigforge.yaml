@@ -1,6 +1,6 @@
 name: rigforge
 repo: https://github.com/DECRUX9812/rigforge-plugin
-sha: 48b23721c78bce516faa053d71afbad4a23a0cb4
+sha: f12c25330c8f9dea640254cb5f4390f2ebe261da
 title: Rigforge
 description: >-
   A build studio for robots, printed machines and controller boards, inside Hermes
@@ -25,13 +25,13 @@ tier: community
 category: desktop
 version: "1.1.0"
 docs_url: https://github.com/DECRUX9812/rigforge-plugin#readme
-image: https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/hero.png
+image: https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/hero.png
 screenshots:
-  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/quad.png
-  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/gripper.png
-  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/board.png
-  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/audit.png
-  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/48b23721c78bce516faa053d71afbad4a23a0cb4/docs/screenshots/compare.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/quad.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/gripper.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/board.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/audit.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/f12c25330c8f9dea640254cb5f4390f2ebe261da/docs/screenshots/compare.png
 platforms:
   - linux
   - macos

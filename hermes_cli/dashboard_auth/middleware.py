@@ -187,7 +187,7 @@ def _session_token_header_session(request: Request):
         return None
     provider = next(
         (p for p in list_session_providers() if p.name == _SESSION_TOKEN_PROVIDER), None)
-    if provider is None or not webapp_sign_in.token_works_alone(request, token):
+    if provider is None or not webapp_sign_in.access_token_works_alone(request, token):
         return None
     return provider.verify_session(access_token=token)
 

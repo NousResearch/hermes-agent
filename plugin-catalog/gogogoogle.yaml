@@ -1,0 +1,32 @@
+name: gogogoogle
+repo: https://github.com/josefacero/hermes-gogogoogle
+sha: 0d445b58f1aef507dcd865f6c06dc5c9323ee91d
+description: >-
+  Hand bulk work to Google Antigravity's agy CLI as a worker agent, then have a fresh model on another family
+  check it against the real files and the git diff. Hermes keeps its own model. Background jobs, resume of
+  timed-out runs, a git-based check that read-only roles did not edit files, failure classes (quota, model,
+  auth) that move the verifier to the next model, and per-run stats. Disclosure — runs agy with all
+  permissions auto-approved, so it can edit or delete files in the working folder (git is the undo); task
+  text, files agy reads and a git diff excerpt go to Google through agy; runs read-only git commands in the
+  working folder; writes runs.jsonl and background job files under the plugin data directory; refuses a
+  drive root, the home folder and paths under GOGOGOOGLE_BLOCKED_ROOTS; no credentials stored, no telemetry,
+  no self-update.
+maintainer: josefacero
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/josefacero/hermes-gogogoogle#readme
+version: "0.2.0"
+readme: true
+known_issues:
+  - "Needs the Antigravity CLI (agy) installed and signed in; runs count against that Antigravity plan's quota."
+  - "research and review roles are told not to edit files; the plugin detects a change afterwards in git repos and warns, but does not revert it."
+  - "Background jobs end if Hermes restarts. Edits inside an already-untracked file are not seen by the change check."
+capabilities:
+  provides_tools:
+    - antigravity_delegate
+    - antigravity_job
+    - antigravity_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

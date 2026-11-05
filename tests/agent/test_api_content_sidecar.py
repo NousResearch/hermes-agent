@@ -870,7 +870,7 @@ class TestFlushSanitizeDivergenceCapture:
         """get_messages_as_conversation strips <memory-context> fences on
         load; the sent bytes must survive in the sidecar so a reloaded
         session replays what was actually on the wire."""
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import sanitize_context
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-fence"

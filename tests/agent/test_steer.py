@@ -527,7 +527,7 @@ class TestSteerInjection:
         """A run that ends right after a steered batch leaves user(steer) as the persisted tail.
         The next real prompt makes two consecutive user rows; the alternation repair must leave
         the steer row byte-identical (append-only persistence cannot follow an in-place merge)."""
-        from agent.agent_runtime_helpers import _merge_consecutive_users
+        from session_rules.turns import _merge_consecutive_users
         from agent.prompt_builder import steer_user_row
 
         steer = steer_user_row("focus on error handling")

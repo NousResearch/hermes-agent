@@ -159,7 +159,7 @@ def _session_key_or_err(rid, session, module: str, label: str):
 
 def _user_turn_indices(session):
     """(history, indices of user-originated turns) minus ephemeral scaffolding. Call under history_lock."""
-    is_user = _tools_mod("agent.context_compressor").user_originated_turn_view
+    is_user = _tools_mod("session_rules.turns").user_originated_turn_view
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     return history, [i for i, m in enumerate(history) if is_user(m) is not None]
 
@@ -758,7 +758,7 @@ def _cmd_retry(rid, params, session, name, arg):
         return _err(rid, 4001, "no active session to retry")
     if busy := _busy_error(rid, session, "retry"):
         return busy
-    cc = _tools_mod("agent.context_compressor")
+    cc = _tools_mod("session_rules.turns")
     with session["history_lock"]:
         if busy := _busy_error(rid, session, "retry"):
             return busy
@@ -862,7 +862,7 @@ def _cmd_undo(rid, params, session, name, arg):
         if err:
             return err
         active, live_view, rewound_count = rewound
-        target_text = _tools_mod("agent.message_content").flatten_message_text(live_view.get("content"))
+        target_text = _tools_mod("session_rules.turns").flatten_message_text(live_view.get("content"))
     # Notify memory providers (same hook /branch fires) with rewound=True so cached per-turn state invalidates.
     agent = session.get("agent")
     if agent is not None:

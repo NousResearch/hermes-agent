@@ -58,7 +58,7 @@ def _rewind_to(turns_back, *, retry=False):
         if retry:
             # Main's retry_last order: a turn that cannot be resent losslessly as text (an image
             # turn) is refused on the CAS snapshot, before session.mutate archives it.
-            from agent.context_compressor import retryable_user_text, user_originated_turn_view
+            from session_rules.turns import retryable_user_text, user_originated_turn_view
             try:
                 retryable_user_text((user_originated_turn_view(target) or {}).get("content"))
             except ValueError as exc:
@@ -88,7 +88,7 @@ async def _rewind(view, turns_back, *, retry=False):
     view.generation = snapshot["execution_generation"]
     content = (result.get("target_message") or {}).get("content")
     if retry:
-        from agent.context_compressor import retryable_user_text
+        from session_rules.turns import retryable_user_text
         with contextlib.suppress(ValueError):
             return retryable_user_text(content), result["rewound_count"]
     return content if isinstance(content, str) else "", result["rewound_count"]

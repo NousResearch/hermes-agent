@@ -6,7 +6,7 @@ The agent's ``result["messages"]`` copies of the prior history carry ``timestamp
 the stored history grew 3 -> 8 -> 17 instead of 2 -> 4 -> 6 (#95137, #101644, #82513).
 """
 
-from agent.agent_runtime_helpers import repair_message_sequence
+from session_rules.turns import repair_message_sequence
 from agent.message_metadata import append_message
 from gateway.platforms.api_server import APIServerAdapter
 

@@ -109,7 +109,7 @@ def test_lineage_display_prefers_tip_carrier_over_replayed_parent_ask(db):
 
     model_history, display_history = db.get_resume_conversations(child)
 
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
 
     visible_users = [
         user_originated_turn_view(message)
@@ -141,7 +141,7 @@ def test_lineage_display_dedupes_multimodal_ask_in_tip_carrier(db):
 
     _, display_history = db.get_resume_conversations(child)
 
-    from agent.context_compressor import user_originated_turn_view
+    from session_rules.turns import user_originated_turn_view
 
     visible_users = [
         user_originated_turn_view(message)

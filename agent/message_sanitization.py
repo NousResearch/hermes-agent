@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, NamedTuple
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
+from session_rules.turns import _tc_field, coalesce_tool_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,7 @@ def _strip_images_from_messages(messages: list) -> bool:
     current callers pass per-call clones, where this is a no-op.
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.turn_context import drop_stale_api_content
+    from session_rules.turns import drop_stale_api_content
 
     found = False
     to_delete = []
@@ -483,13 +484,13 @@ __all__ = [
     "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
+    "close_interrupted_tool_sequence", "coerce_tool_name",
     "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
     "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "uniquify_tool_call_ids",
 ]
 
 
@@ -498,11 +499,6 @@ __all__ = [
 # not chat tool-call content; merging would change ids and invalidate caches).
 # HARD INVARIANT: deterministic (never uuid4) and byte-identical for existing inputs —
 # these ids feed prompt-cache prefixes.
-
-
-def _tc_field(tc: Any, key: str) -> Any:
-    """Read ``key`` from a tool-call entry that may be a dict or an SDK object."""
-    return tc.get(key) if isinstance(tc, dict) else getattr(tc, key, None)
 
 
 def _tc_set(tc: Any, key: str, value: Any) -> None:
@@ -524,39 +520,6 @@ def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Deterministic call_id fallback when the API omits one (random ids would break caching)."""
     seed = f"{fn_name}:{arguments}:{index}"
     return f"call_{hashlib.sha256(seed.encode('utf-8', errors='replace')).hexdigest()[:12]}"
-
-
-def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:
-    """Every wire spelling of one tool-call identifier: Responses bridges may expose the pairing
-    id and response-item id separately or as ``call_id|response_item_id``; all alias ONE call."""
-    variants: set[str] = set()
-    for raw in values:
-        value = raw.strip() if isinstance(raw, str) else ""
-        if value:
-            variants.add(value)
-            variants.update(p for p in (part.strip() for part in value.split("|")) if p)
-    return frozenset(variants)
-
-
-def tool_call_id_variants(tc: Any) -> frozenset[str]:
-    """Return all pairing-id variants carried by a tool-call entry."""
-    return _expand_tool_id_variants(tuple(_tc_field(tc, k) for k in ("call_id", "id", "response_item_id")))
-
-
-def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
-    """Return all matching variants for a role=tool ``tool_call_id``."""
-    return _expand_tool_id_variants((tool_call_id,))
-
-
-def coalesce_tool_call_id(tc: Any) -> str:
-    """Effective call id of a tool_call entry (dict or object); ``""`` when none. Codex Responses
-    carry ``call_id`` (authoritative pairing key), Chat Completions ``id`` only, and bridge ids
-    may be ``call_id|response_item_id``."""
-    for raw in (_tc_field(tc, "call_id"), _tc_field(tc, "id")):
-        value = raw.strip() if isinstance(raw, str) else ""
-        if value:
-            return value.split("|", 1)[0].strip() or value
-    return ""
 
 
 def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
@@ -1050,7 +1013,10 @@ def rejected_reasoning_carriers(agent: Any) -> frozenset:
     session_id = getattr(agent, "session_id", None)
     if session_id and getattr(agent, "_reasoning_rejections_loaded_for", None) != session_id:
         agent._reasoning_rejections_loaded_for = session_id
-        getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        getter = (store.sessions.get_model_config_value if store is not None
+                  else getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None))
         stored = getter(session_id, _REJECTION_MODEL_CONFIG_KEY, []) if callable(getter) else []
         for entry in stored if isinstance(stored, list) else ():
             if isinstance(entry, list) and len(entry) == 4 and isinstance(entry[3], list):
@@ -1079,7 +1045,10 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
         return frozenset()
     routes = agent._reasoning_rejecting_routes
     routes.setdefault(reasoning_route_key(agent), set()).update(new)
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
         patcher(agent.session_id, {_REJECTION_MODEL_CONFIG_KEY: [[*key, sorted(v)] for key, v in sorted(routes.items())]})
     return frozenset(new)

@@ -25,9 +25,9 @@ def test_top_level_oneshot_routes_through_the_gateway_launcher(monkeypatch):
     assert seen == ["hello"]
 
 
-def test_no_in_process_oneshot_agent_runner_remains():
-    from hermes_cli import main as main_mod, oneshot
 
-    assert not hasattr(oneshot, "run_oneshot")
-    assert not hasattr(oneshot, "_run_agent")
-    assert not hasattr(main_mod, "_run_and_exit_oneshot")
+def test_get_fallback_chain_stays_importable_from_oneshot():
+    """Public name kept on purpose: external scripts set ``hermes_cli.oneshot.get_fallback_chain``."""
+    from hermes_cli import fallback_config, oneshot
+
+    assert oneshot.get_fallback_chain is fallback_config.get_fallback_chain

@@ -46,9 +46,14 @@ CHROMIUM_SANDBOX_BYPASS_ARGS: tuple[str, ...] = ("--no-sandbox", "--disable-dev-
 #   --disable-component-update                    no component downloads into a throwaway profile
 #   --disable-default-apps / --disable-sync       nothing installed or signed in behind the agent's back
 #   --disable-features=Translate                  no translate bubble covering the page
+#   --disable-background-timer-throttling /       Chrome throttles and freezes a tab it judges idle by
+#   --disable-backgrounding-occluded-windows /    visibility, not CDP traffic, so the agent's tab stalls
+#   --disable-renderer-backgrounding              whenever it isn't the selected one (#135435)
 _BASE_FLAGS: tuple[str, ...] = (
     "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-default-apps", "--disable-sync", "--disable-features=Translate",
+    "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
 )
 # Only for the launcher-resolved packaged Chromium: a keyring unlock prompt (Linux desktops) or the macOS
 # keychain dialog would block an unattended launch. Never for a real or shared profile, whose cookies are

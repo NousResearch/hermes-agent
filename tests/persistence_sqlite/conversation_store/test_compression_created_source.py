@@ -5,24 +5,29 @@ is the write that fills the column, and it carries the surface to the NULL root.
 """
 import pytest
 
-from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.compression import publish_compression_child
+from persistence.sqlite.conversation._store.messages import append_message
+from persistence.sqlite.conversation._store.sessions import create_session, get_session
+from persistence.sqlite.conversation._store.usage import update_token_counts
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _compress(db, parent_created, child):
     parent = "parent-" + child
-    db.create_session(parent, source="local")
+    create_session(db, parent, source="local")
     with db._lock:
         db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (parent_created, parent))
         db._conn.commit()
-    db.append_message(parent, role="user", content="hi")
-    db.publish_compression_child(
-        parent_session_id=parent, child_session_id=child, source="local",
+    append_message(db, parent, role="user", content="hi")
+    publish_compression_child(
+        db, parent_session_id=parent, child_session_id=child, source="local",
         messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
     return child
 
 
 def _created(db, sid):
-    return db.get_session(sid)["created_source"]
+    return get_session(db, sid)["created_source"]
 
 
 @pytest.mark.parametrize("child_created", [None, "unknown"])
@@ -30,18 +35,20 @@ def test_desktop_worker_heals_gui_to_desktop(tmp_path, child_created):
     """A managed Desktop worker's platform is the policy label ``gui``. The healed
     column is ``desktop``, the same surface the in-process agent and the insert stamp.
     An auxiliary-usage ``unknown`` placeholder is unset too, as in the creator upsert."""
-    import hermes_state_runtime as rt
+    from persistence.sqlite.authority._runtime_ends import begin_runtime_epoch
+    from persistence.sqlite.workers._executions import register_worker_execution
+    from persistence.sqlite.workers._receipt import mutate_worker_execution
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         child = _compress(db, None, "desktop-child")
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (child_created, child))
             db._conn.commit()
-        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        epoch = begin_runtime_epoch(db, instance_id="owner")
         scope = dict(epoch=epoch, execution_id="w", session_id=child, generation=0)
-        rt.register_worker_execution(db, **scope, kind="compute", adoption_secret="private")
-        rt.mutate_worker_execution(db, **scope, sequence=1, operation="usage.main", payload={
+        register_worker_execution(db, **scope, kind="compute", adoption_secret="private")
+        mutate_worker_execution(db, **scope, sequence=1, operation="usage.main", payload={
             "input_tokens": 4, "output_tokens": 1, "api_call_count": 1, "model": "m",
             "billing_provider": "p", "source": "gui"})
         assert _created(db, child) == "desktop"
@@ -54,17 +61,17 @@ def test_desktop_worker_heals_gui_to_desktop(tmp_path, child_created):
 def test_stamp_walks_through_a_same_surface_mid_segment(tmp_path, mid_created, expected_root):
     """root(NULL) -> mid -> tip(NULL): a usage write on the tip stamps the root through a mid
     segment already on the tip's surface; a mid on another surface stops the walk."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         mid = _compress(db, None, "mid")
-        db.publish_compression_child(
-            parent_session_id=mid, child_session_id="tip", source="local",
+        publish_compression_child(
+            db, parent_session_id=mid, child_session_id="tip", source="local",
             messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (mid_created, mid))
             db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id='tip'")
             db._conn.commit()
-        db.update_token_counts("tip", input_tokens=1, model="m", api_call_count=1, source="cli")
+        update_token_counts(db, "tip", input_tokens=1, model="m", api_call_count=1, source="cli")
         assert [_created(db, sid) for sid in ("parent-mid", mid, "tip")] == [
             expected_root, mid_created, "cli"]
     finally:
@@ -75,14 +82,14 @@ def test_stamp_walks_through_a_same_surface_mid_segment(tmp_path, mid_created, e
 def test_compressing_a_stamped_tip_stamps_its_legacy_root(tmp_path, root_created):
     """A chain compressed before write-time stamping has an unset root and a stamped tip. The
     next compression publish copies the tip's surface to the child and stamps the root."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         tip = _compress(db, root_created, "legacy-tip")
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id=?", (tip,))
             db._conn.commit()
-        db.publish_compression_child(
-            parent_session_id=tip, child_session_id="new-tip", source="local",
+        publish_compression_child(
+            db, parent_session_id=tip, child_session_id="new-tip", source="local",
             messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
         assert [_created(db, sid) for sid in ("parent-" + tip, tip, "new-tip")] == ["cli"] * 3
     finally:
@@ -92,20 +99,20 @@ def test_compressing_a_stamped_tip_stamps_its_legacy_root(tmp_path, root_created
 def test_unset_parent_behind_a_reset_edge_takes_the_fast_path(tmp_path):
     """A stamped chain whose root was reset from a legacy NULL row has nothing to stamp: the
     ancestor stamp returns after its two lookups instead of walking the chain on every write."""
-    from hermes_state_compression import stamp_compression_ancestors
+    from persistence.sqlite.conversation._store.compression import stamp_compression_ancestors
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
-        db.create_session("legacy", source="local")
-        db.create_session("reset-root", source="cli", parent_session_id="legacy",
-                          model_config={"_reset_from": "legacy"})
+        create_session(db, "legacy", source="local")
+        create_session(db, "reset-root", source="cli", parent_session_id="legacy",
+                       model_config={"_reset_from": "legacy"})
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source=NULL, ended_at=1, "
                              "end_reason='session_reset' WHERE id='legacy'")
             db._conn.commit()
-        db.append_message("reset-root", role="user", content="hi")
-        db.publish_compression_child(
-            parent_session_id="reset-root", child_session_id="tip", source="cli",
+        append_message(db, "reset-root", role="user", content="hi")
+        publish_compression_child(
+            db, parent_session_id="reset-root", child_session_id="tip", source="cli",
             messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
         statements = []
         with db._lock:
@@ -127,12 +134,13 @@ def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created
     nothing left to do."""
     from gateway.session_authority import backfill_compression_created_sources
     from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from persistence_assembly import open_persistence_reader
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         mid = _compress(db, root_created, "mid")
-        db.publish_compression_child(
-            parent_session_id=mid, child_session_id="tip", source="local",
+        publish_compression_child(
+            db, parent_session_id=mid, child_session_id="tip", source="local",
             messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (root_created, mid))
@@ -140,13 +148,14 @@ def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created
             db._conn.commit()
 
         def listed():
-            return [s["id"] for s in SurfaceLabelReader(db).list_sessions_rich(source="cli")]
+            with open_persistence_reader(db.db_path) as store:
+                return [s["id"] for s in SurfaceLabelReader(store).list_sessions_rich(source="cli")]
 
         assert listed() == []
-        assert backfill_compression_created_sources(db) == 2
+        assert backfill_compression_created_sources(storage_handle(tmp_path)) == 2
         assert [_created(db, sid) for sid in ("parent-mid", mid, "tip")] == ["cli"] * 3
         assert listed() == ["tip"]
-        assert backfill_compression_created_sources(db) == 0
+        assert backfill_compression_created_sources(storage_handle(tmp_path)) == 0
     finally:
         db.close()
 
@@ -156,19 +165,19 @@ def test_owner_start_keeps_known_provenance(tmp_path):
     surface, a branch child's surface and a chain with nothing stamped are all left as they are."""
     from gateway.session_authority import backfill_compression_created_sources
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         _compress(db, "tui", "known")
         _compress(db, None, "unset")
         branched = _compress(db, None, "branched")
-        db.create_session("branch", source="cli", parent_session_id="parent-" + branched,
-                          model_config={"_branched_from": "parent-" + branched})
+        create_session(db, "branch", source="cli", parent_session_id="parent-" + branched,
+                       model_config={"_branched_from": "parent-" + branched})
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id IN ('known', 'branch')")
             db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id IN ('unset', ?)", (branched,))
             db._conn.commit()
 
-        assert backfill_compression_created_sources(db) == 0
+        assert backfill_compression_created_sources(storage_handle(tmp_path)) == 0
         assert [_created(db, sid) for sid in ("parent-known", "parent-unset", "parent-branched", "branch")] == [
             "tui", None, None, "cli"]
     finally:
@@ -179,19 +188,19 @@ def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_pat
     """A branch child is no continuation: the stamp never follows it, so it is no repair candidate
     either, and a later start does not walk its unset compression parent again."""
     from gateway.session_authority import backfill_compression_created_sources
-    from hermes_state_compression import _UNSTAMPED_EDGE_CHILD_SQL
+    from persistence.sqlite.conversation._store.compression import _UNSTAMPED_EDGE_CHILD_SQL
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         branched = _compress(db, None, "branched")
-        db.create_session("branch", source="cli", parent_session_id="parent-" + branched,
-                          model_config={"_branched_from": "parent-" + branched})
+        create_session(db, "branch", source="cli", parent_session_id="parent-" + branched,
+                       model_config={"_branched_from": "parent-" + branched})
         with db._lock:
             db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id='branch'")
             db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", (branched,))
             db._conn.commit()
 
-        assert backfill_compression_created_sources(db) == 0
+        assert backfill_compression_created_sources(storage_handle(tmp_path)) == 0
         assert db._conn.execute(_UNSTAMPED_EDGE_CHILD_SQL).fetchall() == []
     finally:
         db.close()
@@ -200,9 +209,9 @@ def test_owner_start_skips_a_branch_child_of_an_unset_compression_parent(tmp_pat
 def test_unset_ancestor_probe_reads_only_the_walked_rows(tmp_path):
     """The fast path runs on every usage write of a stamped compression child: its final lookup
     must join the walked ids to sessions by key, never scan the table (ms per write at 30k rows)."""
-    from hermes_state_compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
+    from persistence.sqlite.conversation._store.compression import _CHAIN_CAP, _UNSET_ANCESTOR_SQL
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
         plan = [row[3] for row in db._conn.execute(
             "EXPLAIN QUERY PLAN " + _UNSET_ANCESTOR_SQL, ("tip", "cli", _CHAIN_CAP))]

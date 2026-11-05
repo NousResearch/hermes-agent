@@ -11,8 +11,11 @@ from argparse import Namespace
 import pytest
 
 from hermes_cli.sessions_cmd import _cmd_optimize_storage, _optimize_progress_line
-from hermes_state import SessionDB
-from hermes_state_common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
+from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite._schema_ddl import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
+from persistence.sqlite.admin import _maintenance
+from persistence.sqlite.admin._maintenance import _FtsStorageOptimizer
+from persistence.sqlite.conversation._store.search import fts_rebuild_status, search_messages
 
 GAP_AFTER, GAP_IDS = 600, 100_000  # a pruned store: ids jump after the first 600 messages
 
@@ -35,15 +38,15 @@ def _legacy_inline_store(db_path, n=1200):
 @pytest.fixture
 def legacy_db(tmp_path):
     _legacy_inline_store(tmp_path / "state.db")
-    db = SessionDB(db_path=tmp_path / "state.db")
-    assert db.fts_optimize_available()
+    db = StoreHolder(db_path=tmp_path / "state.db")
+    assert _FtsStorageOptimizer(db).fts_optimize_available()
     yield db
     db.close()
 
 
 @pytest.mark.parametrize("vacuum_fails", [False, True], ids=["vacuum-ok", "vacuum-fails"])
 def test_progress_reports_teardown_rows_and_vacuum_liveness(legacy_db, monkeypatch, vacuum_fails):
-    monkeypatch.setattr(SessionDB, "_VACUUM_TICK_S", 0.01)
+    monkeypatch.setattr(_maintenance, "_VACUUM_TICK_S", 0.01)
     events, in_vacuum, ticked_in_vacuum = [], threading.Event(), threading.Event()
 
     def progress(info):
@@ -63,7 +66,7 @@ def test_progress_reports_teardown_rows_and_vacuum_liveness(legacy_db, monkeypat
         return 1 if vacuum_fails else 0  # non-zero interrupts the VACUUM
 
     legacy_db._conn.set_progress_handler(hold_vacuum, 100)
-    result = legacy_db.optimize_fts_storage(progress_cb=progress, vacuum=True)
+    result = _FtsStorageOptimizer(legacy_db).optimize_fts_storage(progress_cb=progress, vacuum=True)
 
     assert result == {"ok": True, "vacuumed": not vacuum_fails}
     assert ticked_in_vacuum.is_set()
@@ -85,24 +88,25 @@ def test_progress_reports_teardown_rows_and_vacuum_liveness(legacy_db, monkeypat
     # Both legacy indexes (base + trigram) are reclaimed: five shadow tables each.
     assert count == 10 and {e["table_index"] for e in teardown} <= set(range(1, count + 1))
     assert any(e["table"].endswith("messages_fts_trigram_data") and e["total"] > 0 for e in teardown)
-    assert legacy_db.search_messages("quokka")
+    assert search_messages(legacy_db, "quokka")
 
 
 def test_foreground_optimize_never_sleeps_and_chunks_by_rows_across_id_gaps(legacy_db, monkeypatch):
     slept = []
     monkeypatch.setattr(time, "sleep", slept.append)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_CHUNK_MIN_ROWS", 500)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_CHUNK_MAX_ROWS", 500)
-    markers, real_step = [0], legacy_db.fts_rebuild_step
+    monkeypatch.setattr(_FtsStorageOptimizer, "_FTS_REBUILD_CHUNK_MIN_ROWS", 500)
+    monkeypatch.setattr(_FtsStorageOptimizer, "_FTS_REBUILD_CHUNK_MAX_ROWS", 500)
+    optimizer = _FtsStorageOptimizer(legacy_db)
+    markers, real_step = [0], optimizer.fts_rebuild_step
 
     def observed_step(*args):
         more = real_step(*args)
-        status = legacy_db.fts_rebuild_status()
+        status = fts_rebuild_status(legacy_db)
         markers.append(status["indexed"] if status else GAP_IDS + 1200)
         return more
 
-    legacy_db.fts_rebuild_step = observed_step
-    assert legacy_db.optimize_fts_storage(vacuum=False)["ok"] is True
+    optimizer.fts_rebuild_step = observed_step
+    assert optimizer.optimize_fts_storage(vacuum=False)["ok"] is True
     assert slept == []
     with legacy_db._read_ctx() as conn:
         windows = [conn.execute("SELECT COUNT(*) FROM messages WHERE id > ? AND id <= ?", (lo, hi)).fetchone()[0]
@@ -113,7 +117,8 @@ def test_foreground_optimize_never_sleeps_and_chunks_by_rows_across_id_gaps(lega
 
 def test_chunk_that_keeps_failing_ends_the_run_and_a_rerun_resumes(legacy_db, monkeypatch, capsys):
     monkeypatch.setattr(time, "sleep", lambda _s: None)  # the retry backoff
-    calls, real_step = [], legacy_db.fts_rebuild_step
+    optimizer = _FtsStorageOptimizer(legacy_db)
+    calls, real_step = [], optimizer.fts_rebuild_step
 
     def disk_fills_during_backfill(*args):
         if not calls:
@@ -123,23 +128,31 @@ def test_chunk_that_keeps_failing_ends_the_run_and_a_rerun_resumes(legacy_db, mo
         assert len(calls) < 50, "optimize kept retrying a chunk that can never succeed"
         return real_step(*args)
 
-    legacy_db.fts_rebuild_step = disk_fills_during_backfill
+    optimizer.fts_rebuild_step = disk_fills_during_backfill
     with pytest.raises(sqlite3.OperationalError, match="full"):
-        legacy_db.optimize_fts_storage(vacuum=False)
+        optimizer.optimize_fts_storage(vacuum=False)
     # The CLI reports the failure and exits non-zero (main() reads None as success).
-    calls.clear()
-    assert _cmd_optimize_storage(legacy_db, Namespace(yes=True, no_vacuum=True, force=False)) == 1
+    from persistence import DiskFull
+    from persistence.sqlite.admin import SQLiteStoreAdmin
+    from persistence_assembly import open_persistence, profile_scope
+
+    def disk_full(self, **_kw):
+        raise DiskFull("database or disk is full")
+
+    monkeypatch.setattr(SQLiteStoreAdmin, "optimize_fts_storage", disk_full)
+    with open_persistence(profile_scope(home=legacy_db.db_path.parent)) as store:
+        assert _cmd_optimize_storage(Namespace(yes=True, no_vacuum=True, force=False), persistence=store) == 1
     assert "Error: optimization failed: database or disk is full" in capsys.readouterr().out
     legacy_db._conn.execute("PRAGMA max_page_count = 1073741823")
-    assert legacy_db.optimize_fts_storage(vacuum=False)["ok"] is True
-    assert len(legacy_db.search_messages("quokka", limit=2000)) == 1200
+    assert optimizer.optimize_fts_storage(vacuum=False)["ok"] is True
+    assert len(search_messages(legacy_db, "quokka", limit=2000)) == 1200
 
 
 def test_writer_that_opens_the_store_mid_run_gets_the_paced_cycle(legacy_db, monkeypatch):
     slept, scans, events, writer_opened = [], [], [], threading.Event()
     monkeypatch.setattr(time, "sleep", slept.append)
-    monkeypatch.setattr(SessionDB, "_HOLDER_SCAN_INTERVAL_S", 0.01)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_CHUNK_MAX_ROWS", 100)
+    monkeypatch.setattr(_maintenance, "_HOLDER_SCAN_INTERVAL_S", 0.01)
+    monkeypatch.setattr(_FtsStorageOptimizer, "_FTS_REBUILD_CHUNK_MAX_ROWS", 100)
 
     def holder_scan():
         scans.append(1)
@@ -149,15 +162,16 @@ def test_writer_that_opens_the_store_mid_run_gets_the_paced_cycle(legacy_db, mon
         return [(4242, str(legacy_db.db_path))]
 
     monkeypatch.setattr(legacy_db, "_foreign_state_db_holders", holder_scan)
-    real_step = legacy_db.fts_rebuild_step
+    optimizer = _FtsStorageOptimizer(legacy_db)
+    real_step = optimizer.fts_rebuild_step
 
     def step_then_writer_opens(*args):
         more = real_step(*args)
         assert writer_opened.wait(10)  # e.g. Desktop launched after the first chunk
         return more
 
-    legacy_db.fts_rebuild_step = step_then_writer_opens
-    result = legacy_db.optimize_fts_storage(progress_cb=events.append, vacuum=True)
+    optimizer.fts_rebuild_step = step_then_writer_opens
+    result = optimizer.optimize_fts_storage(progress_cb=events.append, vacuum=True)
     # The writer is still there at the end: no minutes-long VACUUM lock over its appends.
     assert result == {"ok": True, "vacuumed": False, "vacuum_skipped": "in_use"}
     chunks = [e for e in events if e["phase"] != "done"]
@@ -165,6 +179,6 @@ def test_writer_that_opens_the_store_mid_run_gets_the_paced_cycle(legacy_db, mon
     assert chunks[0]["paced"] is False and all(e["paced"] for e in chunks[1:])
     # Every chunk after the writer appeared yields the write lock for at least the duty-cycle floor.
     teardown = [e for e in chunks if e["phase"] == "teardown"]
-    assert len(slept) >= len(teardown) > 0 and min(slept) >= SessionDB._FTS_REBUILD_MIN_PAUSE
+    assert len(slept) >= len(teardown) > 0 and min(slept) >= _FtsStorageOptimizer._FTS_REBUILD_MIN_PAUSE
     assert "paced: another process" in _optimize_progress_line(chunks[-1])
     assert not [t for t in threading.enumerate() if t.name == "optimize-holder-watch"]

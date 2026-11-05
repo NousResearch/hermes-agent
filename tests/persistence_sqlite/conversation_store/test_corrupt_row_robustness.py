@@ -11,19 +11,34 @@ import sqlite3
 import pytest
 
 from agent.insights import InsightsEngine
-from hermes_cli.session_export import iter_user_prompt_records
+from hermes_cli.session_export import iter_user_prompt_records, to_legacy_export_dict
 from hermes_cli.session_export_html import generate_multi_session_html_export
 from hermes_cli.session_export_md import _iso_timestamp
 from hermes_cli.sessions_cmd import _cmd_list
-from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store.messages import append_message, append_messages_batch, get_messages
+from persistence.sqlite.conversation._store.sessions import (
+    create_session,
+    delete_sessions,
+    list_sessions_rich,
+    search_sessions,
+)
+from persistence_assembly import open_persistence_reader
+
+MEDIA_ROOT = "/nonexistent/native-inputs"
 
 
 @pytest.fixture
-def corrupt_db(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+def backend_store(backend, scope_a):
+    return backend.open(scope_a)
+
+
+@pytest.fixture
+def corrupt_db(backend_store):
+    db = backend_store.holder()
     for sid in ("good", "bad-text", "bad-huge"):
-        db.create_session(sid, "cli")
-        db.append_message(sid, "user", f"hello from {sid}")
+        create_session(db, sid, "cli")
+        append_message(db, sid, "user", f"hello from {sid}")
 
     def _corrupt(conn):
         conn.execute("UPDATE sessions SET started_at='not-a-timestamp', last_activity_at='not-a-timestamp' "
@@ -33,19 +48,19 @@ def corrupt_db(tmp_path):
         conn.execute("UPDATE messages SET timestamp=1e30 WHERE session_id='bad-huge'")
 
     db._execute_write(_corrupt)
-    yield db
-    db.close()
+    return db
 
 
-def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, capsys, caplog):
+def test_list_export_and_insights_survive_corrupt_timestamp_rows(backend_store, corrupt_db, capsys, caplog):
     with caplog.at_level(logging.WARNING, logger="hermes_cli.timefmt"):
-        _cmd_list(corrupt_db, argparse.Namespace(limit=20, source=None, all=False, workspace=None))
+        with open_persistence_reader(corrupt_db.db_path) as store:
+            _cmd_list(argparse.Namespace(limit=20, source=None, all=False, workspace=None), persistence=store)
         listing = capsys.readouterr().out
-        exported = corrupt_db.export_all()
+        exported = [to_legacy_export_dict(s) for s in backend_store.maintenance.export_all()]
         records = list(iter_user_prompt_records(exported))
         html = generate_multi_session_html_export(exported)
         md_stamps = [_iso_timestamp(s["started_at"]) for s in exported]
-        report = InsightsEngine(corrupt_db).generate(days=365_000)
+        report = InsightsEngine(backend_store, persistence=backend_store).generate(days=365_000)
 
     # Every session is still present on every surface; the bad cells degrade, the good one renders.
     assert all(sid in listing for sid in ("good", "bad-text", "bad-huge")) and "?" in listing
@@ -61,19 +76,19 @@ def test_last_active_skips_a_garbage_message_timestamp(tmp_path):
     """The Desktop sessions pane reads ``last_active`` straight from ``list_sessions_rich`` and builds
     ``new Date(last_active * 1000)``; one salvaged garbage double must not become the session's recency
     (#91536)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
-        db.create_session("recovered", "cli")
+        create_session(db, "recovered", "cli")
         for text in ("first", "second", "third"):
-            db.append_message("recovered", "user", text)
-        good = max(row["timestamp"] for row in db.get_messages("recovered"))
+            append_message(db, "recovered", "user", text)
+        good = max(row["timestamp"] for row in get_messages(db, "recovered"))
         db._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET timestamp = 5.4905047707024164e+246 WHERE session_id = 'recovered' "
             "AND id = (SELECT MIN(id) FROM messages WHERE session_id = 'recovered')"))
         db._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET last_activity_at = 'not-a-timestamp' WHERE id = 'recovered'"))
-        rows = {r["id"]: r for r in db.list_sessions_rich(limit=10)}
-        tip_rows = {r["id"]: r for r in db.list_sessions_rich(limit=10, order_by_last_active=True)}
+        rows = {r["id"]: r for r in list_sessions_rich(db, limit=10)}
+        tip_rows = {r["id"]: r for r in list_sessions_rich(db, limit=10, order_by_last_active=True)}
     finally:
         db.close()
     assert rows["recovered"]["last_active"] == good
@@ -85,8 +100,8 @@ def test_last_active_never_falls_back_to_a_corrupt_started_at(corrupt_db):
     too, or the corrupt cell becomes ``last_active`` and pins the session to the top of MRU (#91536)."""
     corrupt_db._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET last_activity_at = NULL WHERE id = 'bad-huge'"))
-    listings = (corrupt_db.list_sessions_rich(limit=10), corrupt_db.list_sessions_rich(limit=10, order_by_last_active=True),
-                corrupt_db.search_sessions(limit=10))
+    listings = (list_sessions_rich(corrupt_db, limit=10), list_sessions_rich(corrupt_db, limit=10, order_by_last_active=True),
+                search_sessions(corrupt_db, limit=10))
     for rows in listings:
         by_id = {r["id"]: r for r in rows}
         assert by_id["bad-huge"]["last_active"] is None and by_id["bad-text"]["last_active"] is None
@@ -96,35 +111,32 @@ def test_last_active_never_falls_back_to_a_corrupt_started_at(corrupt_db):
 
 
 def test_writers_never_persist_an_out_of_window_timestamp(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = StoreHolder(db_path=tmp_path / "state.db")
     try:
-        db.create_session("s", "cli")
-        db.append_message("s", "user", "a", timestamp=8.4e252)
-        db.append_messages_batch("s", [{"role": "assistant", "content": "b", "timestamp": "not-a-timestamp"}])
-        stored = [row["timestamp"] for row in db.get_messages("s")]
+        create_session(db, "s", "cli")
+        append_message(db, "s", "user", "a", timestamp=8.4e252)
+        append_messages_batch(db, "s", [{"role": "assistant", "content": "b", "timestamp": "not-a-timestamp"}])
+        stored = [row["timestamp"] for row in get_messages(db, "s")]
     finally:
         db.close()
     assert len(stored) == 2 and all(isinstance(ts, float) and 0 < ts < 4.2e9 for ts in stored)
 
 
-def test_bulk_delete_and_prune_stay_below_sqlite_variable_limit(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        old = 1_600_000_000.0
-        ids = [f"cron_job_{i}" for i in range(1200)]
+def test_bulk_delete_and_prune_stay_below_sqlite_variable_limit(backend_store):
+    db = backend_store.holder()
+    old = 1_600_000_000.0
+    ids = [f"cron_job_{i}" for i in range(1200)]
 
-        def seed(conn):
-            conn.executemany("INSERT INTO sessions (id, source, started_at, ended_at, message_count) "
-                             "VALUES (?, 'cron', ?, ?, 1)", [(sid, old, old) for sid in ids])
-            conn.executemany("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', 'x', ?)",
-                             [(sid, old) for sid in ids])
+    def seed(conn):
+        conn.executemany("INSERT INTO sessions (id, source, started_at, ended_at, message_count) "
+                         "VALUES (?, 'cron', ?, ?, 1)", [(sid, old, old) for sid in ids])
+        conn.executemany("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', 'x', ?)",
+                         [(sid, old) for sid in ids])
 
-        db._execute_write(seed)
-        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)  # the legacy ceiling, deterministic
-        assert db.prune_sessions(older_than_days=14, source="cron") == 1200
-        db._execute_write(seed)
-        db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-        assert db.delete_sessions(ids) == 1200
-        assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)")[0] == 0
-    finally:
-        db.close()
+    db._execute_write(seed)
+    db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)  # the legacy ceiling, deterministic
+    assert backend_store.maintenance.prune_sessions(older_than_days=14, source="cron", media_root=MEDIA_ROOT).count == 1200
+    db._execute_write(seed)
+    db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    assert delete_sessions(db, ids, media_root=MEDIA_ROOT)[0] == 1200
+    assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)")[0] == 0

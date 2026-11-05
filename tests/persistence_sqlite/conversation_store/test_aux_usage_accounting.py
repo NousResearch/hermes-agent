@@ -5,17 +5,20 @@ their token usage into session_model_usage with a ``task`` dimension via
 the ambient accounting context (agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
-from pathlib import Path
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
+from persistence.sqlite.conversation._store import usage as usage_store
+from persistence.sqlite.conversation._store.sessions import create_session, get_session
+from persistence.sqlite.conversation._store.usage import record_auxiliary_usage, update_token_counts
 
 
 @pytest.fixture
 def db(tmp_path):
-    return SessionDB(tmp_path / "state.db")
+    return StoreHolder(tmp_path / "state.db")
 
 
 def _mk_response(model="aux-model", prompt=100, completion=20):
@@ -30,6 +33,12 @@ def _mk_response(model="aux-model", prompt=100, completion=20):
     )
 
 
+def _holder_store(db):
+    """A session store whose usage write is the backend's ``record_auxiliary_usage`` on *db*: the store the
+    accounting context writes through when no writer handle stands beside it."""
+    return SimpleNamespace(record_auxiliary_usage=partial(record_auxiliary_usage, db))
+
+
 def _usage_rows(db, session_id):
     with db._lock:
         rows = db._conn.execute(
@@ -41,8 +50,9 @@ def _usage_rows(db, session_id):
 
 class TestRecordAuxiliaryUsage:
     def test_records_task_row(self, db):
-        db.create_session("s1", source="cli")
-        db.record_auxiliary_usage(
+        create_session(db, "s1", source="cli")
+        record_auxiliary_usage(
+            db,
             "s1", "vision", model="gemini-3-flash",
             billing_provider="gemini", input_tokens=500, output_tokens=50,
         )
@@ -57,9 +67,10 @@ class TestRecordAuxiliaryUsage:
         assert r["api_call_count"] == 1
 
     def test_accumulates_same_task_and_model(self, db):
-        db.create_session("s1", source="cli")
+        create_session(db, "s1", source="cli")
         for _ in range(3):
-            db.record_auxiliary_usage(
+            record_auxiliary_usage(
+                db,
                 "s1", "compression", model="glm-5", input_tokens=1000, output_tokens=100,
             )
         rows = _usage_rows(db, "s1")
@@ -69,8 +80,9 @@ class TestRecordAuxiliaryUsage:
 
     def test_explicit_none_api_call_count_uses_default_one(self, db):
         """Explicit None must match the documented default of 1, not become 0."""
-        db.create_session("s1", source="cli")
-        db.record_auxiliary_usage(
+        create_session(db, "s1", source="cli")
+        record_auxiliary_usage(
+            db,
             "s1",
             "vision",
             model="gemini-3-flash",
@@ -83,12 +95,14 @@ class TestRecordAuxiliaryUsage:
         assert rows[0]["api_call_count"] == 1
 
     def test_main_loop_and_aux_rows_coexist(self, db):
-        db.create_session("s1", source="cli")
-        db.update_token_counts(
+        create_session(db, "s1", source="cli")
+        update_token_counts(
+            db,
             "s1", input_tokens=100, output_tokens=10,
             model="main-model", billing_provider="nous", api_call_count=1,
         )
-        db.record_auxiliary_usage(
+        record_auxiliary_usage(
+            db,
             "s1", "title_generation", model="main-model",
             billing_provider="nous", input_tokens=40, output_tokens=8,
         )
@@ -96,21 +110,21 @@ class TestRecordAuxiliaryUsage:
         tasks = sorted(r["task"] for r in rows)
         assert tasks == ["", "title_generation"]
 
-    def test_existing_row_keeps_null_created_source_and_backfills_profile(self, db):
+    def test_existing_row_keeps_null_created_source_and_backfills_profile(self, db, monkeypatch):
         """Skipping the unknown upsert must not skip the NULL profile_name backfill.
 
         source and created_source stay as they are. A NULL profile_name is filled
         with this store's profile, the same value the upsert would have written.
         """
-        db.create_session("s1", source="local")
-        db._own_profile_name = lambda: "default"
+        create_session(db, "s1", source="local")
+        monkeypatch.setattr(usage_store, "_own_profile_name", lambda holder: "default")
         with db._lock:
             db._conn.execute(
                 "UPDATE sessions SET created_source=NULL, profile_name=NULL WHERE id=?",
                 ("s1",))
             db._conn.commit()
-        db.record_auxiliary_usage("s1", "compression", model="m", input_tokens=1)
-        row = db.get_session("s1")
+        record_auxiliary_usage(db, "s1", "compression", model="m", input_tokens=1)
+        row = get_session(db, "s1")
         assert row["source"] == "local"
         assert row["created_source"] is None
         assert row["profile_name"] == "default"
@@ -120,9 +134,10 @@ class TestSchemaMigrationV22:
     def test_v21_db_migrates_with_existing_rows(self, tmp_path):
         """A legacy DB with pre-task rows migrates: rows preserved, task=''."""
         import sqlite3 as _sq
-        db = SessionDB(tmp_path / "state.db")
-        db.create_session("legacy", source="cli")
-        db.update_token_counts(
+        db = StoreHolder(tmp_path / "state.db")
+        create_session(db, "legacy", source="cli")
+        update_token_counts(
+            db,
             "legacy", input_tokens=42, model="old-model",
             billing_provider="openrouter", api_call_count=1,
         )
@@ -166,7 +181,7 @@ class TestSchemaMigrationV22:
         conn.close()
 
         # Reopen: v22 migration rebuilds the table with task in the PK.
-        db2 = SessionDB(tmp_path / "state.db")
+        db2 = StoreHolder(tmp_path / "state.db")
         with db2._lock:
             pk_cols = [
                 r[1] for r in db2._conn.execute(
@@ -181,7 +196,7 @@ class TestSchemaMigrationV22:
         assert row[0] == ""  # legacy rows are main-loop accounting
         assert row[1] == 42
         # And the new dimension works post-migration.
-        db2.record_auxiliary_usage("legacy", "vision", model="v", input_tokens=1)
+        record_auxiliary_usage(db2, "legacy", "vision", model="v", input_tokens=1)
         db2.close()
 
 
@@ -193,8 +208,8 @@ class TestAmbientAccountingContext:
             set_accounting_context,
         )
 
-        db.create_session("s1", source="cli")
-        token = set_accounting_context(db, "s1")
+        create_session(db, "s1", source="cli")
+        token = set_accounting_context(_holder_store(db), "s1")
         try:
             record_aux_usage(_mk_response(model="aux-m"), "vision", provider="gemini")
         finally:
@@ -207,17 +222,81 @@ class TestAmbientAccountingContext:
         assert rows[0]["output_tokens"] == 20
 
 
-    def test_moa_tasks_excluded(self, db):
-        """MoA advisor usage is already folded into the main-loop delta by
-        conversation_loop — recording it here would double-count."""
+    def test_writer_handle_records_the_row_the_store_records(self, db, tmp_path, monkeypatch):
+        """A writer handle beside the store carries the write and the store is never called; the row
+        matches the one the store itself records for the same response."""
+        from unittest.mock import MagicMock
+
+        import persistence_assembly
+        from agent import usage_pricing
         from agent.aux_accounting import (
             record_aux_usage,
             reset_accounting_context,
             set_accounting_context,
         )
 
-        db.create_session("s1", source="cli")
-        token = set_accounting_context(db, "s1")
+        monkeypatch.setattr(usage_pricing, "estimate_usage_cost",
+                            lambda *a, **k: SimpleNamespace(amount_usd=0.0125))
+        response = _mk_response(model="aux-m")
+        response.usage.prompt_tokens_details = SimpleNamespace(cached_tokens=30)
+        response.usage.completion_tokens_details = SimpleNamespace(reasoning_tokens=7)
+        create_session(db, "via-store", source="cli")
+        create_session(db, "via-handle", source="cli")
+
+        token = set_accounting_context(_holder_store(db), "via-store")
+        try:
+            record_aux_usage(response, "vision", provider="gemini", base_url="https://g.invalid/v1")
+        finally:
+            reset_accounting_context(token)
+        store = MagicMock()
+        with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path)) as handle:
+            token = set_accounting_context(store, "via-handle", persistence=handle)
+            try:
+                record_aux_usage(response, "vision", provider="gemini", base_url="https://g.invalid/v1")
+            finally:
+                reset_accounting_context(token)
+
+        assert store.method_calls == []
+        volatile = {"session_id", "first_seen", "last_seen"}
+        (by_store,), (by_handle,) = _usage_rows(db, "via-store"), _usage_rows(db, "via-handle")
+        assert {k: v for k, v in by_handle.items() if k not in volatile} == {
+            k: v for k, v in by_store.items() if k not in volatile}
+        assert (by_handle["task"], by_handle["billing_base_url"], by_handle["api_call_count"]) == (
+            "vision", "https://g.invalid/v1", 1)
+        assert (by_handle["cache_read_tokens"], by_handle["reasoning_tokens"]) == (30, 7)
+        assert by_handle["estimated_cost_usd"] == pytest.approx(0.0125)
+
+    def test_reader_handle_leaves_the_write_on_the_store(self, db):
+        """A read-only handle is no writer: the store beside it records the usage."""
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+        from persistence_assembly import open_persistence_reader
+
+        create_session(db, "s1", source="cli")
+        with open_persistence_reader(db.db_path) as reader:
+            token = set_accounting_context(_holder_store(db), "s1", persistence=reader)
+            try:
+                record_aux_usage(_mk_response(model="aux-m"), "vision", provider="gemini")
+            finally:
+                reset_accounting_context(token)
+        rows = _usage_rows(db, "s1")
+        assert [(r["task"], r["model"], r["input_tokens"]) for r in rows] == [("vision", "aux-m", 100)]
+
+
+    def test_moa_tasks_excluded(self, db):
+        """MoA advisor usage is already folded into the main-loop delta by
+        conversation_loop: recording it here would double-count."""
+        from agent.aux_accounting import (
+            record_aux_usage,
+            reset_accounting_context,
+            set_accounting_context,
+        )
+
+        create_session(db, "s1", source="cli")
+        token = set_accounting_context(_holder_store(db), "s1")
         try:
             record_aux_usage(_mk_response(), "moa_reference")
             record_aux_usage(_mk_response(), "moa_aggregator")
@@ -235,8 +314,8 @@ class TestAmbientAccountingContext:
         )
         from agent.auxiliary_client import _validate_llm_response
 
-        db.create_session("s1", source="cli")
-        token = set_accounting_context(db, "s1")
+        create_session(db, "s1", source="cli")
+        token = set_accounting_context(_holder_store(db), "s1")
         try:
             out = _validate_llm_response(_mk_response(), "web_extract", provider="openrouter")
         finally:
@@ -253,21 +332,27 @@ class TestAnalyticsAuxRows:
     def test_aux_usage_rows_and_merge(self, db):
         from hermes_cli.web_server_profiles import _aux_task_summary, _aux_usage_rows, _merge_aux_into_by_model
 
-        db.create_session("s1", source="cli")
-        db.update_token_counts(
+        create_session(db, "s1", source="cli")
+        update_token_counts(
+            db,
             "s1", input_tokens=1000, output_tokens=100,
             model="main-model", billing_provider="nous", api_call_count=1,
         )
-        db.record_auxiliary_usage(
+        record_auxiliary_usage(
+            db,
             "s1", "vision", model="vision-model",
             billing_provider="gemini", input_tokens=300, output_tokens=30,
         )
-        db.record_auxiliary_usage(
+        record_auxiliary_usage(
+            db,
             "s1", "compression", model="main-model",
             billing_provider="nous", input_tokens=200, output_tokens=20,
         )
 
-        aux = _aux_usage_rows(db, cutoff=0)
+        from persistence_assembly import open_persistence_reader
+
+        with open_persistence_reader(db.db_path) as store:
+            aux = _aux_usage_rows(store, cutoff=0)
         assert {r["task"] for r in aux} == {"vision", "compression"}
 
         by_model = [{
@@ -293,12 +378,14 @@ class TestInsightsAuxTotals:
         sessions counters (issues #58592, #9979)."""
         from agent.insights import InsightsEngine
 
-        db.create_session("s1", source="cli")
-        db.update_token_counts(
+        create_session(db, "s1", source="cli")
+        update_token_counts(
+            db,
             "s1", input_tokens=1000, output_tokens=100,
             model="main-model", billing_provider="nous", api_call_count=1,
         )
-        db.record_auxiliary_usage(
+        record_auxiliary_usage(
+            db,
             "s1", "compression", model="glm-5",
             billing_provider="openrouter", input_tokens=5000, output_tokens=500,
         )
@@ -308,4 +395,3 @@ class TestInsightsAuxTotals:
         assert ov["total_output_tokens"] == 600
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
-

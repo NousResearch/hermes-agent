@@ -1,18 +1,23 @@
 """Watermarked compaction and rotation share the worker receipt transaction."""
 import pytest
 
+from persistence.sqlite.conversation._store.messages import append_messages_batch, get_messages_as_conversation
+from persistence.sqlite.conversation._store.sessions import create_session, get_session
+from tests.persistence_sqlite.workers._runtime_worker import worker as worker  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+
 
 def test_watermarked_compaction_preserves_foreign_tail_and_rejects_stale_holder(worker):
-    db, store = worker
+    persistence, store = worker
+    holder = persistence.holder()
     store.append_messages_batch('owned', [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'carry'}])
     assert store.try_acquire_compression_lock('owned', 'holder')
     watermark = store.get_active_message_watermark('owned')
-    db.append_messages_batch('owned', [{'role': 'user', 'content': 'foreign tail', 'api_content': ' EXACT ',
-                                       'display_metadata': {'_accepted_input_id': 'input-tail'}}])
+    append_messages_batch(holder, 'owned', [{'role': 'user', 'content': 'foreign tail', 'api_content': ' EXACT ',
+                                            'display_metadata': {'_accepted_input_id': 'input-tail'}}])
     seq = store.journal['next_sequence']
-    from hermes_state_runtime import mutate_worker_execution
+    from persistence.sqlite.workers._receipt import mutate_worker_execution
     with pytest.raises(Exception, match='lease'):
-        mutate_worker_execution(db, **store.scope, sequence=seq, operation='compression.archive', payload={
+        mutate_worker_execution(holder, **store.scope, sequence=seq, operation='compression.archive', payload={
             'messages': [{'role': 'assistant', 'content': 'bad'}], 'model_config_patch': None,
             'watermark': watermark, 'lock_holder': 'old', 'tail_count': 0})
     assert store.archive_and_compact('owned', [{'role': 'assistant', 'content': 'summary'},
@@ -21,17 +26,18 @@ def test_watermarked_compaction_preserves_foreign_tail_and_rejects_stale_holder(
     rows = store.get_messages_as_conversation('owned', include_row_ids=True)
     assert rows[-1]['content'] == 'foreign tail' and rows[-1]['api_content'] == ' EXACT '
     assert rows[-1]['display_metadata'] == {'_accepted_input_id': 'input-tail'}
-    assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 1
+    assert holder._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 1
     assert store.get_session_model_config_value('owned', '_proactive_prune_rearm_tokens') == 42
 
 
 def test_publication_replay_advances_assignment_once_and_keeps_markers(worker):
-    db, store = worker
+    persistence, store = worker
+    holder = persistence.holder()
     store.append_messages_batch('owned', [{'role': 'user', 'content': 'before'}])
     assert store.try_acquire_compression_lock('owned', 'holder')
     watermark = store.get_active_message_watermark('owned')
-    db.append_messages_batch('owned', [{'role': 'user', 'content': 'foreign', 'api_content': ' exact tail ',
-                                       'display_metadata': {'_accepted_input_id': 'delivery'}}])
+    append_messages_batch(holder, 'owned', [{'role': 'user', 'content': 'foreign', 'api_content': ' exact tail ',
+                                            'display_metadata': {'_accepted_input_id': 'delivery'}}])
     original = store.rpc
     def lost_ack(method, **params):
         original(method, **params)
@@ -41,8 +47,8 @@ def test_publication_replay_advances_assignment_once_and_keeps_markers(worker):
         store.publish_compression_child(parent_session_id='owned', child_session_id='child', source='cli',
             messages=[{'role': 'assistant', 'content': 'summary'}], system_prompt='prefix',
             compression_lock_holder='holder', watermark=watermark)
-    assert db._read_one('SELECT session_id FROM worker_executions')[0] == 'child'
-    assert db.get_session('owned')['end_reason'] == 'compression'
+    assert holder._read_one('SELECT session_id FROM worker_executions')[0] == 'child'
+    assert get_session(holder, 'owned')['end_reason'] == 'compression'
     store.rpc = original
     store.retry_pending()
     assert store.scope['session_id'] == store.journal['scope']['session_id'] == 'child'
@@ -52,21 +58,22 @@ def test_publication_replay_advances_assignment_once_and_keeps_markers(worker):
     assert rows[1]['api_content'] == ' exact tail '
     assert rows[1]['display_metadata'] == {'_accepted_input_id': 'delivery'}
     assert store.get_compression_lineage('child') == ['owned', 'child']
-    assert db.get_session('child')['system_prompt'] == 'prefix'
+    assert get_session(holder, 'child')['system_prompt'] == 'prefix'
 
 
 def test_in_place_archive_without_a_lease_persists_from_a_worker(worker):
     """Micro-compaction and proactive prune archive without a compression lease; the worker RPC
     must accept the same ``lock_holder=None`` the in-process store does, or the journal sticks in
     failure and every later persist of that turn raises."""
-    db, store = worker
+    persistence, store = worker
+    holder = persistence.holder()
     store.append_messages_batch('owned', [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'long'}])
     assert store.archive_and_compact('owned', [{'role': 'assistant', 'content': 'pruned'}],
                                      tail_count=0, model_config_patch=None) == 1
     assert store.failure is None and store.journal['pending'] == []
     rows = store.get_messages_as_conversation('owned')
     assert [r['content'] for r in rows] == ['pruned']
-    assert db._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 2
+    assert holder._read_one("SELECT COUNT(*) FROM messages WHERE session_id='owned' AND compacted=1")[0] == 2
     store.append_messages_batch('owned', [{'role': 'user', 'content': 'after'}])
     assert [r['content'] for r in store.get_messages_as_conversation('owned')] == ['pruned', 'after']
 
@@ -79,22 +86,26 @@ def test_micro_compaction_live_dicts_persist_through_the_worker_like_direct(work
     import types
     from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, MICRO_COMPACT_MARKER_KEY
     from agent.micro_compaction import MicroCompactionMixin
-    db, store = worker
-    db.create_session('direct', 'cli')
+    persistence, store = worker
+    holder = persistence.holder()
+    create_session(holder, 'direct', 'cli')
     durable = {}
-    for sid, sdb in (('direct', db), ('owned', store)):
+    # The direct writer commits through the storage interface; the worker through its owner's receipts.
+    for sid, append, owner, interface in (
+            ('direct', lambda sid, rows: append_messages_batch(holder, sid, rows), holder, persistence),
+            ('owned', store.append_messages_batch, store, None)):
         live = [{'role': 'user', 'content': 'u1'}, {'role': 'assistant', 'content': 'a1'},
                 {'role': 'user', 'content': 'u2'}]
-        sdb.append_messages_batch(sid, live)
+        append(sid, live)
         for message in live:
             message['_db_persisted'] = True  # sync_flushed_message_markers' post-commit stamp
         marker = {'role': 'assistant', 'content': 'micro summary', COMPRESSED_SUMMARY_METADATA_KEY: True,
                   MICRO_COMPACT_MARKER_KEY: True, '_compressed_summary_has_user_turn': False}
         compacted = [live[0], marker, live[2]]
         assert MicroCompactionMixin._sync_micro_compact_to_db(
-            types.SimpleNamespace(_session_db=sdb, _session_id=sid), compacted)
+            types.SimpleNamespace(_session_db=owner, _session_id=sid, _store_interface=lambda interface=interface: interface), compacted)
         assert marker[MICRO_COMPACT_MARKER_KEY] and marker['_db_persisted'] and isinstance(marker['_row_id'], int)
-        sdb.append_messages_batch(sid, [{'role': 'assistant', 'content': 'after'}])
-        durable[sid] = [r['content'] for r in db.get_messages_as_conversation(sid)]
+        append(sid, [{'role': 'assistant', 'content': 'after'}])
+        durable[sid] = [r['content'] for r in get_messages_as_conversation(holder, sid)]
     assert store.failure is None and store.journal['pending'] == []
     assert durable['owned'] == durable['direct'] == ['u1', 'micro summary', 'u2', 'after']

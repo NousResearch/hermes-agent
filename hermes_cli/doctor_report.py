@@ -68,18 +68,29 @@ class Finding:
 def doctor_check(on_error: str | None = None, detail: str = ""):
     """Turn ``fn(should_fix, f: Finding)`` into a ``(should_fix) -> Finding`` doctor check.
 
-    *on_error* None: exceptions propagate (as they always did for that check). Otherwise the check is
-    best-effort via :func:`warn_on_error` (``""`` = silent) and the partial Finding is still returned,
-    so issues recorded before the crash survive."""
+    *on_error* None: exceptions propagate. Otherwise a crash warns and adds a manual issue;
+    the partial Finding is still returned, so issues and fixes recorded before the crash survive."""
     def deco(fn):
+        prefix = "_check_" if fn.__name__.startswith("_check_") else "check_"
+        label = fn.__name__.removeprefix(prefix).replace("_", " ")
+
         @functools.wraps(fn)
         def check(should_fix: bool) -> Finding:
             f = Finding()
             if on_error is None:
                 fn(should_fix, f)
             else:
-                with warn_on_error(on_error, detail):
+                try:
                     fn(should_fix, f)
+                except Exception as e:  # health: allow BLE001 -- check boundary: any crash must become an unresolved finding
+                    if on_error:
+                        check_warn(on_error.format(e=e), detail.format(e=e))
+                    else:
+                        check_warn(f"{label} check could not finish", f"({type(e).__name__})")
+                    f.manual_issues.append(
+                        f"Doctor could not finish the {label} check ({type(e).__name__}); "
+                        "check the settings it reads, re-run `hermes doctor`, and report it if it repeats"
+                    )
             return f
         return check
     return deco

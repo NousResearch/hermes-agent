@@ -14,6 +14,7 @@ import json
 import subprocess
 from unittest.mock import patch
 
+import pytest
 
 from hermes_cli import doctor_tools
 from hermes_cli.doctor_report import Finding
@@ -67,6 +68,44 @@ def test_npm_audit_only_finding_does_not_offer_doctor_fix(capsys):
 def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
+    assert "✓" in out
+    assert issues == []
+
+
+@pytest.mark.parametrize("stdout,reason", [
+    (json.dumps({"error": {"summary": "registry unavailable"}}), "registry or network error"),
+    ("", "no output"),
+    ("   ", "no output"),
+    ("not JSON", "unexpected output"),
+    ("{}", "unexpected output"),
+    ('{"metadata": {}}', "unexpected output"),
+    ('{"metadata": null}', "unexpected output"),
+    ('{"metadata": {"vulnerabilities": []}}', "unexpected output"),
+    ("[]", "unexpected output"),
+    ("null", "unexpected output"),
+])
+def test_incomplete_npm_audit_warns_without_issue(capsys, stdout, reason):
+    out, issues = _run_audit_one(capsys, ["--workspaces=false"], stdout)
+    assert f"npm audit did not complete: {reason}" in out
+    assert "⚠" in out
+    assert "✓" not in out
+    assert issues == []
+
+
+@pytest.mark.parametrize("error,reason", [
+    (subprocess.TimeoutExpired("npm audit", 30), "timed out after 30s"),
+    (OSError("fixture launch failure"), "npm could not be started"),
+    (ValueError("fixture failure"), "unexpected error"),
+])
+def test_npm_audit_subprocess_failure_warns_without_issue(capsys, error, reason):
+    issues = []
+    with patch.object(doctor_tools.subprocess, "run", side_effect=error):
+        doctor_tools._audit_one("npm", "C:/fake/root", "Root npm package",
+                                ["--workspaces=false"], issues)
+    out = capsys.readouterr().out
+    assert f"npm audit did not complete: {reason}" in out
+    assert "⚠" in out
+    assert "✓" not in out
     assert issues == []
 
 

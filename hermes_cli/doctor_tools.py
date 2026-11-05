@@ -387,8 +387,30 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
+def _audit_counts(result) -> tuple[int, int, int] | str:
+    """Return severity counts only for a completed audit, otherwise a short reason."""
+    import json
+
+    if not result.stdout.strip():
+        return "no output"
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "unexpected output"
+    if not isinstance(data, dict):
+        return "unexpected output"
+    if "error" in data:
+        return "registry or network error"
+    metadata = data.get("metadata")
+    counts = metadata.get("vulnerabilities") if isinstance(metadata, dict) else None
+    if not isinstance(counts, dict):
+        return "unexpected output"
+    critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
+    return critical, high, critical + high + moderate
+
+
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
-    """Run one `npm audit --json` and report; any failure is silently skipped.
+    """Run one `npm audit --json` and report; incomplete audits warn without adding an issue.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
     (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
@@ -398,17 +420,18 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
     on main (update `package-lock.json` and ship it); the doctor therefore never
     prescribes a local mutating fix command. See #116774.
     """
-    import json
     from hermes_constants import with_hermes_node_path
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                                       env=with_hermes_node_path(), check=False)
-        audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
-        counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
-        critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
-        total = critical + high + moderate
+        counts = _audit_counts(audit_result)
+        if isinstance(counts, str):
+            check_warn(f"{label} deps", f"(npm audit did not complete: {counts})")
+            return
+        critical, high, total = counts
+        moderate = total - critical - high
         workspace_scoped = bool(audit_extra) and audit_extra[0] == "--workspace"
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
@@ -427,8 +450,12 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual
             )
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        check_warn(f"{label} deps", "(npm audit did not complete: timed out after 30s)")
+    except OSError:
+        check_warn(f"{label} deps", "(npm audit did not complete: npm could not be started)")
+    except Exception:  # health: allow BLE001 -- audit boundary: unexpected failures warn without failing offline health gates
+        check_warn(f"{label} deps", "(npm audit did not complete: unexpected error)")
 
 
 @doctor_check()

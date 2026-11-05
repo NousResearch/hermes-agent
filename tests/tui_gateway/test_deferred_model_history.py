@@ -5,8 +5,17 @@ import threading
 import pytest
 
 from agent.replay_cleanup import canonicalize_replay_history
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import close_stores_under, open_persistence, profile_scope, store_location
+from tests.fixtures.storage_holder import raw_holder
 from tui_gateway import server
+
+
+def _repository_type(home, name):
+    """The class of the storage interface repository ``name`` bound on ``home``'s store."""
+    with open_persistence(profile_scope(home=home)) as persistence:
+        return type(getattr(persistence, name))
 
 
 @pytest.mark.parametrize("source,omit_messages", [("desktop", True), ("desktop", False), ("tui", True)])
@@ -14,53 +23,66 @@ from tui_gateway import server
 def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monkeypatch, source, omit_messages, profile):
     home = tmp_path / "work"
     home.mkdir()
-    db = SessionDB(home / "state.db")
-    db.create_session("parent", source=source)
-    db.append_message("parent", "user", "ancestor-only display", timestamp=100.0)
-    db.end_session("parent", "compression")
-    db.create_session("tip", source=source, parent_session_id="parent")
-    db.append_message("tip", "user", "archived display", timestamp=101.0)
-    db.archive_and_compact("tip", [
-        {"role": "assistant", "content": "summary", "_compressed_summary": True},
-        {"role": "user", "content": "current ask"},
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "dangling", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+    db = open_persistence(profile_scope(home=home), eager=True)
+    db.sessions.create(NewSession(session_id="parent", source=source))
+    db.messages.append("parent", NewMessage(role="user", content="ancestor-only display", timestamp=100.0))
+    db.sessions.end("parent", "compression")
+    db.sessions.create(NewSession(session_id="tip", source=source, parent_session_id="parent"))
+    db.messages.append("tip", NewMessage(role="user", content="archived display", timestamp=101.0))
+    db.messages.compact("tip", [
+        NewMessage(role="assistant", content="summary", compressed_summary=True),
+        NewMessage(role="user", content="current ask"),
+        NewMessage(role="assistant", content="", tool_calls=(
+            {"id": "dangling", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},)),
     ])
-    expected = canonicalize_replay_history(db.get_messages_as_conversation(
-        "tip", repair_alternation=True, include_row_ids=True))
-    stored = db.get_session("tip")
+    expected = canonicalize_replay_history([m.as_openai_message() for m in db.messages.read_conversation(
+        "tip", ConversationRequest(repair_alternation=True, include_row_ids=True))])
+    stored = db.sessions.get("tip")
     assert stored is not None
-    stored_count = stored["message_count"]
-    _, display = db.get_resume_conversations("tip")
-    prefix = db.get_ancestor_display_prefix("tip")
+    stored_count = stored.message_count
+    display = db.messages.read_resume_conversations("tip").display
+    prefix = [m.as_openai_message() for m in db.lineage.ancestor_display_prefix("tip")]
     display_reads = []
-    original_display = db.get_resume_conversations
-    original_prefix = db.get_ancestor_display_prefix
+    messages_type, lineage_type = _repository_type(home, "messages"), _repository_type(home, "lineage")
+    original_display = messages_type.read_resume_conversations
+    original_prefix = lineage_type.ancestor_display_prefix
     closed = threading.Event()
     built = threading.Event()
     events = []
     original_close = db.close
+    dedicated_closes = []
+    real_profile_session_db = server._profile_session_db
 
     def close():
         original_close()
         closed.set()
 
-    def read_display(sid):
+    def profile_session_db(profile_home):
+        opened, owns = real_profile_session_db(profile_home)
+        if owns:
+            assert store_location(opened.scope) == (home / "state.db").resolve()
+            release = opened.close
+
+            def close_dedicated():
+                release()
+                dedicated_closes.append(opened)
+                closed.set()
+
+            opened.close = close_dedicated
+        return opened, owns
+
+    def read_display(repository, sid):
         display_reads.append("display")
-        return original_display(sid)
+        return original_display(repository, sid)
 
-    def read_prefix(sid):
+    def read_prefix(repository, sid):
         display_reads.append("prefix")
-        return original_prefix(sid)
-
-    def acquire(db_path=None, **kwargs):
-        assert db_path == home / "state.db"
-        return db
+        return original_prefix(repository, sid)
 
     monkeypatch.setattr(db, "close", close)
-    monkeypatch.setattr(db, "get_resume_conversations", read_display)
-    monkeypatch.setattr(db, "get_ancestor_display_prefix", read_prefix)
-    monkeypatch.setattr("hermes_state_registry.acquire", acquire)
+    monkeypatch.setattr(messages_type, "read_resume_conversations", read_display)
+    monkeypatch.setattr(lineage_type, "ancestor_display_prefix", read_prefix)
+    monkeypatch.setattr(server, "_profile_session_db", profile_session_db)
     monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
@@ -90,10 +112,10 @@ def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monk
         assert ("session.resume_progress", {"message_count": count, "phase": "history", "status": "complete"}) in events
         if profile:
             assert closed.wait(5)
-            assert db._conn is None
+            assert len(dedicated_closes) == 1
         else:
             assert not closed.is_set()
-            assert db.get_session("tip") is not None
+            assert db.sessions.get("tip") is not None
     finally:
         if sid is not None:
             server._sessions.pop(sid, None)
@@ -102,11 +124,12 @@ def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monk
 
 @pytest.mark.parametrize("outcome", ["replaced", "failed"])
 def test_model_hydration_discards_stale_results_and_closes_owned_db(tmp_path, monkeypatch, outcome):
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("stored", source="desktop")
-    db.append_message("stored", "user", "model context")
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
+    db.sessions.create(NewSession(session_id="stored", source="desktop"))
+    db.messages.append("stored", NewMessage(role="user", content="model context"))
     started, release, closed = threading.Event(), threading.Event(), threading.Event()
-    original_read, original_close = db.get_messages_as_conversation, db.close
+    messages_type = _repository_type(tmp_path, "messages")
+    original_read, original_close = messages_type.read_conversation, db.close
     events, builds = [], []
     old = {"history": [], "history_lock": threading.RLock(), "resume_hydrating": True,
            "resume_history_ready": threading.Event(), "agent_ready": threading.Event(),
@@ -114,18 +137,19 @@ def test_model_hydration_discards_stale_results_and_closes_owned_db(tmp_path, mo
     replacement = {"history": [{"role": "user", "content": "replacement"}]}
     monkeypatch.setitem(server._sessions, "hydrating", old)
 
-    def read(*args, **kwargs):
+    def read(repository, *args, **kwargs):
         started.set()
         assert release.wait(5)
         if outcome == "failed":
-            db._read_all("SELECT * FROM deliberately_missing_table")
-        return original_read(*args, **kwargs)
+            with raw_holder(db)._read_ctx() as conn:
+                conn.execute("SELECT * FROM deliberately_missing_table")
+        return original_read(repository, *args, **kwargs)
 
     def close():
         original_close()
         closed.set()
 
-    monkeypatch.setattr(db, "get_messages_as_conversation", read)
+    monkeypatch.setattr(messages_type, "read_conversation", read)
     monkeypatch.setattr(db, "close", close)
     monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
     monkeypatch.setattr(server, "_start_agent_build", lambda *args: builds.append(args))
@@ -137,7 +161,7 @@ def test_model_hydration_discards_stale_results_and_closes_owned_db(tmp_path, mo
             server._sessions["hydrating"] = replacement
         release.set()
         assert closed.wait(5)
-        assert db._conn is None
+        assert close_stores_under(tmp_path) == 0
         assert builds == []
         if outcome == "replaced":
             assert server._sessions["hydrating"] is replacement

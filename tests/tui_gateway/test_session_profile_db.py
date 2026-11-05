@@ -28,7 +28,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SESSION_ID = "sid-profile"
 SESSION_KEY = "tui-profile-1"
@@ -71,7 +74,7 @@ def server(hermes_home):
 @pytest.fixture()
 def launch_db(server, hermes_home):
     """The launch profile's state.db, wired in as the ``_get_db()`` handle."""
-    db = SessionDB(db_path=hermes_home / "state.db")
+    db = storage_handle(hermes_home)
     server._db = db
     return db
 
@@ -81,17 +84,17 @@ def profile_db(tmp_path):
     """A second, non-launch profile's state.db."""
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    return profile_home, SessionDB(db_path=profile_home / "state.db")
+    return profile_home, storage_handle(profile_home)
 
 
 def _seed(db, turns=3, *, _capture_user_row_ids=None):
-    db.create_session(SESSION_KEY, source="tui")
+    seed_session(db, SESSION_KEY, "tui")
     for i in range(1, turns + 1):
-        uid = db.append_message(SESSION_KEY, "user", f"question {i}")
+        [uid] = seed_messages(db, SESSION_KEY, {"role": "user", "content": f"question {i}"})
         if _capture_user_row_ids is not None:
             _capture_user_row_ids.append(uid)
-        db.append_message(SESSION_KEY, "assistant", f"answer {i}")
-    return db.get_messages_as_conversation(SESSION_KEY)
+        seed_messages(db, SESSION_KEY, {"role": "assistant", "content": f"answer {i}"})
+    return conversation(db, SESSION_KEY)
 
 
 def _register(server, history, *, profile_home=None):
@@ -167,13 +170,13 @@ def test_undo_rewinds_the_profile_transcript(server, launch_db, profile_db):
     assert result["type"] == "prefill"
     assert result["message"] == "question 3"
     # The rewind is durable in the profile's own db, not the launch one.
-    assert _texts(pdb.get_messages_as_conversation(SESSION_KEY)) == [
+    assert _texts(conversation(pdb, SESSION_KEY)) == [
         "question 1",
         "answer 1",
         "question 2",
         "answer 2",
     ]
-    assert launch_db.get_messages_as_conversation(SESSION_KEY) == []
+    assert conversation(launch_db, SESSION_KEY) == []
 
 
 def test_undo_still_uses_the_shared_handle_without_a_profile(server, launch_db):
@@ -189,7 +192,7 @@ def test_undo_still_uses_the_shared_handle_without_a_profile(server, launch_db):
 
     assert not resp.get("error"), f"/undo failed: {resp.get('error')}"
     assert resp["result"]["message"] == "question 3"
-    assert _texts(launch_db.get_messages_as_conversation(SESSION_KEY)) == [
+    assert _texts(conversation(launch_db, SESSION_KEY)) == [
         "question 1",
         "answer 1",
         "question 2",
@@ -246,12 +249,12 @@ def test_truncation_persists_to_the_profile_db(server, launch_db, profile_db, mo
     assert not resp.get("error"), f"prompt.submit failed: {resp.get('error')}"
     # The undone turns are gone from the profile's own db, so session.resume
     # (which opens the profile db correctly) cannot resurrect them.
-    assert _texts(pdb.get_messages_as_conversation(SESSION_KEY)) == [
+    assert _texts(conversation(pdb, SESSION_KEY)) == [
         "question 1",
         "answer 1",
     ]
     # ...and nothing was copied into a foreign profile under this session id.
-    assert launch_db.get_messages_as_conversation(SESSION_KEY) == []
+    assert conversation(launch_db, SESSION_KEY) == []
 
 
 def test_truncation_does_not_copy_rows_into_the_launch_profile(
@@ -267,7 +270,7 @@ def test_truncation_does_not_copy_rows_into_the_launch_profile(
     profile_home, pdb = profile_db
     user_row_ids: list = []
     history = _seed(pdb, _capture_user_row_ids=user_row_ids)
-    launch_db.create_session(SESSION_KEY, source="unknown")
+    seed_session(launch_db, SESSION_KEY, "unknown")
     _register(server, history, profile_home=profile_home)
     _stop_after_truncate(server, monkeypatch)
 
@@ -285,8 +288,8 @@ def test_truncation_does_not_copy_rows_into_the_launch_profile(
     )
 
     assert not resp.get("error"), f"prompt.submit failed: {resp.get('error')}"
-    assert launch_db.get_messages_as_conversation(SESSION_KEY) == []
-    assert _texts(pdb.get_messages_as_conversation(SESSION_KEY)) == [
+    assert conversation(launch_db, SESSION_KEY) == []
+    assert _texts(conversation(pdb, SESSION_KEY)) == [
         "question 1",
         "answer 1",
     ]
@@ -323,7 +326,7 @@ def test_truncation_surfaces_the_profile_dbs_live_row_ids(
     assert not resp.get("error"), f"prompt.submit failed: {resp.get('error')}"
     surviving = [
         row["_row_id"]
-        for row in pdb.get_messages_as_conversation(SESSION_KEY, include_row_ids=True)
+        for row in conversation(pdb, SESSION_KEY, ConversationRequest(include_row_ids=True))
         if row["role"] == "user"
     ]
     assert resp["result"]["survivor_user_row_ids"] == surviving
@@ -351,7 +354,7 @@ def test_truncation_without_a_profile_uses_the_shared_handle(server, launch_db, 
     )
 
     assert not resp.get("error"), f"prompt.submit failed: {resp.get('error')}"
-    assert _texts(launch_db.get_messages_as_conversation(SESSION_KEY)) == [
+    assert _texts(conversation(launch_db, SESSION_KEY)) == [
         "question 1",
         "answer 1",
     ]

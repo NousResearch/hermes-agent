@@ -1,4 +1,4 @@
-"""Dedicated profile ``SessionDB`` handles must be closed by whoever ends up owning them.
+"""Dedicated profile store handles must be closed by whoever ends up owning them.
 
 Companion to ``test_session_resume_db_ownership.py``, which pins the paths that
 return BEFORE a handle reaches an agent. This file pins the other half — the two
@@ -174,16 +174,17 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
     opened: list[_RecordingDB] = []
 
     def _factory(*_a, **_k):
-        db = _RecordingDB()
-        opened.append(db)
-        return db
+        handle = _RecordingDB()
+        handle.read_only = False
+        opened.append(handle)
+        return handle
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("persistence_assembly.open_persistence", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
 
-    assert got is opened[0]
+    assert got is opened[0] and agent.persistence is opened[0]
     assert agent._owns_session_db is True
 
     agent.close()
@@ -254,14 +255,22 @@ def build_env(monkeypatch, tmp_path):
     profile_home = tmp_path / "work"
     profile_home.mkdir()
 
-    opened: list[_RecordingDB] = []
+    opened: list = []
+    real_open = server._open_profile_session_db
 
-    def _factory(db_path=None, **kwargs):
-        db = _RecordingDB(db_path=db_path, **kwargs)
+    def _open_counting_closes(home):
+        db = real_open(home)
+        db.closed, release = 0, db.close
+
+        def close():
+            db.closed += 1
+            release()
+
+        db.close = close
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr(server, "_open_profile_session_db", _open_counting_closes)
     for name, value in [
         ("_set_session_context", lambda _key, cwd=None: []),
         ("_clear_session_context", lambda _tokens: None),
@@ -283,6 +292,9 @@ def build_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: None)
     monkeypatch.setattr(server, "reset_hermes_home_override", lambda _tok: None)
     yield types.SimpleNamespace(opened=opened, profile_home=str(profile_home))
+    for db in opened:
+        if db.closed == 0:
+            db.close()
 
 
 def _run_build(sid, session):

@@ -148,10 +148,11 @@ class _RecordingProvider(MemoryProvider):
         return []
 
 
-def _build_agent_with_recording_provider(seen, **extra):
-    """A real AIAgent init with a recording provider; returns the agent."""
-    cfg = {"compression": {}, "agent": {}, "memory": {"provider": "recording", "memory_enabled": False,
-                                                      "user_profile_enabled": False}}
+def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
+    """A real AIAgent init with a recording provider; returns the agent. ``builtin_memory`` sets both
+    built-in store flags (``memory.memory_enabled`` / ``memory.user_profile_enabled``)."""
+    cfg = {"compression": {}, "agent": {}, "memory": {"provider": "recording", "memory_enabled": builtin_memory,
+                                                      "user_profile_enabled": builtin_memory}}
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
@@ -190,3 +191,34 @@ def test_parent_session_id_reaches_the_provider_initialize():
 
     _build_agent_with_recording_provider(seen)
     assert "parent_session_id" not in seen
+
+
+def test_fork_keeps_builtin_memory_out_of_its_prompt():
+    """The fork loads the provider for the checkpoint only: MEMORY.md and USER.md stay out of its
+    system prompt, as with ``skip_memory=True``. The same config without the fork label loads them."""
+    from agent.system_prompt import build_system_prompt
+    from hermes_constants import get_hermes_home
+
+    memories = get_hermes_home() / "memories"
+    memories.mkdir(parents=True, exist_ok=True)
+    (memories / "MEMORY.md").write_text("parent-only agent note\n")
+    (memories / "USER.md").write_text("parent-only user profile\n")
+
+    fork = _build_agent_with_recording_provider({}, builtin_memory=True, memory_agent_context="subagent",
+                                                platform="subagent")
+    primary = _build_agent_with_recording_provider({}, builtin_memory=True)
+
+    assert fork._memory_manager is not None  # the checkpoint provider is still there
+    assert fork._memory_store is None
+    assert "parent-only" not in build_system_prompt(fork)
+    assert "parent-only agent note" in build_system_prompt(primary)
+    assert "parent-only user profile" in build_system_prompt(primary)
+
+
+def test_fork_requesting_the_memory_toolset_keeps_the_builtin_store():
+    """``enabled_toolsets=["memory"]`` is a request for the built-in store (#65429) and wins over the
+    fork label, exactly as it does for a ``skip_memory=True`` fork with the gate off."""
+    fork = _build_agent_with_recording_provider({}, builtin_memory=True, memory_agent_context="subagent",
+                                                platform="subagent", enabled_toolsets=["memory"])
+    assert fork._memory_store is not None
+    assert fork._memory_enabled and fork._user_profile_enabled

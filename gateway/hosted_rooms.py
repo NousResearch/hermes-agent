@@ -635,6 +635,15 @@ def prune_disbanded_rooms(db_path: DbPath, *, now: float | None = None) -> int:
 
 
 # --- room links / grants / reservations / remote runs ---------------------------------
+def room_has_peer_obligations(db_path: DbPath, *, room_id: Any, now: float | None = None) -> bool:
+    """Whether metadata-only Disband needs a runtime to settle peer access."""
+    room_id = _room_id(room_id)
+    with closing(_read_connection(db_path)) as conn:
+        return conn.execute("""SELECT 1 FROM hosted_room_links WHERE room_id=?
+            UNION ALL SELECT 1 FROM hosted_room_owed_revokes WHERE room_id=? AND expires_at>? LIMIT 1""",
+            (room_id, room_id, _now(now))).fetchone() is not None
+
+
 def list_room_link_records(db_path: DbPath) -> list[dict[str, Any]]:
     """Return private RoomLink records without logging or formatting grants."""
     with _transaction(db_path) as conn:

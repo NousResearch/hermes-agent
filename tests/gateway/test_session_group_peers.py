@@ -393,7 +393,9 @@ def _owed(db_path):
                             'ORDER BY room_id, member_id').fetchall()
 
 
-def test_disband_without_a_driver_drops_stored_routes_and_owes_their_revokes(tmp_path, monkeypatch):
+@pytest.mark.parametrize('obligation', ['route', 'held', 'owed', 'expired', 'none'])
+@pytest.mark.parametrize('room_id', ['linked', ' linked '])
+def test_disband_without_a_service_requires_coordination_for_peer_routes(tmp_path, monkeypatch, obligation, room_id):
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
@@ -409,14 +411,44 @@ def test_disband_without_a_driver_drops_stored_routes_and_owes_their_revokes(tmp
             await call(owner, 'groups.create', room_id='linked', name='Linked', members=[
                 {'member_id': 'host', 'profile': 'default', 'handle': 'host'},
                 {'member_id': 'reviewer', 'profile': 'default', 'handle': 'reviewer', 'target': pinned}])
-            hosted_room_links.save_room_link(db.db_path, hosted_room_links.make_stored_link(
-                room_id='linked', member_id='reviewer', target_url=endpoint['url'], target_profile='default',
-                grant='stored-grant', catalog=GatewayRoomCatalog.from_mapping(catalog),
-                cancellation_scope_id='cancel-linked', trace_id='trace-linked'))
-            assert 'tombstone' in await call(owner, 'groups.disband', room_id='linked')
-            assert hosted_room_links.load_room_links(db.db_path) == ()
-            assert _owed(db.db_path) == [('linked', 'reviewer', 0)]
+            if obligation == 'route':
+                hosted_room_links.save_room_link(db.db_path, hosted_room_links.make_stored_link(
+                    room_id='linked', member_id='reviewer', target_url=endpoint['url'], target_profile='default',
+                    grant='stored-grant', catalog=GatewayRoomCatalog.from_mapping(catalog),
+                    cancellation_scope_id='cancel-linked', trace_id='trace-linked'))
+            if obligation in {'held', 'owed', 'expired'}:
+                with hosted_rooms._transaction(db.db_path, immediate=True) as conn:
+                    hosted_rooms._owe_revoke_locked(conn, room_id='linked', member_id='reviewer',
+                        target_url=endpoint['url'], grant='retained-grant',
+                        expires_at=time.time() + (-1 if obligation == 'expired' else 3600),
+                        now=time.time() - 10, held=obligation != 'owed')
+            owed = _owed(db.db_path)
+            links = hosted_room_links.load_room_links(db.db_path)
+            result = await call(owner, 'groups.disband', room_id=room_id)
+            if obligation in {'route', 'held', 'owed'}:
+                assert result == 'runtime_coordination_required'
+                assert hosted_rooms.room_state(db.db_path, room_id='linked').get('disbanded_at') is None
+            else:
+                assert 'tombstone' in result
+            assert hosted_room_links.load_room_links(db.db_path) == links
+            if obligation != 'expired':
+                assert _owed(db.db_path) == owed
         asyncio.run(probe())
+
+
+@pytest.mark.asyncio
+async def test_disband_replay_without_service_preserves_later_owed_debt(gateway, linked_peer):
+    _, url, _, _ = linked_peer
+    first = (await call(gateway.owner, 'groups.disband', room_id='linked'))['tombstone']
+    hosted_rooms.owe_room_grant_revoke(gateway.db.db_path, room_id='linked', member_id='reviewer',
+        target_url=url, grant='late-grant', expires_at=time.time() + 3600)
+    debt = _owed(gateway.db.db_path)
+    assert debt
+    gateway.authority.hosted_room_service = None
+    replay = await call(gateway.owner, 'groups.disband', room_id=' linked ')
+    assert isinstance(replay, dict) and 'tombstone' in replay, replay
+    assert replay['tombstone'] == {**first, 'idempotent': True, 'event': {**first['event'], 'idempotent': True}}
+    assert _owed(gateway.db.db_path) == debt
 
 
 @pytest.mark.asyncio

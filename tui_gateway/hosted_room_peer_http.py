@@ -421,6 +421,30 @@ class PeerRunsHTTPClient:
         self._recovery_backoff.pop(key, None)
         return recovered
 
+    def close_admission(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
+        """Find the run this admission's key started, never starting it: by receipt, else by
+        asking the member gateway to look the key up and close it when unused
+        (``POST /v1/room-members/runs/close``). ``{"closed": True}`` means nothing runs under the
+        key and nothing ever will; otherwise the receipt is saved and the accepted run returned.
+        A member too old to answer raises (404/405 on the route): Discard then keeps the turn,
+        since replaying the admission to find out could start it."""
+        checked = self._checked_dispatch(dispatch, grant)
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        if existing is not None:
+            return self._accepted(
+                checked, run_id=str(existing["run_id"]), session_id=str(existing["session_id"]),
+                replayed=True)
+        result = self._scoped_post("/v1/room-members/runs/close", grant, body={
+            "task_id": checked.task_id, "execution_generation": checked.execution_generation})
+        if result.get("closed") is True:
+            return {"closed": True}
+        run_id = str(result.get("run_id") or "")
+        if not run_id:
+            raise PeerRunsHTTPError("peer answered a run close with no run")
+        session_id = self._session_id(checked, grant=grant)
+        self._save_receipt(checked, run_id=run_id, session_id=session_id)
+        return self._accepted(checked, run_id=run_id, session_id=session_id, replayed=True)
+
     @staticmethod
     def _accepted(
         checked: HostedMemberDispatch, *, run_id: str, session_id: str, replayed: bool,
@@ -466,6 +490,12 @@ class PeerRunsHTTPClient:
                     error_code=replay_error.error_code,
                 ) from replay_error
         run_id = str(result.get("run_id") or "")
+        self._save_receipt(checked, run_id=run_id, session_id=session_id)
+        return self._accepted(
+            checked, run_id=run_id, session_id=session_id,
+            replayed=bool(result.get("replayed", False)))
+
+    def _save_receipt(self, checked: HostedMemberDispatch, *, run_id: str, session_id: str) -> None:
         receipt = {
             "run_id": run_id, "session_id": session_id,
             **{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
@@ -475,9 +505,6 @@ class PeerRunsHTTPClient:
             hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
         self._runs[(checked.task_id, checked.execution_generation)] = receipt
         self._status_cache.pop(run_id, None)
-        return self._accepted(
-            checked, run_id=run_id, session_id=session_id,
-            replayed=bool(result.get("replayed", False)))
 
     def _session_id(self, dispatch: HostedMemberDispatch, *, grant: str) -> str:
         existing = self._receipt(dispatch.task_id, dispatch.execution_generation)

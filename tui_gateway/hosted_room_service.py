@@ -495,6 +495,27 @@ class HostedRoomService:
             source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
         recover(dispatch=dispatch.as_mapping(), grant=route.grant)
 
+    def close_peer_admission(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
+        """Whether a deferred peer turn's admission key is closed on its member's gateway, which
+        then never had the run and never will. False: that gateway has the run, and its receipt is
+        now saved for Stop. Never sends the admission, so it never starts the turn. A missing route
+        raises RuntimeError; an unreachable or too-old member gateway raises PeerRunsHTTPError."""
+        key = (binding.room_id, _member_of(task))
+        route, client = self.peer_routes.get(key), self.peer_clients.get(key)
+        close = _hook(client, "close_admission")
+        if route is None or close is None:
+            raise RuntimeError("peer room route is unavailable")
+        identity, payload = task["identity"], task["payload"]
+        if not route.trace_id:
+            raise RuntimeError("peer room admission identity is unavailable for recovery")
+        dispatch = build_member_dispatch(
+            binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
+            target_profile=route.target_profile, execution_generation=int(task["execution_generation"]),
+            source_event_seq=int(payload["source_event_seq"]), prompt=str(payload["prompt"]),
+            trace_id=route.trace_id)
+        result = close(dispatch=dispatch.as_mapping(), grant=route.grant)
+        return isinstance(result, Mapping) and result.get("closed") is True
+
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:
             if isinstance(m, Mapping) and str(

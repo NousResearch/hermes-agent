@@ -55,21 +55,27 @@ class HostedControls:
 
     def _discard_peer(self, binding, task, cancel_id):
         """Discard a deferred peer turn the way Disband ends it, since its member's gateway may still
-        run it: the admission is recovered under its own key (its receipt, else a replay, which finds
-        that run or starts it), the run is stopped, and the turn settles only once that gateway
-        confirms the run ended. An unreachable member keeps the turn: nothing here can prove what
-        its gateway did with the admission."""
+        run it, and never start it there: the member's gateway is asked which run this turn's
+        admission key started, closing the key when it started none (``close_peer_admission``). A
+        closed key settles the turn at once. A found run is stopped, and the turn settles only once
+        that gateway confirms the run ended. A member gateway that is unreachable, or too old to
+        answer that question, keeps the turn: nothing here can prove what it did with the admission."""
         from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
         if task['status'] != 'deferred':
             raise RuntimeStoreError('unsupported_operation')
         try:
-            self._resolve_member_transport(binding, task)
+            closed = self.close_peer_admission(binding, task)
         except PeerRunsHTTPError as exc:
-            raise RuntimeStoreError(
-                exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
+            if exc.error_code in _GRANT_ERRORS:
+                raise RuntimeStoreError(exc.error_code) from exc
+            if exc.status_code in {404, 405}:
+                raise RuntimeStoreError('peer_unreachable', detail=(
+                    "the member's gateway is too old to confirm this turn never started; "
+                    'update it, then Discard again')) from exc
+            raise RuntimeStoreError('peer_unreachable') from exc
         except RuntimeError as exc:  # no live route to the member's gateway
             raise RuntimeStoreError('peer_unreachable') from exc
-        if not self._stop_deferred_peer(binding.room_id, task):
+        if not closed and not self._stop_deferred_peer(binding.room_id, task):
             raise RuntimeStoreError('session_busy', detail=(
                 "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
         result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,

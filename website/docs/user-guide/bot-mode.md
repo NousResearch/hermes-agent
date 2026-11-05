@@ -404,9 +404,12 @@ message. **Retry** on that turn asks the member gateway for the same attempt: it
 posts the reply if the run finished (unless a newer message in that thread has
 superseded it, as for any late reply), follows the run if it is still going, and
 never starts another attempt. **Discard** of that turn ends it the way Disband
-does: the home asks the member gateway for the same attempt, stops its run, and
-settles the turn only once that gateway confirms the run ended; while the member
-gateway is unreachable the turn is kept. A turn still running when it reaches its time limit is stopped, as it would
+does, and never starts it: the home asks the member gateway which run the turn's
+idempotency key started, without sending the turn again. If none, the member
+gateway closes that key, so a late copy of the turn is refused there, and the turn
+is discarded at once. If a run is found, the home stops it and settles the turn
+only once that gateway confirms the run ended. While the member gateway is
+unreachable, or too old to answer that question, the turn is kept. A turn still running when it reaches its time limit is stopped, as it would
 be on the home. This holds while the member gateway still keeps the run's record: it
 forgets a finished run once the grant's status lifetime has passed, so a replay
 after that (a Retry under a new grant much later) can start the turn again.

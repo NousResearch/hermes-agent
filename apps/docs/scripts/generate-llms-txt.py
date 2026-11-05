@@ -583,6 +583,21 @@ def _published_url(href: str, source_rel: str) -> str | None:
     return f"{SITE_BASE}/{'/'.join(parts)}{suffix}"
 
 
+_WRAPPED_TAIL_RE = re.compile(r"^(?P<text>[^\[\]]*)\]\((?P<href>[^)\s]+)\)")
+
+
+def _opens_link(line: str) -> bool:
+    """True when the line's last `[` (outside inline code) is never closed."""
+    closed, open_span = _code_spans(line, 0)
+    if open_span is not None:
+        return False
+    code = closed
+    start = line.rfind("[")
+    while start >= 0 and any(cs <= start < ce for cs, ce in code):
+        start = line.rfind("[", 0, start)
+    return start >= 0 and "]" not in line[start:] and not line[start - 1 : start] == "!"
+
+
 def _rewrite_document_links(body: str, source_rel: str) -> str:
     """Turn authored document links into published page URLs, line by line.
 
@@ -594,10 +609,23 @@ def _rewrite_document_links(body: str, source_rel: str) -> str:
     still rewrite.
     """
     out: list[str] = []
+    # Hard-wrapped prose can split a link's text across lines: `[multi-gateway`
+    # then `guide](./page.md)`. Remember a live line that leaves a `[` open so
+    # the next one's leading `text](href)` is rewritten as the link's tail.
+    open_link = False
     for live, line in _line_kinds(body):
         if not live:
+            open_link = False
             out.append(line)
             continue
+
+        if open_link:
+            tail = _WRAPPED_TAIL_RE.match(line)
+            if tail:
+                url = _published_url(tail.group("href"), source_rel)
+                if url is not None:
+                    line = f"{tail.group('text')}]({url})" + line[tail.end():]
+        open_link = _opens_link(line)
 
         # A link that begins inside a code span — any delimiter length — is
         # an example, not authored syntax; code bytes stay verbatim.

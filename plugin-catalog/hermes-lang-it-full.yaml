@@ -1,6 +1,6 @@
 name: hermes-lang-it-full
 repo: https://github.com/gradia64/hermes-lang-it-full
-sha: f206a948cba00c4778358fe5220d3f51b7a85c61
+sha: f41e2536148b96497c35a0bbbe182d0443835cc2
 description: >-
   Italian (Italiano) language pack for Hermes Desktop covering nearly every Desktop string (firstRun, themePicker, connector accounts and the update-channel picker included; the few array/object leaves the pack format rejects fall back to English). Core, CLI and TUI keep the Italian catalogs already bundled with Hermes. Generated from the hand-reviewed typed catalog maintained in gradia64/hermes-agent (gradia-desktop-it branch); function-backed keys ship as positional {0} templates. Independent community translation, unrelated to hermes-lang-it. Disclosure — text-only catalogs plus an __init__.py whose register() is a no-op (kept so Desktop "Install from Git" accepts the pack, #138118); registering the pack never changes display.language, the user opts in via config.
 maintainer: gradia64

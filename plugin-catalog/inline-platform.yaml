@@ -1,6 +1,6 @@
 name: inline-platform
 repo: https://github.com/inline-chat/inline
-sha: 2d3b360da0430684eabab2d946eca0e725c08aa5
+sha: ec95e9296b83c13d2179b47019d915b16783c186
 subdir: plugins/hermes-agent/plugin/inline
 description: >-
   Use Hermes Agent from Inline work-chat DMs, chats, and reply threads.
@@ -14,7 +14,7 @@ maintainer: morajabi
 tier: community
 category: platform
 requires_hermes: ">=0.21.3"
-version: "0.0.21"
+version: "1.0.1"
 capabilities:
   provides_tools:
     - inline

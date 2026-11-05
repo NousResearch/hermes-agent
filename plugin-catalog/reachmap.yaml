@@ -1,0 +1,22 @@
+name: reachmap
+repo: https://github.com/MindSproutStudios/hermes-reachmap
+sha: edade54efc44d84b285c626b6628929923044a0d
+description: "Hermes knows what it can reach before it says it can't. Scans signed-in browser sessions on DevTools ports, MCP servers, local services, CLIs and drives; freezes a compact map into each new session's prompt (cache-safe system prompt section); and catches replies that call something unreachable when the map shows it live, with a footer for the user and a one-shot correction for the agent. Keeps a SQLite ledger of when each capability appeared or vanished. Disclosure — loopback-only HTTP GETs to Chrome DevTools /json/version and /json/list (tab titles and URLs, never navigates or executes); runs ps, lsof (or ss) and shutil.which on a fixed CLI list (presence only); reads browser.cdp_url and MCP server names via load_config_readonly; the map text, including account emails visible in tab titles unless show_identities is off, is sent to the model provider as part of the prompt; writes plugin-data/reachmap/data.db; no credential stores, no third-party network calls, no telemetry."
+maintainer: MindSproutStudios
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/MindSproutStudios/hermes-reachmap#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/MindSproutStudios/hermes-reachmap/edade54efc44d84b285c626b6628929923044a0d/docs/banner.png
+platforms: [macos, linux]
+title: reachmap
+capabilities:
+  provides_tools:
+  - reachmap
+  provides_hooks:
+  - on_session_start
+  - pre_llm_call
+  - transform_llm_output
+  provides_middleware: []
+  requires_env: []

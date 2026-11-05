@@ -611,6 +611,22 @@ class TestManagedGateway:
         assert "concurrency" in result["error"].lower()
 
 
+    def test_managed_krea2_sends_styles_and_refuses_moodboards(self):
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen._common import error_factory
+
+        fail = error_factory("krea", "landscape", model="krea-2-medium", prompt="a poster")
+        styles = [{"id": "style-1", "strength": 0.8}]
+        payload, err = krea_mod._krea2_payload("a poster", "16:9", None, None, {"styles": styles}, True, fail)
+        assert err is None
+        assert payload["styles"] == styles
+
+        _, err = krea_mod._krea2_payload(
+            "a poster", "16:9", None, None, {"moodboards": [{"url": "https://x.com/m.png"}]}, True, fail)
+        assert err is not None and err["error_type"] == "unsupported_argument"
+        assert "moodboards" in err["error"]
+
+
 class TestExplicitModelOverride:
     def test_model_kwarg_overrides_config(self, monkeypatch):
         """An explicit ``model`` kwarg (managed routing) wins over config/default."""

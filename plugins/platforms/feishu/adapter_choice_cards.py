@@ -205,6 +205,16 @@ class FeishuChoiceCardsMixin:
         label = str(choice.get("label") or choice.get("value") or "")
         return self._card_response(_card(state["header"], "green", f"{state['body']}\n\n✓ **{label}** — {checked[2]}"))
 
+    def _on_webhook_card_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A card tap over HTTP, handled as the SDK delivers it: the button value stays a dict (the
+        routes key on it) and the settled card goes back as the response body."""
+        data = self._namespace_from_mapping(payload)
+        action = getattr(getattr(data, "event", None), "action", None)
+        if action is not None:
+            action.value = ((payload.get("event") or {}).get("action") or {}).get("value")
+        card = getattr(self._on_card_action_trigger(data), "card", None)
+        return {"card": {"type": card.type, "data": card.data}} if card is not None else {}
+
     async def _apply_choice_picker_selection(self, state: dict[str, Any], value: str) -> None:
         """Run the picker's applier and send its confirmation to the chat."""
         try:

@@ -18,6 +18,8 @@ class _APIError(Exception):
     "Error code: 403 - Your request was blocked.",
     "<!doctype html><html><body>Enable JavaScript and cookies to continue</body></html>",
     "<!doctype html><html><script src='/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page'></script></html>",
+    "<!doctype html><html><body><p>Unable to load site</p><p>Cloudflare Ray ID: test-ray</p></body></html>",
+    "<!doctype html><html><body><p>Cloudflare Ray ID: test-ray</p></body></html>",
 ])
 def test_403_waf_block_is_upstream_blocked_not_auth(body):
     result = classify_api_error(_APIError(body, 403), provider="openai-api")

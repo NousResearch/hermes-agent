@@ -492,6 +492,9 @@ _UPSTREAM_BLOCKED_PATTERNS = (
     "your request was blocked", "request blocked", "sorry, you have been blocked",
     "enable javascript and cookies to continue", "cdn-cgi/challenge-platform", "cf-browser-verification",
     "challenge-error-text", "__cf_chl", "cf-error-details", "attention required! | cloudflare",
+    # Cloudflare's origin/edge error page is not an expired OAuth credential (#141080).
+    # Keep it out of auth recovery: refreshing cannot resolve this upstream refusal.
+    "unable to load site", "cloudflare ray id",
 )
 
 

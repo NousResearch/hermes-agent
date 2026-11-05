@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- session-budget default for #52484: the only growth is the documented max_children_per_session key in DEFAULT_CONFIG (its comments are the user-facing config.yaml docs); the canonical defaults file has no other home for a new default
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

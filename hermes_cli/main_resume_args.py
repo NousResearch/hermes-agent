@@ -1,8 +1,38 @@
-"""``hermes chat`` resume-argument steps split out of ``hermes_cli.main``: ``--resume @claude/@codex``
-imports, and recreating a removed ``--tui -w`` worktree a resumed session needs (N8)."""
+"""``hermes chat`` session-argument steps split out of ``hermes_cli.main``: ``--in DIR``, ``--resume
+@claude/@codex`` imports, and recreating a removed ``--tui -w`` worktree a resumed session needs (N8)."""
 
 import os
 import sys
+
+
+def apply_in_dir(args) -> None:
+    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
+    in_dir = getattr(args, "in_dir", None)
+    if not in_dir:
+        return
+    # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
+    # translate drive-root spellings to native Windows form. No-op elsewhere.
+    from tools.environments.local import _msys_to_windows_path
+
+    _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
+    if not os.path.isdir(_target_dir):
+        print(f"Error: --in directory not found: {in_dir}")
+        sys.exit(1)
+    try:
+        os.chdir(_target_dir)
+    except OSError as e:
+        print(f"Error: cannot enter --in directory {in_dir}: {e}")
+        sys.exit(1)
+    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
+    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
+    # cwd, so a value inherited from a parent surface, the shell or .env outlives
+    # this chdir and re-homes the session in the old directory (#106220). Refresh
+    # it. An unset variable stays unset: the backends then derive from the new
+    # process cwd (local exports it at cli import, docker mounts it, ssh and
+    # container backends keep their own remote/sandbox default).
+    if os.environ.get("TERMINAL_CWD", "").strip():
+        os.environ["TERMINAL_CWD"] = _target_dir
+    args.no_restore_cwd = True
 
 
 def import_foreign_resume(args) -> None:
@@ -28,13 +58,10 @@ def import_foreign_resume(args) -> None:
 def _frozen_cwd(db, session_id) -> str:
     """The cwd the owner runs *session_id*'s tools in (its local policy), or "" without one. The
     row's cwd is main's stamp, which for a classic ``-w`` session is the repo root, not the tree."""
-    import sqlite3
-
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import PersistenceError
     try:
-        return str(local_receipt(db, session_id)["policy"].get("cwd") or "").strip()
-    except (RuntimeStoreError, KeyError, AttributeError, sqlite3.Error):  # no readable policy: use the row's cwd
+        return str(db.persistence.bindings.receipt(session_id).policy.get("cwd") or "").strip()
+    except (PersistenceError, AttributeError):  # no readable policy: use the row's cwd
         return ""
 
 
@@ -46,8 +73,10 @@ def recreate_resumed_tui_worktree(args) -> None:
     cwd = ""
     from hermes_cli.main import _session_db
     with _session_db() as db:  # a store error is swallowed: nothing to recreate
-        cwd = (_frozen_cwd(db, args.resume)
-               or ((db.get_session(args.resume) or {}).get("cwd") or "").strip())
+        cwd = _frozen_cwd(db, args.resume)
+        if not cwd:
+            record = db.persistence.sessions.get(args.resume)
+            cwd = ((record.cwd if record else None) or "").strip()
     if not cwd or os.path.isdir(cwd):
         return
     from hermes_cli.tui_worktree_resume import recreate_tui_worktree

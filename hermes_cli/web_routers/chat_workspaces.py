@@ -45,13 +45,13 @@ def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
     from hermes_cli import projects_db as pdb
 
     # Browsing never bootstraps the owner's session store: a profile whose gateway has not
-    # yet initialized state.db simply contributes no session-derived roots (``db=None``).
+    # yet initialized state.db simply contributes no session-derived roots (``persistence=None``).
     try:
-        db = _open_session_db_for_profile(profile, read_only=True)
+        persistence = _open_session_db_for_profile(profile, read_only=True)
     except HTTPException as exc:
         if exc.status_code != 503:
             raise
-        db = None
+        persistence = None
     try:
         with pdb.connect_closing() as conn:
             policy = gateway._repo_discovery_policy()
@@ -59,10 +59,10 @@ def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
                 gateway._scan_discovered_repos_remote(conn, policy)
             projects = [p.to_dict() for p in pdb.list_projects(conn)]
             repos = gateway._discover_repos_payload(
-                db, conn=conn, backfill=False, include_cached=policy["enabled"])
+                None, conn=conn, backfill=False, include_cached=policy["enabled"], persistence=persistence)
     finally:
-        if db is not None:
-            db.close()
+        if persistence is not None:
+            persistence.close()
     default_cwd = gateway._completion_cwd({"profile": profile} if profile else {})
     return {
         "projects": projects, "repos": repos, "default_cwd": default_cwd,

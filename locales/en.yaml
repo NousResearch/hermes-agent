@@ -389,6 +389,8 @@ gateway:
   set_home:
     save_failed: "Failed to save home channel: {error}"
     success: "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."
+    bot_chat_success: "✅ The Bot Chat is now this profile's home.\nCron jobs without an origin and gateway notices go there instead of your messaging home channels. Run /sethome in a messaging chat to switch back."
+    bot_chat_released: "The Bot Chat is no longer this profile's home."
     err_missing_platform: "Missing logical platform"
     err_relay_unauthenticated: "Relay does not authenticate this logical home target"
   context:

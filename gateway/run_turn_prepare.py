@@ -562,7 +562,8 @@ class GatewayTurnPrepareMixin:
                 turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
-        if not human_platform:
+        from gateway.bot_chat_home import bot_chat_is_home, scoped_config
+        if not human_platform or bot_chat_is_home(scoped_config(self)):
             return
         platform_name = source.platform.value
         env_key = _home_target_env_var(platform_name)

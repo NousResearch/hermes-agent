@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Salvataggio del canale home non riuscito: {error}"
     success: "✅ Canale home impostato su **{name}** (ID: {chat_id}).\nI cron job e i messaggi cross-platform verranno consegnati qui."
+    bot_chat_success: "✅ La Bot Chat è ora la home di questo profilo.\nI cron job senza origine e gli avvisi del gateway vanno lì invece che nei tuoi canali home di messaggistica. Esegui /sethome in una chat di messaggistica per tornare indietro."
+    bot_chat_released: "La Bot Chat non è più la home di questo profilo."
     err_missing_platform: "Piattaforma logica mancante"
     err_relay_unauthenticated: "Il relay non autentica questa destinazione home logica"
   context:

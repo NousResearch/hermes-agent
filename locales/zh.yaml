@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "无法保存主频道：{error}"
     success: "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
+    bot_chat_success: "✅ Bot Chat 现在是此配置文件的主频道。\n没有来源的定时任务和网关通知会发送到那里，而不是你的消息主频道。如需切换回来，请在消息聊天中运行 /sethome。"
+    bot_chat_released: "Bot Chat 已不再是此配置文件的主频道。"
     err_missing_platform: "缺少逻辑平台"
     err_relay_unauthenticated: "中继未对该逻辑主频道目标进行认证"
   context:

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
-from gateway.config import Platform
+from gateway.config import HOME_BOT_CHAT, Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
@@ -154,11 +154,13 @@ def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Op
 
     Two served profiles can share one home chat (one Telegram group for the whole host) and owe it
     ONE notice per host restart. A positive Telegram chat id names the USER, though: the same id
-    under two bot tokens is two conversations, so those stay keyed per served profile (#118233).
+    under two bot tokens is two conversations, so those stay keyed per served profile (#118233), as
+    does a Bot Chat home (each profile's own chat).
     """
     from gateway.delivery import looks_like_telegram_private_chat_id
-    if (profile and profile != "default" and platform_value == "telegram"
-            and looks_like_telegram_private_chat_id(chat_id)):
+    if profile and profile != "default" and (
+            (platform_value == "telegram" and looks_like_telegram_private_chat_id(chat_id))
+            or (platform_value == Platform.LOCAL.value and chat_id == HOME_BOT_CHAT)):
         platform_value = f"{profile}:{platform_value}"
     return _notice_target_key(platform_value, chat_id, thread_id)
 

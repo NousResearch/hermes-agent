@@ -375,6 +375,14 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
     save_config(config)
 
 
+def persist_primary_home(value: Optional[str]) -> None:
+    """Persist ``gateway.home`` (``HOME_BOT_CHAT`` or None) in the active profile's config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    _dict_slot(config, "gateway")["home"] = value
+    save_config(config)
+
+
 @dataclass
 class ChannelOverride:
     """Per-channel reply policy/model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
@@ -586,6 +594,9 @@ def _discovered_registry_entry(platform: Platform):
 
 
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
+# ``gateway.home``: the Bot Chat replaces the platform home channels as the profile's primary home.
+HOME_BOT_CHAT = "bot-chat"
+
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
     "group_sessions_per_user": True, "thread_sessions_per_user": False,
@@ -652,6 +663,7 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    home: Optional[str] = None  # HOME_BOT_CHAT or None (platform home channels); gateway/bot_chat_home.py
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -662,6 +674,7 @@ class GatewayConfig:
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "home",
     )
 
     def __post_init__(self) -> None:
@@ -803,6 +816,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            home=_normalize_choice(pick("home"), {HOME_BOT_CHAT}, None),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

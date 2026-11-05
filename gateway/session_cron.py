@@ -38,7 +38,7 @@ def owner_for_home(home):
     return None
 
 
-async def _admit_local_delivery(authority, chat_id, text, metadata):
+async def _admit_local_delivery(authority, chat_id, text, metadata, *, producer='cron'):
     from gateway.config import Platform
     from gateway.session_authorities import owner_scope
     from gateway.session_automation import admit_route_wake
@@ -57,7 +57,7 @@ async def _admit_local_delivery(authority, chat_id, text, metadata):
         # conversation's own turn there.
         adapter = (local_adapter_map(authority)[Platform.LOCAL] if source.platform == Platform.LOCAL
                    else authority.runner._adapter_for_source(source))
-        return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
+        return await admit_route_wake(authority.runner, adapter, source, text, producer, metadata)
 
 
 def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):

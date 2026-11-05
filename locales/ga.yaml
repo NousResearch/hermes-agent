@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "Theip ar shábháil chainéil bhaile: {error}"
     success: "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
+    bot_chat_success: "✅ Is é an Bot Chat baile na próifíle seo anois.\nTéann tascanna cron gan bhunús agus fógraí an gheata ansin in ionad do chainéil bhaile teachtaireachtaí. Rith /sethome i gcomhrá teachtaireachtaí chun filleadh."
+    bot_chat_released: "Ní hé an Bot Chat baile na próifíle seo a thuilleadh."
     err_missing_platform: "Ardán loighciúil ar iarraidh"
     err_relay_unauthenticated: "Ní fhíordheimhníonn an t-athsheachadán an sprioc bhaile loighciúil seo"
   context:

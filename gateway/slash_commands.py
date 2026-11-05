@@ -639,7 +639,11 @@ class GatewaySlashCommandsMixin(
         return self._telegramized_command_reply(event, reply.text)
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
-        """Handle /sethome command -- set the current chat as the platform's home channel."""
+        """Handle /sethome command -- set the current chat as the platform's home channel. From a local
+        (Desktop/Webapp/TUI) chat it makes the profile's Bot Chat the home instead (gateway/bot_chat_home.py);
+        a later messaging /sethome takes the home back."""
+        from gateway.bot_chat_home import bot_chat_is_home, scoped_config, set_home
+        from gateway.config import HOME_BOT_CHAT
         from gateway.run import _home_target_env_var, _home_thread_env_var
         source = event.source
         platform_name = source.platform.value if source.platform else "unknown"
@@ -647,6 +651,13 @@ class GatewaySlashCommandsMixin(
         chat_name = source.chat_name or chat_id
         if source.platform is None:
             return t("gateway.set_home.save_failed", error=t("gateway.set_home.err_missing_platform"))
+        if source.platform == Platform.LOCAL:
+            try:
+                set_home(self, HOME_BOT_CHAT)
+            except Exception as e:
+                logger.warning("Bot Chat home not saved", exc_info=True)
+                return t("gateway.set_home.save_failed", error=e)
+            return t("gateway.set_home.bot_chat_success")
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
             adapter_for_source = getattr(self, "_intake_adapter_for", None)
@@ -678,7 +689,15 @@ class GatewaySlashCommandsMixin(
         # self.config before the process reloads config.
         platform_config = self.config.platforms.setdefault(source.platform, PlatformConfig(enabled=not via_relay))
         platform_config.home_channel = home
-        return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+        reply = t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+        if bot_chat_is_home(scoped_config(self)):
+            try:
+                set_home(self, None)
+            except Exception:
+                logger.warning("Home channel saved but gateway.home was not cleared", exc_info=True)
+            else:
+                reply += "\n" + t("gateway.set_home.bot_chat_released")
+        return reply
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

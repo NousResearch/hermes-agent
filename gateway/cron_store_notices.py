@@ -89,6 +89,7 @@ def _log_notice_failure(done, event: str, store: str) -> None:
 
 async def send_cron_store_notice(runner, event: str, record) -> None:
     """Post one ``unwritable``/``recovered`` notice to the home channels of the store's profile."""
+    from gateway.bot_chat_home import notice_platform
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
     from cron.store_health import store_key
@@ -110,4 +111,4 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
             await present_notification(
                 lambda: runner._send_home_channel_message(
                     platform, home, transport, message, "Cron store notice failed for %s:%s: %s"),
-                platform=platform)
+                platform=notice_platform(platform, home))

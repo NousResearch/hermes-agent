@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "홈 채널 저장에 실패했습니다: {error}"
     success: "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."
+    bot_chat_success: "✅ 이제 Bot Chat이 이 프로필의 홈입니다.\n출처가 없는 크론 작업과 게이트웨이 알림은 메시징 홈 채널 대신 그곳으로 전달됩니다. 되돌리려면 메시징 채팅에서 /sethome을 실행하세요."
+    bot_chat_released: "Bot Chat은 더 이상 이 프로필의 홈이 아닙니다."
     err_missing_platform: "논리 플랫폼이 없어요"
     err_relay_unauthenticated: "릴레이가 이 논리 홈 대상을 인증하지 않아요"
   context:

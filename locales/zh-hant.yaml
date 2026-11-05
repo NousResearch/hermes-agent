@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "無法儲存主頻道：{error}"
     success: "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
+    bot_chat_success: "✅ Bot Chat 現在是此設定檔的主頻道。\n沒有來源的排程任務和閘道通知會傳送到那裡，而不是你的通訊主頻道。若要切換回來，請在通訊聊天中執行 /sethome。"
+    bot_chat_released: "Bot Chat 已不再是此設定檔的主頻道。"
     err_missing_platform: "缺少邏輯平台"
     err_relay_unauthenticated: "中繼未驗證此邏輯主目標"
   context:

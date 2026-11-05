@@ -385,6 +385,8 @@ gateway:
   set_home:
     save_failed: "ホームチャンネルを保存できませんでした: {error}"
     success: "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"
+    bot_chat_success: "✅ このプロファイルのホームが Bot Chat になりました。\n送信元のない Cron ジョブとゲートウェイの通知は、メッセージングのホームチャンネルではなくそこに届きます。元に戻すにはメッセージングのチャットで /sethome を実行してください。"
+    bot_chat_released: "Bot Chat はこのプロファイルのホームではなくなりました。"
     err_missing_platform: "論理プラットフォームが指定されていません"
     err_relay_unauthenticated: "リレーはこの論理ホームターゲットを認証していません"
   context:

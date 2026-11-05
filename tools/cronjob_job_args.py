@@ -167,9 +167,9 @@ def _mode_guidance_notes(job: dict[str, Any], user_deliver: Optional[str]) -> li
     if _deliver:
         if "all" in _deliver.split(","):
             notes.append(
-                "deliver='all' resolves at fire time and never includes "
-                "bot-chat targets — channels connected later are picked up "
-                "automatically.")
+                "deliver='all' resolves at fire time and includes this "
+                "profile's Bot Chat only while it is the home (gateway.home) — "
+                "channels connected later are picked up automatically.")
         if _deliver.startswith("bot-chat:"):
             notes.append("Targeting another profile's Bot Chat costs that bot an agent turn per run.")
         # platform:chat_id with no thread segment loses topic targeting.

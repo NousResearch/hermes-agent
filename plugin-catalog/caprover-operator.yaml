@@ -1,0 +1,36 @@
+name: caprover-operator
+title: CapRover Operator
+repo: https://github.com/fmercurio/hermes-caprover-operator
+sha: a9f0d6466bf5a667d5833d8b638ef3e183d2c99e
+description: >-
+  Human-approved, state-bound immutable-image deployment for one owner-configured
+  CapRover app, with durable uncertainty, replay refusal and observation receipts.
+  Disclosure: contacts the configured CapRover HTTPS origin and optional fixed
+  health endpoint; CapRover returns all app definitions in memory, while only the
+  configured app's keyed fingerprint and sanitized evidence enter a private local
+  ledger. Image startup may run migrations. HTTP alone does not prove the serving
+  image; runtime task evidence is optional. No shell, telemetry, self-updater or
+  automatic rollback. Apply requires fresh native human approval in in_process mode.
+maintainer: fmercurio
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/fmercurio/hermes-caprover-operator#readme
+version: "0.1.0"
+platforms: [linux, macos]
+known_issues:
+  - Apply requires an interactive native human approval and plugins.isolation set to in_process; unattended, smart and YOLO approval cannot authorize a deployment.
+  - Servers without supported runtime task evidence produce metadata/HTTP observation receipts rather than a verified serving-image rollout.
+capabilities:
+  provides_tools:
+    - caprover_plan
+    - caprover_apply
+    - caprover_reconcile
+    - caprover_status
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware:
+    - tool_execution
+  requires_env:
+    - CAPROVER_OPERATOR_TOKEN

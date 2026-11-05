@@ -8,6 +8,8 @@ because closing any descriptor on the file cancels the process's POSIX locks on 
 
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -107,6 +109,51 @@ def test_probe_kept_when_a_tracked_connection_opens_after_the_scan(tmp_path, mon
         assert str(db_path) in dbfile._HEADER_PROBE_FDS
     finally:
         conn.close()
+
+
+_LOCKF_CHILD = """import sys, fcntl
+f = open(sys.argv[1], "r+b")
+try:
+    fcntl.lockf(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB, 510, 1073741826)  # SQLite's SHARED range: in WAL mode the writer's lock on the main file
+    print("ACQUIRED")
+except BlockingIOError:
+    print("BLOCKED")
+"""
+
+
+@pytest.mark.platforms("posix")
+def test_hard_link_alias_opened_after_scan_keeps_probe(tmp_path, monkeypatch):
+    """A tracked open through a hard link after the scan is missed by the pathname-keyed guards;
+    closing the probe then would drop the alias writer's lock to another process."""
+    home, db_path = _home(tmp_path, "linked")
+    alias = tmp_path / "alias.db"  # outside the swept home
+    os.link(db_path, alias)
+    _probe(db_path)
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    writers: list = []
+    scan = dbfile.inodes_with_other_descriptors
+
+    def _scan_then_open_alias(identities):
+        seen = scan(identities)
+        if not writers:
+            writer = connect_tracked(str(alias), tracking_path=alias)
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("CREATE TABLE alias_write (x)")
+            writers.append(writer)
+        return seen
+
+    monkeypatch.setattr(dbfile, "inodes_with_other_descriptors", _scan_then_open_alias)
+    try:
+        registry.close_all_under(home)
+        assert str(db_path) in dbfile._HEADER_PROBE_FDS
+        locked = subprocess.run([sys.executable, "-c", _LOCKF_CHILD, str(db_path)],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        assert locked == "BLOCKED"
+    finally:
+        for writer in writers:
+            writer.rollback()
+            writer.close()
 
 
 @pytest.mark.platforms("posix")

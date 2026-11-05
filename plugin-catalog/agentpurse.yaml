@@ -1,0 +1,44 @@
+name: agentpurse
+repo: https://github.com/maaz-bin-hassan/agentpurse
+sha: 84a1ed7cc9dbac462a5bde8b65f6d105cc56b20b
+subdir: plugins/hermes
+version: "1.0.0"
+title: AgentPurse
+description: >-
+  Search, quote, and buy from an AgentPurse allowance on the PayPal sandbox.
+  Every purchase waits for Hermes' approval prompt and is sent only after a
+  person approves it; YOLO, approvals off, auto-approve modes, and smart
+  (model) approval cannot spend. A per-chat spend limit and /purse kill sit in
+  front of the clerk. Disclosure: calls agentpurse.vercel.app (POST /mcp and
+  GET /api/spends/:id), which talks to the PayPal sandbox and Channel3. The API
+  key is read through Hermes' secret scope. A kill switch, quote cache,
+  short-lived approval grants, and per-chat spent cents live in plugin state.
+  No shell commands, background processes, telemetry, or self-update.
+  Sandbox money only. A receipt is not a retailer order.
+maintainer: maaz-bin-hassan
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/maaz-bin-hassan/agentpurse/blob/84a1ed7cc9dbac462a5bde8b65f6d105cc56b20b/plugins/hermes/README.md
+known_issues:
+  - PayPal sandbox only. A captured payment is not a retailer order.
+capabilities:
+  provides_tools:
+    - search_merchants
+    - search_products
+    - get_product
+    - check_price
+    - find_alternatives
+    - get_quote
+    - request_purchase
+    - watch_price
+    - list_watches
+    - cancel_watch
+    - get_budget
+    - list_receipts
+  provides_hooks:
+    - pre_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env:
+    - AGENTPURSE_API_KEY

@@ -526,6 +526,14 @@ class GatewayTurnPersistenceMixin:
 
         if is_context_overflow_failure:
             pass  # Skip all transcript writes — don't grow a broken session
+        elif agent_result.get("failure_reason") == "content_policy_blocked":
+            # A safety refusal is deterministic for the unchanged conversation (the filter judges the
+            # whole thread), so a persisted refused turn re-trips the filter on every later message and
+            # locks the chat — the "stuck session" report. The agent flushed the user row at turn start;
+            # drop that turn now that the lease is released (soft-delete, the same rewind /undo uses) so
+            # the next turn rebuilds from a clean transcript. The refusal was already delivered to the
+            # user. Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
+            await self._hmwa_drop_content_policy_refused_turn(sid, session_key)
         else:
             if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
@@ -594,6 +602,25 @@ class GatewayTurnPersistenceMixin:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
+
+    async def _hmwa_drop_content_policy_refused_turn(self, sid, session_key):
+        """Drop a safety-refused turn and force the next turn to rebuild from the clean transcript.
+
+        The agent flushed the user row at turn start (a managed worker never mutates its own
+        transcript); now that the turn lease is released, soft-delete that turn owner-side — the same
+        rewind ``/undo`` uses — and evict the cached agent so the next turn rebuilds from the
+        active-only transcript. Otherwise the cached agent keeps the refused turn in its in-memory
+        history and the deterministic filter re-refuses every later message (the "stuck session"
+        report). The refusal was already delivered to the user. Best-effort: a failure here must
+        never crash turn teardown.
+        """
+        try:
+            await self.async_session_store.rewind_session(sid, 1)
+        except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash turn teardown
+            logger.debug("content-policy refusal: could not drop the refused turn for %s: %s", sid, e)
+            return
+        with suppress(Exception):
+            self._evict_cached_agent(session_key)
 
     @staticmethod
     def _usage_window_chat_wording(agent_result: dict, response: str) -> str:

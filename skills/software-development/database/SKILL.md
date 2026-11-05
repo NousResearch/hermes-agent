@@ -144,6 +144,14 @@ COMMIT;
 
 For SQLite, use `sqlite3 -readonly`. Add a deterministic `ORDER BY` and a practical `LIMIT` during exploration. Use engine-native parameter binding from application code instead of interpolating user input into SQL.
 
+Before any schema-changing `DDL` (`CREATE`, `ALTER`, or `DROP`) or `TRUNCATE`,
+show the exact target and SQL and obtain explicit approval. Also require explicit
+approval before `DELETE` or `UPDATE` without a `WHERE` clause: confirm that changing
+all rows is intentional. A tautology such as `WHERE 1=1` is still an all-row write,
+not a safety boundary. Preview the affected rows with a read-only query before
+requesting approval; do not infer consent from a general request to inspect or
+manage the database.
+
 ### 4. Export and Back Up
 
 Confirm available disk space and the destination path before exporting.

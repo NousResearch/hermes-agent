@@ -114,3 +114,14 @@ def test_skill_requires_approval_for_destructive_operations():
     assert "obtaining approval" in content
     assert "explicitly approved administrative operation" in content
     assert "-pMyPassword" not in content
+
+
+def test_query_guidance_explicitly_gates_schema_and_unbounded_writes():
+    query_guidance = _content().split("### 3. Run Queries Conservatively", 1)[1]
+    query_guidance = query_guidance.split("### 4. Export and Back Up", 1)[0]
+    assert "explicit approval" in query_guidance
+    for operation in ("DDL", "CREATE", "ALTER", "DROP", "TRUNCATE", "DELETE", "UPDATE"):
+        assert f"`{operation}`" in query_guidance
+    assert "without a `WHERE` clause" in query_guidance
+    assert "exact target and SQL" in query_guidance
+    assert "WHERE 1=1" in query_guidance

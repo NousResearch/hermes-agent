@@ -83,9 +83,11 @@ def _raise_unless_peer_gone(exc: Exception, what: str) -> None:
 def serialize_frame(obj: dict, peer: str, log: logging.Logger) -> str:
     """``json.dumps`` the frame; an unserializable payload becomes a JSON-RPC error frame carrying
     the original id. Shared by every transport: without it the TypeError escaped from a pool
-    worker (the executor swallows it), so the client waited forever with no log line (#92506)."""
+    worker (the executor swallows it), so the client waited forever with no log line (#92506).
+    ``allow_nan=False`` extends that contract to non-finite floats: bare ``Infinity``/``NaN``
+    tokens are not JSON, so a strict client would drop the whole frame (#132800)."""
     try:
-        return json.dumps(obj, ensure_ascii=False)
+        return json.dumps(obj, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         rid = obj.get("id") if isinstance(obj, dict) else None
         log.error("frame serialization failed peer=%s id=%s error_type=%s error=%s",

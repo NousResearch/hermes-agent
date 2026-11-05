@@ -66,9 +66,15 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
 # one whitespace character; keeping that means this fix changes no approval decision.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
-# Flags inside a `hermes <group> <verb>` path: the _GLOBAL_FLAGS grammar, but a flag word may be quoted
-# ("-p" work). Rules repeat it between the path's words because -p/--profile works anywhere before `--`.
-_HERMES_FLAGS = r'(?:["\']?-\S++(?:\s++(?!["\']?-\S)\S++)?\s++)*'
+# Flags in a `hermes <group> <verb>` path. Before the group: global flags, one shell word each (quoted parts
+# may hold spaces: -p " work "), each with an optional value that is neither a flag nor the bare word
+# hermes (the search restarts there), so a long run stays linear. After the group only the profile flag
+# can appear (main._scan_profile_flag strips the first -p NAME, --profile NAME or --profile=NAME anywhere
+# before `--`), matched possessively so the path words never nest backtracking loops.
+_SHELL_WORD = r'(?:[^\s"\']++|"[^"]*+"|\'[^\']*+\')++'
+_HERMES_FLAGS = r'(?:(?=["\']?-)' + _SHELL_WORD + r'(?:\s++(?!["\']?-|hermes\s)' + _SHELL_WORD + r')?\s++)*'
+_HERMES_PROFILE_FLAG = (r'(?:(?:(?=["\']?--profile=)' + _SHELL_WORD + r'|(?=["\']?(?:-p|--profile)["\']?\s)'
+                        + _SHELL_WORD + r'\s++' + _SHELL_WORD + r')\s++)?+')
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -594,9 +600,9 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
     (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
-    # Messaging setup changes who can reach the agent. Kept LAST: approval keys on the first matching rule,
-    # so a command that also matches an older rule keeps that rule's key.
-    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?gateway["\']?\s+' + _HERMES_FLAGS + r'["\']?setup(?![\w-])',
+    # Messaging setup changes who can reach the agent. Kept LAST: approval keys on the first matching rule, so
+    # this row never masks an older pattern rule (checks that run after the list, such as shell -c payloads, still can).
+    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?gateway["\']?\s+' + _HERMES_PROFILE_FLAG + r'["\']?setup(?![\w-])',
      "configure a messaging platform (changes who can reach the agent)"),
 ]
 

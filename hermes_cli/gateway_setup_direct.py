@@ -86,8 +86,11 @@ def _save_telegram(result, allowed: list[str]) -> None:
     else:
         kept = "the existing allowlist stays in force" if get_env_value("TELEGRAM_ALLOWED_USERS") else (
             "with no other access rule the gateway denies everyone")
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+        flag = f"-p {profile} " if profile not in ("default", "custom") else ""
         print(f"No owner was detected, so no user was added; {kept}. "
-              "Set allowed user IDs with: hermes config set TELEGRAM_ALLOWED_USERS ID1,ID2")
+              f"Set allowed user IDs with: hermes {flag}config set TELEGRAM_ALLOWED_USERS ID1,ID2")
     write_platform_config_field("telegram", "enabled", True)
     if owner and not get_env_value("TELEGRAM_HOME_CHANNEL"):
         save_env_value("TELEGRAM_HOME_CHANNEL", owner)

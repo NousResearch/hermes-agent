@@ -11,6 +11,9 @@ from tools.approval_detection import detect_dangerous_command
     # -p/--profile is accepted anywhere before `--`, and a quoted flag word reaches argparse unquoted.
     "hermes gateway -p work setup telegram --quick", 'hermes "-p" work gateway setup telegram --quick',
     "hermes gateway --profile=work setup",
+    # A quoted value may hold spaces (the profile scanner strips them).
+    'hermes gateway -p " work " setup telegram --quick', 'hermes -p " work " gateway setup',
+    "hermes gateway '--profile=work' setup",
 ])
 def test_setup_requires_approval(command):
     dangerous, description, _ = detect_dangerous_command(command)
@@ -21,13 +24,15 @@ def test_setup_requires_approval(command):
 @pytest.mark.parametrize("command", [
     "hermes gateway status", "hermes gateway list", "hermes gateway setup-help", "hermes gateway setup_extra",
     "hermes gateway -p work status",
+    # After the group only the profile flag takes a value, so the next word is the verb.
+    "hermes gateway --profile=work status setup",
 ])
 def test_other_gateway_commands_are_unchanged(command):
     assert detect_dangerous_command(command)[0] is False
 
 
 def test_an_older_rule_keeps_its_key_in_a_compound_command():
-    # Approval keys on the first matching rule only, so this row sits last and never masks an older one.
+    # Approval keys on the first matching rule only, so this row sits last and never masks an older pattern rule.
     dangerous, key, _ = detect_dangerous_command("hermes gateway setup telegram --quick; git reset --hard")
     assert dangerous is True
     assert key == "git reset --hard (destroys uncommitted changes)"

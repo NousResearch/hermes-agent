@@ -212,7 +212,7 @@ def test_running_gateway_prints_restart_only(setup_env, monkeypatch, capsys):
     gw._wizard_post_setup.assert_not_called()
 
 
-def test_explicit_work_home(setup_env, tmp_path, monkeypatch):
+def test_explicit_work_home(setup_env, tmp_path, monkeypatch, capsys):
     from hermes_cli import main
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -225,11 +225,13 @@ def test_explicit_work_home(setup_env, tmp_path, monkeypatch):
     # test_apply_profile_override does) and let the flag set it.
     monkeypatch.delenv("HERMES_HOME", raising=False)
     main._apply_profile_override()
+    direct.poll_for_setup_result.return_value = TelegramBotSetupResult(TOKEN)  # no owner: the hint names -p
     with pytest.raises(SystemExit) as exited:
         gw._cmd_setup(_parse(*sys.argv[3:]))
     assert exited.value.code == 0
     assert dotenv_values(work / ".env")["TELEGRAM_BOT_TOKEN"] == TOKEN
     assert not (setup_env / ".env").exists()
+    assert "hermes -p work config set TELEGRAM_ALLOWED_USERS" in capsys.readouterr().out
 
 
 def test_tty_qr_and_link_before_poll(setup_env, monkeypatch, capsys):

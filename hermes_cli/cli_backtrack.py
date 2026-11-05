@@ -20,6 +20,9 @@ from __future__ import annotations
 from agent.i18n import t
 
 
+_BROWSE_KEYS = ("left", "right", "h", "l", "up", "down", "j", "k", "pageup", "pagedown", "enter", "q", "f")
+
+
 class BacktrackResend(str):
     """An edited prompt to send after rewinding to the turn it was picked from."""
 
@@ -85,6 +88,14 @@ class CLIBacktrackMixin:
                 _cprint(f"  {t('cli.backtrack.no_previous')}")
             else:
                 self._open_backtrack_picker()
+
+    def _backtrack_primed_chord(self, event) -> None:
+        """Primed Esc, then Esc + a browse key in one read: the second Esc, then that key."""
+        from prompt_toolkit.key_binding.key_processor import KeyPress
+        self._backtrack_primed = None
+        self._backtrack_second_escape()
+        last = event.key_sequence[-1]
+        event.app.key_processor.feed_multiple([KeyPress(last.key, last.data)], first=True)
 
     def _backtrack_unprime(self) -> None:
         if self._backtrack_primed:
@@ -340,6 +351,12 @@ class CLIBacktrackMixin:
         lone_esc = Condition(lambda: not get_app().key_processor.input_queue
                              and self._backtrack_composer_empty(get_app()) and not self._backtrack_blocked())
         kb.add("escape", filter=primable, eager=lone_esc)(self._backtrack_handle_escape)
+        # A browse key typed within the escape timeout of the second Esc reaches us as an Alt chord
+        # (the parser holds a lone Esc for 0.5 s). While primed on an empty composer that chord is
+        # the gesture: open browse, then apply the key. Unprimed or with a draft, Alt keys are unchanged.
+        primed_chord = primable & Condition(lambda: bool(self._backtrack_primed)) & lone_esc
+        for key in _BROWSE_KEYS:
+            kb.add("escape", key, filter=primed_chord)(self._backtrack_primed_chord)
         kb.add(Keys.Any, filter=picker)(self._backtrack_close_and_replay)
         for keys, handler in (
                 (("left",), lambda event: self._backtrack_step(1)), (("h",), lambda event: self._backtrack_step(1)),

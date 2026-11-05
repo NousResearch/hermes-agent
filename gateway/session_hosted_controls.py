@@ -27,12 +27,11 @@ class HostedControls:
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
-            if self._member_is_peer(room_id, member_id):
-                # Nothing here can prove what the member's gateway did with that attempt.
-                raise RuntimeStoreError('unsupported_operation')
             cancel_id = f'discard:{execution_generation}'
             if task['status'] == 'cancelled' and task.get('cancel_id') == cancel_id:
                 return task
+            if self._member_is_peer(room_id, member_id):
+                return self._discard_unadmitted_peer(room_id, task, cancel_id)
             if task['status'] != 'indeterminate':
                 raise RuntimeStoreError('stale_generation')
             rpc = self._resolve_member_transport(binding, task)
@@ -47,6 +46,18 @@ class HostedControls:
             self.runtime._set_blocked(room_id, False)
             self.runtime.wakeup()
             return result
+
+    def _discard_unadmitted_peer(self, room_id, task, cancel_id):
+        """Settle a deferred peer turn whose admission was never confirmed: no run handle exists to
+        stop or follow, so only the user can let it go (side effects, if the run started, stay).
+        With a receipt Stop or Retry can reach that exact run, so Discard stays refused."""
+        if task['status'] != 'deferred' or self.peer_admission_receipt(room_id, task) is not None:
+            raise RuntimeStoreError('unsupported_operation')
+        result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,
+                                   expected_cancel_generation=task['cancel_generation'],
+                                   clock=self.runtime.clock)
+        self.runtime.wakeup()
+        return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
         if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
@@ -97,8 +108,11 @@ class HostedControls:
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
-            if task['status'] == 'indeterminate' and self._member_is_peer(room_id, task_member_id(task)):
+            peer = self._member_is_peer(room_id, task_member_id(task))
+            if task['status'] == 'indeterminate' and peer:
                 continue
             actions.append(attempt_action(
                 'discard' if task['status'] == 'indeterminate' else 'retry', task))
+            if peer and self.peer_admission_receipt(room_id, task) is None:
+                actions.append(attempt_action('discard', task))
         return {**result, 'pending_actions': actions}

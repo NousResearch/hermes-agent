@@ -874,6 +874,20 @@ class HostedRoomService:
         self.runtime.wakeup()
         return len(tasks) - unconfirmed
 
+    def peer_admission_receipt(self, room_id: str, task: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The durable run handle this home holds for a peer attempt, or None when its admission
+        was never confirmed (the member's gateway may or may not have the run)."""
+        route = self.peer_routes.get((room_id, _member_of(task)))
+        if route is None:
+            return None
+        room = self._room(room_id)
+        return hosted_rooms.remote_run_receipt(self.db_path, record={
+            "room_id": room_id, "home_install_id": route.home_install_id,
+            "authority_gateway_id": str(room["authority_gateway_id"]),
+            "authority_epoch": int(room["authority_epoch"]), "member_id": route.member_id,
+            "target_install_id": route.target_install_id, "target_profile": route.target_profile,
+            "task_id": task["identity"].task_id, "execution_generation": int(task["execution_generation"])})
+
     def _stop_deferred_peer(self, room_id: str, task: Mapping[str, Any]) -> bool:
         """Whether a deferred task may be cancelled here: always for a member on this gateway. For a
         member on another gateway, only once that gateway answers that the exact run this home holds

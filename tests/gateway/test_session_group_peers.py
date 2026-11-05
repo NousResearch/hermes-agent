@@ -592,12 +592,9 @@ async def test_disband_waits_for_a_registration_even_while_the_driver_stops(gate
     assert await _grant_error(url, after) == 'room_reauthorization_required'
 
 
-@pytest.mark.asyncio
-async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, monkeypatch, linked_peer, tmp_path):
-    """A member's gateway admitted a turn, the reply was lost, the home restarted, and the turn was
-    deferred while the member stayed unreachable. Retry is offered for it, asks for that exact
-    generation, and never sends another; Discard of a member's uncertain turn stays unoffered."""
-    import sqlite3
+async def _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer):
+    """A member's gateway admitted a turn, the reply was lost, the home restarted before it saved
+    the receipt, and the turn was deferred while the member stayed unreachable."""
     from gateway import hosted_room_driver as driver
     from gateway.platforms import api_server_runs
     from tui_gateway.hosted_room_peer_transport import build_member_dispatch
@@ -637,9 +634,19 @@ async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, 
     recovered = driver.get_task(db, identity)
     service.runtime._fenced(driver.defer_indeterminate_task, None, recovered, lease, reason='member_unavailable')
 
+    return service, db, identity
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, monkeypatch, linked_peer, tmp_path):
+    """A deferred peer turn without a receipt offers Retry, which asks for that exact generation
+    and never sends another; Discard is offered too (P2-3), and refused once Retry is watching
+    the run again."""
+    import sqlite3
+    _service, _db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
     actions = (await call(gateway.owner, 'groups.state', room_id='linked'))['driver_status']['pending_actions']
     assert [(a['kind'], a['member_id'], a['task_id'], a['execution_generation']) for a in actions] == [
-        ('retry', 'reviewer', identity.task_id, 1)], actions
+        ('retry', 'reviewer', identity.task_id, 1), ('discard', 'reviewer', identity.task_id, 1)], actions
     retried = await call(gateway.owner, 'groups.retry', room_id='linked', member_id='reviewer',
                          task_id=identity.task_id, execution_generation=1)
     assert isinstance(retried, dict) and retried['retried'], retried
@@ -653,6 +660,26 @@ async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, 
                              (await call(gateway.owner, 'groups.state', room_id='linked'))['driver_status']['pending_actions']}
     assert await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
                       task_id=identity.task_id, execution_generation=1) == 'unsupported_operation'
+
+
+@pytest.mark.asyncio
+async def test_discard_settles_a_deferred_peer_turn_with_no_receipt_while_its_member_is_down(
+        gateway, monkeypatch, linked_peer):
+    """Without a receipt Stop has no run to stop and Retry fails while the member is unreachable;
+    Discard lets the user settle that turn, so it no longer holds Stop or Disband."""
+    from gateway import hosted_room_driver as driver
+    server = linked_peer[0]
+    service, db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
+    await server.close()
+    assert await call(gateway.owner, 'groups.retry', room_id='linked', member_id='reviewer',
+                      task_id=identity.task_id, execution_generation=1) == 'peer_unreachable'
+    with pytest.raises(RuntimeError, match='still stopping'):
+        await asyncio.to_thread(service.stop_room, 'linked', cancel_id='d', require_acknowledged=True)
+    discarded = await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
+                           task_id=identity.task_id, execution_generation=1)
+    assert isinstance(discarded, dict) and discarded['discarded'], discarded
+    assert driver.get_task(db, identity)['status'] == 'cancelled'
+    assert await asyncio.to_thread(service.stop_room, 'linked', cancel_id='d2', require_acknowledged=True) == 0
 
 
 @pytest.mark.asyncio

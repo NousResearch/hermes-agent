@@ -10,11 +10,11 @@ from cli import HermesCLI
 
 
 def test_cli_session_store_is_the_gateway_store_and_opens_no_writer(monkeypatch):
-    import hermes_state_registry
     from hermes_cli.gateway_session_store import GatewaySessionStore
+    from persistence.sqlite import _registry
 
     constructed = []
-    monkeypatch.setattr(hermes_state_registry, "_open_session_db", lambda path: constructed.append(path))
+    monkeypatch.setattr(_registry, "_open_holder", lambda path: constructed.append(path))
     cli = SimpleNamespace()
     HermesCLI._init_session_store(cli)
     assert isinstance(cli._session_db, GatewaySessionStore) and not cli._session_db_unavailable

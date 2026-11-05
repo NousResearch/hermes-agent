@@ -1,12 +1,11 @@
 import time
 
-import hermes_state
 from hermes_state import SessionDB
 
 
 def test_export_candidates_via_prune_filters_ended_old_sessions(tmp_path, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 2_000_000.0)
+    monkeypatch.setattr(time, "time", lambda: 2_000_000.0)
     try:
         db.create_session("old_cli", source="cli")
         db.end_session("old_cli", "done")

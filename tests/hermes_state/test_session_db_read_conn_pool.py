@@ -43,6 +43,8 @@ import threading
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite import _holder
+from persistence.sqlite._holder import StoreHolder
 
 
 def _live_count(path) -> int:
@@ -194,7 +196,7 @@ def test_read_open_failure_backs_off_but_recovers(db):
     """
     import time as _time
 
-    from hermes_state import _READ_OPEN_RETRY_SECONDS
+    from persistence.sqlite._holder import _READ_OPEN_RETRY_SECONDS
 
     baseline = db._get_read_conn()
     assert baseline is not None, "baseline read open should succeed"
@@ -240,7 +242,7 @@ def test_peak_live_connections_bounded_under_simultaneous_burst(db):
     of them have checked out, so the count below IS the simultaneous peak
     rather than a sample of it.
     """
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     n = 64
     assert n > _READ_POOL_MAX, "burst must exceed the ceiling to test anything"
@@ -292,7 +294,7 @@ def test_exhausted_permits_fall_back_to_the_writer_connection(db):
     connection. Blocking instead would convert descriptor exhaustion into a
     stall -- the same outage with a different stack trace.
     """
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     assert all(c is not None for c in held), "the first _READ_POOL_MAX must succeed"
@@ -321,13 +323,12 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
     """
     import sqlite3 as _sqlite3
 
-    import hermes_state as _hs
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     def boom(*a, **kw):
         raise _sqlite3.OperationalError("simulated open failure")
 
-    monkeypatch.setattr(_hs, "_connect_tracked_db", boom)
+    monkeypatch.setattr(_holder, "_connect_tracked_db", boom)
     for _ in range(_READ_POOL_MAX * 3):
         assert db._get_read_conn() is None
         db._read_open_failed_at = 0.0    # defeat the backoff so every call opens
@@ -348,7 +349,7 @@ def test_permits_are_not_stranded_by_a_failed_open(db, monkeypatch):
 @pytest.mark.requires_wal
 def test_close_returns_every_permit(db):
     """close() must release the permits its drained connections held."""
-    from hermes_state import _READ_POOL_MAX
+    from hermes_state_readpool import _READ_POOL_MAX
 
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
     for c in held:
@@ -380,7 +381,8 @@ def test_close_returns_every_permit(db):
 @pytest.mark.requires_wal
 def test_peak_is_bounded_across_two_SessionDBs_on_one_path(db):
     """Two handles on one file must share one read-connection ceiling."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
 
     second = SessionDB(db_path=db.db_path)
     try:
@@ -437,7 +439,8 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
     SessionDB, a second profile's store -- to the locked writer connection for
     the life of the process. Trading one bug for a quieter one.
     """
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
 
     # Warm every permit into db's IDLE pool.
     held = [db._checkout_read_conn() for _ in range(_READ_POOL_MAX)]
@@ -477,7 +480,8 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 @pytest.mark.requires_wal
 def test_peak_is_bounded_across_many_database_files(tmp_path):
     """Read connections must be capped for the PROCESS, not just per file."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
     from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     n_files = (_READ_POOL_PROCESS_MAX // _READ_POOL_MAX) + 2
@@ -527,7 +531,8 @@ def test_peak_is_bounded_across_many_database_files(tmp_path):
 @pytest.mark.requires_wal
 def test_idle_connections_are_reclaimed_across_database_files(tmp_path):
     """A quiet profile's idle connections must not starve the busy one."""
-    from hermes_state import SessionDB, _READ_POOL_MAX
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _READ_POOL_MAX
     from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 
     quiet = []
@@ -617,21 +622,27 @@ def test_fd_soft_limit_fails_open_for_importable_resource_stub(monkeypatch):
 
 
 @pytest.mark.requires_wal
-def test_duplicate_handles_on_one_path_are_reported(db, caplog):
-    """The one-shot warning must identify earlier holders, not just the last opener."""
+def test_duplicate_handles_on_one_path_are_reported(tmp_path, caplog):
+    """The one-shot warning must identify earlier holders, not just the last opener. Duplicate writers are holders
+    opened outside the registry, which lends one holder per file."""
     import logging
     import re
 
     from hermes_state import SessionDB
     from hermes_state_readpool import _HANDLES_PER_PATH_WARN
 
+    path = tmp_path / "state.db"
+
+    def open_first_handle():
+        return SessionDB(holder=StoreHolder(path))
+
     def open_extra_handle():
-        return SessionDB(db_path=db.db_path)
+        return SessionDB(holder=StoreHolder(path))
 
     def open_read_only_attach():
-        return SessionDB(db_path=db.db_path, read_only=True)
+        return SessionDB(db_path=path, read_only=True)
 
-    extra = []
+    extra = [open_first_handle()]
     try:
         with caplog.at_level(logging.WARNING, logger="hermes_state"):
             # A read-only attach is outside the count (#110934); it must be outside the list too.
@@ -645,10 +656,10 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
         ]
         assert len(warnings) == 1
         warning = warnings[0]
-        assert f"{_HANDLES_PER_PATH_WARN + 1} live SessionDB handles on {db.db_path}" in warning
-        # The fixture returned before any duplicate was opened. Its creation
+        assert f"{_HANDLES_PER_PATH_WARN + 1} live SessionDB handles on {path}" in warning
+        # The first handle's opener returned before any duplicate was opened. Its creation
         # site must still be available when another caller triggers the warning.
-        assert re.search(rf"{re.escape(__name__)}\.db:\d+", warning)
+        assert re.search(rf"{re.escape(__name__)}\.open_first_handle:\d+", warning)
         assert len(re.findall(rf"{re.escape(__name__)}\.open_extra_handle:\d+", warning)) == _HANDLES_PER_PATH_WARN
         assert "open_read_only_attach" not in warning, "listed a holder the count excludes"
     finally:
@@ -716,7 +727,9 @@ def test_handle_diagnostics_unavailable_does_not_block_database(tmp_path, monkey
     with SessionDB(db_path=tmp_path / "state.db") as handle:
         handle.create_session(session_id="available", source="cli", model="m")
         assert handle.get_session("available")["id"] == "available"
-        assert handle._creation_site == "unknown"
+    with SessionDB(db_path=tmp_path / "state.db", read_only=True) as reader:
+        assert reader.get_session("available")["id"] == "available"
+        assert reader._creation_site == "unknown"
 
 
 @pytest.mark.requires_wal
@@ -726,13 +739,13 @@ def test_closed_handles_do_not_count_toward_duplicate_writer_warning(db, caplog)
 
     from hermes_state_readpool import _HANDLES_PER_PATH_WARN
 
-    closed = [SessionDB(db_path=db.db_path) for _ in range(_HANDLES_PER_PATH_WARN - 1)]
+    closed = [SessionDB(holder=StoreHolder(db.db_path)) for _ in range(_HANDLES_PER_PATH_WARN - 1)]
     for handle in closed:
         handle.close()
 
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
-        survivor = SessionDB(db_path=db.db_path)
+        survivor = SessionDB(holder=StoreHolder(db.db_path))
     try:
         assert not any(
             "live SessionDB handles on" in record.getMessage() for record in caplog.records
@@ -755,9 +768,9 @@ def test_failed_initialization_does_not_register_duplicate_writer_handle(db, mon
         raise sqlite3.OperationalError("injected initialization failure")
 
     monkeypatch.setattr(budget, "register", remember_register)
-    monkeypatch.setattr(SessionDB, "_open_writer", fail_open_writer)
+    monkeypatch.setattr(StoreHolder, "_open_writer", fail_open_writer)
 
     with pytest.raises(sqlite3.OperationalError, match="injected initialization failure"):
-        SessionDB(db_path=db.db_path)
+        SessionDB(holder=StoreHolder(db.db_path))
 
     assert registered == []

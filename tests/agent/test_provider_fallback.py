@@ -1,7 +1,6 @@
 """Tests for ordered provider fallback chain (salvage of PR #1761).
 
-Extends the single-fallback tests in test_fallback_model.py to cover
-the new list-based ``fallback_providers`` config format and chain
+Covers the list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 

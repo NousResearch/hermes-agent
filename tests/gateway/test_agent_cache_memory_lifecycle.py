@@ -334,3 +334,46 @@ class TestAgentCacheMemoryLifecycle:
             if ex is not None:
                 ex.shutdown(wait=True)
 
+    def test_direct_compress_paths_hold_engine_request(self, monkeypatch):
+        # Review round 2 (#147087): the Codex /compress handler and the gateway hygiene
+        # compaction drive the resident's engine through _compress_context, outside the turn
+        # facade. While such a compression runs the agent counts as an in-flight engine user,
+        # and a soft eviction landing mid-compression is deferred until the compression ends.
+        # The choke point is on _compress_context itself; the shape leg pins that both gateway
+        # sites still route through it.
+        import inspect
+        from agent.conversation_compression import CompressionCommitFence
+
+        events = []
+        agent, _provider = self._agent_with_writer_provider("mem-compress-req-test", events)
+        agent.context_compressor = _OrderingEngine(events, "engine")
+        agent._session_messages = []
+        seen = {}
+
+        def _fake_compress(compressor_agent, msgs, sysmsg, **kwargs):
+            seen["inflight"] = int(getattr(compressor_agent, "_engine_inflight", 0))
+            compressor_agent.release_clients()  # eviction shape landing mid-compression
+            seen["events_mid"] = list(events)
+            return ([], "")
+
+        monkeypatch.setattr("agent.conversation_compression.compress_context", _fake_compress)
+        try:
+            agent._compress_context([], "", force=True, commit_fence=CompressionCommitFence())
+            assert seen["inflight"] >= 1, "compression ran with no in-flight engine count"
+            assert "engine:shutdown" not in seen["events_mid"], (
+                "soft eviction shut the engine down while the compression was still running")
+            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
+                "the compression's own end must play out the deferred shutdown exactly once")
+        finally:
+            agent.close()
+
+        import agent.compression_facade as facade
+        import gateway.run as grun
+        from gateway.slash_commands_session import GatewaySessionCommandsMixin
+        assert hasattr(facade.CompressionFacadeMixin._compress_context, "__wrapped__"), (
+            "the choke point was unwrapped: every direct executor caller counts again")
+        src_codex = inspect.getsource(GatewaySessionCommandsMixin._compress_codex_app_server_session)
+        src_hygiene = inspect.getsource(grun.run_codex_hygiene_compaction)
+        assert "_compress_context" in src_codex and "_compress_context" in src_hygiene, (
+            "a gateway engine driver bypasses the wrapped choke point")
+

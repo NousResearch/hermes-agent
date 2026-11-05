@@ -221,6 +221,51 @@ def test_fork_request_end_closes_engine_once():
     assert engine.calls.count("shutdown") == 1
 
 
+def test_fork_join_window_defers_parent_soft_eviction(monkeypatch):
+    # Review round 2 (#147087): the fork joins parent._active_children BEFORE its first
+    # run_conversation opens the turn-facade count. A parent eviction landing in that join
+    # window must defer (pending), not shut the engine the about-to-start request uses; the
+    # fork's own request end closes it, exactly once.
+    import agent.background_review as br
+
+    engine = _OrderingEngine()
+    fork = _bare_agent(context_compressor=engine, _context_engine_owned=True)
+    fork._session_messages = []
+    seen = {}
+
+    def _stub_run_conversation(*args, **kwargs):
+        seen["inflight"] = int(getattr(fork, "_engine_inflight", 0))
+        return {}
+
+    fork.run_conversation = _stub_run_conversation
+    parent = _bare_agent(context_compressor=_OrderingEngine(), _context_engine_owned=True)
+
+    real_track = br._track_review_fork
+
+    def _track_then_evict(agent_arg, child, *, register):
+        real_track(agent_arg, child, register=register)
+        if register:
+            # The window the reviewer flagged: joined the table, first request not open yet.
+            agent_arg._close_active_children(soft=True)
+
+    monkeypatch.setattr(br, "_track_review_fork", _track_then_evict)
+    monkeypatch.setattr(br, "build_cache_parity_fork", lambda *a, **k: (fork, None, False))
+    monkeypatch.setattr(br, "_review_tool_whitelist", lambda *a, **k: (set(), set()))
+    monkeypatch.setattr(br, "_snapshot_review_usage", lambda ag: {})
+    monkeypatch.setattr(br, "_record_review_usage_to_parent", lambda *a, **k: None)
+    monkeypatch.setattr(br, "finish_background_review_run", lambda *a, **k: None)
+    from hermes_cli import plugins
+    monkeypatch.setattr(plugins, "set_thread_tool_whitelist", lambda *a, **k: None)
+    monkeypatch.setattr(plugins, "clear_thread_tool_whitelist", lambda *a, **k: None)
+
+    st = br._ReviewForkState()
+    br._run_review_fork(parent, [], "prompt", None, None, st)
+
+    assert seen["inflight"] >= 1, "join-window begin missing: the request opened with a zero count"
+    assert engine.calls == ["shutdown"], (
+        "the join-window eviction must defer, then close once at the fork's own end")
+
+
 def test_compress_mutation_defers_soft_release(monkeypatch):
     # Finding 2's other path: gateway/session_mutation_compress.prepare_compress summarizes in a
     # worker thread against the session's RESIDENT agent, so that mutation region must be bracketed

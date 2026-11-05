@@ -1,7 +1,7 @@
 name: hermes-notify
 title: Hermes Pocket
 repo: https://github.com/Belweave/hermes-notify
-sha: "d4da572ccfcca229b20ada76e0457eee09768430"
+sha: "698b66b6d64a87d317ba97938f37f9ed75f04cd6"
 description: Release workspaces, progress, replies and exact phone approvals through Notify.
 maintainer: belweave
 tier: community
@@ -10,9 +10,9 @@ version: "0.2.0"
 readme: true
 platforms: [macos]
 screenshots:
-  - https://raw.githubusercontent.com/Belweave/hermes-notify/d4da572ccfcca229b20ada76e0457eee09768430/docs/screenshots/release-phone.png
-  - https://raw.githubusercontent.com/Belweave/hermes-notify/d4da572ccfcca229b20ada76e0457eee09768430/docs/screenshots/approval-phone.png
-  - https://raw.githubusercontent.com/Belweave/hermes-notify/d4da572ccfcca229b20ada76e0457eee09768430/docs/screenshots/shipped-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/release-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/approval-phone.png
+  - https://raw.githubusercontent.com/Belweave/hermes-notify/698b66b6d64a87d317ba97938f37f9ed75f04cd6/docs/screenshots/shipped-phone.png
 known_issues:
   - One native phone approval passed; the full deployed App, sign-in and Live Activity flow remain unverified.
   - A configured Cloudflare Worker and verified origin-specific owner are needed for private Apps.

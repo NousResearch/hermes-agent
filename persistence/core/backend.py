@@ -26,6 +26,7 @@ from ..gateway.hosted_rooms import (
     HostedRoomRepository,
 )
 from ..gateway.routing import RoutingRepository
+from ..workers.executions import WorkerExecutionRepository
 from .admin import AdminUnsupported, ProfileRepairAdmin, StoreAdmin
 from .aio import AwaitableStore
 from .capabilities import PersistenceCapabilities
@@ -61,6 +62,7 @@ class PersistenceStore(Protocol):
     hosted_room_driver: HostedRoomDriverRepository
     hosted_room_policy: HostedRoomPolicyRepository
     hosted_room_attachments: HostedRoomAttachmentRepository
+    worker_executions: WorkerExecutionRepository
 
 
 @runtime_checkable

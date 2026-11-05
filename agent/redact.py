@@ -642,7 +642,7 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 _TELEGRAM_RE = re.compile(
     r"(?P<boundary>\\[nrtbfv]|\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|"
     r"\\U[0-9a-fA-F]{8}|%[0-9a-fA-F]{2}|(?P<csi>(?:\x1b|\\x1b|\\u001[bB]|\\033)\[[0-?]*[ -/]*[@-~])|(?<![A-Za-z_\d]))"
-    r"(?P<bot>bot)?(?P<id>\d{8,}):(?P<body>[-A-Za-z0-9_]{30,})"
+    r"(?:(?P<arn>arn:[\w.-]+:[\w.-]+:[\w.-]*:\d{12}:)|(?P<bot>bot)?(?P<id>\d{8,}):(?P<body>[-A-Za-z0-9_]{30,}))"
 )
 
 
@@ -656,7 +656,7 @@ def _redact_telegram_token(match: re.Match) -> str:
         char = chr(value)
         if char in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_" or char.isdecimal():
             return match.group(0)
-    return f"{boundary}{match.group('bot') or ''}{match.group('id')}:***"
+    return match.group(0) if match.group("arn") else f"{boundary}{match.group('bot') or ''}{match.group('id')}:***"
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 # A base64-encoded PEM private key: kubeconfig's ``client-key-data`` and the ``*_b64``

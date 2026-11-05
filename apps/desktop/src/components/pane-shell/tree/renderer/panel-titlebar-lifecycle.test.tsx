@@ -184,7 +184,8 @@ describe('titlebar reservation lifecycle', () => {
 
     rightEdge = 700
     act(chromeChanged)
-    expect(reservation('right')).toBe('124px')
+    // panel.right (800) - cluster.left (700); no extra pad (#131729)
+    expect(reservation('right')).toBe('100px')
   })
 
   it('remeasures through real chat, contributed-page and overlay navigation', () => {

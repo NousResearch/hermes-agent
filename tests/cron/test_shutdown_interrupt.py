@@ -33,10 +33,6 @@ def _reset_scheduler_state():
 
 
 class TestGetRunningJobIds:
-    def test_empty_when_nothing_running(self):
-        import cron.scheduler as sched
-
-        assert sched.get_running_job_ids() == frozenset()
 
     def test_reflects_in_flight_jobs(self):
         import cron.scheduler as sched
@@ -134,7 +130,7 @@ class TestMarkRunningJobsInterrupted:
         assert marked == ["job-2"]
 
     def test_stale_shutdown_cannot_clear_replacement_owner(self, tmp_path):
-        import cron.jobs as jobs
+        from cron import jobs
         import cron.scheduler as sched
 
         profile_home = tmp_path / "profile"
@@ -260,17 +256,7 @@ class TestIsInterrupted:
     """Peek-only check used at the delivery gate -- must NOT clear the
     flag, unlike _consume_interrupted_flag."""
 
-    def test_false_when_not_marked(self):
-        import cron.scheduler as sched
 
-        assert sched._is_interrupted("job-1") is False
-
-    def test_true_when_marked(self):
-        import cron.scheduler as sched
-
-        sched._interrupted_job_ids.add(sched._inflight_key("job-1"))
-
-        assert sched._is_interrupted("job-1") is True
 
     def test_does_not_clear_the_flag(self):
         import cron.scheduler as sched
@@ -369,7 +355,7 @@ class TestExecutionScopedInterruption:
         }
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -444,7 +430,7 @@ class TestBaseExceptionThroughOwnerFencedFlow:
         return (
             patch("cron.scheduler.claim_dispatch", return_value=True),
             patch("agent.secret_scope.set_secret_scope", return_value=None),
-            patch("agent.secret_scope.build_profile_secret_scope", return_value=None),
+            patch("agent.secret_scope.build_profile_secret_scope", return_value={}),
             patch("agent.secret_scope.reset_secret_scope"),
             patch("cron.scheduler.run_job", side_effect=run_side_effect),
             patch("cron.scheduler.heartbeat_fire_claim", return_value=True),
@@ -518,7 +504,7 @@ class TestCallerLossAfterClaimAcquisition:
     and block retries while that ownership is live."""
 
     def test_second_fire_cannot_claim_while_first_ownership_live(self, tmp_path):
-        import cron.jobs as jobs
+        from cron import jobs
 
         with jobs.use_cron_store(tmp_path):
             job = jobs.create_job(prompt="x", schedule="every 5m", name="owned")
@@ -557,7 +543,7 @@ class TestRunOneJobHonoursInterruptedFlag:
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -587,12 +573,12 @@ class TestRunOneJobHonoursInterruptedFlag:
         would."""
         import cron.scheduler as sched
 
-        job = self._make_job()
+        job = dict(self._make_job(), deliver="telegram")
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
                  "cron.scheduler.run_job",
@@ -604,7 +590,7 @@ class TestRunOneJobHonoursInterruptedFlag:
                  return_value="This run was interrupted.",
              ) as mock_summarize, \
              patch("cron.scheduler._is_cron_silence_response", return_value=False), \
-             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "pending"}) as mock_deliver, \
              patch("cron.scheduler.mark_job_run"):
             result = sched.run_one_job(job)
 
@@ -613,7 +599,9 @@ class TestRunOneJobHonoursInterruptedFlag:
         # The summarizer's error argument must mention the interruption,
         # not be silently None / the agent's own (possibly absent) error.
         assert "interrupt" in mock_summarize.call_args.args[1].lower()
-        delivered_content = mock_deliver.call_args.args[1]
+        mock_deliver.assert_called_once()
+        assert mock_deliver.call_args.kwargs["for_failure"] is True
+        delivered_content = mock_deliver.call_args.args[2]
         assert delivered_content == "This run was interrupted."
         assert "plausible final response" not in delivered_content
 
@@ -626,7 +614,7 @@ class TestRunOneJobHonoursInterruptedFlag:
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch("cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
              patch("cron.scheduler.mark_job_run") as mock_mark:

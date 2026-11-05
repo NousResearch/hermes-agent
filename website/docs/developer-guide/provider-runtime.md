@@ -63,7 +63,6 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
-- Copilot / Copilot ACP
 - Anthropic (native)
 - Google / Gemini (`gemini`)
 - Alibaba / DashScope (`alibaba`, `alibaba-coding-plan`)
@@ -159,16 +158,14 @@ Codex uses a separate Responses API path:
 
 - `api_mode = codex_responses`
 - dedicated credential resolution and auth store support
-- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation
+- a resumed session whose lingering Codex reasoning items (`encrypted_content`) are rejected — as a 400 `invalid_encrypted_content` or as a 401 `token_expired` — self-heals by stripping the cached items and replaying once, before any credential refresh or pool rotation. Reasoning minted after that strip keeps replaying; only a second rejection in the same session turns replay off
 
 ## Auxiliary model routing
 
 Auxiliary tasks such as:
 
 - vision
-- web extraction summarization
 - context compression summaries
-- skills hub operations
 - MCP helper operations
 - memory flushes
 
@@ -213,7 +210,7 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
 - **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
 
-Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
+Unpinned cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. A job with its own `provider` / `model` / `base_url` gets no chain, the same rule as a pinned delegation child. See [Cron Internals](./cron-internals.md).
 
 ### Test coverage
 
@@ -221,7 +218,6 @@ Fallback behavior is exercised across several suites:
 
 - `tests/agent/test_fallback_credential_isolation.py` — credential isolation between primary and fallback
 - `tests/hermes_cli/test_fallback_cmd.py` — the `/fallback` CLI command
-- `tests/gateway/test_fallback_eviction.py` — gateway eviction of failed providers
 
 ## Related docs
 

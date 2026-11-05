@@ -50,7 +50,7 @@ def _install_id_file_lock(root: Path):
 def _read_existing(path: Path) -> tuple[Optional[str], bool]:
     """``(valid id or None, mint?)`` — mint on a missing or malformed file, never on a read failure."""
     try:
-        existing = path.read_text(encoding="utf-8").strip().lower()
+        existing = path.read_text(encoding="utf-8-sig").strip().lower()
     except FileNotFoundError:
         return None, True
     except (OSError, UnicodeDecodeError):
@@ -65,23 +65,24 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
     """
     root = get_default_hermes_root() if root is None else root
     path = root / _INSTALL_ID_FILENAME
-    existing, mint = _read_existing(path)
-    if not mint:
-        return existing
-    try:
-        from hermes_constants import mkdir_under_hermes_home
-        mkdir_under_hermes_home(root)
-        # Windows byte-range locks can report a same-process conflict instead of waiting for another
-        # thread: serialize threads here, then keep the file lock as the cross-process publication fence.
-        with _INSTALL_ID_PUBLICATION_LOCK, _install_id_file_lock(root):
-            existing, mint = _read_existing(path)
-            if not mint:
-                return existing
-            atomic_write_text(path, uuid.uuid4().hex + "\n", tmp_prefix=".install_id-", fsync_dir=True, mode=0o600)
-            committed = path.read_text(encoding="utf-8").strip().lower()
-            return committed if _INSTALL_ID_RE.fullmatch(committed) else None
-    except OSError:
-        return None
+    # A reader can collide with the first atomic replace on Windows. Serialize
+    # threads before reading, and recheck an unavailable file under the OS lock.
+    with _INSTALL_ID_PUBLICATION_LOCK:
+        existing, _ = _read_existing(path)
+        if existing is not None:
+            return existing  # Existing identities remain readable on read-only roots.
+        try:
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(root)
+            with _install_id_file_lock(root):
+                existing, mint = _read_existing(path)
+                if not mint:
+                    return existing
+                atomic_write_text(path, uuid.uuid4().hex + "\n", tmp_prefix=".install_id-", fsync_dir=True, mode=0o600)
+                committed = path.read_text(encoding="utf-8-sig").strip().lower()
+                return committed if _INSTALL_ID_RE.fullmatch(committed) else None
+        except OSError:
+            return None
 
 
 def get_install_id(*, cache: dict[str, Optional[str]] | None = None) -> Optional[str]:

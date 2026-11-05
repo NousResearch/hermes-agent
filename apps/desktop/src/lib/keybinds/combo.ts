@@ -1,3 +1,5 @@
+import { keybindActionAllowedInEditableTarget } from './actions'
+
 // Keybind combo normalization + display.
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
@@ -32,6 +34,8 @@ const CODE_TO_KEY: Record<string, string> = {
   Enter: 'enter',
   Escape: 'escape',
   Backspace: 'backspace',
+  Delete: 'delete',
+  CapsLock: 'capslock',
   Tab: 'tab',
   PageUp: 'pageup',
   PageDown: 'pagedown',
@@ -55,7 +59,14 @@ const MODIFIER_CODES = new Set([
 // Modifier names as reported by `event.key` on a bare modifier keydown.
 const MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
-function baseKeyFromCode(code: string): string | null {
+function baseKeyFromCode(code: unknown): string | null {
+  // event.code is typed string, but synthetic/IME keydowns can arrive without
+  // one (packaged-renderer TypeError reproductions in #91611); treat a
+  // non-string or empty code as "no physical key" instead of throwing.
+  if (typeof code !== 'string' || !code) {
+    return null
+  }
+
   if (code.startsWith('Key')) {
     return code.slice(3).toLowerCase()
   }
@@ -128,6 +139,14 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
+  // AltGr typing a character. Windows reports it as Ctrl+Alt; Linux can
+  // report Alt with AltGraph but no Ctrl, which must not read as a plain
+  // Alt chord (the browser-tab defaults are Alt+letter off macOS). Firefox on
+  // macOS reports every Option press as AltGraph, so Option chords stay chords.
+  if (!IS_MAC && event.altKey && !event.ctrlKey && !event.metaKey && event.getModifierState?.('AltGraph')) {
+    return null
+  }
+
   const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
 
   if (!base) {
@@ -170,6 +189,8 @@ const TOKEN_LABELS: Record<string, string> = {
   enter: '↵',
   escape: 'Esc',
   backspace: '⌫',
+  delete: 'Del',
+  capslock: 'Caps Lock',
   tab: '⇥',
   pageup: 'PgUp',
   pagedown: 'PgDn',
@@ -218,6 +239,11 @@ export function comboTokens(combo: string): string[] {
   const parts = combo.split('+')
   const base = parts.pop() ?? ''
 
+  // Canonical order keeps `mod` first; macOS writes Control before Command (⌃⌘N).
+  if (IS_MAC && parts[0] === 'mod' && parts[1] === 'ctrl') {
+    parts.splice(0, 2, 'ctrl', 'mod')
+  }
+
   return [...parts.map(formatModifierToken), labelForBase(base)]
 }
 
@@ -258,6 +284,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',
+  'composer.dictate',
   'keybinds.openPanel',
   'nav.commandPalette',
   'session.next',
@@ -298,6 +325,14 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   }
 
   if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
+  }
+
+  // An action that opts in (reasoning up/down) fires from an editable target
+  // on any modified combo — including Alt/Numpad chords without a primary
+  // modifier (#71627). Bare/shift-only combos never qualify, so typing is
+  // never hijacked.
+  if (keybindActionAllowedInEditableTarget(actionId, combo)) {
     return true
   }
 

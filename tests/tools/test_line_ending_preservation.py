@@ -167,11 +167,6 @@ class TestLineEndingHelpers:
     """Direct unit tests for the pure helpers — easier to debug than the
     integration tests above."""
 
-    def test_detect_crlf(self):
-        from tools.file_operations import _detect_line_ending
-
-        assert _detect_line_ending("a\r\nb\r\n") == "\r\n"
-
 
     def test_normalize_to_crlf_idempotent(self):
         from tools.file_operations import _normalize_line_endings

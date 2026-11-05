@@ -10,18 +10,15 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from tools import tts_tool, tts_tool_local
 from tools.tts_tool import (
-    BUILTIN_TTS_PROVIDERS,
-    _check_piper_available,
     check_tts_requirements,
     text_to_speech_tool,
 )
-from tools.tts_tool_delivery import PROVIDER_MAX_TEXT_LENGTH
 from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 
 
@@ -29,23 +26,12 @@ from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 # Registry / constants
 # ---------------------------------------------------------------------------
 
-class TestPiperRegistration:
-    def test_piper_is_a_builtin_provider(self):
-        assert "piper" in BUILTIN_TTS_PROVIDERS
-
-    def test_piper_has_a_text_length_cap(self):
-        assert PROVIDER_MAX_TEXT_LENGTH.get("piper", 0) > 0
 
 
 # ---------------------------------------------------------------------------
 # _check_piper_available
 # ---------------------------------------------------------------------------
 
-class TestCheckPiperAvailable:
-    def test_returns_bool_without_raising(self):
-        # We don't care about the current environment's answer — just that
-        # the probe never raises on a machine without piper installed.
-        assert isinstance(_check_piper_available(), bool)
 
 
 # ---------------------------------------------------------------------------

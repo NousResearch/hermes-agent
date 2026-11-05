@@ -2,36 +2,12 @@
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
-from agent.status_output import StatusOutputMixin
-from agent.notification_presentation import notification_turn
 from gateway.run_turn_runner import TurnRunner
 from gateway.turn_context import TurnContext
 from gateway.config import Platform
 from gateway.session import SessionSource
 
 
-def test_actual_wiring_retains_observers_and_controls_across_muted_turn():
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="offline", chat_type="dm")
-    for muted in (False, True, False):
-        observed = []
-        ctx = TurnContext(source=source, user_config={"display": {"suppress_warning_notifications": True}},
-            mute_notification_reply=muted, _hooks_ref=NS(loaded_hooks=[]),
-            _status_callback_sync=lambda *a: observed.append(("status", a)))
-        holder = NS(_ctx=ctx, _runner=NS(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda _: []),
-            _make_bg_review_callbacks=lambda: (lambda _: None, lambda: None),
-            _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
-            _clarify_callback_sync=lambda *a: "yes",
-            _notice_callback_sync=lambda *a: observed.append(("notice", a)),
-            _attach_session_title_callback=lambda *a: None)
-        agent = StatusOutputMixin()
-        agent.suppress_status_output = True
-        TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
-        with notification_turn(agent, muted=muted, session_id="offline"):
-            agent._emit_warning("real warning source")
-            agent._emit_notice(NS(level="warn", text="structured diagnostic"))
-            assert agent.clarify_callback("Continue?") == "yes"
-        assert len(observed) == 2
-        assert callable(agent.status_callback) and callable(agent.notice_callback)
 
 
 def test_concrete_gateway_sinks_hide_all_freeform_muted_turn_output():

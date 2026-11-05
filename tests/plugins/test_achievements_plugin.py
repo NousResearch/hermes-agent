@@ -53,7 +53,7 @@ def plugin_api(tmp_path, monkeypatch):
     # Stash monkeypatch so ``_install_fake_session_db`` can use it to
     # swap ``sys.modules['hermes_state']`` with auto-restoration. Without
     # this, a raw ``sys.modules[...] = fake`` assignment would leak the
-    # fake into later tests in the same xdist worker — breaking every
+    # fake into later tests in the same process — breaking every
     # test that does ``from hermes_state import SessionDB``.
     module._test_monkeypatch = monkeypatch
     yield module
@@ -73,12 +73,12 @@ class _FakeSessionDB:
     def list_sessions_rich(
         self,
         source: Optional[str] = None,
-        exclude_sources: Optional[List[str]] = None,
+        exclude_sources: Optional[list[str]] = None,
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
         self.last_limit = limit
@@ -100,7 +100,7 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str, include_compacted: bool = False) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str, include_compacted: bool = False) -> list[dict[str, Any]]:
         self.messages_calls += 1
         return [
             {"role": "user", "content": f"ask {session_id}"},
@@ -120,7 +120,7 @@ def _install_fake_session_db(plugin_api, fake_db):
 
     Uses the monkeypatch stashed on ``plugin_api`` by the fixture, so the
     ``sys.modules['hermes_state']`` swap is auto-restored at test teardown
-    and cannot leak into unrelated tests in the same xdist worker.
+    and cannot leak into unrelated tests in the same process.
     """
     fake_module = type(sys)("hermes_state")
     fake_module.SessionDB = lambda **_kw: fake_db
@@ -237,7 +237,7 @@ def test_background_scan_publishes_partial_snapshots(plugin_api):
     _install_fake_session_db(plugin_api, fake_db)
 
     # Record every partial snapshot the scanner publishes.
-    partial_snapshots: List[Dict[str, Any]] = []
+    partial_snapshots: list[dict[str, Any]] = []
     original_compute_from_scan = plugin_api._compute_from_scan
 
     def recording_compute(scan, *, is_partial=False):

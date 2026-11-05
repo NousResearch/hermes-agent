@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from agent import video_gen_registry
 from plugins.video_gen.openrouter import OpenRouterVideoGenProvider, _build_payload
@@ -119,6 +120,106 @@ def test_generate_submits_polls_and_downloads_from_configured_origin(monkeypatch
     assert saved[0][1]["headers"]["Authorization"] == "Bearer sk-or-test" and saved[0][1]["require_video_content_type"]
     # Operator-configured origin: a LAN relay must not be refused as SSRF on the first hop.
     assert saved[0][1]["trusted_origin"] is True
+
+
+def _generate_capturing(monkeypatch, tmp_path, provider):
+    """``generate()`` over the fake transport; returns the result and every Authorization header sent."""
+    session = _Session()
+    monkeypatch.setattr(provider, "_session", lambda: session)
+    monkeypatch.setattr("plugins.video_gen.openrouter.time.sleep", lambda s: None)
+    saved = []
+
+    def fake_save(url, **kwargs):
+        saved.append((url, kwargs))
+        return tmp_path / "clip.mp4"
+    monkeypatch.setattr("plugins.video_gen.openrouter.save_url_video", fake_save)
+    result = provider.generate("a fox")
+    bearers = [kwargs["headers"]["Authorization"] for _, kwargs in session.posts + session.gets + saved]
+    return result, session, bearers
+
+
+def _add_pooled_key(key, label):
+    from hermes_cli.auth_commands import auth_add_command
+    auth_add_command(SimpleNamespace(provider="openrouter", auth_type="api-key", api_key=key, label=label))
+
+
+def test_pooled_credential_enables_the_backend(monkeypatch, tmp_path):
+    """A key added only with ``hermes auth add openrouter`` serves chat and image_gen; video must use it too."""
+    _add_pooled_key("sk-or-pool", "pool")
+    provider = _provider(monkeypatch, [_VEO])
+    assert provider.is_available() is True
+    result, _, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
+    assert result["success"], result
+    assert bearers == ["Bearer sk-or-pool"] * 4  # submit, two polls, download
+
+
+def test_one_job_keeps_one_credential_while_the_pool_rotates(monkeypatch, tmp_path):
+    """A job created under one account is only visible to that account: poll and download must reuse the
+    submit key even when a round-robin pool would hand out the other one next."""
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
+    _add_pooled_key("sk-or-one", "one")
+    _add_pooled_key("sk-or-two", "two")
+    result, _, bearers = _generate_capturing(monkeypatch, tmp_path, _provider(monkeypatch, [_VEO]))
+    assert result["success"], result
+    assert len(bearers) == 4 and len(set(bearers)) == 1 and bearers[0] in {"Bearer sk-or-one", "Bearer sk-or-two"}
+
+
+def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypatch, tmp_path):
+    """On a multiplexed gateway os.environ is the launch profile's .env; a routed turn must sign every request
+    with its own profile's key and send it only to its own profile's base URL."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://launch.example/api/v1")
+    profile_home = tmp_path / "profile-b"
+    profile_home.mkdir()
+    (profile_home / ".env").write_text("OPENROUTER_API_KEY=sk-or-profile-b\n"
+                                       "OPENROUTER_BASE_URL=https://profile-b.example/api/v1\n")
+    provider = _provider(monkeypatch, [_VEO])
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        result, session, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert result["success"], result
+    assert bearers == ["Bearer sk-or-profile-b"] * 4
+    assert session.posts[0][0] == "https://profile-b.example/api/v1/videos"
+
+
+def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_key(monkeypatch, tmp_path):
+    """Absence on the routed side: a profile with no OpenRouter credential of its own must fail closed, never
+    spend the launch profile's ``os.environ`` key."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
+    profile_home = tmp_path / "profile-nokey"
+    profile_home.mkdir()
+    (profile_home / ".env").write_text("")
+    provider = _provider(monkeypatch, [_VEO])
+
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    try:
+        available = provider.is_available()
+        result, session, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert available is False
+    assert result["success"] is False and result["error_type"] == "missing_credentials", result
+    assert session.posts == [] and bearers == []
 
 
 def test_generate_rejects_local_image_paths_before_spending(monkeypatch):

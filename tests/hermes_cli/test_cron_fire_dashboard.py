@@ -14,13 +14,11 @@ hosted agents don't expose). It must:
     through — 503 when the gateway is unreachable so NAS retries.
 """
 
-import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_cron as _web_server_cron
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 
 def _client(auth_required: bool):
@@ -47,10 +45,6 @@ def _restore(prev_auth, prev_host):
 
 
 
-def test_fire_path_is_public():
-    """Must bypass the dashboard cookie gate so the NAS bearer-JWT callback
-    reaches the verifier (the JWT is the real auth)."""
-    assert "/api/cron/fire" in PUBLIC_API_PATHS
 
 
 def test_bad_token_401(monkeypatch):
@@ -135,7 +129,7 @@ def test_valid_fire_forwards_to_gateway(monkeypatch):
     monkeypatch.setattr(_web_server_cron, "_fire_cron_job_for_profile",
                         lambda p, j: executed.append((p, j)))
 
-    client, pa, ph = _client(auth_required=False)
+    client, pa, ph = _client(auth_required=True)  # the NAS JWT, not the cookie gate, admits it
     try:
         resp = client.post("/api/cron/fire",
                            headers={"Authorization": "Bearer nas-jwt"},
@@ -211,9 +205,52 @@ def test_gateway_error_status_passes_through(monkeypatch):
 def test_fire_endpoint_default_port(tmp_path, monkeypatch):
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     url = _web_server_cron._gateway_fire_endpoint("default", tmp_path)
     assert url == "http://127.0.0.1:8642/api/cron/fire"
+
+    # Resolution reads config/.env (and multiplex state) — it must run off the dashboard loop.
+    import asyncio
+    import threading
+    import time
+
+    import httpx
+
+    released = threading.Event()
+
+    def _blocking_endpoint(_profile, _home):
+        released.wait(3)
+        return "http://127.0.0.1:8642/api/cron/fire"
+
+    class _RefusingClient:  # gateway down without a real socket dial: forward returns None
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(_web_server_cron, "_gateway_fire_endpoint", _blocking_endpoint)
+    monkeypatch.setattr(_web_server_cron, "_cron_profile_home", lambda p: ("default", tmp_path))
+    monkeypatch.setattr(httpx, "AsyncClient", _RefusingClient)
+
+    async def _heartbeat_while_resolving():
+        forward = asyncio.ensure_future(
+            _web_server_cron._forward_cron_fire_to_gateway("default", "j1", "Bearer x"))
+        start = time.monotonic()
+        try:
+            await asyncio.sleep(0.05)
+            assert time.monotonic() - start < 1.0 and not forward.done()
+        finally:
+            released.set()
+        return await forward
+
+    assert asyncio.run(_heartbeat_while_resolving()) is None
 
 
 def test_fire_endpoint_config_yaml_port_wins(tmp_path, monkeypatch):
@@ -235,7 +272,7 @@ def test_fire_endpoint_profile_env_port(tmp_path, monkeypatch):
     dashboard process env (per-profile-gateway topology)."""
     monkeypatch.setenv("API_SERVER_PORT", "9999")  # dashboard process env
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
     (tmp_path / ".env").write_text("API_SERVER_PORT=8701\n", encoding="utf-8")
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
@@ -247,7 +284,7 @@ def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
     gateway's port with the /p/<profile>/ prefix mirror."""
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "1")
-    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+    monkeypatch.setattr(_cfg_mod, "load_config", dict)
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", tmp_path)
     assert url == "http://127.0.0.1:8642/p/worker_alpha/api/cron/fire"
 

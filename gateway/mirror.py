@@ -101,7 +101,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     if not sessions_index.exists():
         return None
     try:
-        data = json.loads(sessions_index.read_text(encoding="utf-8"))
+        data = json.loads(sessions_index.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 

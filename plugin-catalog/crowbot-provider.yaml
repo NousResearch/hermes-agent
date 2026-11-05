@@ -1,0 +1,17 @@
+name: crowbot-provider
+title: Crowbot
+repo: https://github.com/AgileIndustrialComplex/hermes-crowbot
+sha: 47975dce1bf2eadce761941be094934413279502
+description: "crowbot.sh as a model provider: frontier models plus the uncensored open models with their refusals removed. Disclosure — registers one model provider at import and nothing else (no tools, hooks or commands); requests go to https://api.crowbot.sh/v1 through Hermes' own client with CROWBOT_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no files and starts no processes."
+maintainer: AgileIndustrialComplex
+tier: community
+category: models
+requires_hermes: ">=0.22.2"
+version: "1.0.0"
+docs_url: https://github.com/AgileIndustrialComplex/hermes-crowbot#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CROWBOT_API_KEY

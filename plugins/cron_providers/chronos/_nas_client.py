@@ -41,13 +41,13 @@ class NasCronClient:
         self.portal_url = portal_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         """Bearer auth with the agent's existing Nous Portal access token (refresh-aware)."""
         from hermes_cli.auth import resolve_nous_access_token
         return {"Authorization": f"Bearer {resolve_nous_access_token()}",
                 "Content-Type": "application/json"}
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
+    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         """Issue one request; raise NasCronClientError on transport error or non-2xx."""
         import requests  # lazy: agent already depends on requests
         try:
@@ -67,27 +67,19 @@ class NasCronClient:
         return {}
 
     def provision(self, *, job_id: str, fire_at: str, agent_callback_url: str,
-                  dedup_key: str) -> Dict[str, Any]:
+                  dedup_key: str) -> dict[str, Any]:
         """Arm a one-shot for ``job_id`` at ``fire_at`` (ISO 8601); ``dedup_key`` makes re-arming
         idempotent NAS-side. Returns the NAS response (e.g. ``{schedule_id}``)."""
         return self._request("POST", _PROVISION_PATH, json={
             "job_id": job_id, "fire_at": fire_at, "agent_callback_url": agent_callback_url,
             "dedup_key": dedup_key})
 
-    def cancel(self, *, job_id: str) -> Dict[str, Any]:
+    def cancel(self, *, job_id: str) -> dict[str, Any]:
         """Cancel any armed one-shot for ``job_id``."""
         return self._request("POST", _CANCEL_PATH, json={"job_id": job_id})
 
-    def list_armed(self) -> List[Dict[str, Any]]:
+    def list_armed(self) -> list[dict[str, Any]]:
         """List armed one-shots (``{job_id, fire_at, schedule_id}``); best-effort, [] on odd shape."""
         data = self._request("GET", _LIST_PATH, params={})
         items = data.get("armed") if isinstance(data, dict) else None
         return items if isinstance(items, list) else []
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

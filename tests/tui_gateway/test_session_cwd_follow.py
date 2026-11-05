@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-import tools.terminal_tool as terminal_tool
-import tui_gateway.server as server
+from tools import terminal_tool
+from tui_gateway import server
 
 
 def _git(cwd, *args):
@@ -57,7 +57,7 @@ def _no_db(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_a: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: True)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
 
 
 def test_settling_in_a_worktree_reanchors_the_session(session, repo_with_worktree):
@@ -140,10 +140,26 @@ def test_an_unrelated_repo_is_not_a_move(session, repo_with_worktree, tmp_path):
     assert session["cwd"] == str(repo)
 
 
-def test_an_explicit_workspace_is_never_overridden(session, repo_with_worktree):
-    """A user-chosen cwd must survive even a legitimate same-repo worktree move."""
-    repo, worktree = repo_with_worktree
+def test_a_session_created_in_a_checkout_still_follows_its_agent(session, repo_with_worktree):
+    """The reported bug: an agent told to make a worktree and work in it left the chat on `main`.
+
+    ``session.create`` marks `explicit_cwd` for ANY session whose cwd exists on disk, so every
+    desktop session starts that way — a cwd the chat merely STARTED in is not a pin.
+    """
+    _repo, worktree = repo_with_worktree
     session["explicit_cwd"] = True
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(worktree)
+
+
+def test_a_deliberately_moved_workspace_is_never_overridden(session, repo_with_worktree):
+    """A workspace the chat was MOVED to (folder picker / project switch) survives a same-repo
+    worktree settle: only another deliberate move re-homes it."""
+    repo, worktree = repo_with_worktree
+    server._set_session_cwd(session, str(repo))  # what session.cwd.set / workspace.move do
+    assert session["cwd_pinned"] is True
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False
@@ -167,7 +183,7 @@ def test_a_settle_adopted_cwd_can_keep_following(session, repo_with_worktree):
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree
-    monkeypatch.setattr(server, "_is_local_terminal_backend", lambda: False)
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "ssh")
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False

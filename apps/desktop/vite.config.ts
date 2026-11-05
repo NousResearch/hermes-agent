@@ -14,11 +14,32 @@ function compilerPreset() {
   return preset
 }
 
+/** The production renderer build memoizes this pass on disk (scripts/compiler-cache.mjs); the
+ *  lockfile and this config (the preset and its filter) pin the toolchain it keys on. The
+ *  cache lives under node_modules: ignored, and outside every freshness hash. */
+async function cachedCompilerPass(command: string) {
+  // Babel resolves the compiler preset's plugin from its cwd. Pin it here: the
+  // Webapp build runs Vite from the checkout root, which a fresh clone leaves
+  // without node_modules (its dependencies live in the private workspace).
+  return withCompilerCache(await babel({ cwd: __dirname, presets: [compilerPreset()] }), {
+    command,
+    cacheRoot: path.join(__dirname, 'node_modules/.cache/hermes-react-compiler'),
+    base: __dirname,
+    toolchain: [path.resolve(__dirname, '../../package-lock.json'), fileURLToPath(import.meta.url)]
+  })
+}
+
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'
+import { fileURLToPath } from 'url'
 
 import tailwindcss from '@tailwindcss/vite'
+
+import { withCompilerCache } from './scripts/compiler-cache.mjs'
+
+// The runner loads this as ESM without the default bundler's CJS globals.
+const __dirname: string = path.dirname(fileURLToPath(import.meta.url))
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -87,10 +108,12 @@ const emojibaseAssets = () => ({
       if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) {
         return next()
       }
+
       fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
         if (err) {
           return next()
         }
+
         res.setHeader('Content-Type', 'application/json')
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         res.end(buf)
@@ -114,7 +137,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -175,15 +198,13 @@ export default defineConfig(({ command }) => ({
             // heavy groups for the same boot-path reason.
             {
               name: 'vendor-util',
-              test: /node_modules[\\/](lodash-es|es-toolkit|uuid|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify|stylis)[\\/]/
+              test: /node_modules[\\/](lodash-es|es-toolkit|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify)[\\/]/
             },
             // One chunk per heavyweight, lazy-only library family.
             // @streamdown/code lives WITH shiki because it statically imports
-            // the full shiki bundle.
-            {
-              name: 'mermaid',
-              test: /node_modules[\\/](mermaid|cytoscape|dagre|khroma|elkjs|d3|d3-[^\\/]+|@mermaid-js)[\\/]/
-            },
+            // the full shiki bundle. Pele (mermaid fences) is deliberately not
+            // grouped: `pele/lazy` keeps each diagram type in its own small
+            // chunk, and a group would merge them back into one.
             {
               name: 'shiki',
               test: /node_modules[\\/](shiki|@shikijs|react-shiki|@streamdown[\\/]code|oniguruma-to-es|oniguruma-parser|regex(-[^\\/]+)?)[\\/]/
@@ -243,9 +264,6 @@ export default defineConfig(({ command }) => ({
     host: '127.0.0.1',
     port: 5174,
     strictPort: true,
-    warmup: {
-      clientFiles: ['./src/components/intro-reveal/intro-root.tsx']
-    },
     fs: {
       allow: fsAllow
     }

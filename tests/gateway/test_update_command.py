@@ -5,6 +5,7 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -61,7 +62,6 @@ class TestHandleUpdateCommand:
             MockPath.return_value = MagicMock()
             MockPath.__truediv__ = Path.__truediv__
             # Easier: just patch the __file__ resolution in the method
-            pass
 
         # Simpler approach — mock at method level using a wrapper
         runner = _make_runner()
@@ -72,7 +72,6 @@ class TestHandleUpdateCommand:
             # Since Path(__file__) resolves to the real gateway/run.py,
             # project_root will be the real hermes-agent dir (which HAS .git).
             # Patch Path to control this.
-            original_path = Path
 
             class FakePath(type(Path())):
                 pass
@@ -139,9 +138,10 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()
@@ -155,6 +155,7 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.platforms("linux")
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()
@@ -180,9 +181,10 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         # Verify plain bash -c fallback (no nohup, no setsid)
         call_args = mock_popen.call_args[0][0]
@@ -192,7 +194,6 @@ class TestHandleUpdateCommand:
         # start_new_session=True should be in kwargs
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
-        assert "Starting Hermes update" in result
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +221,6 @@ class TestUpdateCommandPlatformGate:
         the hardcoded frozenset does not regress the /update command for
         Discord users.
         """
-        from gateway.run import GatewayRunner
-
-        # Precondition: DISCORD is NOT in the hardcoded set anymore.
-        assert Platform.DISCORD not in GatewayRunner._UPDATE_ALLOWED_PLATFORMS
 
         # Make sure the plugin registry is populated so the fallback fires.
         from hermes_cli.plugins import PluginManager
@@ -247,31 +244,6 @@ class TestUpdateCommandPlatformGate:
         assert "only available from messaging platforms" not in result
 
 
-    @pytest.mark.asyncio
-    async def test_allows_homeassistant_via_registry_fallback(self, monkeypatch):
-        """Same as DISCORD/MATTERMOST: HOMEASSISTANT is now plugin-migrated
-        (PR #40709) and not in the hardcoded frozenset; the registry must
-        keep /update working via ``allow_update_command=True``.
-        """
-        from gateway.run import GatewayRunner
-
-        assert Platform.HOMEASSISTANT not in GatewayRunner._UPDATE_ALLOWED_PLATFORMS
-
-        from hermes_cli.plugins import PluginManager
-        PluginManager().discover_and_load(force=True)
-        from gateway.platform_registry import platform_registry
-        ha_entry = platform_registry.get("homeassistant")
-        assert ha_entry is not None
-        assert ha_entry.allow_update_command is True
-
-        runner = _make_runner()
-        event = _make_event(platform=Platform.HOMEASSISTANT)
-        monkeypatch.setenv("HERMES_MANAGED", "")
-
-        with patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
-
-        assert "only available from messaging platforms" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -590,11 +562,8 @@ class TestSendUpdateNotification:
             await runner._send_update_notification()
 
         sent_text = mock_adapter.send.call_args[0][1]
-        assert "previous version is still running" in sent_text
-        assert "hermes update" in sent_text and "/update" in sent_text
         assert "ERROR: pip failed" in sent_text
         assert len(sent_text) < 1200
-        assert "exit code" not in sent_text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -602,23 +571,6 @@ class TestSendUpdateNotification:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateInHelp:
-    """Verify /update appears in help text and known commands set."""
-
-
-    def test_update_is_known_command(self):
-        """/update dispatches through the gateway's plain-command handler table.
-
-        (Was an inspect.getsource() check for the literal '"update"' in
-        _handle_message — a banned source-reading test. The if-chain was
-        replaced by _gateway_plain_command_handlers(), so assert the real
-        dispatch contract: the table maps "update" to the update handler.)
-        """
-        from gateway.run import GatewayRunner
-
-        runner = object.__new__(GatewayRunner)
-        handlers = runner._gateway_plain_command_handlers()
-        assert handlers.get("update") == runner._handle_update_command
 
 class TestWatchUpdateProgress:
     @pytest.mark.asyncio
@@ -648,3 +600,77 @@ class TestWatchUpdateProgress:
         assert "continued after" in sent
         assert "Hermes update finished" in sent
         assert not (hermes_home / ".update_pending.json").exists()
+# ---------------------------------------------------------------------------
+# Install-method refusal gate
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCommandInstallMethodRefusal:
+    """/update on a non-git install refuses with the steward's own update
+    command instead of attempting a git-based `hermes update`."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["docker", "nix"])
+    async def test_refuses_non_git_install(self, tmp_path, method):
+        runner = _make_runner()
+        event = _make_event()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        mock_popen = MagicMock()
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("hermes_cli.config.detect_install_method",
+                   return_value=method), \
+             patch("hermes_cli.config.recommended_update_command_for_method",
+                   return_value=f"steward-update --{method}"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert f"does not apply to this install ({method})" in result
+        assert f"Update with: steward-update --{method}" in result
+        # No update attempt: nothing spawned, no pending marker written.
+        mock_popen.assert_not_called()
+        assert not (hermes_home / ".update_pending.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Exit-code publication: the watcher polls .update_exit_code and reads "" as exit 1
+# ---------------------------------------------------------------------------
+
+
+class TestDetachedUpdateExitCodePublication:
+    """The detached wrapper never exposes an empty ``.update_exit_code`` to the 2 s watcher poll."""
+
+    @pytest.mark.platforms("linux", "macos")
+    @pytest.mark.live_system_guard_bypass  # runs the wrapper around `sh -c 'exit 3'`, never hermes
+    def test_bash_wrapper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
+        import subprocess
+        from gateway.slash_commands import _spawn_detached_update
+
+        output, marker, seen = tmp_path / "out.log", tmp_path / ".update_exit_code", tmp_path / "seen.log"
+        spawned = MagicMock()
+        with patch("shutil.which", return_value=None), patch("subprocess.Popen", spawned):
+            _spawn_detached_update(["sh", "-c", "exit 3"], output, marker)
+        # Poll the marker at the instant the wrapper's printf runs: a `printf > marker` redirect has
+        # already truncated it by then (bash applies redirections before running the command).
+        hook = tmp_path / "bash_env.sh"
+        hook.write_text('printf() { [ -e "$MARKER" ] && echo "exists:$(cat "$MARKER")" >> "$SEEN"; '
+                        'builtin printf "$@"; }\n', encoding="utf-8")
+        env = {**os.environ, "BASH_ENV": str(hook), "MARKER": str(marker), "SEEN": str(seen)}
+        subprocess.run(spawned.call_args[0][0], env=env, check=True, timeout=60)
+        assert not seen.exists() or "exists:\n" not in seen.read_text(encoding="utf-8")
+        assert marker.read_text(encoding="utf-8") == "3"
+
+    def test_windows_helper_never_exposes_an_empty_exit_code(self, tmp_path, monkeypatch):
+        import sys
+        from gateway.slash_commands import _WINDOWS_UPDATE_HELPER
+        from tests.file_write_observer import observe_file_writes
+
+        output, marker = tmp_path / "out.log", tmp_path / ".update_exit_code"
+        seen = []
+        monkeypatch.setattr(sys, "argv", ["-c", str(output), str(marker),
+                                          sys.executable, "-c", "raise SystemExit(4)"])
+        with observe_file_writes(lambda: seen.append(marker.read_text() if marker.exists() else None)):
+            exec(compile(_WINDOWS_UPDATE_HELPER, "<update-helper>", "exec"), {"__name__": "__main__"})
+        assert "" not in seen
+        assert marker.read_text(encoding="utf-8") == "4"

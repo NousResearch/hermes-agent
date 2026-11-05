@@ -59,7 +59,7 @@ behavior-affecting hooks:
 
 | Hook | Return behavior |
 | --- | --- |
-| `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message. |
+| `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message, or `{"action": "block", "message": "..."}` to end the turn before any inference request (the message becomes the reply and the prompt is stored as a withheld placeholder; see [Event Hooks](../user-guide/features/hooks.md)). A callback that raises or times out is skipped, so it never blocks. |
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
@@ -99,6 +99,7 @@ Session hooks describe conversation boundaries and resets:
 | `on_session_end` | A `run_conversation` call ends, including interrupted or incomplete turns. |
 | `on_session_finalize` | CLI or gateway tears down an active session identity. |
 | `on_session_reset` | CLI or gateway moves from an old session identity to a new one. |
+| `on_session_delete` | A session delete or deliberate archive committed (`reason` says which). |
 
 Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 `old_session_id`, and `new_session_id` where available.
@@ -136,6 +137,8 @@ API hooks describe provider attempts inside the agent loop:
 | `pre_api_request` | Immediately before a provider API request. |
 | `post_api_request` | After a successful provider response. |
 | `api_request_error` | After a failed provider request or retryable error path. |
+| `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, ...). Carries `aux_task`; the `*_api_request` hooks stay main-loop only. |
+| `post_auxiliary_call` | After that attempt returns or raises (`error` set on failure). |
 
 `pre_api_request` includes:
 
@@ -192,6 +195,17 @@ Tool hooks describe individual tool calls:
 
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
+
+### Human Input Lifecycle
+
+`on_human_input_request` / `on_human_input_resolved` fire around every point
+where the agent blocks for a person: sudo password prompts (`kind="sudo"`),
+`clarify` questions (`kind="clarify"`) and approval prompts
+(`kind="approval"`) on CLI, TUI/Desktop, ACP and gateway platforms. Fields:
+`kind`, `request_id` (shared by the pair), `session_id`, `session_key`,
+`platform`, and a force-redacted `prompt`; the resolved hook adds `outcome`.
+The typed password or answer is never included. Smart (aux-LLM) approvals do
+not fire it. Source: `tools/human_input_hooks.py`.
 
 ### Approval Lifecycle
 
@@ -321,11 +335,12 @@ nested agent work or security lifecycle events.
 
 ## Existing Consumers
 
-The bundled Langfuse plugin demonstrates direct hook-based observability for
-turns, provider requests, and tool calls.
+The official [Langfuse catalog plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse) demonstrates direct hook-based
+observability for turns, provider requests, and tool calls.
 
 The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
-lifecycles to Relay. Explicit Relay plugin configuration can add
+lifecycles to Relay. Relay's discovered user and system configuration, or an
+explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).

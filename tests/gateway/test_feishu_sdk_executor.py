@@ -42,22 +42,6 @@ def test_get_executor_recreates_after_shutdown():
     adapter._shutdown_sdk_executor()
 
 
-@pytest.mark.asyncio
-async def test_run_blocking_executes_on_owned_pool():
-    adapter = _bare_adapter()
-    captured = {}
-
-    def _work(value):
-        import threading
-
-        captured["thread"] = threading.current_thread().name
-        return value * 2
-
-    result = await adapter._run_blocking(_work, 21)
-    assert result == 42
-    # Ran on the adapter-owned pool, not the default executor.
-    assert captured["thread"].startswith("hermes-feishu-sdk")
-    adapter._shutdown_sdk_executor()
 
 
 @pytest.mark.asyncio

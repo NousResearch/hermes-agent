@@ -28,6 +28,11 @@ export interface BackendStartFailureContext {
    * cloud) primary backend rather than spawning a local child.
    */
   attemptedRemote: boolean
+  /**
+   * True when the boot that just failed was a supervisor-owned respawn after
+   * an unexpected primary exit, not an initial or user-driven start.
+   */
+  supervisorRecovery?: boolean
 }
 
 /**
@@ -35,9 +40,14 @@ export interface BackendStartFailureContext {
  * Latch local failures (prevent install-restart loops); never latch remote
  * failures (they are transient and must stay retryable so recovery paths work
  * without an app restart).
+ *
+ * A supervisor-owned respawn never latches either: it already has its own
+ * bounded crash-loop budget, so a pre-ready child exit must not become a
+ * permanent local boot latch before that budget can run. Initial and
+ * user-driven starts keep the fail-closed latch.
  */
 export function shouldLatchBackendStartFailure(context: BackendStartFailureContext): boolean {
-  return !context.attemptedRemote
+  return !context.attemptedRemote && !context.supervisorRecovery
 }
 
 export interface RemoteReauthFailureContext {
@@ -86,6 +96,19 @@ export interface RemoteBootRetryContext {
    * is terminal like a reauth rejection — not connectivity.
    */
   isHostKeyChanged?: boolean
+  /**
+   * True when SSH rejected the credentials (`auth-failed`). Desktop runs ssh
+   * in BatchMode, so nothing changes until the user loads the key into
+   * ssh-agent or fixes the connection settings: terminal, not connectivity.
+   */
+  isSshAuthFailed?: boolean
+  /**
+   * True when the LOCAL ssh client failed (`ssh -G` could not run or exited
+   * non-zero). `-G` never touches the network, so a retry re-runs the same
+   * doomed probe: terminal until the user fixes the client or sets
+   * `desktop.ssh_path` (#103288).
+   */
+  isSshClientFailed?: boolean
 }
 
 /**
@@ -105,6 +128,78 @@ export function isHostKeyChangedBootFailure(error: unknown): boolean {
   return /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|host key for .+ has CHANGED/i.test(
     message
   )
+}
+
+/**
+ * An SSH credential rejection is identifiable by the `auth-failed` kind that
+ * classifySshError puts on the error (`kind` from `SshConnection.open`,
+ * `sshError` once the bootstrap re-wraps a lifecycle failure) and, for errors
+ * that crossed a stringifying boundary, by our own message or ssh's banner.
+ */
+export function isSshAuthFailedBootFailure(error: unknown): boolean {
+  const tagged = error as { kind?: string; sshError?: string } | null | undefined
+
+  if (tagged?.kind === 'auth-failed' || tagged?.sshError === 'auth-failed') {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /SSH authentication to .+ failed|Permission denied \((?:publickey|password|keyboard-interactive)/i.test(
+    message
+  )
+}
+
+export const SSH_CLIENT_FAILED = 'ssh-client-failed'
+
+/**
+ * Wrap a failed local `ssh -G` probe as a terminal, tagged boot failure that
+ * names the client binary. On Windows the message points at
+ * `desktop.ssh_path`, the only way past a broken in-box OpenSSH (#103288).
+ */
+export function sshClientFailedError(sshBinary: string, cause: unknown, platform: string = process.platform): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause ?? '')
+
+  const hint =
+    platform === 'win32'
+      ? " Set desktop.ssh_path in config.yaml to a working ssh.exe (for example Git for Windows' usr\\bin\\ssh.exe) and retry."
+      : ''
+
+  const error = new Error(
+    `The local SSH client (${sshBinary}) failed to resolve the connection config: ${detail}.${hint}`
+  ) as Error & {
+    kind: string
+  }
+
+  error.kind = SSH_CLIENT_FAILED
+
+  return error
+}
+
+/** A failed local ssh client probe, tagged by sshClientFailedError. */
+export function isSshClientFailedBootFailure(error: unknown): boolean {
+  return (error as { kind?: string } | null | undefined)?.kind === SSH_CLIENT_FAILED
+}
+
+/**
+ * Whether a failed remote boot should latch because the local ssh client
+ * itself failed. Same rationale as the credential latch: unlatched, every
+ * api call re-drives boot and the overlay never holds still (#103288).
+ */
+export function shouldLatchSshClientFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isSshClientFailed === true
+}
+
+/**
+ * Whether a failed remote boot should latch (into `backendStartFailure`)
+ * because SSH rejected the credentials (#72698). Unlatched, every
+ * `getConnection`/api call re-runs startHermes, re-emits `running: true` and
+ * hides the boot-failure overlay, so its Gateway settings button — the only
+ * way to fix the key — ignores clicks. Released by reset/repair/apply-config
+ * like the host-key latch.
+ */
+export function shouldLatchSshAuthFailure(context: RemoteBootRetryContext): boolean {
+  return context.attemptedRemote && context.isSshAuthFailed === true
 }
 
 /**
@@ -131,12 +226,18 @@ export function shouldLatchHostKeyChangedFailure(context: RemoteBootRetryContext
  * only arms after a completed boot, so the app sat on "Desktop boot failed"
  * until the user manually re-entered the same connection details (which just
  * forced a fresh bootstrap). A missing capability differs from a transient
- * failure: confirmed reauth rejections, host-key changes, and local failures
- * stay out of the retry path; everything else remote is connectivity and
+ * failure: confirmed reauth rejections, host-key changes, SSH credential
+ * rejections, and local failures stay out of the retry path; everything else remote is connectivity and
  * should retry.
  */
 export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): boolean {
-  return context.attemptedRemote && !context.isReauth && context.isHostKeyChanged !== true
+  return (
+    context.attemptedRemote &&
+    !context.isReauth &&
+    context.isHostKeyChanged !== true &&
+    context.isSshAuthFailed !== true &&
+    context.isSshClientFailed !== true
+  )
 }
 
 export interface BootProgressUpdateLike {

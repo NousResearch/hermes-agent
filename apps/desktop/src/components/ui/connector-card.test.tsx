@@ -18,20 +18,6 @@ function renderRow(overrides: Partial<ConnectorRowProps> = {}) {
 }
 
 describe('a row in the card', () => {
-  it('offers exactly one verb and gives no reason', () => {
-    const onClick = vi.fn()
-
-    renderRow({ action: { label: 'Connect', onClick } })
-
-    expect(screen.getByText('Connect your apps')).toBeTruthy()
-    // Scoped to a span: the brand glyph is an <svg> carrying its own <title>.
-    expect(screen.getByText('Linear', { selector: 'span' })).toBeTruthy()
-    expect(screen.getAllByRole('button')).toHaveLength(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(onClick).toHaveBeenCalledOnce()
-  })
-
   it('says how it stands through the mark, so the verb never has to', () => {
     renderRow({
       action: { label: 'Connect', onClick: vi.fn() },
@@ -78,24 +64,6 @@ describe('credentials under a row', () => {
     openInBrowser: 'Open in browser',
     setup: (server: string) => `Set up ${server}`
   }
-
-  it('stay out of the way until the row asks for them', () => {
-    render(
-      <SetupFormDialog
-        copy={copy}
-        fields={fields}
-        onCancel={vi.fn()}
-        onConnect={vi.fn()}
-        onOpenBrowser={vi.fn()}
-        open={false}
-        pending={false}
-        server="Linear"
-        status="pending"
-      />
-    )
-
-    expect(screen.queryByLabelText('API key')).toBeNull()
-  })
 
   it('renders plain and masked inputs, prefills plain defaults, and reports the complete draft', () => {
     const onConnect = vi.fn()

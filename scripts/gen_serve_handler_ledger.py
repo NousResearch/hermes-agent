@@ -11,8 +11,10 @@ Columns are derived from code, never judged:
 
 * RPC ``current_path`` uses the tables ``/api/ws`` dispatch reads (``tui_gateway/ws.py``): served by
   the authority (``AuthorityConnection.handlers`` + group verbs + ``profiles.list``), else legacy
-  fallback or refused per ``tui_gateway/ws_legacy_fallback.py``. Without an authority (standalone
-  ``serve``/``dashboard``) every legacy method runs in-process on ``server.dispatch``.
+  fallback or refused per ``tui_gateway/ws_legacy_fallback.py::legacy_fallback_allowed``. A connector
+  verb the authority serves only for a session-owned call (``gateway/session_connections.py``) falls
+  back for an account-owned one. Without an authority (standalone ``serve``/``dashboard``) every
+  legacy method runs in-process on ``server.dispatch``.
 * HTTP ``current_path`` is the endpoint plus any ``route_on`` surface gate
   (``hermes_cli/web_server_surface.py``). Whether an endpoint reaches the authority is not derived.
 * ``decision`` is ``authority`` for a verb the authority serves; everything else is ``undecided``
@@ -30,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "tests" / "hermes_cli" / "serve_handler_ledger.json"
@@ -62,11 +65,15 @@ def _collect() -> dict:
     from fastapi.routing import APIRoute, APIWebSocketRoute
     from starlette.routing import Mount
 
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from gateway.session_connections import METHODS as CONNECTION_METHODS
     from gateway.session_controls import AuthorityConnection
     from gateway.session_group_controls import GROUP_METHODS
     from hermes_cli.web_server import app
     from tui_gateway import server
-    from tui_gateway.ws_legacy_fallback import _PROCESS_GLOBAL, _SESSION_FALLBACK_ALLOWED, _SESSION_NAMESPACES
+    from tui_gateway.ws_legacy_fallback import legacy_fallback_allowed
+
+    interactive = SimpleNamespace(capabilities=_PURPOSE_CAPABILITIES["interactive"])
 
     routes = []
     for route in app.routes:
@@ -87,9 +94,10 @@ def _collect() -> dict:
         "routes": routes,
         "legacy": sorted(server._methods),
         "served": sorted(set(AuthorityConnection.handlers(MagicMock())) | set(GROUP_METHODS) | {"profiles.list"}),
-        "process_global": sorted(_PROCESS_GLOBAL),
-        "session_namespaces": list(_SESSION_NAMESPACES),
-        "session_fallback_allowed": sorted(_SESSION_FALLBACK_ALLOWED),
+        # The authority serves these only for a session-owned call; an account-owned one gets -32601.
+        "account_owned_fallback": sorted(CONNECTION_METHODS),
+        # Legacy methods ws.py keeps on the authority's -32601, by the predicate it calls.
+        "refused": sorted(method for method in server._methods if not legacy_fallback_allowed(interactive, method)),
     }
 
 
@@ -112,11 +120,13 @@ def _facts() -> dict:
 def _rpc_row(method: str, facts: dict) -> dict:
     legacy, served = method in facts["legacy"], method in facts["served"]
     standalone = "; standalone: legacy server.dispatch" if legacy else "; standalone: unknown method"
+    falls_back = legacy and method not in facts["refused"]
+    if served and falls_back and method in facts["account_owned_fallback"]:
+        return {"current_path": "authority (session-owned); account-owned: legacy fallback" + standalone,
+                "decision": "undecided", "ref": "D3"}
     if served:
         return {"current_path": "authority" + standalone, "decision": "authority", "ref": ""}
-    refused = method in facts["process_global"] or (
-        method.startswith(tuple(facts["session_namespaces"])) and method not in facts["session_fallback_allowed"])
-    path = "authority refuses (-32601)" if refused else "legacy fallback"
+    path = "legacy fallback" if falls_back else "authority refuses (-32601)"
     return {"current_path": path + standalone, "decision": "undecided", "ref": "D3"}
 
 

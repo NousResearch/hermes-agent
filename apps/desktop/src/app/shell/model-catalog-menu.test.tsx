@@ -725,6 +725,114 @@ describe('the per-row options submenu is discoverable', () => {
   })
 })
 
+// Choosing a level on another model's row reads as choosing that model. A host
+// opts in where switching costs nothing (a new session not yet created); elsewhere
+// the pick stays that model's remembered level.
+describe('picking an effort on another model', () => {
+  const openGeminiPro = async () => {
+    const trigger = (await screen.findByText(/Gemini 3\.1 Pro/i)).closest('[data-slot="dropdown-menu-sub-trigger"]')
+
+    fireEvent.pointerMove(trigger as Element, { pointerType: 'mouse' })
+    await screen.findByText('Effort')
+  }
+
+  const pickHighOnGeminiPro = async () => {
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+  }
+
+  const other = { model: 'gemini-2.5-flash', provider: 'google' }
+  const row = { isActive: false, model: 'gemini-3.1-pro', provider: 'google' }
+
+  it('selects that model with the picked level when the host opts in', async () => {
+    const applyPreset = vi.fn()
+    const setOptions = vi.fn()
+
+    const select = renderMenu(
+      { model: 'gemini-2.5-flash', provider: 'google' },
+      { applyPreset, effortPickSelects: true, setOptions }
+    )
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, row)
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    await waitFor(() =>
+      expect(applyPreset).toHaveBeenCalledWith(expect.objectContaining({ effort: 'high' }), {
+        model: 'gemini-3.1-pro',
+        provider: 'google'
+      })
+    )
+    await waitFor(() => expect(closeMenu).toHaveBeenCalled())
+  })
+
+  it('only remembers the level for that model when the host does not opt in', async () => {
+    const setOptions = vi.fn()
+    const select = renderMenu({ model: 'gemini-2.5-flash', provider: 'google' }, { setOptions })
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, row)
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it('selects that model when its Thinking switch is flipped, since that is an effort edit too', async () => {
+    const select = renderMenu(other, { effortPickSelects: true })
+
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('switch'))
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+  })
+
+  it('keeps speed toggles preset-only', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: { 'gemini-3.1-pro': { fast: true } },
+          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+          name: 'Google',
+          slug: 'google'
+        }
+      ]
+    })
+    const setOptions = vi.fn()
+    const select = renderMenu(other, { effortPickSelects: true, setOptions })
+
+    await openGeminiPro()
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast' }))
+
+    expect(setOptions).toHaveBeenCalledWith({ fast: true }, row)
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it('edits the current model in place instead of selecting it again', async () => {
+    const setOptions = vi.fn()
+    const select = renderMenu({ model: 'gemini-3.1-pro', provider: 'google' }, { effortPickSelects: true, setOptions })
+
+    await pickHighOnGeminiPro()
+
+    expect(setOptions).toHaveBeenCalledWith({ effort: 'high' }, { ...row, isActive: true })
+    expect(select).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+
+  it('keeps the menu open when the host refuses the switch', async () => {
+    const applyPreset = vi.fn()
+    const select = vi.fn(async () => false)
+
+    renderMenu(other, { applyPreset, effortPickSelects: true, select })
+    await pickHighOnGeminiPro()
+    await act(async () => {})
+
+    expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google')
+    expect(applyPreset).not.toHaveBeenCalled()
+    expect(closeMenu).not.toHaveBeenCalled()
+  })
+})
+
 describe('the catalog renders per-model pricing', () => {
   beforeEach(() => setShowModelPricing(true))
   afterEach(() => setShowModelPricing(false))

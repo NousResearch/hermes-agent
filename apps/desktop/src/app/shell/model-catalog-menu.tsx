@@ -159,6 +159,12 @@ export interface ModelMenuController {
   /** OpenAI Daybreak, one profile-wide switch. Absent on surfaces that can't write it; shown only on
    *  rows whose `capabilities.daybreak` says this account's catalog lists the model. */
   daybreak?: DaybreakControl
+  /** Picking an effort on another model's row also selects that model with that level. For hosts
+   *  where a switch costs nothing, such as a new session not yet created; otherwise the pick only
+   *  edits the row's remembered preset. The menu still calls `setOptions` first, then `select`, then
+   *  `applyPreset` with the picked level, and closes unless `select` returns false — so a host whose
+   *  `setOptions` already selects the row should leave this off. */
+  effortPickSelects?: boolean
   /** Restore a model's remembered settings after it is selected. Separate from
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
@@ -432,7 +438,11 @@ export function ModelCatalogMenu({
     [customSlug, pickerProviders, current.provider]
   )
 
-  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider): Promise<boolean> => {
+  const selectFamily = async (
+    family: ModelFamily,
+    provider: ModelOptionProvider,
+    effort?: string
+  ): Promise<boolean> => {
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
 
@@ -459,7 +469,7 @@ export function ModelCatalogMenu({
 
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
+        effort: (caps?.reasoning ?? true) ? (effort ?? preset.effort ?? defaultEffort) : undefined,
         ...(controller.allowSpeed !== false ? { serviceTier: tier, fast: tier !== 'normal' } : {})
       },
       { model: family.id, provider: provider.slug }
@@ -1003,8 +1013,9 @@ interface ModelFamilyRowProps {
    *  the provider groups share ONE flat selection order. */
   kbProps: KbRowProps
   loadingModels: Record<string, LocalModelLoadProgress>
-  /** Commit this family — what a click means belongs to the host that owns it. */
-  onSelect: (family: ModelFamily, provider: ModelOptionProvider) => Promise<boolean | void> | void
+  /** Commit this family — what a click means belongs to the host that owns it. `effort` is the level
+   *  picked in its submenu when that pick is what selected it. */
+  onSelect: (family: ModelFamily, provider: ModelOptionProvider, effort?: string) => Promise<boolean | void> | void
   /** Keyboard-focus round trip for the sub this row opens (#86966). */
   onSubOpenChange?: (open: boolean, key: string) => void
   provider: ModelOptionProvider
@@ -1209,9 +1220,14 @@ function ModelFamilyRow({
         isActive={isCurrent}
         model={family.id}
         onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
-        onSetOptions={patch =>
+        onSetOptions={patch => {
           controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
-        }
+
+          // A pick that selects the model closes the menu like a row click, so the list cannot reflow under the pointer.
+          if (!isCurrent && patch.effort !== undefined && controller.effortPickSelects) {
+            void Promise.resolve(onSelect(family, provider, patch.effort)).then(ok => ok !== false && closeMenu())
+          }
+        }}
         provider={provider.slug}
         reasoning={caps?.reasoning ?? true}
         serviceTier={effTier}

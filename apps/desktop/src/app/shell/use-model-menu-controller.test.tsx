@@ -6,7 +6,7 @@ import { expect, it, vi } from 'vitest'
 import type { HermesGateway } from '@/hermes'
 import { $daybreakByProfile, daybreakKey } from '@/store/daybreak'
 import { $notifications } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, $selectedStoredSessionId } from '@/store/session'
 
 import { useModelMenuController } from './use-model-menu-controller'
 
@@ -44,6 +44,41 @@ it('a level picked while a reply streams applies from the next message instead o
     )
   )
   expect($notifications.get().some(n => n.kind === 'error')).toBe(false)
+})
+
+it("a level picked on another model's row selects it only while the session is new", () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+
+  const requestGateway = vi.fn(async () => ({ providers: [] }))
+  $activeSessionId.set(null)
+  $selectedStoredSessionId.set(null)
+
+  try {
+    const { rerender, result } = renderHook(
+      () => useModelMenuController({ onSelectModel: vi.fn(), requestGateway: requestGateway as never }),
+      { wrapper }
+    )
+
+    expect(result.current.controller.effortPickSelects).toBe(true)
+
+    // A stored session still resuming has no runtime id yet, but it already has a model.
+    $selectedStoredSessionId.set('stored-1')
+    rerender()
+    expect(result.current.controller.effortPickSelects).toBe(false)
+
+    // A session just created has a runtime id before its stored id arrives.
+    $selectedStoredSessionId.set(null)
+    $activeSessionId.set('runtime-1')
+    rerender()
+    expect(result.current.controller.effortPickSelects).toBe(false)
+  } finally {
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+  }
 })
 
 it('a queued Daybreak flip goes to the connection that was clicked, not the one focused later', async () => {

@@ -47,8 +47,9 @@ def _install_lease_listener() -> None:
     _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 
 
+# Desktop polls these (the thumbnail every 4 s) and they read no secrets: no external source load.
 @method("display.status")
-@_profile_scoped
+@_profile_scoped(hydrate_secrets=False)
 def _(rid, params: dict) -> dict:
     _install_lease_listener()
     try:
@@ -58,7 +59,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("display.thumbnail")
-@_profile_scoped
+@_profile_scoped(hydrate_secrets=False)
 def _(rid, params: dict) -> dict:
     """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
     Suppressed while a human holds the lease — the frame may show what they are typing — and when

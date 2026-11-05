@@ -7,7 +7,7 @@ from __future__ import annotations
 import contextlib
 import copy
 
-from .method_ctx import HandlerRegistry, bind_module
+from .method_ctx import HYDRATE_SECRETS_IF_UNTRIED, HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 
@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> _TurnScopes:
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool | str = True) -> _TurnScopes:
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -65,6 +65,8 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     ``bws``, ``sh -c`` — a subprocess with a 30s CLI budget holding a process-global lock). Pass it
     from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
     TOTAL budget, and one slow source there costs the transcript the flush exists to save.
+    ``HYDRATE_SECRETS_IF_UNTRIED`` (polled reads) loads them only while
+    ``env_loader.secret_sources_tried`` is false (see ``env_loader.hydrate_profile_secret_sources``).
     """
     from agent.secret_scope import is_multiplex_active
     scopes = _TurnScopes()
@@ -74,7 +76,10 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             # External sources first: the requested profile may never have been served in this process.
             if hydrate_secrets:
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
-                hydrate_profile_secret_sources(home)
+                if hydrate_secrets == HYDRATE_SECRETS_IF_UNTRIED:
+                    hydrate_profile_secret_sources(home, if_untried=True)
+                else:
+                    hydrate_profile_secret_sources(home)
             secrets = build_profile_secret_scope(home)
             overlay = None
             scopes.home = set_hermes_home_override(str(home))
@@ -131,7 +136,7 @@ def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
 
 
 @contextlib.contextmanager
-def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = True):
+def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool | str = True):
     """Bind model resolution to the session's profile config and secrets (launch profile included
     once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
     scopes = _profile_runtime_scope_tokens(session.get("profile_home"), hydrate_secrets=hydrate_secrets)

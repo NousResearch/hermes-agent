@@ -1417,6 +1417,53 @@ def test_routed_hydration_refuses_a_source_that_supplies_a_protected_name(profil
     assert env_loader.hydrate_profile_secret_sources(named) == {"SYNTHETIC_KEY": "routed-ok"}
 
 
+def test_a_refused_retry_keeps_refusing_polled_reads(profile_plane, monkeypatch):
+    """A routed profile loads partially (one source fails), then its other source starts supplying a
+    protected name. The retry's refusal also clears the earlier attempt, so a polled read
+    (``if_untried``) reruns the load and refuses again instead of reusing an empty snapshot."""
+    from agent.secret_sources import registry
+    from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+    from hermes_cli import env_loader
+    for name, empty in (("_APPLIED_HOMES", set()), ("_SOURCE_SUPPLIED_NAMES", set()),
+                        ("_SECRET_SOURCE_TRIED_AT", {}), ("_SECRET_SOURCE_VALUES_BY_HOME", {})):
+        monkeypatch.setattr(env_loader, name, empty)
+    monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
+    runs = []
+
+    class _Down(SecretSource):
+        name, label, shape = "vaultdown", "Fixture vault", "bulk"
+
+        def fetch(self, cfg, home_path):
+            runs.append(self.name)
+            return FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+
+    def secrets(line):
+        return {"secrets": {"vaultdown": {"enabled": True}, "command": {
+            "enabled": True, "override_existing": True, "command": f"printf '{line}\\n'"}}}
+
+    registry._reset_registry_for_tests()
+    registry.register_source(_Down(), replace=True)
+    try:
+        named = _routed_profile(profile_plane, "SYNTHETIC_KEY=partial")
+        profile_plane.profile("routed").update(values=secrets("SYNTHETIC_KEY=partial"), version=1)
+        assert env_loader.hydrate_profile_secret_sources(named) == {"SYNTHETIC_KEY": "partial"}
+        assert env_loader.secret_sources_tried(named)
+
+        profile_plane.profile("routed").update(values=secrets("HERMES_PORTAL_BASE_URL=http://127.0.0.1:1"),
+                                               version=2)
+        backend = get_config_backend()
+        assert backend.poll_one(backend._state(named))
+        with pytest.raises(ConfigBackendUnavailable, match="HERMES_PORTAL_BASE_URL"):
+            env_loader.hydrate_profile_secret_sources(named)
+        assert env_loader.get_secret_source_values(named) == {}
+        assert not env_loader.secret_sources_tried(named)
+        with pytest.raises(ConfigBackendUnavailable, match="HERMES_PORTAL_BASE_URL"):
+            env_loader.hydrate_profile_secret_sources(named, if_untried=True)
+        assert runs == ["vaultdown"] * 3
+    finally:
+        registry._reset_registry_for_tests()
+
+
 def test_file_mode_routed_hydration_drops_only_the_selector(monkeypatch, tmp_path, capsys):
     """Control: under the file backend a routed source may not switch the backend either, but its
     other values (a Portal URL included: file mode has no plane credential) still hydrate."""

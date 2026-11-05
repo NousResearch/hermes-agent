@@ -156,6 +156,10 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Hermes browser profiles (CDP / agent-browser user-data dirs): locked SQLite files and
+    # hundreds of MB of cache that are never project state.
+    "chrome_cdp_profile/",
+    "agent-browser-chrome-*/",
 ]
 
 # Git subprocess timeout (seconds).
@@ -283,6 +287,26 @@ def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
         _run_git(
             ["rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch", "--", *paths],
             store, working_dir, index_file=index_file,
+        )
+
+
+def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
+    """Drop paths the store's excludes now cover from an index re-seeded from an older checkpoint.
+
+    ``add -A`` honours ``info/exclude`` only for paths it is not already tracking, so a
+    directory excluded after it was first captured (browser profiles) would otherwise stay in
+    every later snapshot.
+    """
+    ok, out, _ = _run_git(
+        ["ls-files", "--cached", "--ignored", "-z", f"--exclude-from={store / 'info' / 'exclude'}"],
+        store, working_dir, index_file=index_file,
+    )
+    paths = [p for p in out.split("\x00") if p] if ok else []
+    for i in range(0, len(paths), 200):
+        _run_git(
+            ["rm", "--cached", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
+            store, working_dir, index_file=index_file,
+            extra_env={"GIT_LITERAL_PATHSPECS": "1"},
         )
 
 
@@ -577,6 +601,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _write_default_excludes(store)  # a store made by an older build gets new excludes too
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -623,14 +648,23 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _write_default_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None
+
+
+def _write_default_excludes(store: Path) -> None:
+    """(Re)write the store's ``info/exclude`` when it differs from :data:`DEFAULT_EXCLUDES`."""
+    exclude = store / "info" / "exclude"
+    text = "\n".join(DEFAULT_EXCLUDES) + "\n"
+    try:
+        if exclude.is_file() and exclude.read_text(encoding="utf-8-sig") == text:
+            return
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write checkpoint excludes: %s", exc)
 
 
 def _volume_evidence(workdir: Path) -> dict:
@@ -827,6 +861,12 @@ def _dir_file_count(path: str) -> int:
     return count
 
 
+def _too_broad(abs_dir: str) -> bool:
+    """``/``, the user's home and every ancestor of it: never a project, always huge."""
+    home = Path.home().resolve()
+    return Path(abs_dir) in {Path("/"), home, *home.parents}
+
+
 def _dir_size_bytes(path: Path) -> int:
     """Best-effort recursive size in bytes.  Returns 0 on error."""
     total = 0
@@ -1013,7 +1053,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        if _too_broad(abs_dir):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
@@ -1553,6 +1593,7 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
         _unstage_store(store, working_dir, index_file)
+        _unstage_excluded(store, working_dir, index_file)
 
         if self.max_file_size_mb > 0:
             if not self._drop_oversize_from_index(store, working_dir, index_file):

@@ -23,7 +23,6 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     from gateway.session_contract import SessionActor, Submission
     from gateway.session_local import create_local_session
     from gateway.session_policy import _ACTIVE_POLICY, policy_for_source
-    from hermes_state import SessionDB
     from tools import approval as A
     from tools import approval_context
 
@@ -34,9 +33,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
-    db = SessionDB(tmp_path / "state.db")
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner", db=db)
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
     gates = {}
 
     def gate_in_turn_thread(live):
@@ -93,7 +90,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
         await authority.submit(viewer, Submission("queued", ref, {"text": "typed, then detached"}, "queue"))
         await async_wait_until(lambda: "typed, then detached" in gates, timeout=10, what="the detached turn")
     finally:
-        db.close()
+        runner.session_store.close_all_db_handles()
 
     assert gates == {"typed by the viewer": (True, []),
                      "plugin injection": (False, ["execute_code"]),

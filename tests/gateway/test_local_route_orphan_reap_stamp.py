@@ -10,6 +10,9 @@ the authority advances it (compression, reset), and the first admitted turn reop
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 async def _local_session(tmp_path, monkeypatch):
@@ -21,19 +24,19 @@ async def _local_session(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
     from gateway.session_controls import AuthorityConnection
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     ref = create_local_session(authority, connection.actor, {'request_id': 'r', 'source': 'gui',
                                                              'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
-    authority.db.append_message(ref.session_id, 'user', 'earlier turn')
+    seed_messages(authority.persistence, ref.session_id, {'role': 'user', 'content': 'earlier turn'})
     return store, authority, connection, ref
 
 
 def _rows(db):
-    with db._read_ctx() as conn:
+    with raw_holder(db)._read_ctx() as conn:
         return [row[0] for row in conn.execute('SELECT id FROM sessions ORDER BY started_at')]
 
 
@@ -42,19 +45,19 @@ async def test_stamped_local_route_is_not_replaced_by_a_fresh_session(tmp_path, 
     store, authority, connection, ref = await _local_session(tmp_path, monkeypatch)
     try:
         live = authority.sessions[ref.session_id]
-        authority.db.end_session(ref.session_id, 'ws_orphan_reap')
+        authority.persistence.sessions.end(ref.session_id, 'ws_orphan_reap')
 
         entry = store.get_or_create_session(live.source)
 
         assert entry.session_id == ref.session_id
-        assert _rows(authority.db) == [ref.session_id], 'no replacement row may be minted for a local route'
+        assert _rows(authority.persistence) == [ref.session_id], 'no replacement row may be minted for a local route'
         # The conversation still resumes through the authority.
         reply = await connection.dispatch({'id': 1, 'method': 'session.resume',
                                            'params': {'session_id': ref.session_id}})
         assert reply['result']['messages'][0]['content'] == 'earlier turn', reply
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -62,18 +65,18 @@ async def test_restart_prune_keeps_a_stamped_local_route_on_its_receipt_target(t
     store, authority, connection, ref = await _local_session(tmp_path, monkeypatch)
     try:
         live = authority.sessions[ref.session_id]
-        authority.db.end_session(ref.session_id, 'ws_orphan_reap')
+        authority.persistence.sessions.end(ref.session_id, 'ws_orphan_reap')
         # The empty replacement row a pre-fix self-heal left behind on the same route.
-        authority.db.create_session('stray-replacement', 'local', session_key=live.route,
-                                    chat_id=live.source.chat_id, chat_type='dm', user_id=live.source.user_id)
+        seed_session(authority.persistence, 'stray-replacement', 'local', session_key=live.route,
+                     chat_id=live.source.chat_id, chat_type='dm', user_id=live.source.user_id)
         with store._lock:
             entry = store._entries[live.route]
-            verdict = store._stale_entry_verdict(live.route, entry, authority.db.get_session(ref.session_id))
+            verdict = store._stale_entry_verdict(live.route, entry, store._persistence_for_key(live.route).sessions.get(ref.session_id))
         assert verdict is None, verdict
         assert store._entries[live.route].session_id == ref.session_id
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -83,8 +86,8 @@ async def test_resume_heals_a_route_repointed_at_an_empty_stray_row(tmp_path, mo
     store, authority, connection, ref = await _local_session(tmp_path, monkeypatch)
     try:
         live = authority.sessions.pop(ref.session_id)
-        authority.db.create_session('stray-replacement', 'local', session_key=live.route,
-                                    chat_id=live.source.chat_id, chat_type='dm', user_id=live.source.user_id)
+        seed_session(authority.persistence, 'stray-replacement', 'local', session_key=live.route,
+                     chat_id=live.source.chat_id, chat_type='dm', user_id=live.source.user_id)
         with store._lock:
             store._entries[live.route].session_id = 'stray-replacement'
 
@@ -95,4 +98,4 @@ async def test_resume_heals_a_route_repointed_at_an_empty_stray_row(tmp_path, mo
         assert store._entries[live.route].session_id == ref.session_id
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

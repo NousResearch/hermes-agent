@@ -1,11 +1,13 @@
 import os
 import sqlite3
 import threading
+from contextlib import closing
 
 import pytest
 
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import (
+    DISBANDED_GRACE_SECONDS,
     AttachmentConflictError,
     AttachmentError,
     AttachmentIntegrityError,
@@ -18,6 +20,7 @@ from gateway.hosted_room_attachments import (
     decode_content_base64,
     validate_task_manifest,
 )
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"image-payload"
@@ -37,6 +40,40 @@ def _put(store, *, upload_id="upload-1", data=PNG, **overrides):
     return store.put(**params)
 
 
+def _root(home):
+    return home / "hosted-room-attachments"
+
+
+def _stats(home):
+    with closing(sqlite3.connect(home / "state.db")) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM hosted_room_attachments"
+        ).fetchone()
+        blob = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM hosted_room_attachment_blobs"
+        ).fetchone()
+    return {
+        "attachments": row[0],
+        "logical_bytes": row[1],
+        "blobs": blob[0],
+        "physical_bytes": blob[1],
+    }
+
+
+def _prune(store, now):
+    return store._repository._prune("profile", now)
+
+
+def _mark_room_disbanded(home, room_id, now):
+    with closing(sqlite3.connect(home / "state.db")) as conn, conn:
+        return conn.execute(
+            """UPDATE hosted_room_attachments
+                  SET state='disbanded', updated_at=?, expires_at=?
+                WHERE room_id=? AND state!='disbanded'""",
+            (now, now + DISBANDED_GRACE_SECONDS, room_id),
+        ).rowcount
+
+
 def _manifest(*attachments):
     return [
         {
@@ -51,7 +88,7 @@ def _manifest(*attachments):
 
 
 def test_store_is_private_atomic_deduplicated_and_upload_idempotent(tmp_path):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
 
     first = _put(store)
     repeated = _put(store)
@@ -60,43 +97,44 @@ def test_store_is_private_atomic_deduplicated_and_upload_idempotent(tmp_path):
     assert repeated["attachment_id"] == first["attachment_id"]
     assert repeated["idempotent"] is True
     assert second["attachment_id"] != first["attachment_id"]
-    assert store.stats() == {
+    assert _stats(tmp_path) == {
         "attachments": 2,
         "logical_bytes": len(PNG) * 2,
         "blobs": 1,
         "physical_bytes": len(PNG),
     }
     if os.name != "nt":
-        assert store.root.stat().st_mode & 0o777 == 0o700
-        assert store.blob_root.stat().st_mode & 0o777 == 0o700
-        blob = next(path for path in store.blob_root.iterdir() if path.name.startswith("blob_"))
+        assert _root(tmp_path).stat().st_mode & 0o777 == 0o700
+        assert (_root(tmp_path) / "blobs").stat().st_mode & 0o777 == 0o700
+        blob = next(path for path in (_root(tmp_path) / "blobs").iterdir() if path.name.startswith("blob_"))
         assert blob.stat().st_mode & 0o777 == 0o600
-    assert not list(store.blob_root.glob(".tmp-*"))
+    assert not list((_root(tmp_path) / "blobs").glob(".tmp-*"))
 
 
 def test_orphan_sweep_serializes_with_concurrent_canonical_blob_commit(
     tmp_path,
     monkeypatch,
 ):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     entered_sweep = threading.Event()
     release_sweep = threading.Event()
     writer_done = threading.Event()
     errors: list[BaseException] = []
-    original_iterdir = type(store.blob_root).iterdir
+    original_iterdir = type(_root(tmp_path) / "blobs").iterdir
 
     def blocking_iterdir(path):
         if (
-            path == store.blob_root
+            path == (_root(tmp_path) / "blobs")
             and threading.current_thread().name == "stale-sweep"
         ):
             entered_sweep.set()
             assert release_sweep.wait(5)
         return original_iterdir(path)
 
-    monkeypatch.setattr(type(store.blob_root), "iterdir", blocking_iterdir)
+    monkeypatch.setattr(type(_root(tmp_path) / "blobs"), "iterdir", blocking_iterdir)
     sweep_thread = threading.Thread(
-        target=store._sweep_orphans,
+        target=store._repository._sweep_orphans,
+        args=("profile",),
         name="stale-sweep",
     )
     sweep_thread.start()
@@ -120,11 +158,11 @@ def test_orphan_sweep_serializes_with_concurrent_canonical_blob_commit(
     assert not errors
     assert writer_done.is_set()
     assert _put(store)["idempotent"] is True
-    assert len(list(store.blob_root.iterdir())) == 1
+    assert len(list((_root(tmp_path) / "blobs").iterdir())) == 1
 
 
 def test_upload_id_conflict_and_manifest_metadata_conflict_fail_closed(tmp_path):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     attachment = _put(store)
 
     with pytest.raises(AttachmentConflictError):
@@ -145,7 +183,7 @@ def test_failed_replay_rolls_back_only_attachments_transitioned_by_that_attempt(
     tmp_path,
 ):
     db = tmp_path / "state.db"
-    store = HostedRoomAttachmentStore(db)
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     committed = _put(store, upload_id="already-committed")
     new_upload = _put(store, upload_id="new-upload", data=PNG + b"new")
     store.commit_message(
@@ -189,7 +227,7 @@ def test_failed_replay_rolls_back_only_attachments_transitioned_by_that_attempt(
 
 
 def test_image_pdf_text_and_binary_round_trip_with_frozen_recipients(tmp_path):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     image = _put(store)
     pdf = _put(
         store,
@@ -260,7 +298,7 @@ def test_image_pdf_text_and_binary_round_trip_with_frozen_recipients(tmp_path):
     ],
 )
 def test_mime_mismatches_are_rejected(tmp_path, kind, mime, data):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
 
     with pytest.raises(AttachmentError, match="MIME|mime|kind|bytes"):
         _put(store, data=data, kind=kind, mime=mime, name="claimed.dat")
@@ -289,7 +327,7 @@ def test_mime_mismatches_are_rejected(tmp_path, kind, mime, data):
 def test_generic_zip_container_formats_are_accepted_as_opaque_files(
     tmp_path, name, mime
 ):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     container = b"PK\x03\x04" + b"opaque-container-payload"
 
     attachment = _put(
@@ -338,7 +376,7 @@ def test_task_manifest_has_independent_count_and_byte_budgets():
 
 def test_uncommitted_expiry_and_disband_grace_release_deduplicated_blob(tmp_path):
     now = [100.0]
-    store = HostedRoomAttachmentStore(tmp_path / "state.db", clock=lambda: now[0])
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path), clock=lambda: now[0])
     first = _put(store)
     second = _put(store, upload_id="upload-2")
     store.commit_message(
@@ -349,15 +387,15 @@ def test_uncommitted_expiry_and_disband_grace_release_deduplicated_blob(tmp_path
     )
 
     now[0] += UNCOMMITTED_TTL_SECONDS + 1
-    assert store.prune() == 1
-    assert store.stats()["blobs"] == 1
-    assert store.stats()["attachments"] == 1
+    assert _prune(store, now[0]) == 1
+    assert _stats(tmp_path)["blobs"] == 1
+    assert _stats(tmp_path)["attachments"] == 1
 
-    assert store.mark_room_disbanded("room-1") == 1
+    assert _mark_room_disbanded(tmp_path, "room-1", now[0]) == 1
     now[0] += 15 * 60 + 1
-    assert store.prune() == 1
-    assert store.stats()["blobs"] == 0
-    assert not any(store.blob_root.iterdir())
+    assert _prune(store, now[0]) == 1
+    assert _stats(tmp_path)["blobs"] == 0
+    assert not any((_root(tmp_path) / "blobs").iterdir())
     with pytest.raises(AttachmentNotFoundError):
         store.read(
             room_id="room-1",
@@ -366,12 +404,12 @@ def test_uncommitted_expiry_and_disband_grace_release_deduplicated_blob(tmp_path
         )
 
 
-def test_new_upload_reclaims_expired_uncommitted_quota_without_restart(tmp_path):
+def test_new_upload_reclaims_expired_uncommitted_quota_without_restart(tmp_path, monkeypatch):
     now = [100.0]
+    monkeypatch.setattr("persistence.sqlite.gateway.hosted_room_attachments.MAX_ROOM_ATTACHMENT_BYTES", len(PNG))
     store = HostedRoomAttachmentStore(
-        tmp_path / "state.db",
+        storage_handle(tmp_path),
         clock=lambda: now[0],
-        room_quota_bytes=len(PNG),
     )
     _put(store, upload_id="expired")
     now[0] += UNCOMMITTED_TTL_SECONDS + 1
@@ -379,11 +417,11 @@ def test_new_upload_reclaims_expired_uncommitted_quota_without_restart(tmp_path)
     current = _put(store, upload_id="current")
 
     assert current["attachment_id"].startswith("att_")
-    assert store.stats()["attachments"] == 1
+    assert _stats(tmp_path)["attachments"] == 1
 
 
 def test_integrity_check_rejects_tampering_and_symlink_replacement(tmp_path):
-    store = HostedRoomAttachmentStore(tmp_path / "state.db")
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     attachment = _put(store)
     store.commit_message(
         room_id="room-1",
@@ -391,7 +429,7 @@ def test_integrity_check_rejects_tampering_and_symlink_replacement(tmp_path):
         manifest=_manifest(attachment),
         recipient_member_ids=("research",),
     )
-    blob = next(path for path in store.blob_root.iterdir() if path.name.startswith("blob_"))
+    blob = next(path for path in (_root(tmp_path) / "blobs").iterdir() if path.name.startswith("blob_"))
     blob.write_bytes(PNG + b"tampered")
     with pytest.raises(AttachmentIntegrityError):
         store.read(
@@ -415,17 +453,16 @@ def test_integrity_check_rejects_tampering_and_symlink_replacement(tmp_path):
         )
 
 
-def test_room_and_gateway_quotas_are_bounded(tmp_path):
-    room_limited = HostedRoomAttachmentStore(
-        tmp_path / "room.db", room_quota_bytes=len(PNG)
-    )
+def test_room_and_gateway_quotas_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr("persistence.sqlite.gateway.hosted_room_attachments.MAX_ROOM_ATTACHMENT_BYTES", len(PNG))
+    room_limited = HostedRoomAttachmentStore(storage_handle(tmp_path / "room"))
     _put(room_limited)
     with pytest.raises(AttachmentQuotaError, match="room"):
         _put(room_limited, upload_id="upload-2")
 
-    gateway_limited = HostedRoomAttachmentStore(
-        tmp_path / "gateway.db", gateway_quota_bytes=len(PNG)
-    )
+    monkeypatch.undo()
+    monkeypatch.setattr("persistence.sqlite.gateway.hosted_room_attachments.MAX_GATEWAY_BLOB_BYTES", len(PNG))
+    gateway_limited = HostedRoomAttachmentStore(storage_handle(tmp_path / "gateway"))
     _put(gateway_limited)
     with pytest.raises(AttachmentQuotaError, match="gateway"):
         _put(gateway_limited, upload_id="upload-2", data=PNG + b"other")
@@ -440,7 +477,7 @@ def test_base64_decoder_is_bounded_and_rejects_data_urls():
 
 def test_metadata_database_never_contains_blob_bytes_or_paths(tmp_path):
     db = tmp_path / "state.db"
-    store = HostedRoomAttachmentStore(db)
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     attachment = _put(store)
     store.commit_message(
         room_id="room-1",
@@ -457,21 +494,22 @@ def test_metadata_database_never_contains_blob_bytes_or_paths(tmp_path):
     conn.close()
     encoded = repr(row)
     assert repr(PNG) not in encoded
-    assert str(store.root) not in encoded
+    assert str(_root(tmp_path)) not in encoded
 
 
 def test_restart_reconciles_event_commit_and_expires_abandoned_commit(tmp_path):
     now = [100.0]
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     hosted_rooms.create_room(
         db,
+        placement="profile",
         room_id="room-1",
         name="Release",
         members=[{"member_id": "research"}],
         authority_gateway_id="gateway-a",
         now=now[0],
     )
-    store = HostedRoomAttachmentStore(db, clock=lambda: now[0])
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path), clock=lambda: now[0])
     retained = _put(store, upload_id="retained")
     abandoned = _put(store, upload_id="abandoned", data=PNG + b"other")
     store.commit_message(
@@ -491,6 +529,7 @@ def test_restart_reconciles_event_commit_and_expires_abandoned_commit(tmp_path):
     )
     hosted_rooms.append_event(
         db,
+        placement="profile",
         room_id="room-1",
         event_id="event-retained",
         kind="message.user",
@@ -506,7 +545,7 @@ def test_restart_reconciles_event_commit_and_expires_abandoned_commit(tmp_path):
     )
 
     now[0] += UNCOMMITTED_TTL_SECONDS + 1
-    restarted = HostedRoomAttachmentStore(db, clock=lambda: now[0])
+    restarted = HostedRoomAttachmentStore(storage_handle(tmp_path), clock=lambda: now[0])
 
     assert restarted.read(
         room_id="room-1",
@@ -528,7 +567,7 @@ def test_attachment_reads_take_no_write_lock_and_repeat_no_startup(tmp_path):
     import time
 
     db = tmp_path / "state.db"
-    store = HostedRoomAttachmentStore(db)
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     item = _put(store)
     store.commit_message(room_id="room-1", event_id="event-1", manifest=_manifest(item),
                          recipient_member_ids=("research",))
@@ -536,7 +575,7 @@ def test_attachment_reads_take_no_write_lock_and_repeat_no_startup(tmp_path):
     writer.execute("BEGIN IMMEDIATE")
     try:
         started = time.monotonic()
-        saved = HostedRoomAttachmentStore(db).read_range(
+        saved = HostedRoomAttachmentStore(storage_handle(tmp_path)).read_range(
             room_id="room-1", attachment_id=item["attachment_id"], event_id="event-1",
             recipient_member_id="research", offset=0, length=4)
         assert saved.data == PNG[:4]

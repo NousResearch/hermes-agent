@@ -7,12 +7,23 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence.gateway.hosted_rooms import DriverValidationError
+from persistence_assembly import open_persistence, profile_scope
 
 
 ROOM = {"room_id": "room", "name": "Files", "authority_gateway_id": "gw", "authority_epoch": 1,
         "members": [{"member_id": name, "profile": name, "handle": name, "display_name": name}
                     for name in ("alice", "bob", "carol")]}
 PROFILES = ("alice", "bob", "carol")
+
+
+@pytest.fixture(name="room_store")
+def room_store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 def attachment(n):
@@ -30,24 +41,24 @@ def plan(events, **kwargs):
     return discussion.plan_next_task(ROOM, events, local_profiles=PROFILES, **kwargs).task
 
 
-def test_bound_manifest_reconstructs_frozen_input_and_rejects_forgery(tmp_path):
-    db = tmp_path / "state.db"
-    hosted_rooms.create_room(db, **{key: val for key, val in ROOM.items() if key != "authority_epoch"})
-    store = HostedRoomAttachmentStore(db)
+def test_bound_manifest_reconstructs_frozen_input_and_rejects_forgery(tmp_path, room_store):
+    db = room_store
+    hosted_rooms.create_room(db, placement="profile", **{key: val for key, val in ROOM.items() if key != "authority_epoch"})
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path))
     meta = store.put(room_id="room", upload_id="upload", kind="file", name="notes.txt", mime="text/plain", data=b"x")
     meta = {key: meta[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
     store.commit_message_with_receipt(room_id="room", event_id="event-1", manifest=[meta],
                                       recipient_member_ids=list(PROFILES), viewer_access=True, hold_until_event=True)
     raw = event(1, attachments=[meta], text="")
-    hosted_rooms.append_event(db, **{key: val for key, val in raw.items() if key != "seq"}, authority_gateway_id="gw")
-    events = hosted_rooms.read_events(db, room_id="room", since_seq=0)["events"]
+    hosted_rooms.append_event(db, placement="profile", **{key: val for key, val in raw.items() if key != "seq"}, authority_gateway_id="gw")
+    events = hosted_rooms.read_events(db, placement="profile", room_id="room", since_seq=0)["events"]
     task = plan(events, freeze_input_context=True)
     expected = [{**meta, "event_id": "event-1"}]
     assert task.payload["attachments"] == expected
     normalized, _, digest = driver._task_payload(dict(task.payload))
     assert normalized == task.payload
-    driver.admit_task(db, task.identity, payload=normalized, clock=lambda: 10)
-    saved = driver.get_task(db, task.identity)
+    driver.admit_task(room_store, task.identity, placement="profile", payload=normalized, clock=lambda: 10)
+    saved = driver.get_task(room_store, task.identity, placement="profile")
     assert saved["payload"] == normalized
     events.append(event(2, attachments=[attachment(2)]))
     assert discussion.reconstruct_task_plan(ROOM, events, saved, local_profiles=PROFILES) == task
@@ -59,7 +70,7 @@ def test_bound_manifest_reconstructs_frozen_input_and_rejects_forgery(tmp_path):
             discussion.reconstruct_task_plan(ROOM, events, forged, local_profiles=PROFILES)
     for invalid in ([], [{**expected[0], "size": True}], [{**expected[0], "path": "/private"}],
                     [{k: v for k, v in expected[0].items() if k != "event_id"}]):
-        with pytest.raises(driver.DriverValidationError):
+        with pytest.raises(DriverValidationError):
             driver._task_payload({**normalized, "attachments": invalid})
 
 

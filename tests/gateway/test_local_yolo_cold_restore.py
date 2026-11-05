@@ -18,7 +18,7 @@ async def test_cold_restore_keeps_the_persisted_yolo_toggle_and_untoggled_follow
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        return SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+        return SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     first = runner()
     authority = await initialize_session_authority(first, profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')

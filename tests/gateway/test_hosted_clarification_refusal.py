@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from tools import clarify_gateway as clarify_mod
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -71,15 +72,14 @@ def test_clarify_without_an_answering_viewer_is_declined(ask, owner):
     from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
     from gateway.session_authority import LiveSession
     from gateway.session_contract import SessionActor
-    from hermes_state_runtime import admit_session_input, claim_session_input
     forwarded = {'source': 'a2a', 'a2a_identity': ['dev', '', 'peer', 'ctx']}
     (response, answered), elapsed = ask('a2a', request=forwarded)
     assert (response, answered) == (UNDELIVERED_DECLINED, False) and elapsed < 5
-    owner.db.create_session('chat', 'local')
+    seed_session(owner.persistence, 'chat', 'local')
     owner.sessions['chat'] = live = LiveSession(object(), 'route-chat')
-    admit_session_input(owner.db, epoch=owner.epoch, principal_id='automation:route-chat', session_id='chat',
-                        request_id='bot:dm', payload={'text': 'hi', 'local_automation_v1': {'identity': 'bot:dm'}})
-    assert claim_session_input(owner.db, epoch=owner.epoch, session_id='chat')['status'] == 'started'
+    owner.persistence.admissions.admit(epoch=owner.epoch, principal_id='automation:route-chat', session_id='chat',
+                                       request_id='bot:dm', payload={'text': 'hi', 'local_automation_v1': {'identity': 'bot:dm'}})
+    assert owner.persistence.admissions.claim(epoch=owner.epoch, session_id='chat').status == 'started'
     (response, answered), elapsed = ask('cli')
     assert (response, answered) == (UNDELIVERED_DECLINED, False), 'a Bot DM waited for an unseen question'
     assert elapsed < 5

@@ -28,7 +28,8 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 SESSION = "20260918_033413_0665eb"      # the originating (Relay/web-UI) session id
 WORKER_SESSION = "20260918_034333_945a5a"  # the dispatcher-spawned worker's own session
@@ -113,11 +114,8 @@ def served(tmp_path, monkeypatch):
 
 
 def _own_session(home: Path, session_id: str, profile_name: str) -> None:
-    db = SessionDB(home / "state.db")
-    try:
-        db.create_session(session_id, source="webui", profile_name=profile_name)
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, session_id, "webui", profile_name=profile_name)
 
 
 def _make_runner(*, adapter=None, routes=None, builder_adapters=None):
@@ -232,16 +230,13 @@ def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(
     from gateway.platforms.api_server import APIServerAdapter, _api_request_profile
 
     parent, tip = "20260918_010000_parent", "20260918_020000_tip"
-    db = SessionDB(served.builder / "state.db")
-    try:
-        db.create_session(parent, source="webui", profile_name="builder")
-        db.append_message(parent, "user", "old turn")
-        db.end_session(parent, "compression")
-        db.create_session(tip, source="webui", profile_name="builder", parent_session_id=parent)
-        db.append_message(tip, "user", "live turn")
-        assert db.resolve_resume_session_id(parent) == tip, "fixture must produce a live tip"
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=served.builder)) as store:
+        seed_session(store, parent, "webui", profile_name="builder")
+        seed_messages(store, parent, {"role": "user", "content": "old turn"})
+        store.sessions.end(parent, "compression")
+        seed_session(store, tip, "webui", profile_name="builder", parent_session_id=parent)
+        seed_messages(store, tip, {"role": "user", "content": "live turn"})
+        assert store.lineage.resolve_resume_target(parent) == tip, "fixture must produce a live tip"
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     # A model_routes alias for the virtual model must apply to the wake turn as it does to the

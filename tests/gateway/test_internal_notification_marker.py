@@ -13,7 +13,7 @@ Covered:
 2. a real user event does NOT get the marker;
 3. the gateway-side fallback user rows (transient-failure / no-new-messages
    paths) carry the marker for internal events only;
-4. a marked row round-trips through SessionDB replay with role='user' intact
+4. a marked row round-trips through the store's replay with role='user' intact
    and the marker is stripped from provider-bound payload copies.
 """
 
@@ -246,22 +246,26 @@ async def test_no_new_messages_fallback_row_is_marked_for_internal_event(
 def test_marked_row_replays_cleanly_and_never_reaches_provider(tmp_path):
     """A marked row persists, resumes with role='user' + marker intact, and
     the provider-bound copy built by conversation_loop drops the marker."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(tmp_path / "state.db")
     sid = "sess-82888-replay"
-    db.create_session(session_id=sid, source="gateway", model="test-model")
-    try:
-        db.append_message(
-            session_id=sid,
-            role="user",
-            content="[ASYNC DELEGATION BATCH COMPLETE — 2/2 succeeded]",
-            display_kind="internal_notification",
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, sid, "gateway", model="test-model")
+        seed_messages(
+            store,
+            sid,
+            {
+                "role": "user",
+                "content": "[ASYNC DELEGATION BATCH COMPLETE — 2/2 succeeded]",
+                "display_kind": "internal_notification",
+            },
+            {"role": "assistant", "content": "noted"},
         )
-        db.append_message(session_id=sid, role="assistant", content="noted")
 
         # Session resume/load tolerates the extra key and keeps role='user'.
-        replayed = db.get_messages_as_conversation(sid)
+        replayed = conversation(store, sid)
         user_row, = [m for m in replayed if m["role"] == "user"]
         assert user_row["display_kind"] == "internal_notification"
         assert user_row["content"].startswith("[ASYNC DELEGATION BATCH COMPLETE")
@@ -282,5 +286,3 @@ def test_marked_row_replays_cleanly_and_never_reaches_provider(tmp_path):
         assert "display_metadata" not in api_msg
         assert api_msg["role"] == "user"
         assert user_row["display_kind"] == "internal_notification"
-    finally:
-        db.close()

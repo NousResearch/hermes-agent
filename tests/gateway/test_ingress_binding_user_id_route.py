@@ -8,7 +8,7 @@ it never passed ``user_id``, and ``ProfileRoute.matches`` returns ``False`` for 
 that declares a ``user_id`` when none is supplied. The ``user_id`` route therefore
 cannot match there, a catch-all route wins, and the final
 ``(source.profile or primary) != runtime_profile`` check raises
-``RuntimeStoreError('profile_mismatch')`` — every normal DM from that sender is refused
+``AuthorityRefusal('profile_mismatch')`` — every normal DM from that sender is refused
 while the same gateway's inbound filter has just accepted it.
 
 Without the fix ``capture_provenance`` raises ``profile_mismatch``; with it, the same
@@ -29,7 +29,8 @@ from gateway.session import SessionSource
 from gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import close_stores_under
 
 
 class _FakeAdapter:
@@ -45,9 +46,6 @@ def _reserve_homes(tmp_path, monkeypatch, names=("guest",)):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(root))
-    import hermes_state
-    monkeypatch.setattr(
-        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [("default", root)]
     for name in names:
         home = root / "profiles" / name
@@ -98,7 +96,7 @@ async def _admit_and_read_provenance(tmp_path, monkeypatch, user_id):
         return provenance, homes, stamped
     finally:
         for authority in list(getattr(runner, "session_authorities", []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)
 

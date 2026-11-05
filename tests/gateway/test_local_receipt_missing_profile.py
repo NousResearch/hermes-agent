@@ -2,7 +2,9 @@
 import json
 
 import pytest
+from persistence_assembly import close_stores_under
 
+from tests.fixtures.storage_holder import policy_key, raw_holder
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 # How each variant ages the receipt once its origin lost ``profile`` (``missing`` keeps just that).
@@ -16,6 +18,11 @@ _AGED = {
 }
 
 
+def _receipt(store, session_id):
+    """The stored creation receipt as the JSON object it was written."""
+    return json.loads(store.state_meta.get(policy_key(session_id)))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('variant', ['current', 'missing', 'null', 'foreign', 'route', 'home', 'user'])
 async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, monkeypatch, variant):
@@ -26,7 +33,6 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import POLICY_PREFIX, local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -43,28 +49,28 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'old-desktop', 'source': 'gui',
                 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
-        receipt = local_receipt(authority.db, ref.session_id)
+        receipt = _receipt(authority.persistence, ref.session_id)
         original = json.loads(json.dumps(receipt))
         if variant != 'current':
             receipt['entry']['origin'].pop('profile')
             _AGED[variant](receipt, root)
-            authority.db._execute_write(lambda conn: conn.execute(
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
                 'UPDATE state_meta SET value=? WHERE key=?',
-                (json.dumps(receipt), POLICY_PREFIX + ref.session_id)))
+                (json.dumps(receipt), policy_key(ref.session_id))))
         for owner in first.session_authorities:
-            owner.db.close()
+            close_stores_under(owner.persistence.scope.profile_dir)
 
         second = _runner(root, homes)
         runners.append(second)
         await initialize_gateway_runtime(second)
         restored = second.session_authorities.for_home(home)
         if variant not in ('current', 'missing'):
-            from hermes_state_runtime import RuntimeStoreError
+            from persistence.core.errors import AuthorityRefusal
             assert ref.session_id not in restored.sessions
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 restore_local_session(restored, ref.session_id)
-            assert local_receipt(restored.db, ref.session_id) == receipt
-            assert second.session_authorities.launch.db.get_session(ref.session_id) is None
+            assert _receipt(restored.persistence, ref.session_id) == receipt
+            assert second.session_authorities.launch.persistence.sessions.get(ref.session_id) is None
             return
         assert ref.session_id in restored.sessions, 'owned legacy receipt was paused on cold recovery'
         with _profile_runtime_scope(home, {}):
@@ -72,11 +78,11 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         live = restored.sessions[ref.session_id]
         assert live.source.profile == 'alpha'
         assert live.route == original['route']
-        assert second.session_authorities.launch.db.get_session(ref.session_id) is None
-        assert local_receipt(restored.db, ref.session_id)['policy'] == original['policy']
+        assert second.session_authorities.launch.persistence.sessions.get(ref.session_id) is None
+        assert restored.persistence.bindings.receipt(ref.session_id).policy == original['policy']
     finally:
         for runner in runners:
             for owner in getattr(runner, 'session_authorities', ()):
-                owner.db.close()
+                close_stores_under(owner.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

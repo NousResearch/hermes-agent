@@ -55,7 +55,7 @@ def _read_record_incumbent(store, boot_id: str) -> tuple[str, str]:
             return ("", "")
         # An old-boot record still names who we would have collided with, so it is reported the same way.
         return (rec.controller_id, rec.engine)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- decorates a shadow record only; ("", "") is the honest "unknown", and the caller still logs the decision it really made
         return ("", "")
 
 
@@ -117,7 +117,7 @@ def _record_shadow_residency(*, engine: str, backend: str, model_count: int, act
     except Exception as exc:
         # Deliberately no line for this: the file is an audit of what admission WOULD have decided about real engines, and a line written by a
         # broken hook is not such an observation. The log is where a broken shadow hook belongs.
-        logger.warning("residency shadow hook failed (%s); booting regardless", exc)
+        logger.warning("residency shadow hook failed (%s); booting regardless", exc, exc_info=True)
         return
     _append_shadow_record(record)
     logger.info("residency shadow: boot would have seen %s (%s); action=%s",

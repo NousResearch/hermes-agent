@@ -112,15 +112,14 @@ def bootable(tmp_path, monkeypatch):
 
         def start(self, timeout_s=120):
             spawns.append(1)
-            time.sleep(0.4)                 # widen the window a racing caller boots into
-            # publish what a real router publishes, so the second caller adopts instead of spawning
+            # publish what a real router publishes, so a second caller adopts instead of spawning
             _publish_live_state(sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
 
         def stop(self):
             pass
 
     monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
-    return {"spawns": spawns, "bootstrap": bootstrap}
+    return {"spawns": spawns, "bootstrap": bootstrap, "sup_mod": sup_mod}
 
 
 def _publish_live_state(path, *, base_url, api_key):
@@ -249,20 +248,31 @@ def test_a_shadow_record_is_one_line_of_valid_json_with_no_secrets(bootable):
     assert str(bootable["bootstrap"].runtimes_root()) not in raw, raw
 
 
-def test_two_racing_boots_write_one_shadow_line_each(bootable):
-    """One line per boot attempt, including the loser that adopts: a human must be able to count boots in this file."""
+def test_the_adopting_boot_records_its_line_too(bootable, monkeypatch):
+    """One line per boot attempt, including the one that adopts another router instead of spawning.
+
+    Deterministic on purpose: a two-thread version can only demonstrate adoption by winning a race
+    (core's own concurrency suite owns that), and a test that passes twice in three tries is worse
+    than no test. Here the incumbent is simply declared to exist."""
     b = bootable["bootstrap"]
-    results, barrier = [], threading.Barrier(2)
+    sup_mod = bootable["sup_mod"]
+    _publish_live_state(sup_mod.state_path(), base_url="http://127.0.0.1:18471/v1", api_key="k")
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+                        lambda: {"base_url": "http://127.0.0.1:18471/v1", "api_key": "k",
+                                 "engine": "b7", "backend": "metal"})
+    monkeypatch.setattr(b, "_presets_stale", lambda: False)
+    monkeypatch.setattr(b, "_SUPERVISOR", None)
 
-    def _boot():
-        barrier.wait()
-        results.append(b.ensure_local_runtime({"local_runtime": {"enabled": True, "residency_mode": "shadow"}}))
-
-    threads = [threading.Thread(target=_boot) for _ in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=20)
+    assert b.ensure_local_runtime({"local_runtime": {"enabled": True, "residency_mode": "shadow"}}) is None
+    assert bootable["spawns"] == [], "the adopting boot must not spawn a second router"
     lines = _shadow_lines(b)
-    assert len(lines) == 2, lines
-    assert sorted(line["action"] for line in lines) == ["adopt", "boot_anyway"], lines
+    assert len(lines) == 1, lines
+    assert lines[0]["action"] == "adopt", lines
+    # what the boot *saw* lives in engine/backend; incumbent_* is admission's view of who holds the
+    # slot, and in this fixture nobody acquired it - an empty one here is honest, not missing.
+    assert (lines[0]["engine"], lines[0]["backend"]) == ("b7", "metal"), lines
+    assert lines[0]["decision"] == "would_grant", lines
+
+    monkeypatch.setattr(b, "_SUPERVISOR", None)
+    assert b.ensure_local_runtime({"local_runtime": {"enabled": True}}) is None
+    assert len(_shadow_lines(b)) == 1, "with residency off, the adopting boot records nothing either"

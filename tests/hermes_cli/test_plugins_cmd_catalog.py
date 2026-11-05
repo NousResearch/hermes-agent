@@ -398,6 +398,18 @@ def test_plugin_pack_install_refuses_a_recalled_plugin(world):
     assert "cat-plugin" not in pc._get_enabled_set()
 
 
+def test_plugin_pack_refuses_a_bare_name_whose_catalog_name_is_recalled(world, monkeypatch):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, install_pack_plugins, resolve_pack_plugins
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [pc_cat.PluginCatalogEntry(
+        name="cat-entry", repo=world["repo"].as_uri(), sha=world["sha1"], description="d", maintainer="t")])
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="cat-entry", reason="malware"))
+    pack = PluginPack(name="p", plugins=[PackPluginEntry(ref=world["sha1"], name="cat-entry")])
+    results = install_pack_plugins(pack, resolve_pack_plugins(pack), pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
 def test_dashboard_enable_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
     _recall_after_install(world, tmp_path, monkeypatch)
     result = pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)

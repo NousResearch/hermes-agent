@@ -445,6 +445,21 @@ def _normalize_tool_call_id(tool_call_id: Any) -> Any:
     return tool_call_id
 
 
+def latest_user_task(messages: list[dict[str, Any]] | None) -> str:
+    """Return the exact latest string user turn for request-local dispatch.
+
+    Mutation-capable registered tools may bind their work to the user message
+    that triggered this turn. Derive that value from the in-flight conversation
+    rather than process environment or a session-level task. Non-string content
+    fails closed because it cannot be matched exactly to a durable text row.
+    """
+    for message in reversed(messages or []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content")
+            return content if isinstance(content, str) else ""
+    return ""
+
+
 def make_tool_result_message(
     name: str,
     content: Any,

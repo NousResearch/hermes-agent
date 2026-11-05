@@ -52,3 +52,26 @@ def test_at_file_bare_without_colon_lists_files(tmp_path, monkeypatch):
 
     assert any(t == "@file:readme.md" for t in texts), texts
     assert not any(t == "@file:src/" for t in texts)
+
+
+def test_project_file_completion_does_not_request_global_mtime_sort(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("hermes_cli.commands_completion.shutil.which", lambda name: "/usr/bin/rg")
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "src/main.py\n"
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr("hermes_cli.commands_completion.subprocess.run", run)
+    completer = SlashCommandCompleter.__new__(SlashCommandCompleter)
+    completer._file_cache = []
+    completer._file_cache_cwd = None
+    completer._file_cache_time = 0.0
+
+    assert completer._get_project_files() == ["src/main.py"]
+    assert calls == [["rg", "--files", str(tmp_path)]]

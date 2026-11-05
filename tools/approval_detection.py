@@ -66,6 +66,9 @@ _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
 # one whitespace character; keeping that means this fix changes no approval decision.
 _CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+# Flags inside a `hermes <group> <verb>` path: the _GLOBAL_FLAGS grammar, but a flag word may be quoted
+# ("-p" work). Rules repeat it between the path's words because -p/--profile works anywhere before `--`.
+_HERMES_FLAGS = r'(?:["\']?-\S++(?:\s++(?!["\']?-\S)\S++)?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -486,11 +489,12 @@ DANGEROUS_PATTERNS = [
     (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Extension installs and source trust load code or instructions into future sessions.
-    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'["\']?(?:'
-     r'skills["\']?\s+["\']?(?:install|update|trust|tap["\']?\s+["\']?add|snapshot["\']?\s+["\']?import)'
-     r'|plugins["\']?\s+["\']?(?:install|update|enable|adopt|trust-update-url|pack["\']?\s+["\']?install'
-     r'|validate["\']?\s+[^;&|\n]*(?<!\S)--install-deps)'
-     r')(?![\w-])',
+    (r'\bhermes\s+' + _HERMES_FLAGS + r'["\']?(?:'
+     + r'skills["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|trust'
+     + r'|tap["\']?\s+' + _HERMES_FLAGS + r'["\']?add|snapshot["\']?\s+' + _HERMES_FLAGS + r'["\']?import)'
+     + r'|plugins["\']?\s+' + _HERMES_FLAGS + r'["\']?(?:install|update|enable|adopt|trust-update-url'
+     + r'|pack["\']?\s+' + _HERMES_FLAGS + r'["\']?install|validate["\']?\s+[^;&|\n]*(?<!\S)["\']?--install-deps)'
+     + r')(?![\w-])',
      "install, enable or trust a skill or plugin (code and instructions every session loads)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval

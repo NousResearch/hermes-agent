@@ -31,7 +31,16 @@ DESC = "install, enable or trust a skill or plugin (code and instructions every 
     "hermes plugins adopt x",
     "hermes plugins validate . --install-deps",
     "hermes plugins validate --install-deps .",
+    'hermes plugins validate . "--install-deps"',
+    "hermes plugins validate '--install-deps' .",
     "cd /x && hermes skills install foo",
+    # -p/--profile is accepted anywhere before `--`, and a quoted flag word reaches argparse unquoted.
+    "hermes skills -p work install foo",
+    'hermes "-p" work skills install foo',
+    "hermes skills tap --profile work add owner/repo",
+    "hermes skills snapshot -p work import s.json",
+    "hermes plugins --profile=work enable x",
+    "hermes plugins pack -p work install p.yaml",
 ])
 def test_extension_mutation_requires_approval(command):
     assert detect_dangerous_command(command) == (True, DESC, DESC)
@@ -61,6 +70,8 @@ def test_extension_mutation_requires_approval(command):
     "hermes plugins pack show p.yaml",
     "hermes plugins pack export",
     "hermes plugins validate .",
+    "hermes skills -p work list",
+    'hermes "-p" work plugins disable x',
     "hermes skills install-local foo",
     "hermes plugins install-local x",
     "hermes skills tap add-local owner/repo",

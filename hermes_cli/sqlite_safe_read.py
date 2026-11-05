@@ -13,6 +13,7 @@ import logging
 import os
 import sqlite3
 import threading
+import weakref
 from pathlib import Path
 from typing import Optional
 
@@ -108,6 +109,7 @@ class _TrackingMixin:
     """
 
     _hermes_tracked_path: str | None = None
+    _hermes_untrack_finalizer: weakref.finalize | None = None
 
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
@@ -118,6 +120,9 @@ class _TrackingMixin:
             super().close()  # type: ignore[misc]
             if path is not None:
                 self._hermes_tracked_path = None
+                finalizer = getattr(self, "_hermes_untrack_finalizer", None)
+                if finalizer is not None:
+                    finalizer.detach()  # this close() untracks; the collector must not untrack again
                 untrack_connection(path)
 
 
@@ -167,6 +172,11 @@ def connect_tracked(
                 conn = _retrofit_tracking(conn, resolved)
             conn._hermes_tracked_path = resolved
             _track_key(resolved)
+            try:
+                _untrack_when_collected(conn, resolved)
+            except Exception:
+                _track_key(resolved, -1)  # the unwind below closes without untracking
+                raise
             return conn
         except Exception:
             try:
@@ -176,6 +186,26 @@ def connect_tracked(
             except Exception:
                 pass
             raise
+
+
+def _untrack_collected(key: str) -> None:
+    with _live_lock:
+        _track_key(key, -1)
+
+
+def _untrack_when_collected(conn: sqlite3.Connection, key: str) -> None:
+    """Release *conn*'s registry entry if it is garbage-collected without ``close()`` (#149291).
+
+    Without this, a dropped connection stays "live" for the life of the process and every
+    :func:`offline_file_access` on its path is refused. Attached only after ``_track_key`` so it
+    never releases a count that was not taken. The callback can run on any thread mid-collection;
+    ``_live_lock`` is reentrant, so a collection on a thread that already holds it still proceeds.
+    Weakref callbacks run before ``sqlite3.Connection`` deallocates, so the entry is released just
+    before the descriptor closes. The connection is already unreachable then, so nothing can rely on
+    its locks during that gap."""
+    finalizer = weakref.finalize(conn, _untrack_collected, key)
+    finalizer.atexit = False  # at interpreter exit the registry no longer matters
+    conn._hermes_untrack_finalizer = finalizer
 
 
 def _retrofit_tracking(conn: sqlite3.Connection, resolved: str) -> sqlite3.Connection:

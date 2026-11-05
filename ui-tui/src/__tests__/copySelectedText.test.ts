@@ -17,9 +17,16 @@ it('uses the local clipboard, falling back to OSC 52 when native copying is unav
   const nativeCopy = vi.spyOn(clipboard, 'writeClipboardText').mockResolvedValueOnce(true).mockResolvedValueOnce(false)
   const remoteCopy = vi.spyOn(osc52, 'writeOsc52Clipboard').mockReturnValue(true)
 
-  await copySelectedText('local selection')
+  await expect(copySelectedText('local selection')).resolves.toBe('clipboard')
   expect(nativeCopy).toHaveBeenCalledWith('local selection')
   expect(remoteCopy).not.toHaveBeenCalled()
-  await copySelectedText('fallback selection')
+  await expect(copySelectedText('fallback selection')).resolves.toBe('terminal')
   expect(remoteCopy).toHaveBeenCalledExactlyOnceWith('fallback selection')
+})
+
+it('treats a buffered terminal write as sent, rather than as a failed clipboard request', async () => {
+  vi.stubEnv('SSH_CONNECTION', '127.0.0.1 1234 127.0.0.1 22')
+  vi.spyOn(osc52, 'writeOsc52Clipboard').mockReturnValue(false)
+
+  await expect(copySelectedText('buffered selection')).resolves.toBe('terminal')
 })

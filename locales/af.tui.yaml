@@ -218,6 +218,7 @@ common.no: "nee"
 common.unknown: "onbekend"
 common.yes: "ja"
 
+composer.copySentToTerminal: "Kopie na terminaal gestuur · plak om te bevestig"
 composer.interruptHint: "Ctrl+C om te onderbreek…"
 composer.pasteCollapseHint: "wysig geplakte teks · Ctrl+P vou toe"
 composer.pasteExpandHint: "Ctrl+P vou plaksel oop om te lees / wysig"

@@ -218,6 +218,7 @@ common.no: "níl"
 common.unknown: "anaithnid"
 common.yes: "tá"
 
+composer.copySentToTerminal: "Cóip seolta chuig an teirminéal · greamaigh lena fíorú"
 composer.interruptHint: "Ctrl+C le briseadh isteach…"
 composer.pasteCollapseHint: "ag eagarthóireacht téacs greamaithe · Ctrl+P laghdaigh"
 composer.pasteExpandHint: "Ctrl+P leathnaigh an greamú le léamh / eagarthóireacht"

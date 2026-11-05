@@ -264,6 +264,11 @@ macOS and leaves it off elsewhere (the OS running Hermes determines the default,
 not the computer viewing it). Changes are picked up by the TUI's config reload.
 Remote copying requires a terminal that allows OSC 52 clipboard writes. Mouse
 tracking must support dragging (`buttons` or `all`) for TUI text selections.
+After a completed copy, a brief blue confirmation appears above the input, even
+while an agent is working. Remote copies say "Copy sent to terminal · paste to
+verify": the terminal still has to accept the clipboard request. Confirmed native
+composer copies use the existing "copied to clipboard" message. The confirmation
+shares the existing spacer, so it does not move your selection or the transcript.
 
 Runtime toggles:
 

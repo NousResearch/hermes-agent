@@ -5,6 +5,7 @@ import { useStore } from '@nanostores/react'
 import React from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { $copyFeedback, clearCopyFeedback } from '../app/copyFeedbackStore.js'
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import { applyDisplay } from '../app/useConfigSync.js'
 import { useCopyOnSelect } from '../app/useCopyOnSelect.js'
@@ -13,6 +14,7 @@ import * as clipboard from '../lib/clipboard.js'
 import * as osc52 from '../lib/osc52.js'
 
 afterEach(() => {
+  clearCopyFeedback()
   resetUiState()
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
@@ -84,6 +86,7 @@ it('copies completed transcript selections once, keeps the highlight, and honors
     notify()
     expect(copy).toHaveBeenCalledOnce()
     expect(selected).toBe(true)
+    await vi.waitFor(() => expect($copyFeedback.get()).toBe('terminal'))
     selected = false
     version += 1
     notify()
@@ -122,6 +125,7 @@ it('copies composer drags to the SSH terminal on release only, and respects opt-
     mouseApiRef.current!.end()
     expect(remoteCopy).toHaveBeenCalledExactlyOnceWith('hello')
     expect(nativeCopy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($copyFeedback.get()).toBe('terminal'))
 
     configure(false)
     mouseApiRef.current!.startAtBeginning()

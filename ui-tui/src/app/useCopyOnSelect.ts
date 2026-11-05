@@ -1,6 +1,8 @@
 import type { useSelection } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
+import { runCopyWithFeedback } from './copyFeedbackStore.js'
+
 type CopySelection = Pick<
   ReturnType<typeof useSelection>,
   'copySelectionNoClear' | 'getState' | 'hasSelection' | 'subscribe' | 'version'
@@ -33,7 +35,7 @@ export function useCopyOnSelect(selection: CopySelection, enabled: boolean) {
       }
 
       lastCopiedVersion.current = version
-      void selection.copySelectionNoClear()
+      void runCopyWithFeedback(async () => ((await selection.copySelectionNoClear()) ? 'terminal' : null))
     })
   }, [enabled, selection])
 }

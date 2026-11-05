@@ -218,6 +218,7 @@ common.no: "no"
 common.unknown: "desconocido"
 common.yes: "sí"
 
+composer.copySentToTerminal: "Copia enviada al terminal · pega para verificar"
 composer.interruptHint: "Ctrl+C para interrumpir…"
 composer.pasteCollapseHint: "editando texto pegado · Ctrl+P contrae"
 composer.pasteExpandHint: "Ctrl+P expande lo pegado para leer / editar"

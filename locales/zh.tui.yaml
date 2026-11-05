@@ -218,6 +218,7 @@ common.no: "否"
 common.unknown: "未知"
 common.yes: "是"
 
+composer.copySentToTerminal: "已向终端发送复制请求 · 粘贴以确认"
 composer.interruptHint: "Ctrl+C 中断…"
 composer.pasteCollapseHint: "正在编辑粘贴的文本 · Ctrl+P 折叠"
 composer.pasteExpandHint: "Ctrl+P 展开粘贴内容以阅读 / 编辑"

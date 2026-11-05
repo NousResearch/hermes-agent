@@ -218,6 +218,7 @@ common.no: "nein"
 common.unknown: "unbekannt"
 common.yes: "ja"
 
+composer.copySentToTerminal: "Kopieranfrage ans Terminal gesendet · zum Prüfen einfügen"
 composer.interruptHint: "Ctrl+C zum Unterbrechen…"
 composer.pasteCollapseHint: "eingefügter Text wird bearbeitet · Ctrl+P zuklappen"
 composer.pasteExpandHint: "Ctrl+P Einfügung aufklappen zum Lesen / Bearbeiten"

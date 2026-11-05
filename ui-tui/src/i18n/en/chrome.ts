@@ -19,6 +19,7 @@ export const chromeEn = {
     fast: 'fast'
   },
   composer: {
+    copySentToTerminal: 'Copy sent to terminal · paste to verify',
     interruptHint: 'Ctrl+C to interrupt…',
     pasteExpandHint: 'Ctrl+P expand paste to read / edit',
     pasteCollapseHint: 'editing pasted text · Ctrl+P collapse',

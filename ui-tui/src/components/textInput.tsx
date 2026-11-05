@@ -2,6 +2,7 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
+import { runCopyWithFeedback } from '../app/copyFeedbackStore.js'
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
 import { getUiState } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
@@ -1378,7 +1379,9 @@ export function TextInput({
     const normalized = selRange()
 
     if (!mask && getUiState().copyOnSelect && normalized) {
-      void copySelectedText(vRef.current.slice(normalized.start, normalized.end))
+      const text = vRef.current.slice(normalized.start, normalized.end)
+
+      void runCopyWithFeedback(() => copySelectedText(text))
     }
   }
 

@@ -199,6 +199,34 @@ def test_stop_during_the_router_call_discards_its_answer(tmp_path, answers):
     assert _kinds(service, "room.routed") == [] and _queued(service) == []
 
 
+def test_stop_between_the_answer_check_and_its_write_records_no_route(tmp_path, answers):
+    """Stop appends without the policy lock: one landing after the answer's re-plan must not get a
+    route recorded over it."""
+    service = _service(tmp_path)
+    _room(service)
+    release = threading.Event()
+
+    def slow(**_kwargs):
+        assert release.wait(10)
+        return ("build",)
+    answers.script.append(slow)
+    _send(service, "m1", "Fix CI")
+    gateway_id, epoch = service._owned_authority(ROOM_ID)
+    read, stopped = service._policy_snapshot, []
+
+    def snapshot(room):
+        result = read(room)
+        if threading.current_thread().name.startswith("hosted-room-router") and not stopped:
+            stopped.append(hosted_rooms.request_room_stop(
+                service.db_path, room_id=ROOM_ID, cancel_id="stop-gap", expected_gateway_id=gateway_id,
+                expected_epoch=epoch))
+        return result
+    service._policy_snapshot = snapshot
+    release.set()
+    _wait_router(service)
+    assert stopped and _kinds(service, "room.routed") == []
+
+
 @pytest.mark.parametrize("routing", ["everyone", "lead"])
 def test_legacy_rooms_never_call_the_router(tmp_path, answers, routing):
     service = _service(tmp_path)

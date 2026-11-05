@@ -305,3 +305,29 @@ def test_treeless_checkout_still_outranks_a_doc_fetched_before_the_bump(tmp_path
         os.utime(p, (0, 0))
     monkeypatch.setattr(pc, "_in_tree_catalog_time", -1.0)
     assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old
+
+
+def test_search_matches_the_maintainer_handle_the_desktop_search_already_matches(tmp_path):
+    """Someone who cannot recall a plugin's name searches the handle they heard it from
+    ("skappafrost") — a query the Desktop catalog search (``web/src/pages/PluginsPage.tsx``) already
+    answers. Python-side search ran over name/description/declared tools only, so the same query hit
+    in the app and returned an empty list through the ``manage_catalog`` tool and
+    ``hermes plugins search``. The field set is the parity contract: keep it closed here rather than
+    widening it silently."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry(
+        "gemini-live", maintainer="skappafrost", description="duplex voice",
+        capabilities={"provides_tools": ["hermes_task"]})))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("other", maintainer="someone-else")))
+    entries = {e.name: e for e in pc.load_catalog(tmp_path)}
+
+    assert set(pc.search_haystacks(entries["gemini-live"])) == {
+        "gemini-live", "duplex voice", "skappafrost", "hermes_task"}
+    assert [e.name for e in pc.filter_entries(list(entries.values()), "skappafrost")] == ["gemini-live"]
+    assert [e.name for e in pc.filter_entries(list(entries.values()), "SkappaFrost")] == ["gemini-live"]
+
+    # ``repo`` is deliberately not a field: 599 of the catalog's 600 entries sit on one git host, so
+    # the URL would make that host's own name match nearly the whole catalog. Both entries here are on it.
+    assert pc.filter_entries(list(entries.values()), "github.com") == []
+    # An unmatched query stays empty, and the empty query still means "everything".
+    assert pc.filter_entries(list(entries.values()), "zzzz") == []
+    assert len(pc.filter_entries(list(entries.values()), "")) == len(entries)

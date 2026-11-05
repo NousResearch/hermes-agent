@@ -94,6 +94,21 @@ def _warn_checkpoint_required_without_capable_provider(agent: Any) -> None:
     )
 
 
+def _refuse_checkpoint_required_on_codex_app_server(checkpoint_required: bool, api_mode: str | None) -> None:
+    """Fail closed at init: the codex app-server compacts its own thread without a truthful
+    pre-compaction boundary (default "native" mode), so a required checkpoint can't be
+    guaranteed — the compress_context() guard alone cannot cover native turns."""
+    if checkpoint_required and api_mode == "codex_app_server":
+        raise RuntimeError(
+            "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
+            "is incompatible with the codex_app_server API mode: the codex "
+            "agent compacts its own thread without a truthful pre-compaction "
+            "transcript boundary, so a required pre-compress checkpoint "
+            "cannot be guaranteed. Disable compression.checkpoint_required "
+            "or use a non-app-server API mode."
+        )
+
+
 def checkpoint_required_from_config() -> bool:
     """Whether ``compression.checkpoint_required`` is armed, for sites that decide before an agent exists.
 

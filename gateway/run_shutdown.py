@@ -1093,41 +1093,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
-        # EVERY served profile's home channel, through that profile's OWN bot: ``self.adapters`` and
-        # ``self.config`` are the launch profile's alone, so iterating them left the secondaries'
-        # channels silent (#118233). ``list(...)`` snapshots the adapter maps: adapter.send() can hit
-        # a fatal path (_handle_fatal) that pops the adapter -> "dictionary changed size during iteration".
-        profile_adapters = getattr(self, "_profile_adapters", None) or {}
-        for profile, platform, platform_cfg in list(self._served_home_channel_configs()):
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
-                continue
-            adapter = (self.adapters if profile is None else profile_adapters.get(profile) or {}).get(platform)
-            if adapter is None:
-                continue
-            if not self._notice_allowed(platform, "home channel", platform_cfg):
-                continue
-            dedup_key = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
-            if dedup_key in notified:
-                continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
-                if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value, metadata=metadata,
-                ):
-                    notified.add(dedup_key)
-            from gateway.warning_notifications import present_notification
-            from gateway.run import _async_profile_runtime_scope
-            # present_notification reads the ACTIVE profile's display settings: bind the served one's.
-            profile_home = (getattr(self, "_served_profile_homes", None) or {}).get(profile) if profile else None
-            async with _async_profile_runtime_scope(profile_home) if profile_home else nullcontext():
-                await present_notification(_send_home, platform=platform)
+        from gateway.run_shutdown_home import broadcast_home_shutdown_notice
+        await broadcast_home_shutdown_notice(self, msg, notified)
 
     # Agent finalization / resource cleanup
     @staticmethod

@@ -190,3 +190,41 @@ class TestFireOverdueJobs:
         assert fire_overdue_jobs(provider) == 1
         assert provider.wait_fired()
         assert provider.fired == [job["id"]]
+
+    def test_fire_thread_inherits_the_sweeping_profile_scope(self, tmp_path):
+        """Regression: the catch-up fire thread must inherit the sweep's profile context.
+
+        A raw thread starts with an EMPTY contextvars context, so the fire resolved
+        home — and with it secrets, config and the spawned worker's HERMES_HOME — at
+        the LAUNCH profile's value (or the env default), not the profile whose store
+        the sweep was walking. Under a multiplexed gateway profile B's overdue job
+        ran under profile A's home.
+        """
+        from cron.jobs import use_cron_store
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_b = tmp_path / "profiles" / "b"
+        (profile_b / "cron").mkdir(parents=True)
+        seen = {}
+
+        class HomeRecordingProvider(RecordingProvider):
+            def fire_claimed(self, claimed_job, **kw):
+                seen[claimed_job["id"]] = str(get_hermes_home().resolve())
+                return super().fire_claimed(claimed_job, **kw)
+
+        token = set_hermes_home_override(str(profile_b))
+        try:
+            with use_cron_store(profile_b):
+                job = create_job(prompt="p", schedule="every 1h")
+                _park_in_past(job["id"], minutes=30)
+            provider = HomeRecordingProvider()
+            assert fire_overdue_jobs(provider) == 1
+            assert provider.wait_fired()
+        finally:
+            reset_hermes_home_override(token)
+
+        assert seen.get(job["id"]) == str(profile_b.resolve())

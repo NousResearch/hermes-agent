@@ -707,11 +707,37 @@ _OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(room_id, member_id, grant_digest) DO NOTHING"""
 
 
+# Owed revokes are bounded however many grants a caller hands in: an expiry is read from the grant's
+# unsigned payload, so it is capped at the longest status horizon a member gateway signs; a member
+# keeps at most a few (its scope revocation covers every grant issued before it, so the longest-lived
+# one is enough); the table has a ceiling; and a revoke that never lands is dropped after its
+# backed-off attempts, about two days at the hourly ceiling (``settle_room_grant_revoke``).
+MAX_OWED_REVOKE_SECONDS = 30 * 24 * 60 * 60
+MAX_OWED_REVOKES_PER_MEMBER = 4
+MAX_OWED_REVOKES = 512
+MAX_OWED_REVOKE_ATTEMPTS = 48
+
+
 def _owe_revoke_locked(
     conn: sqlite3.Connection, *, room_id: str, member_id: str, target_url: str, grant: str,
     expires_at: float, now: float, held: bool = False) -> None:
+    expires_at = min(float(expires_at), now + MAX_OWED_REVOKE_SECONDS)
+    digest = grant_digest(grant)
+    member = (room_id, member_id)
+    if conn.execute("SELECT 1 FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
+                    (*member, digest)).fetchone() is not None:
+        return
+    rows = conn.execute("""SELECT grant_digest, expires_at FROM hosted_room_owed_revokes
+            WHERE room_id=? AND member_id=? ORDER BY expires_at, created_at""", member).fetchall()
+    if len(rows) >= MAX_OWED_REVOKES_PER_MEMBER:
+        if float(rows[0]["expires_at"]) >= expires_at:
+            return  # a longer-lived grant of this member is already owed
+        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
+                     (*member, rows[0]["grant_digest"]))
+    elif int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
+        raise HostedRoomError("too many owed room grant revokes")
     conn.execute(_OWE_REVOKE, (
-        room_id, member_id, grant_digest(grant), target_url, grant, float(expires_at), now, now, int(held)))
+        room_id, member_id, digest, target_url, grant, expires_at, now, now, int(held)))
 
 
 def retire_room_link_records(
@@ -771,6 +797,8 @@ def settle_room_grant_revoke(
         else:
             conn.execute("""UPDATE hosted_room_owed_revokes SET attempts=attempts+1, next_attempt_at=?
                              WHERE room_id=? AND member_id=? AND grant_digest=?""", (float(retry_at), *key))
+            conn.execute("""DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?
+                             AND attempts>=?""", (*key, MAX_OWED_REVOKE_ATTEMPTS))
 
 
 def _claim_values(claims: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, str]:

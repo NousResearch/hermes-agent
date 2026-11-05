@@ -1,0 +1,43 @@
+name: pdf-shrink
+repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
+sha: 8eceaf85ded91ab5d3ccd8593335f7c38997774d
+description: >-
+  Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
+  everything running locally — no upload, no API key, no third-party service. Two
+  tools and a bundled skill. pdf_inspect reports what makes a file heavy: image
+  share of the bytes, the resolution each image is actually displayed at, fonts,
+  embedded attachments and duplicates, with a verdict (images dominate /
+  vector-heavy / already small) so a shrink that cannot work is caught before it
+  runs. pdf_shrink downsamples images to the resolution they are displayed at,
+  recovered by replaying each page's content stream (q/Q/cm/Do) to get the
+  graphics matrix, so a logo drawn one inch wide is not forced to page
+  resolution, then walks a measured ladder of DPI/JPEG-quality rungs from the
+  mildest down and keeps the first that fits — each rung rebuilt from the
+  pristine original, so the copy is one generation of compression rather than
+  six. Text, fonts and vector art are never rasterised; already-efficient
+  encodings (JBIG2, CCITT, 1-bit masks, small logos) are left alone. When the
+  limit cannot be reached without making the document unreadable it stops at the
+  safe floor, reports the smallest safe size, saves that copy, and names both
+  ways forward (a higher target, or aggressive=true for 72 DPI) instead of
+  handing back mush. Every copy is re-opened and verified (page count, blank
+  pages), the source is re-hashed to prove it was untouched, and a before/after
+  render of page 1 comes back with the run. Writes only new files; the only
+  destructive option is drop_attachments=true, off by default.
+maintainer: Hazem-Samak
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
+version: "1.0.0"
+title: PDF Shrink
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8eceaf85ded91ab5d3ccd8593335f7c38997774d/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/8eceaf85ded91ab5d3ccd8593335f7c38997774d/assets/screenshot.jpg
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - pdf_shrink
+    - pdf_inspect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

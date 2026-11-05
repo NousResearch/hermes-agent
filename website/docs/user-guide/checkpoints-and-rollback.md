@@ -233,19 +233,25 @@ restores them:
 
 ```
 /undo
-↶ Files changed in the undone turns: app.js, notes.md. To restore them: /rollback 1
+↶ Files changed in the undone turns: app.js, notes.md. To restore them: /rollback 3f9c2a1b
 ```
 
-The number is the same one `/rollback` lists, so you can paste the command as
-printed. `/undo N` points at the oldest undone turn that took a checkpoint, so
-the restore covers all of them. When Hermes cannot tell for sure which
-checkpoint belongs to the undone turns (two checkpoints in the same second, or
-older ones already pruned), the line says to run `/rollback` and pick one
-instead of guessing a number. The line is read-only: nothing is written, and
-with checkpoints off `/undo` prints exactly what it always did.
+The command names the checkpoint by its short hash, which `/rollback` accepts
+on every surface just like a list number; unlike a number, it still means the
+same checkpoint after more are taken, so you can paste it as printed. It points
+at the files as they were when the first undone turn started, so `/undo N`
+restores what all N turns changed. When Hermes cannot prove which checkpoint
+that is (the project's checkpoints predate this feature, a checkpoint attempt
+failed, or the one it needs was pruned), the line says to run `/rollback` and
+pick one instead of guessing. The line itself writes nothing, and with
+checkpoints off `/undo` prints exactly what it always did. The editor (ACP)
+and the gateway chat client do not run `/rollback`, so they print no line.
 
-Note that a whole-tree `/rollback <N>` also undoes the newest remaining chat
-turn (step 4 above).
+A whole-tree `/rollback` also undoes the newest remaining chat turn (step 4
+above), but only when that turn made the checkpoint or came after it. After
+`/undo`, the turns you kept ended before the checkpoint, so they stay; when the
+checkpoint's time is only known to the second and a kept turn falls in that
+same second, the turn is kept too.
 
 ## Single-File Restore
 

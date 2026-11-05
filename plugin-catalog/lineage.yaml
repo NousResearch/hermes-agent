@@ -1,0 +1,41 @@
+name: lineage
+repo: https://github.com/P0GL0L/hermes-lineage
+sha: 9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6
+description: >-
+  Provenance for everything the agent produces: every file Hermes writes gets a receipt (what it was made from — files read,
+  pages fetched, searches run — by which tool call, model and agent, with SHA-256 hashes) and a Desktop page draws the graph
+  back to the sources, with observed / evidenced / inferred links labelled, never blended. Verify a file and its sources
+  against recorded hashes; export Mermaid/DOT. Disclosure — hooks only (post_tool_call, pre/post_llm_call,
+  post_api_request, api_request_error, post_auxiliary_call, subagent_start/stop, on_session_start/end); no tools, middleware,
+  LLM calls or credentials; runs no commands. Reads files the agent wrote (hash + bounded text scan) and stats the working tree
+  once after terminal/execute_code calls; receipts only for files the agent produced. Writes under plugin-data/lineage/ (SQLite, install.key) and, on request or with
+  sidecar: true, <file>.receipt.json beside artifacts. Stores redacted, bounded previews of prompts, tool arguments and
+  results (store_previews: false keeps ids and hashes only). Network only on an explicit `verify --refetch` (GET to the
+  recorded source URLs, public hosts only). No telemetry.
+maintainer: P0GL0L
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/P0GL0L/hermes-lineage#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/P0GL0L/hermes-lineage/9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/P0GL0L/hermes-lineage/9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6/docs/graph.png
+readme: true
+platforms: []
+title: Lineage
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+    - post_llm_call
+    - post_api_request
+    - api_request_error
+    - post_auxiliary_call
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env: []

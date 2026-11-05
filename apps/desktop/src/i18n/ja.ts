@@ -3455,6 +3455,7 @@ export const jaOverrides = {
       command: 'コマンド',
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
+      switchToYolo: 'このチャットはすべて承認（YOLO）',
       alwaysAllowMenu: '常に許可…',
       jumpToApproval: '承認が必要',
       reject: '拒否',

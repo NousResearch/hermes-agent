@@ -290,6 +290,7 @@ export const zhHantAssistant = {
       command: '指令',
       moreOptions: '更多核准選項',
       allowSession: '允許本工作階段',
+      switchToYolo: '本聊天全部自動核准（YOLO）',
       alwaysAllowMenu: '一律允許…',
       jumpToApproval: '需要核准',
       reject: '拒絕',

@@ -4565,6 +4565,7 @@ export const en: Translations = {
       commandDetails: 'Command details',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
+      switchToYolo: 'Approve everything in this chat (YOLO)',
       alwaysAllowMenu: 'Always allow…',
       jumpToApproval: 'Approval needed',
       reject: 'Reject',

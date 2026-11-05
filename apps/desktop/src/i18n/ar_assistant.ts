@@ -284,6 +284,7 @@ export const arAssistant = {
       command: 'الأمر',
       moreOptions: 'خيارات إضافية',
       allowSession: 'السماح لهذه الجلسة',
+      switchToYolo: 'الموافقة على كل شيء في هذه المحادثة (YOLO)',
       alwaysAllowMenu: 'السماح دائما',
       jumpToApproval: 'الموافقة مطلوبة',
       reject: 'رفض',

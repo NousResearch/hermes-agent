@@ -28,13 +28,6 @@ function fixture(kit) {
   fs.copyFileSync(path.join(repo, 'apps/desktop/product-identity.cjs'), path.join(desktop, 'product-identity.cjs'))
   fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.21.1' }))
   fs.writeFileSync(path.join(desktop, 'electron-builder.config.cjs'), `module.exports=${JSON.stringify({ directories: { buildResources: kit }, toolsets: { winCodeSign: { url: 'file://' + kit } } })}\n`)
-  // Mirror both install trees so the copied desktop files resolve their
-  // dependencies exactly as they do in the checkout, hoisted or not.
-  for (const dir of ['', 'apps/desktop']) {
-    if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
-      fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(root, dir, 'node_modules'), 'junction')
-    }
-  }
   // Assembly does not depend on production artwork or the icon build step.
   const iconsScript = path.join(root, 'fixture-icons.ps1')
   fs.writeFileSync(iconsScript, String.raw`
@@ -57,6 +50,14 @@ foreach ($asset in @(@('StoreLogo.png',50), @('Square150x150Logo.png',150), @('S
     GIT_AUTHOR_DATE: '2026-09-10T10:20:30Z', GIT_COMMITTER_DATE: '2026-09-10T10:20:30Z' })
   for (const args of [['init', '-q'], ['add', 'scripts', 'apps'], ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture']]) run('git', args, root, env)
   const commit = run('git', ['rev-parse', 'HEAD'], root, env).trim()
+  // Linked after the commit, which needs only the fixture's own files: mirror both
+  // install trees so the copied desktop files resolve their dependencies exactly as
+  // they do in the checkout, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
+      fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(root, dir, 'node_modules'), 'junction')
+    }
+  }
   env.HERMES_BUILD_COMMIT = commit
   env.HERMES_PAYLOAD_VERSION = '0.21.1'
   const release = path.join(desktop, 'release')

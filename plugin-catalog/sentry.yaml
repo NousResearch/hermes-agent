@@ -1,0 +1,36 @@
+name: sentry
+title: Sentry
+repo: https://github.com/YAN-XBT/hermes-sentry
+sha: e489943016b939b854edb41ad74fb13b96d663bf
+version: "0.1.0"
+description: >-
+  Provenance and taint tracking for tool results. Every tool result is stamped with where it came
+  from; content authored by a third party (web fetches, MCP servers, screenshots, images, and files
+  written from untrusted content) is stripped of invisible characters, wrapped in an <untrusted>
+  marker, and taints the session. While a session is tainted, side-effecting tool calls are gated by
+  a policy: credential reads, and writes into files the agent reads as instructions (AGENTS.md,
+  SKILL.md, hook handlers, Hermes' own config), are refused; network egress and writes outside the
+  workspace go to Hermes's approval gate. Deterministic enforcement at the tool boundary — a prompt
+  or a skill can ask a model to ignore injected instructions, this refuses the follow-through.
+  Eight rules, each tunable to allow/monitor/escalate/block; a receipts ledger; a `hermes sentry`
+  CLI with a dry-run policy tester. Disclosure — no network access, no credentials, no
+  python dependencies and no core overrides: it reads tool arguments and results in-process, writes
+  its decisions to a local SQLite ledger under the plugin's own data dir, and reads an optional
+  policy file there. Nothing needs configuring; `mode: monitor` records without interfering and
+  `mode: off` disables enforcement.
+maintainer: YAN-XBT
+tier: community
+category: general
+requires_hermes: ">=0.22"
+docs_url: https://github.com/YAN-XBT/hermes-sentry
+platforms: [windows, macos, linux]
+capabilities:
+  provides_tools:
+    - sentry_status
+    - sentry_receipts
+  provides_hooks:
+    - transform_tool_result
+    - pre_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

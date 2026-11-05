@@ -58,8 +58,9 @@ class CLIBacktrackMixin:
                     or self._model_picker_state or self._command_palette_state)
 
     # ---- prime (first Esc) -----------------------------------------------------------------
-    def _backtrack_composer_empty(self, event) -> bool:
-        return not (event.app.current_buffer.text or self._attached_images)
+    def _backtrack_composer_empty(self, event_or_app) -> bool:
+        app = getattr(event_or_app, "app", event_or_app)
+        return not (app.current_buffer.text or self._attached_images)
 
     def _backtrack_handle_escape(self, event) -> None:
         """A lone Esc (no Alt-sequence followed within the escape timeout). On an idle, empty
@@ -91,11 +92,13 @@ class CLIBacktrackMixin:
             self._invalidate(min_interval=0.0)
 
     def _backtrack_after_key_press(self, key_processor) -> None:
-        """Any key other than Esc cancels a prime (that key already acted normally). An Esc still
-        waiting in the key buffer for a possible Alt-sequence keeps it."""
+        """Any key other than Esc cancels a prime (that key already acted normally). The Esc that
+        primed, or one still waiting in the key buffer for a possible Alt-sequence, keeps it."""
         from prompt_toolkit.keys import Keys
-        if self._backtrack_primed and not (
-                key_processor.key_buffer and all(k.key == Keys.Escape for k in key_processor.key_buffer)):
+        if not self._backtrack_primed:
+            return
+        pending = key_processor.key_buffer or key_processor._previous_key_sequence
+        if not (pending and all(k.key == Keys.Escape for k in pending)):
             self._backtrack_unprime()
 
     # ---- browse --------------------------------------------------------------------------
@@ -320,9 +323,12 @@ class CLIBacktrackMixin:
 
     def _tui_build_key_bindings(self):
         """Prime + browse keys, registered after the generic ones so they win (the last matching
-        binding wins). The lone-Esc binding is NOT eager: Esc stays the Alt prefix, so Esc+Enter
-        (newline), Esc+V, Esc Esc still match first; it fires only after the escape timeout. It is
-        off in vi insert mode (Esc leaves insert mode there) and whenever a prompt owns the composer."""
+        binding wins). The lone Esc is eager only on an idle, empty composer with no further key
+        already queued: an Alt-sequence arrives from the terminal in one read (Esc+Enter newline,
+        Esc+V), so its second key is queued and the Esc stays a prefix. With a draft it is not
+        eager, so Esc Esc still discards the draft. Off in vi insert mode (Esc leaves insert mode
+        there) and whenever a prompt owns the composer."""
+        from prompt_toolkit.application import get_app
         from prompt_toolkit.filters import Condition, vi_insert_mode
         from prompt_toolkit.keys import Keys
 
@@ -331,7 +337,9 @@ class CLIBacktrackMixin:
         picker = Condition(lambda: bool(self._backtrack_state))
         primable = Condition(lambda: not self._backtrack_state and not modal_prompt_active(self)
                              and not self._prompt_stash.panel_open) & ~vi_insert_mode
-        kb.add("escape", filter=primable)(self._backtrack_handle_escape)
+        lone_esc = Condition(lambda: not get_app().key_processor.input_queue
+                             and self._backtrack_composer_empty(get_app()) and not self._backtrack_blocked())
+        kb.add("escape", filter=primable, eager=lone_esc)(self._backtrack_handle_escape)
         kb.add(Keys.Any, filter=picker)(self._backtrack_close_and_replay)
         for keys, handler in (
                 (("left",), lambda event: self._backtrack_step(1)), (("h",), lambda event: self._backtrack_step(1)),

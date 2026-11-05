@@ -82,7 +82,7 @@ it('still tells a self-updating app that its window will close', async (): Promi
   expect(screen.queryByText(en.updates.applyingStayBackend)).toBeNull()
 })
 
-// Its follower still owns a backend apply in its restart stage: hiding it there keeps that state.
+// runBackendUpdate's poll still owns a backend apply in its restart stage: hiding it there keeps that state.
 it('hides a backend update during its restart without resetting it', async (): Promise<void> => {
   $updateOverlayTarget.set('backend')
   $updateOverlayOpen.set(true)

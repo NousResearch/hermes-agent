@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '@/test/deferred'
+
 const storage = new Map<string, string>()
 
 vi.mock('@/lib/storage', () => ({
@@ -139,19 +141,18 @@ describe('hidden backend update progress', () => {
     ],
     ['rejected', () => updateHermesSpy.mockRejectedValue(new Error('offline')), 'error']
   ])('shows a hidden Update press again when its start is %s', async (_label, arrange, stage) => {
-    let release: () => void = () => undefined
-    const gate = new Promise<void>(resolve => (release = resolve))
+    const gate = deferred()
     arrange()
     const outcome = updateHermesSpy.getMockImplementation()
     updateHermesSpy.mockImplementation(async () => {
-      await gate
+      await gate.promise
 
       return outcome?.()
     })
 
     const pressed = applyBackendUpdate()
     $updateOverlayOpen.set(false) // hidden while the start request is in flight
-    release()
+    gate.resolve()
     await pressed
 
     expect($backendUpdateApply.get().stage).toBe(stage)
@@ -182,10 +183,10 @@ describe('hidden backend update progress', () => {
   it("does not replace a running client update's progress with a backend failure, and shows it after", async () => {
     const { pressed } = await pressAndHide()
 
-    let finishClient: (value: unknown) => void = () => undefined
+    const clientApply = deferred<unknown>()
 
     ;(globalThis as unknown as { window: unknown }).window = {
-      hermesDesktop: { updates: { apply: vi.fn(() => new Promise(resolve => (finishClient = resolve))) } }
+      hermesDesktop: { updates: { apply: vi.fn(() => clientApply.promise) } }
     }
 
     try {
@@ -201,7 +202,7 @@ describe('hidden backend update progress', () => {
       expect($updateOverlayTarget.get()).toBe('client')
       expect($updateApply.get().applying).toBe(true)
 
-      finishClient({ ok: true, backendUpdated: true })
+      clientApply.resolve({ ok: true, backendUpdated: true })
       await client
     } finally {
       delete (globalThis as unknown as { window?: unknown }).window

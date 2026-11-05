@@ -176,7 +176,7 @@ function overlayDismissible(phase: ReturnType<typeof overlayPhase>, isBackend: b
 }
 
 // Closing a finished view clears its state. A live backend apply (its restart stage included) is
-// only hidden: its follower still owns that state and reports the outcome.
+// only hidden: runBackendUpdate's poll still owns that state and reports the outcome.
 function dismissResetsApply(apply: UpdateApplyState): boolean {
   return (
     !apply.applying &&

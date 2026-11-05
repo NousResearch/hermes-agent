@@ -1022,13 +1022,10 @@ function receiptProvesOutcome(
   return Number.isFinite(startedMs) && startedMs >= applyStartedAtMs - 60_000
 }
 
-/** This apply's run has ended without success: it exited, or the backend reads its own receipt
- *  `interrupted` (its process is gone). The receipt case is a failure now, not a wait until the
- *  deadline, for a run whose dashboard restarted under it and lost the process. */
-function runEndedUnfinished(
-  status: Awaited<ReturnType<typeof getActionStatus>>,
-  actionId: string | undefined
-): boolean {
+/** This apply's run is over: it exited (any code; the success checks before this read it first),
+ *  or the backend reads its own receipt `interrupted` (its process is gone). The receipt case
+ *  fails now instead of at the deadline, for a run whose dashboard restarted under it. */
+function runIsOver(status: Awaited<ReturnType<typeof getActionStatus>>, actionId: string | undefined): boolean {
   const ownReceipt = !!actionId && status.receipt?.action_id === actionId
 
   return status.exit_code !== null || (ownReceipt && status.receipt?.outcome === 'interrupted')
@@ -1158,7 +1155,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
         }
       }
 
-      if (runEndedUnfinished(last, started.action_id)) {
+      if (runIsOver(last, started.action_id)) {
         break
       }
     }

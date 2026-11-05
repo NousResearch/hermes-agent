@@ -1,10 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 import { zhHantPluginPreviewAccess } from './zh-hant_plugin_preview_access'
+import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
     plugins: {
       ...zhHantPluginPreviewAccess,
+      ...zhHantPluginUpdateAll,
       enabledRestartRequired: (name: string) =>
         `${name} 已啟用。其 Python 相依套件已為下次啟動安裝，請重新啟動 Hermes 以載入。`,
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。',

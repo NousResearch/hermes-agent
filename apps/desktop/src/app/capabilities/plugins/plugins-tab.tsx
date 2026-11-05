@@ -57,6 +57,7 @@ import { PluginFolderAccess } from './plugin-folder-access'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginPageAccess } from './plugin-page-access'
 import { runPluginUpdate, updateTargetLabel } from './plugin-update'
+import { PluginUpdateAllActions } from './plugin-update-all'
 import { UpdateButton } from './plugin-update-button'
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
@@ -560,6 +561,7 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
 
   return (
     <>
+      <PluginUpdateAllActions scope={scope} />
       <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>

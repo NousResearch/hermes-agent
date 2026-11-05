@@ -19,7 +19,6 @@ export interface PluginsTabCopy {
   fleet: {
     updateEverywhere: (count: number) => string
     updateHereOnly: (profile: string) => string
-    updateAll: (count: number) => string
     updateAllTip: (installs: number, plugins: number) => string
     titleOne: (name: string) => string
     titleAll: string

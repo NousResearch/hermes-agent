@@ -17,6 +17,7 @@ import { ruNotices } from './ru_notices'
 import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
+import { ruPluginUpdateAll } from './ru_plugin_update_all'
 import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruPreviewWeb } from './ru_preview_web'
@@ -1423,7 +1424,7 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
-    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
+    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab, ...ruPluginUpdateAll },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
@@ -3301,6 +3302,15 @@ export const ruOverrides = {
           system_prompt: 'Системный промпт',
           tool_definitions: 'Определения инструментов'
         },
+        compact: {
+          action: 'Сжать диалог',
+          busyHint: 'Сначала завершите или остановите текущий ответ',
+          confirm: 'Сжать',
+          hint: 'Сожмите старый контекст, чтобы освободить место. Разговор продолжится здесь же.',
+          question: 'Сжать этот диалог в краткое изложение?',
+          questionNamed: title => `Сжать «${title}» в краткое изложение?`,
+          working: 'Сжимаю…'
+        },
         empty: 'Данных контекста пока нет',
         loading: 'Загрузка разбивки…',
         percentFull: percent => `${percent}% занято`,
@@ -3639,6 +3649,10 @@ export const ruOverrides = {
       authorized: server => `${server} авторизован`,
       failed: server => `Настройка не удалась для ${server}`,
       toolCount: count => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      launchCommand: target => `Запускает: ${target}`,
+      launchRemote: target => `Подключается к: ${target}`,
+      launchEnv: keys => `Окружение: ${keys}`,
+      launchCwd: dir => `Рабочая папка: ${dir}`,
       envRequired: 'Сначала заполните обязательные учётные данные',
       sendFailed: 'Не удалось отправить ответ на настройку MCP',
       reloadFailed: 'Сервер сохранён, но перезагрузка MCP-инструментов не удалась — они загрузятся в следующем сеансе',

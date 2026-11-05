@@ -1592,6 +1592,12 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    clarify:
+      title: "Hermes a besoin de votre réponse"
+      other: "✏️ Autre (saisir)"
+      awaiting_typed: "En attente de la réponse saisie par {user}…"
+    picker:
+      apply_error: "Erreur lors de l'application de la sélection : {error}"
     approval:
       action_session: "Session"
       action_always: "Toujours"
@@ -1726,6 +1732,8 @@ platform:
     prompt_other: "✏️ Autre (saisir)"
     prompt_expired: ⌛ Cette invite n'attend plus de réponse. Envoyez votre réponse comme un message normal.
 slash:
+  rewind:
+    description: "Rembobiner jusqu'à un prompt précédent pour le modifier et le renvoyer, ou bifurquer à partir de là (Esc Esc)"
   approve:
     description: "Approuver une commande dangereuse en attente"
   bg:
@@ -1953,6 +1961,20 @@ slash:
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
+  backtrack:
+    title: "↺ Rembobiner — choisir un prompt précédent"
+    keys_hint: "↑/↓ choisir · Enter modifier et renvoyer · f bifurquer d'ici · Esc fermer"
+    preview_label: "Prompt {number} sur {total} :"
+    more_lines: "… ({count} lignes de plus)"
+    editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
+    edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
+    rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
+    forked: "⑂ Bifurcation avant le prompt {number} ; la session d'origine {parent} est inchangée. Modifiez le prompt ci-dessous et appuyez sur Enter pour l'envoyer."
+    nothing: "(._.) Aucun prompt précédent vers lequel rembobiner."
+    target_changed: "(x_x) La session a changé depuis que vous avez choisi le prompt {number} ; rien n'a été supprimé. Votre modification est de retour dans la zone de saisie."
+    invalid: "(._.) Aucun prompt {value} — choisissez entre 1 et {total}."
+    usage: "Utilisation : /rewind [N | fork N]"
+    rewind_failed: "(x_x) Échec du rembobinage ; l'historique n'a pas été modifié : {error}"
   modern:
     thought_for: "Réflexion pendant {seconds}s"
     thought: "Réflexion"
@@ -2428,6 +2450,7 @@ cli:
     images_attached_other: "📎 {count} images jointes"
     command_interrupted: "Commande interrompue."
     welcome: "Bienvenue dans Hermes Agent ! Tapez votre message ou /help pour les commandes."
+    vscode_images_hint: "VS Code peut afficher ici les images en pleine résolution : activez terminal.integrated.enableImages dans les paramètres."
     activated_skills_label: "Skills activées :"
     redaction_disabled_title: "⚠  La censure des secrets est DÉSACTIVÉE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."

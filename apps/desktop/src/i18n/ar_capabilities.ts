@@ -1,4 +1,5 @@
 import { arPluginPreviewAccess } from './ar_plugin_preview_access'
+import { arPluginUpdateAll } from './ar_plugin_update_all'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
@@ -16,6 +17,7 @@ export const arCapabilities = {
   skills: {
     plugins: {
       ...arPluginPreviewAccess,
+      ...arPluginUpdateAll,
       enabledRestartRequired: (name: string) =>
         `تم تفعيل ${name}. ثُبّتت تبعيات Python الخاصة بها للتشغيل التالي، لذا أعد تشغيل Hermes لتحميلها.`,
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.',

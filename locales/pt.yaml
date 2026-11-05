@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Somente um usuário autorizado do Matrix pode usar estes controles."
       not_requester: "Somente o usuário que solicitou esta ação pode usar estes controles."
   feishu:
+    clarify:
+      title: "O Hermes precisa da sua resposta"
+      other: "✏️ Outro (digitar resposta)"
+      awaiting_typed: "Aguardando resposta digitada de {user}…"
+    picker:
+      apply_error: "Erro ao aplicar a seleção: {error}"
     approval:
       action_session: "Sessão"
       action_always: "Sempre"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Outro (digitar resposta)"
     prompt_expired: ⌛ Essa solicitação não está mais aguardando resposta. Envie sua resposta como uma mensagem normal.
 slash:
+  rewind:
+    description: "Retroceder a um prompt anterior para editá-lo e reenviá-lo, ou bifurcar a partir dali (Esc Esc)"
   approve:
     description: "Aprovar um comando perigoso pendente"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
+  backtrack:
+    title: "↺ Retroceder — escolha um prompt anterior"
+    keys_hint: "↑/↓ escolher · Enter editar e reenviar · f bifurcar daqui · Esc fechar"
+    preview_label: "Prompt {number} de {total}:"
+    more_lines: "… (mais {count} linhas)"
+    editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
+    edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
+    rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."
+    forked: "⑂ Bifurcado antes do prompt {number}; a sessão original {parent} não foi alterada. Edite o prompt abaixo e pressione Enter para enviar."
+    nothing: "(._.) Não há prompts anteriores para retroceder."
+    target_changed: "(x_x) A sessão mudou desde que você escolheu o prompt {number}; nada foi removido. Sua edição voltou para o editor."
+    invalid: "(._.) Não existe o prompt {value} — escolha de 1 a {total}."
+    usage: "Uso: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Falha ao retroceder; o histórico não foi alterado: {error}"
   modern:
     thought_for: "Pensou por {seconds}s"
     thought: "Pensou"
@@ -2164,6 +2186,7 @@ cli:
     images_attached_other: "📎 {count} imagens anexadas"
     command_interrupted: "Comando interrompido."
     welcome: "Bem-vindo ao Hermes Agent! Digite sua mensagem ou /help para ver os comandos."
+    vscode_images_hint: "O VS Code pode mostrar imagens em resolução total aqui: ative terminal.integrated.enableImages nas configurações."
     activated_skills_label: "Skills ativadas:"
     redaction_disabled_title: "⚠  A redação de segredos está DESATIVADA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Chaves de API e tokens podem aparecer sem máscara na saída do chat, nos JSONs de sessão e nos logs. Defina {setting} em config.yaml para reativar."

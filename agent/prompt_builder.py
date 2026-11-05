@@ -879,8 +879,13 @@ def _format_backend_probe(output: str) -> str:
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
-    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
+    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included).
+    None in a hosted scope: the probe builds and tears down a throwaway environment, and a hosted agent's
+    only environment is its own sandbox."""
     from hermes_constants import hermes_home_key
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:

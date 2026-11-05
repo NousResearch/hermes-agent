@@ -38,7 +38,7 @@ from tools.file_tools_write_guards import (
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _carry_full_write_baselines, _check_file_staleness,
     _check_not_found_cache, _dedup_lookup, _known_full_content_sha256,
-    _file_metadata, _file_version,
+    _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -187,12 +187,15 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     Literal first so /dev/stdin is caught before resolving to a terminal path;
     every symlink hop is checked so an alias cannot bypass the guard.
     """
+    from tools.environments.sandbox_scope import hosted_scope
     expanded = _expand_tilde(filepath)
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
         return True
+    if hosted_scope() is not None:
+        return False  # a sandbox path: its symlinks are not this host's to follow
 
     seen: set[str] = set()
     current = normalized
@@ -315,8 +318,10 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Uses terminal_tool's per-task creation locks (no duplicate sandboxes).
     Subagent task_ids collapse to "default" (``_resolve_container_task_id``) so
     delegate_task children share the parent's container; RL/benchmark task_ids
-    with a registered env override keep their isolation.
+    with a registered env override keep their isolation. In a hosted scope every
+    task id resolves to the agent's sandbox, so these operations run there.
     """
+    from tools.environments.sandbox_scope import admit_env
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
@@ -357,7 +362,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with task_lock:
         # Double-check: another thread may have created it while we waited.
         with _env_lock:
-            terminal_env = _active_environments.get(task_id)
+            terminal_env = admit_env(_active_environments.get(task_id))
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
         if terminal_env is None:
@@ -554,8 +559,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         count, dedup = _note_read_served(task_data, dedup_key, path, offset, limit)
         task_data["read_history"].add((path, offset, limit))
         try:
-            _mtime_now = os.path.getmtime(resolved_str)
-            task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if _on_host(resolved_str):
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]

@@ -197,9 +197,12 @@ def _is_workspace_key(key: str) -> bool:
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
+    from tools.environments.sandbox_scope import admit_env, hosted_scope
     from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
+        if hosted_scope() is not None:
+            return admit_env(_active_environments.get(lookup))
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
@@ -316,6 +319,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
     """
+    from tools.environments.sandbox_scope import current_sandbox_key
+    if sandbox := current_sandbox_key():
+        # A hosted agent's sandbox is shared by all its sessions and outlives each of them (the idle
+        # reaper and the backend's own suspend end it): a session's teardown releases nothing, and an
+        # explicit teardown reaches only this agent's sandbox, never an environment its task id names.
+        if not force_remove:
+            return
+        task_id = sandbox
     env = _unregister_env(task_id)
     _clear_file_ops_cache(task_id)
     if env is None:
@@ -332,8 +343,9 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
     )
+    from tools.environments.sandbox_scope import hosted_scope
     keys = {_resolve_container_task_id(task_id)}
-    if task_id:
+    if task_id and hosted_scope() is None:  # a hosted scope evicts only its own sandbox
         keys.add(task_id)
     evicted = []
     with _env_lock:

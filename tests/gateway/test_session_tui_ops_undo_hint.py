@@ -21,10 +21,10 @@ def test_undo_hint_keeps_the_rewinds_boundary_after_a_new_turn(tmp_path):
                                  cwd=str(work), checkpoints=True))['result']['session_id']
                 await rpc(ws, 'prompt.submit', session_id=sid, input_id='kept', text='KEPT')
                 await settled(home)
-                await asyncio.sleep(1.1)  # checkpoint stamps are whole seconds
+                await asyncio.sleep(1.1)  # health: allow HX013 -- checkpoint stamps are whole seconds: the next second IS the case
                 await rpc(ws, 'prompt.submit', session_id=sid, input_id='edit', text='EDIT')
                 await settled(home)
-                await asyncio.sleep(1.1)
+                await asyncio.sleep(1.1)  # health: allow HX013 -- whole-second stamps: the checkpoint follows the turn
                 await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
                 (work / 'a.txt').write_text('edited\n')
                 snapshot = (await rpc(ws, 'session.resume', session_id=sid))['result']
@@ -37,7 +37,7 @@ def test_undo_hint_keeps_the_rewinds_boundary_after_a_new_turn(tmp_path):
                 receipt = receipt['result']
                 target = receipt['target_message']
                 # Another viewer starts (and finishes) a turn before this client asks for the pointer.
-                await asyncio.sleep(1.1)
+                await asyncio.sleep(1.1)  # health: allow HX013 -- whole-second stamps: the new turn is a later second
                 await rpc(ws, 'prompt.submit', session_id=sid, input_id='other', text='OTHER')
                 await settled(home)
                 listed = (await _git_rpc(ws, 'rollback.list', session_id=sid, undo_since=target['timestamp'],

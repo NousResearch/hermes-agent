@@ -7,6 +7,8 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { ASSIGNMENT_EVENT_KIND, CanonicalGroupAssignmentRow } from './canonical-group-lead'
 import { CanonicalGroupContinuedRow, CanonicalGroupPausedRow, type CanonicalGroupPausedRowProps, CanonicalGroupRoutedRow, CONTINUED_EVENT_KIND, isBoundedActivity, pausedDiscussions, ROUTED_EVENT_KIND } from './canonical-group-routed'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
+import type { GroupReasonMessages } from './group-reason-locales'
+import { groupReasonText } from './group-reason-text'
 import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-status'
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
 
@@ -65,10 +67,11 @@ function eventTimeMs(timestamp?: number) {
   return Number.isFinite(new Date(at).getTime()) ? at : undefined
 }
 
-function EventBody({ event, notice, noAnswer }: { event: CanonicalGroupEvent; notice?: string; noAnswer?: string }) {
+function EventBody({ event, labels, notice }: { event: CanonicalGroupEvent; labels: GroupReasonMessages & { turnNoAnswer: string }; notice?: string }) {
   if (notice) {
     const reason = event.payload.error || event.payload.reason || event.payload.reason_code
-    const detail = reason === 'member_unavailable' ? noAnswer : reason
+    const detail = reason === 'member_unavailable' ? labels.turnNoAnswer : groupReasonText(event.payload.error, labels) ||
+      groupReasonText(event.payload.reason, labels) || groupReasonText(event.payload.reason_code, labels)
 
     return <p className="min-w-0 text-[0.6875rem] text-(--ui-text-tertiary)" data-selectable-text="true">
       <strong className="font-medium text-(--ui-text-secondary)">{notice}</strong>{detail && <>: {detail}</>}
@@ -228,7 +231,7 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   if (notice) {
     return <RoomNoticeRow avatar={member && avatarFor?.(member.profile || member.handle, 16)} kind={event.kind}>
       {author && <span className="shrink-0 font-medium text-(--ui-text-secondary)">{author}</span>}
-      <EventBody event={event} noAnswer={labels.turnNoAnswer} notice={notice} />
+      <EventBody event={event} labels={labels} notice={notice} />
     </RoomNoticeRow>
   }
 
@@ -252,7 +255,7 @@ function MessageRow({ author, avatarFor, binding, disabled, event, member, membe
 
   return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
     author={author} avatar={face} badge={badge} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
-    <EventBody event={event} />
+    <EventBody event={event} labels={labels} />
     <EventFiles binding={binding} disabled={disabled} event={event} />
   </RoomMessage>
 }

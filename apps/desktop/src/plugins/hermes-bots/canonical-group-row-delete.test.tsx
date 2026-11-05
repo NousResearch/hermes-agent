@@ -1,6 +1,6 @@
 /**
- * #143571: a gateway Group Chat row in the Bots roster offers Delete from its
- * right-click menu. Delete confirms, disbands the room on its own gateway
+ * #143571: a gateway Group Chat row in the Bots roster offers Disband from its
+ * right-click menu. Disband confirms, disbands the room on its own gateway
  * (`groups.disband`), drops it from the list, forgets its bindings and closes
  * a pane still showing it. A refused disband keeps the row and says why.
  *
@@ -71,17 +71,17 @@ afterEach(() => {
   dropGroupMainTab('Other crew')
 })
 
-async function openDeleteConfirm() {
+async function openDisbandConfirm() {
   fireEvent.contextMenu(await screen.findByRole('button', { name: 'Launch crew' }))
-  fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Disband' }))
 
   return within(await screen.findByRole('dialog'))
 }
 
-it('deletes a gateway group from its row menu: confirm, disband on its gateway, gone from the list', async () => {
+it('disbands a group chat from its row menu: confirm, disband on its gateway, gone from the list', async () => {
   const onOpen = vi.fn()
   renderGatewayRooms(onOpen)
-  const dialog = await openDeleteConfirm()
+  const dialog = await openDisbandConfirm()
   const key = 'canonical:local:default:room-1'
   $groupChatWorkspace.set(key)
 
@@ -104,7 +104,7 @@ it('deletes a gateway group from its row menu: confirm, disband on its gateway, 
 it('keeps the row and explains that the group chat was kept when disband fails', async () => {
   refuse = 'room is busy'
   renderGatewayRooms()
-  const dialog = await openDeleteConfirm()
+  const dialog = await openDisbandConfirm()
   fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
 
   expect(await dialog.findByText(/The group chat has been kept/)).toBeTruthy()
@@ -125,7 +125,7 @@ it('closes the tab and selection opened under the room name, and leaves another 
   $groupChatWorkspace.set(room.name)
 
   renderGatewayRooms()
-  fireEvent.click((await openDeleteConfirm()).getByRole('button', { name: 'Disband' }))
+  fireEvent.click((await openDisbandConfirm()).getByRole('button', { name: 'Disband' }))
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
   await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))

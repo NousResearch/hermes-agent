@@ -50,6 +50,7 @@ it('renders the canonical log actors, timestamps and Markdown without transport 
 
   const { container } = render(<CanonicalGroupHistory binding={binding} events={events} members={members} />)
 
+  expect([...container.querySelectorAll('[data-room-message] [data-selectable-text]')].map(node => node.getAttribute('dir'))).toEqual(['auto', 'auto', 'auto', 'auto'])
   expect(screen.getByText('Morgan')).toBeTruthy()
   expect(screen.getByText('Historical Helper')).toBeTruthy()
   expect(screen.getByText('Code Reviewer')).toBeTruthy()
@@ -132,4 +133,12 @@ it.each([null, false, '', '1792152000', Number.NaN, Number.POSITIVE_INFINITY, 1e
 
   expect(screen.getByText('Still readable')).toBeTruthy()
   expect(container.querySelector('time')).toBeNull()
+})
+
+it.each(['member turn cancelled', 'Stopped by the operator'])('keeps only useful cancellation detail: %s', reason => {
+  const { container } = render(<CanonicalGroupHistory binding={binding} events={[
+    { seq: 1, kind: 'turn.cancelled', payload: { reason } }
+  ]} />)
+
+  expect(container.textContent).toBe(reason === 'member turn cancelled' ? 'Turn cancelled' : `Turn cancelled: ${reason}`)
 })

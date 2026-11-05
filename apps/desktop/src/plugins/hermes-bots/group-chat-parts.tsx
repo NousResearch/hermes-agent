@@ -384,10 +384,12 @@ interface GroupClarifyCardProps {
 export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const b = useBots()
   const { t } = useI18n()
+
   const approvalLabels: Record<string, string> = {
     once: b.canonical.allowOnce, deny: b.canonical.deny,
     session: t.assistant.approval.allowSession, always: t.assistant.approval.alwaysAllow
   }
+
   const { group } = entry
   const isApproval = entry.kind === 'approval'
   const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)

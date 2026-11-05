@@ -6,13 +6,13 @@ memory providers pollutes their stores/embeddings with prompt scaffolding
 instead of what the user actually asked. The strip lives once in MemoryManager
 so it covers the whole provider fan-out — not per backend.
 
-See: agent.skill_commands.extract_user_instruction_from_skill_message and
+See: session_rules.turns.extract_user_instruction_from_skill_message and
 MemoryManager._strip_skill_scaffolding.
 """
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
-from agent.skill_commands import (
+from session_rules.turns import (
     _SKILL_DIR_NOTE_END, extract_user_instruction_from_skill_message, register_auto_load_scaffold,
 )
 

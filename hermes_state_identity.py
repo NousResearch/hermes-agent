@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
 
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
-from agent.message_sanitization import coalesce_tool_call_id
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS
+from session_rules.turns import uid_list, coalesce_tool_call_id
 from hermes_state_common import _json_or
 
 

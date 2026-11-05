@@ -6900,7 +6900,7 @@ class TestMemoryContextSanitization:
         """Helper-level: a string with an embedded memory-context block is
         cleaned to just the surrounding text.  Used by build_memory_context_block
         (input-validation) and by plugins on their own backend boundary."""
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import sanitize_context
         user_text = "how is the honcho working"
         injected = (
             user_text + "\n\n"

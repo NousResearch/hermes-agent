@@ -378,10 +378,14 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,
             wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5,
             on_contended=None):
-        # Reuse only the local polling orchestrator, not the SQLite mixin surface. Same signature
+        # Reuse only the shared polling orchestrator over this store's RPC try. Same signature
         # as the owner's (``on_contended``: a busy-database notice; the RPC try never raises it).
-        from hermes_state_compression import SessionCompressionMixin
-        return SessionCompressionMixin.acquire_session_turn_lease(self, session_id, holder,
+        from types import SimpleNamespace
+        from persistence.authority.coordination import acquire_turn_lease_waiting
+        attempts = SimpleNamespace(try_acquire_turn_lease=lambda *, session_id, holder, ttl_seconds, patience_s:
+                                   self.try_acquire_session_turn_lease(session_id, holder, ttl_seconds=ttl_seconds,
+                                                                       patience_s=patience_s))
+        return acquire_turn_lease_waiting(attempts, session_id=session_id, holder=holder,
             ttl_seconds=ttl_seconds, wait_seconds=wait_seconds,
             poll_interval_seconds=poll_interval_seconds, on_wait=on_wait,
             wait_notice_interval_seconds=wait_notice_interval_seconds,
@@ -457,8 +461,8 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         return self._session_number(session_id, 'compression_recovery_deadline', float, 0.0)
 
     def get_session_model_config_value(self, session_id, key, default=None):
-        from hermes_state_sessions import _parse_model_config
-        return _parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
+        from persistence.conversation.sessions import parse_model_config
+        return parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
 
     def update_conversation_model_config_value(self, session_id, key, update):
         # A worker owns exactly its session row, so the read-modify-write is that row's; the owner applies

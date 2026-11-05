@@ -134,7 +134,8 @@ def native_anthropic_tail_prices(compressor: Any):
     from agent.message_sanitization import native_anthropic_row_costs
 
     rejected = session_rejected_thinking(
-        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", "")
+        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", ""),
+        persistence=getattr(compressor, "_persistence", None),
     )
 
     def prices(messages: list[dict[str, Any]]) -> list[int]:
@@ -192,7 +193,8 @@ def with_skill_safety_rule(
     prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
     prune-only stub's copy (:func:`with_pruned_row_skill_safety_rule`) moves onto the handoff: compaction is the
     sanctioned rewrite, and the token-budget tail often keeps a stub the count-protected prune-only tail ruled."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
 
     def unruled(rows):
         return [{**m, "content": without_skill_safety_rule(m["content"])}
@@ -226,7 +228,8 @@ def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
 def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*pruned* (a prune-only rewrite of *original*) with the rule on the first row it turned into a prune marker,
     when no row carries the rule yet: prune-only has no handoff for :func:`with_skill_safety_rule` to ride."""
-    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX
+    from session_rules.turns import _content_text_for_contains
     if any(SKILL_SAFETY_RULE in _content_text_for_contains(m.get("content")) for m in pruned if isinstance(m, dict)):
         return pruned
     for i, (before, after) in enumerate(zip(original, pruned)):

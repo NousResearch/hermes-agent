@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 
 _QUEUED = "_plugin_live_notes"
 _IN_BATCH = "_plugin_notes_in_tool_batch"

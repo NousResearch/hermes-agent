@@ -38,7 +38,7 @@ export function lastTurnRewind(snapshot: MutationSnapshot): null | { target_mess
 
 const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 
-/** Lossless /retry text (agent/context_compressor_retry.py::retryable_user_text): '' when the turn has
+/** Lossless /retry text (session_rules/turns.py::retryable_user_text): '' when the turn has
  * no text, null when it carries media, unknown or annotated parts (no replay protocol: fail closed). */
 export function retryText(content: unknown): null | string {
   let text = ''

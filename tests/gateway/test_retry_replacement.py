@@ -117,7 +117,7 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
     """/retry re-sends exactly what was stored: a carrier split across text parts comes back as the
     parts' concatenation (``"".join``), not the "\\n"-joined display flattening."""
     import hermes_state
-    from agent.context_compressor import retryable_user_text
+    from session_rules.turns import retryable_user_text
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())

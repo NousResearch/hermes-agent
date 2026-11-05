@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 

@@ -524,7 +524,7 @@ class TestMicroCompaction:
         survive repair untouched, and no summary text leaks into real user
         messages.
         """
-        from agent.agent_runtime_helpers import repair_message_sequence
+        from session_rules.turns import repair_message_sequence
 
         class _DummyAgent:
             session_id = "probe"

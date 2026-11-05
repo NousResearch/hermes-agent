@@ -144,7 +144,7 @@ def _locked_tail(db, rows) -> Optional[list[tuple[Optional[int], list[int]]]]:
     each starts at a user row that is not a compaction carrier. A turn head the user typed (the
     user-originated test #149708's retention uses) is the row shown as refused; an internal head (a
     background-task or process notice, a hidden row) gets ``None``: it leaves the context unshown."""
-    from agent.context_compressor import is_compaction_summary_message, user_originated_turn_view
+    from session_rules.turns import is_compaction_summary_message, user_originated_turn_view
     # The newest settled turn (a real answer or a failure boundary) must be a refusal.
     last_boundary = max((i for i, r in enumerate(rows) if r["display_kind"] == "failed_turn" or _is_final_reply(r)),
                         default=-1)

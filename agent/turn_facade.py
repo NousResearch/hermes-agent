@@ -41,6 +41,7 @@ class TurnFacadeMixin:
         cancel_background_review_for_live_turn(self)
 
         from agent import relay_runtime
+        from agent.agent_init_session import agent_interface
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main
         from agent.conversation_loop import run_conversation
@@ -136,7 +137,8 @@ class TurnFacadeMixin:
             # usage into session_model_usage (task dimension) — the fix for aux spend being invisible in
             # analytics (issue #23270).
             acct_token = set_accounting_context(
-                getattr(self, "_session_db", None), getattr(self, "session_id", None)
+                getattr(self, "_session_db", None), getattr(self, "session_id", None),
+                persistence=agent_interface(self),
             )
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).

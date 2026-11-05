@@ -8,6 +8,7 @@ from contextlib import suppress
 from typing import Any
 
 from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
+from agent.agent_init_session import agent_interface
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger("run_agent")
@@ -97,8 +98,14 @@ def _stored_transcript_kwargs(agent) -> dict[str, Any]:
     count, resumed = 0, False
     if db:
         with suppress(Exception):
-            count = int((db.get_session_list_row(sid) or {}).get("message_count") or 0)
-            resumed = count > 0 and db.latest_message_row_id(sid, role="assistant", require_text=False) is not None
+            store = agent_interface(agent)
+            if store is not None:
+                row = store.sessions.list_row(sid)
+                count = int(row.message_count or 0) if row is not None else 0
+                resumed = count > 0 and store.messages.latest_row_id(sid, role="assistant", require_text=False) is not None
+            else:
+                count = int((db.get_session_list_row(sid) or {}).get("message_count") or 0)
+                resumed = count > 0 and db.latest_message_row_id(sid, role="assistant", require_text=False) is not None
     return {"resumed": resumed, "message_count": count}
 
 
@@ -124,12 +131,15 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
     # Session title (e.g. honcho derives chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
-            _st = agent._session_db.get_session_title(agent.session_id)
+            store = agent_interface(agent)
+            _st = (store.sessions.get_title(agent.session_id) if store is not None
+                   else agent._session_db.get_session_title(agent.session_id))
             if _st:
                 kwargs["session_title"] = _st
-                _source = agent._session_db.get_session_title_source(agent.session_id)
+                _source = (store.sessions.get_title_source(agent.session_id) if store is not None
+                           else agent._session_db.get_session_title_source(agent.session_id))
                 if _source:
-                    kwargs["session_title_source"] = _source
+                    kwargs["session_title_source"] = _source.value if store is not None else _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:

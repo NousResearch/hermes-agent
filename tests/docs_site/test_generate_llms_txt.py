@@ -303,6 +303,37 @@ def test_llms_full_document_links_become_published_urls(mini_docs, tmp_path):
     assert "[gone](./missing.md)" in full
 
 
+def test_llms_full_drops_heading_ids_and_mdx_comments_from_prose(mini_docs, tmp_path):
+    """Heading `[#id]` suffixes and `{/* ... */}` comments are authoring syntax;
+    the same text inside code stays verbatim."""
+    content = tmp_path / "content" / "en"
+    (content / "user-guide" / "cli.md").write_text(
+        "---\n"
+        "title: CLI\n"
+        "---\n"
+        "\n"
+        "## Running the Webapp [#running-the-webapp]\n"
+        "\n"
+        "Uses `/tmp` {/* no-tmp: ok */} on Arch.\n"
+        "\n"
+        "```md\n"
+        "## Example [#kept]\n"
+        "{/* kept */}\n"
+        "```\n"
+        "\n"
+        "Write `{/* inline */}` in MDX.\n",
+        encoding="utf-8",
+    )
+    full = mini_docs.emit_llms_full()
+
+    assert "## Running the Webapp\n" in full
+    assert "[#running-the-webapp]" not in full
+    assert "Uses `/tmp` on Arch." in full
+    assert "no-tmp" not in full
+    assert "```md\n## Example [#kept]\n{/* kept */}\n```" in full
+    assert "Write `{/* inline */}` in MDX." in full
+
+
 def test_llms_full_leaves_indented_code_blocks_alone(mini_docs, tmp_path):
     """Four-space indented code is code too: its callout and link examples stay
     verbatim, while the same lines as prose and as list continuations convert."""

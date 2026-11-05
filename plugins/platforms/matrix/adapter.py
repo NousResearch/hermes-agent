@@ -2556,6 +2556,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+            else:  # this card's request already timed out or was answered elsewhere
+                await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True

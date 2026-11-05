@@ -9,6 +9,7 @@ import { atom } from 'nanostores'
 import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
 import { $apiRequestScope, connectionScoped, profileScoped } from '@/api/client'
 import type {
+  DesktopRemoteOnlyUpdateStatus,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
   DesktopUpdateProgress,
@@ -59,6 +60,8 @@ export const $updateApply = atom<UpdateApplyState>(IDLE)
 export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
 export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
+/** Remote-only (light) builds: the official release tag, never an install. */
+export const $remoteOnlyUpdate = atom<DesktopRemoteOnlyUpdateStatus | null>(null)
 
 // Client and backend are independently updatable; each keeps its own state.
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
@@ -336,11 +339,75 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, t
   })
 }
 
+const REMOTE_ONLY_TOAST_ID = 'remote-only-update-available'
+const REMOTE_ONLY_NOTIFIED_KEY = 'hermes:remote-only-update-notified'
+
+/**
+ * A remote-only build can see that the official client moved on, but it can
+ * never install the release: the toast links to the release page instead of
+ * offering "Update now". One notice per tag, persisted across relaunches.
+ */
+function maybeNotifyRemoteOnlyUpdate(status: DesktopRemoteOnlyUpdateStatus): void {
+  if (!status.newer || !status.latest) {
+    dismissNotification(REMOTE_ONLY_TOAST_ID)
+
+    return
+  }
+
+  if (storedString(REMOTE_ONLY_NOTIFIED_KEY) === status.latest) {
+    return
+  }
+
+  const seen = () => persistString(REMOTE_ONLY_NOTIFIED_KEY, status.latest)
+
+  notify({
+    action: {
+      label: translateNow('remoteOnly.viewRelease'),
+      onClick: () => {
+        seen()
+        window.hermesDesktop?.openExternal?.(status.releaseUrl)
+      }
+    },
+    durationMs: 0,
+    icon: 'cloud',
+    id: REMOTE_ONLY_TOAST_ID,
+    kind: 'info',
+    message: translateNow('remoteOnly.updateAvailable', status.latest),
+    onDismiss: seen,
+    title: translateNow('remoteOnly.toastTitle')
+  })
+}
+
+/**
+ * Ask the remote-only checker for the official release tag. Returns null when
+ * this artifact is not light (the preload bridge is absent or unsupported).
+ * This never downloads, stages or applies anything.
+ */
+export async function checkRemoteOnlyUpdate({ force = false }: { force?: boolean } = {}): Promise<DesktopRemoteOnlyUpdateStatus | null> {
+  const bridge = typeof window === 'undefined' ? null : window.hermesDesktop?.remoteOnly
+
+  if (!bridge?.updateCheck) {
+    return null
+  }
+
+  try {
+    const status = await bridge.updateCheck({ force })
+    $remoteOnlyUpdate.set(status)
+
+    if (status?.supported) {
+      maybeNotifyRemoteOnlyUpdate(status)
+    }
+
+    return status
+  } catch {
+    return null
+  }
+}
+
 /** Which retired-channel revision the discontinued notice was dismissed for. */
 function discontinuedDismissKey(retirement: NonNullable<DesktopUpdateStatus['retirement']>): string {
   return `${retirement.destination}@${retirement.version}`
 }
-
 /** Persist the dismissal so plain re-checks never nag; a new retirement re-shows. */
 export function dismissDiscontinuedNotice(retirement: NonNullable<DesktopUpdateStatus['retirement']>): void {
   persistString(DISCONTINUED_DISMISS_KEY, discontinuedDismissKey(retirement))
@@ -1357,6 +1424,7 @@ function runPassiveChecks(): void {
   persistString(FOCUS_RECHECK_KEY, String(Date.now()))
   void checkUpdates()
   void checkBackendUpdates()
+  void checkRemoteOnlyUpdate()
 }
 
 /** Wire up background polling + progress streaming. Idempotent. */

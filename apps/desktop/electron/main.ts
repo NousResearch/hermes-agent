@@ -327,6 +327,11 @@ import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
+import {
+  createRemoteOnlyUpdateChecker,
+  REMOTE_ONLY_RELEASES_URL,
+  type RemoteOnlyUpdateStatus
+} from './remote-only-update-check'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
@@ -3453,6 +3458,14 @@ function resolvePackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
 }
 
 async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
+  // A remote-only artifact has no bundled payload and no published feed: the
+  // App Installer checker (payload python) and electron-updater cannot run.
+  // Return an explicit unsupported strategy so nothing falls through to a
+  // checkout arm and no user action can start an update.
+  if (isLightVariant()) {
+    return createRemoteOnlyUpdateStrategy()
+  }
+
   const mechanism = resolveUpdaterMechanism({
     platform: process.platform,
     updateMechanism: INSTALL_STAMP?.updateMechanism,
@@ -3492,6 +3505,29 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   }
 
   return createNativePackagedStrategy(mechanism)
+}
+
+/**
+ * The update surface of a remote-only artifact: it can SEE that the official
+ * client moved on, but it can never install anything. `remoteOnly:updateCheck`
+ * is the only version signal it exposes; this strategy makes the native update
+ * paths report unsupported instead of building an App Installer/electron arm.
+ */
+function createRemoteOnlyUpdateStrategy(): UpdaterStrategy {
+  const message =
+    'This is a remote-only Hermes Desktop build: it cannot install updates. Rebase the fork to move to a new version.'
+
+  return {
+    mechanism: 'manual',
+    check: async () => ({
+      supported: false,
+      mechanism: 'manual',
+      reason: 'remote-only',
+      message,
+      fetchedAt: Date.now()
+    }),
+    apply: async () => ({ ok: false, mechanism: 'manual', error: 'remote-only', message })
+  }
 }
 
 function createNativePackagedStrategy(
@@ -17115,6 +17151,33 @@ ipcMain.handle(
       message: error?.message || String(error),
       fetchedAt: Date.now()
     }))
+)
+
+// Remote-only version awareness: read the official release tag, never install.
+// A non-light artifact gets `supported: false` so the renderer hides the badge.
+let remoteOnlyUpdateChecker: ReturnType<typeof createRemoteOnlyUpdateChecker> | null = null
+ipcMain.handle(
+  'remoteOnly:updateCheck',
+  async (_event, opts?: { force?: boolean }): Promise<RemoteOnlyUpdateStatus> => {
+    if (installShape() !== 'light') {
+      return {
+        supported: false,
+        current: app.getVersion(),
+        latest: null,
+        newer: false,
+        releaseUrl: REMOTE_ONLY_RELEASES_URL,
+        checkedAt: Date.now()
+      }
+    }
+
+    remoteOnlyUpdateChecker ??= createRemoteOnlyUpdateChecker({
+      cachePath: path.join(app.getPath('userData'), 'remote-only-update-check.json'),
+      currentVersion: app.getVersion(),
+      log: rememberLog
+    })
+
+    return remoteOnlyUpdateChecker.check({ force: Boolean(opts?.force) })
+  }
 )
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>

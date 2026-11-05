@@ -388,6 +388,13 @@ export const en: Translations = {
 
   boot: enBoot.boot,
 
+  remoteOnly: {
+    updateAvailable: version =>
+      `${version} is available — this build is remote-only and does not update itself.`,
+    viewRelease: 'View release',
+    toastTitle: 'A newer official client exists'
+  },
+
   notifications: {
     sharedProfileWarning:
       'Another Hermes installation is using this profile. Both installations share its settings and data, so changes can conflict. You can continue, or close the other installation before making changes.',

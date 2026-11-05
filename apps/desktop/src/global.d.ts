@@ -744,6 +744,10 @@ declare global {
         ackPendingRun?: (sent: boolean) => Promise<void>
         onPendingRun?: (callback: () => void) => () => void
       }
+      /** Remote-only (light) builds only: read the official release tag, never install. */
+      remoteOnly?: {
+        updateCheck: (opts?: { force?: boolean }) => Promise<DesktopRemoteOnlyUpdateStatus>
+      }
       desktopMetrics?: {
         /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
         setEnabled?: (on: boolean, profile: string) => Promise<void>
@@ -970,6 +974,18 @@ export interface DesktopUpdateCommit {
 
 export type UpdaterMechanismClient =
   'app-installer' | 'electron-updater' | 'external' | 'microsoft-store' | 'windows-handoff' | 'posix-handoff' | 'manual'
+
+/** Remote-only builds: the official release tag, and whether it is newer. */
+export interface DesktopRemoteOnlyUpdateStatus {
+  /** False on every artifact that is not the light variant. */
+  supported: boolean
+  current: string
+  latest: string | null
+  newer: boolean
+  releaseUrl: string
+  checkedAt: number
+  error?: string
+}
 
 export interface DesktopUpdateStatus {
   supported: boolean

@@ -424,6 +424,13 @@ export interface Translations extends NoticeTranslations {
 
   boot: BootTranslations
 
+  /** Remote-only (light) builds: the official release notice, never an install. */
+  remoteOnly: {
+    updateAvailable: (version: string) => string
+    viewRelease: string
+    toastTitle: string
+  }
+
   notifications: {
     sharedProfileWarning: string
     region: string

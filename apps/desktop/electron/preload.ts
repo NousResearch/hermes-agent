@@ -716,6 +716,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:updates:metric:pending', listener)
     }
   },
+  // Remote-only (light) builds can SEE the official release tag but cannot
+  // install anything. Missing on every other artifact.
+  remoteOnly: {
+    updateCheck: (opts?: { force?: boolean }) => ipcRenderer.invoke('remoteOnly:updateCheck', opts)
+  },
   desktopMetrics: {
     setEnabled: (on, profile) => ipcRenderer.invoke('hermes:desktop-metrics:set-enabled', on, profile),
     takeRendererCrashes: () => ipcRenderer.invoke('hermes:desktop-metrics:crash:take'),

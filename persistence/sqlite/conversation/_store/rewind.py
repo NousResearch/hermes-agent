@@ -1,0 +1,229 @@
+"""User-turn rewind: the plan reads and the rewind write."""
+
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Optional
+from persistence.conversation.messages import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+from persistence.sqlite._holder import StoreHolder
+
+
+_HISTORY_CHANGED = "session history changed before the rewind could be persisted"
+
+
+class RewindTargetUnavailableError(ValueError):
+    """The requested user turn is not a rewindable target of the active transcript: no user turns, an
+    ordinal past the newest one, a row that is not user-originated, or a plain turn where the caller
+    required a compaction carrier. Surfaces map this to their own "nothing to undo" message."""
+
+
+@dataclass
+class RewindPlan:
+    target_row_id: int
+    expected_active_ids: list[int]
+    expected_target_content: Any
+    scaffold: Optional[dict[str, Any]]
+    prefix: list[dict[str, Any]]
+    durable_prefix: list[dict[str, Any]]
+    live_view: dict[str, Any]
+    live_text: Optional[str]
+    durable_user: list[int]
+    user_ordinal: int
+
+
+@dataclass
+class RewindOutcome:
+    prefix: list[dict[str, Any]]  # history to install: the warm prefix when ``warm_history`` was given, else durable
+    live_view: dict[str, Any]  # canonical live projection of the rewound turn (prefill / retry source)
+    live_text: str  # lossless retry text when ``require_retryable``, else the display flattening (prefill)
+    rewound_count: int
+    turns_undone: int
+
+
+def _user_indices(messages: list[dict[str, Any]]) -> list[int]:
+    from session_rules.turns import user_originated_turn_view
+    return [i for i, m in enumerate(messages) if user_originated_turn_view(m) is not None]
+
+
+def _comparison_content(message: dict[str, Any]) -> Any:
+    """Project content the way the durable row stores it (flush projection, then the read-side sanitize) so a
+    warm row and its durable twin compare equal."""
+    from session_rules.turns import _durable_content
+    return _loaded_view_content(message.get("role"), _durable_content(message.get("content")))
+
+
+def retain_refused_turn_for_display(
+    holder: StoreHolder, session_id: str, *, notice: str, boundary_row_id: Optional[int] = None,
+) -> bool:
+    """Take a just-safety-refused turn out of the model context, keeping the user's message on screen. The
+    whole turn (the target user row and every later active row) is soft-deleted as ``/undo`` does, and in the
+    SAME write transaction the target row is re-surfaced into the display projection (``compacted = 1``)
+    tagged ``content_refused`` with *notice* in its display metadata; ``active`` stays 0. Targets
+    ``boundary_row_id`` when it is an active user row, else the newest user turn. Returns True when a turn
+    was retained, False when there was nothing to retain."""
+    plan = _plan_refused_retention(holder, session_id, boundary_row_id)
+    if plan is None:
+        return False
+    target_row_id, preserve_handoff, expected_active_ids = plan
+
+    def _do(conn) -> bool:
+        rewind_in_transaction(
+            holder, conn, session_id, target_row_id,
+            preserve_compaction_handoff=preserve_handoff, expected_active_ids=expected_active_ids)
+        row = conn.execute(
+            "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?",
+            (target_row_id, session_id)).fetchone()
+        if row is None:
+            return False
+        meta = _decode_display_metadata(row["display_metadata"]) or {}
+        meta[CONTENT_REFUSED_METADATA_KEY] = {"notice": notice}
+        conn.execute(
+            "UPDATE messages SET compacted = 1, display_kind = ?, display_metadata = ? "
+            "WHERE id = ? AND session_id = ?",
+            (CONTENT_REFUSED_DISPLAY_KIND, _encode_display_metadata(meta), target_row_id, session_id))
+        return True
+
+    return bool(holder._execute_write(_do))
+
+
+def _plan_refused_retention(holder: StoreHolder, session_id: str, boundary_row_id: Optional[int]):
+    """``(target_row_id, preserve_compaction_handoff, expected_active_ids)`` for the rewind that retains the
+    refused turn, or ``None`` when there is nothing to retain. ``boundary_row_id`` is the target when it
+    resolves to an active ``user`` row of the session; the active-id pin alone guards the write. Otherwise
+    the newest user turn is the target."""
+    from session_rules.turns import split_user_originated_turn
+    if isinstance(boundary_row_id, int) and boundary_row_id > 0:
+        with holder._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT role, active, content, display_metadata FROM messages "
+                "WHERE id = ? AND session_id = ?", (boundary_row_id, session_id)).fetchone()
+        if row is not None and row["role"] == "user" and row["active"]:
+            decoded = {"role": "user", "content": _decode_content(row["content"]),
+                       "display_metadata": _decode_display_metadata(row["display_metadata"])}
+            handoff, _live_view = split_user_originated_turn(decoded)
+            return boundary_row_id, handoff is not None, get_active_message_ids(holder, session_id)
+    try:
+        plan = plan_user_turn_rewind(holder, session_id, -1)
+    except RewindTargetUnavailableError:
+        return None
+    return plan.target_row_id, plan.scaffold is not None, plan.expected_active_ids
+
+
+def rewind_user_turn(
+    holder: StoreHolder, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,
+    require_retryable: bool = False, require_composite: bool = False, adopt_row_ids: bool = False,
+) -> RewindOutcome:
+    """Rewind the active transcript to just before user turn ``user_ordinal`` (0 = oldest; negative counts
+    back from the newest and clamps to the oldest, so ``-n`` is ``/undo n``). ``warm_history`` (CLI/TUI):
+    the in-memory view must have the same user turns and the same live target text as the durable
+    transcript, else ``RuntimeError`` and nothing changes; its (richer) prefix is what gets installed.
+    ``require_retryable``: the live payload must be losslessly replayable as text (``ValueError`` from
+    :func:`retryable_user_text` before any write). ``require_composite``: the target must be a compaction
+    carrier. ``adopt_row_ids`` (TUI): copy durable ``_row_id`` identities onto the installed warm prefix so
+    clients can address follow-ups by row; the CLI leaves its history shape alone. Out-of-range /
+    wrong-shape targets raise :class:`RewindTargetUnavailableError`."""
+    from session_rules.turns import _DB_PERSISTED_MARKER
+    from session_rules.turns import flatten_message_text
+    from session_rules.turns import MESSAGE_UID, message_uid_or_none
+
+    plan = plan_user_turn_rewind(holder, session_id, user_ordinal, warm_history=warm_history,
+                                      require_retryable=require_retryable, require_composite=require_composite)
+    (prefix, durable_prefix, live_view, live_text, scaffold, durable_user,
+     user_ordinal) = (plan.prefix, plan.durable_prefix, plan.live_view, plan.live_text, plan.scaffold,
+                      plan.durable_user, plan.user_ordinal)
+    try:
+        result = rewind_to_message(holder,
+            session_id, plan.target_row_id, preserve_compaction_handoff=scaffold is not None,
+            expected_active_ids=plan.expected_active_ids, expected_target_content=plan.expected_target_content)
+    except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
+        raise RewindTargetUnavailableError(str(exc)) from exc
+    if scaffold is not None:
+        replacement_id = result.get("replacement_message_id")
+        if not isinstance(replacement_id, int) or not durable_prefix:
+            raise RuntimeError("rewind did not retain its compaction handoff")
+        # The installed scaffold IS the replacement row: carry its identity, not just its row id.
+        durable_prefix[-1].update({"_row_id": replacement_id, _DB_PERSISTED_MARKER: True})
+        if replacement_uid := result.get("replacement_message_uid"):
+            durable_prefix[-1][MESSAGE_UID] = replacement_uid
+        prefix[-1] = durable_prefix[-1]
+    if adopt_row_ids and prefix is not durable_prefix and len(prefix) == len(durable_prefix) and all(
+        warm.get("role") == durable_message.get("role")
+        and bool(warm.get("display_kind")) == bool(durable_message.get("display_kind"))
+        and _comparison_content(warm) == _comparison_content(durable_message)
+        for warm, durable_message in zip(prefix, durable_prefix)
+    ):
+        # Clients address follow-ups by durable row id: keep the richer warm content, adopt the identities.
+        for warm, durable_message in zip(prefix, durable_prefix):
+            if isinstance(row_id := durable_message.get("_row_id"), int):
+                warm["_row_id"] = row_id
+            if uid := message_uid_or_none(durable_message):
+                warm[MESSAGE_UID] = uid
+    return RewindOutcome(
+        prefix=prefix, live_view=live_view,
+        live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
+        rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal)
+
+
+def plan_user_turn_rewind(
+    holder: StoreHolder, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,
+    require_retryable: bool = False, require_composite: bool = False,
+) -> RewindPlan:
+    """Every read and check :meth:`rewind_user_turn` makes before its write, with no write: the
+    gateway ``/retry`` commits the planned rewind inside its re-send's admission transaction
+    (``rewind_in_transaction`` with the plan's pins), so a refused re-send leaves it unapplied."""
+    from session_rules.turns import history_before_user_originated_turn, retryable_user_text, split_user_originated_turn, user_originated_turn_view
+    from session_rules.turns import _is_ephemeral_scaffolding
+
+    expected_active_ids = get_active_message_ids(holder, session_id)
+    stored = get_messages_as_conversation(holder, session_id, include_row_ids=True)
+    # Live replay (the pre-request repair, a resume) merges a stored ``user;user`` pair — an ask whose turn
+    # ended with no reply, then the next ask — into ONE turn while both rows stay stored. Address turns on
+    # that same repaired projection or the warm history is a turn short of the transcript forever
+    # (#115493); the merged turn keeps the first row's identity, so the rewind starts at that row.
+    durable = get_messages_as_conversation(holder, session_id, include_row_ids=True, repair_alternation=True)
+    durable_user = _user_indices(durable)
+    if user_ordinal < 0:
+        user_ordinal = max(len(durable_user) + user_ordinal, 0)
+    if user_ordinal >= len(durable_user):
+        raise RewindTargetUnavailableError("target user message is no longer in session history")
+    target_index = durable_user[user_ordinal]
+    target = durable[target_index]
+    durable_prefix, live_view = history_before_user_originated_turn(durable, target_index)
+    scaffold, _ = split_user_originated_turn(target)
+    if require_composite and scaffold is None:
+        raise RewindTargetUnavailableError("target user message is not a compaction carrier")
+
+    prefix = durable_prefix
+    if warm_history is not None:
+        warm = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
+        warm_user = _user_indices(warm)
+        if len(warm_user) != len(durable_user):
+            raise RuntimeError(_HISTORY_CHANGED)
+        prefix, warm_live_view = history_before_user_originated_turn(warm, warm_user[user_ordinal])
+        if _comparison_content(live_view) != _comparison_content(warm_live_view):
+            raise RuntimeError(_HISTORY_CHANGED)
+    # Retry re-sends the stored bytes: ``"".join`` of the text parts, never the "\n"-joined display
+    # flattening (wire bytes == stored bytes; ``"ab"`` must not come back as ``"a\nb"``).
+    live_text = retryable_user_text(live_view.get("content")) if require_retryable else None
+    target_row_id = target.get("_row_id")
+    if not isinstance(target_row_id, int):
+        raise RuntimeError("rewind target has no durable row identity")
+    # The in-txn payload pin compares against the STORED row, which for a merged turn holds only the
+    # first ask, never the merged text the live views carry.
+    stored_view = next(
+        (user_originated_turn_view(m) for m in stored if m.get("_row_id") == target_row_id), None)
+    if stored_view is None:
+        raise RuntimeError(_HISTORY_CHANGED)
+    return RewindPlan(
+        target_row_id=target_row_id, expected_active_ids=expected_active_ids,
+        expected_target_content=stored_view.get("content"), scaffold=scaffold, prefix=prefix,
+        durable_prefix=durable_prefix, live_view=live_view, live_text=live_text, durable_user=durable_user,
+        user_ordinal=user_ordinal)
+
+
+# Sibling store modules import this module's copies in turn, so their copies are imported after these.
+from persistence.sqlite.conversation._store.messages import (
+    _decode_content, _decode_display_metadata, _encode_display_metadata, _loaded_view_content, get_active_message_ids,
+    get_messages_as_conversation, rewind_to_message,
+)
+from persistence.sqlite.conversation._store.mutation_transcript import rewind_in_transaction

@@ -20,7 +20,8 @@ from agent.context_compressor import (
     _is_summary_access_or_quota_error,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
 import itertools
 
@@ -1663,33 +1664,32 @@ class TestAbortOnSummaryFailure:
 
 
 
-
     def test_aux_fallback_clears_persisted_session_cooldown_before_retry(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", "cli")
-        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "cli")
+        db.messages.record_compression_cooldown("s1", time.time() + 999.0, "timeout")
 
         c = self._make_compressor()
-        c.bind_session_state(db, "s1")
+        c.bind_session_state(db, "s1", persistence=db)
         c.summary_model = "aux/model"
 
         c._fallback_to_main_for_compression(Exception("provider down"), "failed")
 
         assert c.summary_model == ""
         assert c._summary_failure_cooldown_until == 0.0
-        assert db.get_compression_failure_cooldown("s1") is None
+        assert db.messages.read_compression_cooldown("s1", time.time()) is None
 
     def test_success_clears_persisted_session_cooldown(self, tmp_path):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
 
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", "cli")
-        db.record_compression_failure_cooldown("s1", time.time() + 999.0, "timeout")
+        db = storage_handle(tmp_path)
+        seed_session(db, "s1", "cli")
+        db.messages.record_compression_cooldown("s1", time.time() + 999.0, "timeout")
 
         c = self._make_compressor()
-        c.bind_session_state(db, "s1")
+        c.bind_session_state(db, "s1", persistence=db)
         c._summary_failure_cooldown_until = 0.0
         msgs = self._make_msgs()
 
@@ -1699,7 +1699,7 @@ class TestAbortOnSummaryFailure:
         mock_llm.assert_called()
         assert c._last_compress_aborted is False
         assert len(result) < len(msgs)
-        assert db.get_compression_failure_cooldown("s1") is None
+        assert db.messages.read_compression_cooldown("s1", time.time()) is None
 
 
 

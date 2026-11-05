@@ -111,17 +111,68 @@ def test_an_unreadable_config_backend_never_fails_create(profile_env, monkeypatc
     assert "profile hook failed" in caplog.text
 
 
+def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_env, monkeypatch):
+    import plugins.memory as memory_pkg
+    from agent.secret_scope import get_secret
+    from hermes_cli.profiles import create_profile
+
+    seen = []
+
+    class Reader(_Stub):
+        name = "reader"
+
+        def on_profile_created(self, profile_name, hermes_home):
+            seen.append(get_secret("PROBE_PROFILE_KEY", "unset"))
+
+    monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Reader())
+    monkeypatch.setenv("PROBE_PROFILE_KEY", "caller-value")
+    _select(profile_env, "reader")
+    create_profile("work", clone_config=True, no_alias=True)  # the cloned .env has no such key
+    assert seen == ["unset"]
+
+
+def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, monkeypatch):
+    import plugins.memory as memory_pkg
+    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_constants import get_hermes_home
+
+    class Exits(_Stub):
+        name = "exits"
+
+        def on_profile_created(self, profile_name, hermes_home):
+            calls.append("created")
+            raise SystemExit(3)
+
+        def on_profile_renamed(self, old_name, new_name, hermes_home):
+            calls.append("renamed")
+            raise SystemExit(3)
+
+    home = get_hermes_home()
+    calls = []
+    monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Exits())
+    _select(profile_env, "exits")
+    assert create_profile("work", clone_config=True, no_alias=True).is_dir()
+    with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        assert rename_profile("work", "play").is_dir()
+    assert calls == ["created", "renamed"]
+    assert get_hermes_home() == home  # the profile home override was reset
+
+
 def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
     from hermes_cli.profiles import create_profile, rename_profile
+
+    calls = []
 
     class Broken(_Stub):
         name = "broken"
 
         def on_profile_created(self, profile_name, hermes_home):
+            calls.append("created")
             raise RuntimeError("boom")
 
         def on_profile_renamed(self, old_name, new_name, hermes_home):
+            calls.append("renamed")
             raise RuntimeError("boom")
 
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Broken())
@@ -129,4 +180,4 @@ def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monke
     create_profile("work", clone_config=True, no_alias=True)
     with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
         assert rename_profile("work", "play").is_dir()
-
+    assert calls == ["created", "renamed"]

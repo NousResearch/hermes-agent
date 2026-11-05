@@ -182,7 +182,8 @@ workspace; absent or empty cwd remains unpinned.
 | `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
 
 The two profile hooks run on an uninitialized instance with that profile's home and its own `.env`
-secrets bound (a key that `.env` lacks falls back to the process environment, as at runtime). An exception is logged and never fails the create or rename. They run inside the
+secrets bound. A key that profile's `.env` lacks reads as unset: the caller's environment is never
+used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
 create/rename request on every surface, so do network work on a background thread.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
@@ -359,8 +360,8 @@ def read_config_fields(self, hermes_home: str) -> dict:
 
 def write_config_fields(self, values: dict, hermes_home: str) -> None:
     # Only submitted keys; None clears one. Non-blank secrets arrive here too; core saves them to
-    # .env under env_key only after this returns. Raise a plain ValueError to refuse the save
-    # (shown as a 400), e.g. when your file does not parse.
+    # .env under env_key only after this returns. Raise ValueError (a subclass such as
+    # json.JSONDecodeError counts) to refuse the save (shown as a 400), e.g. when your file does not parse.
     ...
 ```
 

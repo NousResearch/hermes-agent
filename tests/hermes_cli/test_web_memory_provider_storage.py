@@ -39,7 +39,7 @@ class OwnProv(MemoryProvider):
         return {"values": values, "placeholders": {"workspace": "hermes", "aiPeer": "hermes"}}
 
     def write_config_fields(self, values, hermes_home):
-        path, cfg = _read(hermes_home)  # a file that does not parse raises ValueError: no write
+        path, cfg = _read(hermes_home)  # a file that does not parse raises JSONDecodeError: no write
         block = cfg.setdefault("hosts", {}).setdefault("hermes", {})
         for key, value in values.items():
             target = cfg if key in _ROOT_KEYS else block

@@ -81,13 +81,12 @@ def _load_config_dict(profile_dir: Path) -> Optional[dict]:
 
 def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], None]) -> None:
     """Run ``call`` on the memory provider *profile_dir*'s config selects, with that profile's home AND
-    its own secrets bound (a profile lifecycle hook): ``get_secret`` reads the new profile's ``.env``
-    first (outside multiplexing, a key it lacks falls back to the process env, as at runtime). No
+    its own secrets bound (a profile lifecycle hook): ``get_secret`` reads the target profile's
+    ``.env`` and never falls back to the caller's environment for a key it lacks. No
     provider selected or installed: nothing runs. Best-effort: a failing
     provider, or an unreadable config, is logged and never fails the create/rename that called it
     (the directory is already published)."""
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from plugins.memory import load_memory_provider
 
@@ -104,7 +103,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
         provider = load_memory_provider(name, register_skills=False)
         if provider is not None:
             call(provider)
-    except (Exception, ConfigBackendUnavailable):  # the backend error is a SystemExit on purpose
+    except (Exception, SystemExit):  # ConfigBackendUnavailable is a SystemExit; a plugin may sys.exit
         logger.warning("memory provider %r: profile hook failed for %s", name, profile_dir, exc_info=True)
     finally:
         if secret_token is not None:

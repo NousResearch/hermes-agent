@@ -56,7 +56,9 @@ for Windows archive in Hermes' tool store. It does not replace your system Git.
 See [installation methods](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
 for the separate MSIX/App Installer package and its update ownership.
 
-> **Android / Termux:** A signed APT repository is available for aarch64 devices, with a `stable` channel (tagged releases) and a prerelease `canary` channel. The package includes Python, Node.js, and the TUI. Use the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux), not the desktop/server installer script.
+> **Android / Termux:** Android support is documented through the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). Use that guide rather than the desktop/server installer script, and check its current requirements and package source.
+>
+> **Android APK:** This repository also links an APK, but its compatibility and feature parity have not been verified across devices. Treat it as experimental; review the [Android installation and troubleshooting guide](README.android.md) and release notes before installing.
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 

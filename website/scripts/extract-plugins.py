@@ -68,6 +68,13 @@ def _is_allowed_image_url(url: str) -> bool:
     return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
 
 
+def _is_https_url(url: str) -> bool:
+    # docs_url is the one catalog field rendered as a link on the docs site, so any
+    # https host is fine — but a javascript:/data: value must never reach the href.
+    parts = urlsplit(url)
+    return parts.scheme == "https" and bool((parts.hostname or "").strip())
+
+
 def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
     """A cosmetic field is dropped, never fatal: the site must not lose an entry a reviewer merged."""
     text = str(value or "").strip()
@@ -257,7 +264,7 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "requiresHermes": str(raw.get("requires_hermes") or "").strip(),
             "platforms": _str_list(raw.get("platforms")),
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
-            "docsUrl": str(raw.get("docs_url") or "").strip(),
+            "docsUrl": _cosmetic(raw.get("docs_url"), _is_https_url, path.name, name, "docs_url"),
             "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
             "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
             "screenshots": _screenshots(raw.get("screenshots"), path.name, name),

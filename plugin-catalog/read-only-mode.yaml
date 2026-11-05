@@ -1,0 +1,19 @@
+name: read-only-mode
+repo: https://github.com/chengyimingvb/HermesPlugins
+sha: d99850aeccdeca6a5c928ee70e3e57ed5a335624
+subdir: read-only-mode
+title: Read-only mode
+description: 'Ask/read-only toggle beside the Desktop composer (Cursor Ask-mode equivalent): while it is on, each send is prefixed with a read-only instruction so the agent answers from reading only, and asks before changing anything. Per-chat state, palette command, no agent tools or hooks. It is a prompt-level constraint, not a sandbox: Hermes has no session-level read-only policy, so the model can still disobey. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no tools, hooks, env vars.'
+maintainer: chengyimingvb
+tier: community
+category: desktop
+version: "0.1.0"
+docs_url: https://github.com/chengyimingvb/HermesPlugins/tree/main/read-only-mode
+requires_hermes: ">=0.22.7"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

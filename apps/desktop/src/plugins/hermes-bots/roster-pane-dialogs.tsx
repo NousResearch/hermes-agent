@@ -135,15 +135,15 @@ export function renderRosterDialogs({
         title={b.bot.deleteTitle}
       />
       <ConfirmDialog
-        busyLabel={b.group.deleting}
-        confirmLabel={b.group.deleteAction}
+        busyLabel={b.group.disbanding}
+        confirmLabel={b.group.disbandAction}
         description={
           deletingGroup
-            ? b.group.deleteDesc(deletingGroup.name)
+            ? <span>{b.group.disbandDescPrefix}<span className="font-medium text-foreground">{deletingGroup.name}</span>{b.group.disbandDescSuffix(deletingGroup.members.length)}</span>
             : null
         }
         destructive
-        doneLabel={b.group.deletedLabel}
+        doneLabel={b.group.disbandDone}
         onClose={() => setDeletingGroup(null)}
         onConfirm={async () => {
           if (!deletingGroup) {
@@ -153,11 +153,11 @@ export function renderRosterDialogs({
           await disbandGroupChat(deletingGroup.name, deletingGroup.members)
           host.notify({
             kind: 'success',
-            message: b.group.deleted(deletingGroup.name)
+            message: b.group.disbanded(deletingGroup.name)
           })
         }}
         open={Boolean(deletingGroup)}
-        title={b.group.deleteTitle}
+        title={b.group.disbandTitle}
       />
     </>
   )

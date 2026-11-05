@@ -109,7 +109,7 @@ export function CanonicalGroupRow({ active, onOpen, room }: CanonicalGroupRowPro
           <ContextMenuItem onSelect={onOpen}>{labels.openGroup}</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => setConfirming(true)} variant="destructive">
-            {group.deleteAction}
+            {group.disbandAction}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

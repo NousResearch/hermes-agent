@@ -55,9 +55,11 @@ export function CanonicalGroupHeader({ busy, canDisband, canRename, canStop, det
       <CanonicalGroupAttention driver={driver} labels={labels} />
     </RoomHeader>
     {renaming !== null && <form className="flex items-center gap-2 px-3 py-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
-      <Input aria-label={labels.renameLabel} autoFocus onChange={event => setRenaming(event.target.value)} value={renaming} />
+      <div className="mx-auto flex w-full max-w-[calc(48rem+0.5rem)] items-center gap-2 px-1">
+      <Input aria-label={labels.renameLabel} autoFocus className="min-w-0 flex-1" onChange={event => setRenaming(event.target.value)} value={renaming} />
       <Button disabled={busy || !renaming.trim()} size="sm" type="submit">{labels.save}</Button>
       <Button onClick={() => setRenaming(null)} size="sm" type="button" variant="text">{labels.cancel}</Button>
+      </div>
     </form>}
     {ending && <ConfirmDialog busyLabel={labels.disbanding} confirmLabel={labels.disband}
       description={<span>{labels.disbandDescPrefix}<span className="font-medium text-foreground">{room?.name}</span>{labels.disbandDescSuffix(room?.members?.length ?? 0)}</span>}

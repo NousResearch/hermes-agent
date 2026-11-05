@@ -1,4 +1,6 @@
-export interface CanonicalGroupMessages {
+import { GROUP_REASON_LOCALES, type GroupReasonMessages } from './group-reason-locales'
+
+export interface CanonicalGroupMessages extends GroupReasonMessages {
   members: string
   roomStopped: string
   roomDisbanded: string
@@ -117,6 +119,7 @@ export interface CanonicalGroupMessages {
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    ...GROUP_REASON_LOCALES["en"],
     roomStopped: 'Group stopped',
     roomDisbanded: 'Group disbanded',
     authorityLost: 'Group ownership changed',
@@ -144,7 +147,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Remove attachment',
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
-    memberQueued: 'Queued',
+    memberQueued: 'queued',
     groupWorking: 'The group is working…',
     statusWorking: 'working',
     statusStalled: 'no progress for {time}',
@@ -172,7 +175,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'Group details',
     stopGroup: 'Stop the group',
     pendingApproval: '{name} is asking for approval. You decide.',
-    pendingRetry: '{name}’s turn stopped before it finished. Retry it?',
+    pendingRetry: "{name}’s turn didn’t finish here. Retry it?",
     pendingDiscard: '{name}’s turn may have done work that was not recorded. Discard it?',
     membersFixed: 'Members are set when the group is created.',
     rowWorking: 'Working',
@@ -233,6 +236,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Earlier messages, read only. They stay on this Desktop and aren’t copied into a new group.'
   },
   ja: {
+    ...GROUP_REASON_LOCALES["ja"],
     roomStopped: 'グループが停止しました',
     roomDisbanded: 'グループが解散しました',
     authorityLost: 'グループの管理元が変更されました',
@@ -288,7 +292,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'グループの詳細',
     stopGroup: 'グループを停止',
     pendingApproval: '{name} が承認を求めています。判断してください。',
-    pendingRetry: '{name} のターンは完了前に止まりました。再試行しますか？',
+    pendingRetry: "{name} のターンはここでは完了しませんでした。再試行しますか？",
     pendingDiscard: '{name} のターンは記録されていない作業をした可能性があります。破棄しますか？',
     membersFixed: 'メンバーはグループ作成時に決まります。',
     rowWorking: '作業中',
@@ -349,6 +353,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '以前のメッセージ（閲覧のみ）。この Desktop に残り、新しいグループにはコピーされません。'
   },
   zh: {
+    ...GROUP_REASON_LOCALES["zh"],
     roomStopped: '群组已停止',
     roomDisbanded: '群组已解散',
     authorityLost: '群组管理端已更改',
@@ -404,7 +409,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: '群组详情',
     stopGroup: '停止群组',
     pendingApproval: '{name} 正在请求批准，由你决定。',
-    pendingRetry: '{name} 的回合未完成就停止了。要重试吗？',
+    pendingRetry: "{name} 的回合未在此处完成。要重试吗？",
     pendingDiscard: '{name} 的回合可能做了未记录的工作。要丢弃吗？',
     membersFixed: '成员在创建群组时确定。',
     rowWorking: '工作中',
@@ -465,6 +470,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '之前的消息（只读）。它们保留在此 Desktop 上，不会复制到新群组。'
   },
   'zh-hant': {
+    ...GROUP_REASON_LOCALES["zh-hant"],
     roomStopped: '群組已停止',
     roomDisbanded: '群組已解散',
     authorityLost: '群組管理端已變更',
@@ -520,7 +526,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: '群組詳細資料',
     stopGroup: '停止群組',
     pendingApproval: '{name} 正在請求核准，由你決定。',
-    pendingRetry: '{name} 的回合未完成就停止了。要重試嗎？',
+    pendingRetry: "{name} 的回合未在此處完成。要重試嗎？",
     pendingDiscard: '{name} 的回合可能做了未記錄的工作。要捨棄嗎？',
     membersFixed: '成員在建立群組時決定。',
     rowWorking: '工作中',
@@ -581,6 +587,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: '先前的訊息（唯讀）。它們會保留在此 Desktop 上，不會複製到新群組。'
   },
   ar: {
+    ...GROUP_REASON_LOCALES["ar"],
     roomStopped: 'أُوقفت المجموعة',
     roomDisbanded: 'حُلّت المجموعة',
     authorityLost: 'تغيّر مالك المجموعة',
@@ -636,7 +643,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'تفاصيل المجموعة',
     stopGroup: 'إيقاف المجموعة',
     pendingApproval: '{name} يطلب موافقة. القرار لك.',
-    pendingRetry: 'توقف دور {name} قبل أن ينتهي. هل تعيد المحاولة؟',
+    pendingRetry: "لم يكتمل دور {name} هنا. هل تعيد المحاولة؟",
     pendingDiscard: 'ربما أنجز دور {name} عملًا لم يُسجَّل. هل تتجاهله؟',
     membersFixed: 'يُحدَّد الأعضاء عند إنشاء المجموعة.',
     rowWorking: 'يعمل',
@@ -697,6 +704,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'الرسائل السابقة، للقراءة فقط. تبقى على Desktop هذا ولن تُنسخ إلى مجموعة جديدة.'
   },
   ru: {
+    ...GROUP_REASON_LOCALES["ru"],
     roomStopped: 'Группа остановлена',
     roomDisbanded: 'Группа распущена',
     authorityLost: 'Владелец группы изменился',
@@ -727,7 +735,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Удалить вложение',
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
-    memberQueued: 'В очереди',
+    memberQueued: 'в очереди',
     groupWorking: 'Группа работает…',
     statusWorking: 'работает',
     statusStalled: 'нет прогресса {time}',
@@ -755,7 +763,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'Сведения о группе',
     stopGroup: 'Остановить группу',
     pendingApproval: '{name} просит одобрения. Решать вам.',
-    pendingRetry: 'Ход {name} прервался до завершения. Повторить?',
+    pendingRetry: "Ход {name} здесь не завершился. Повторить?",
     pendingDiscard: 'Ход {name} мог выполнить незаписанную работу. Отбросить?',
     membersFixed: 'Участники задаются при создании группы.',
     rowWorking: 'Работает',
@@ -816,6 +824,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Прежние сообщения, только для чтения. Они остаются в этом Desktop и не копируются в новую группу.'
   },
   fr: {
+    ...GROUP_REASON_LOCALES["fr"],
     roomStopped: 'Groupe arrêté',
     roomDisbanded: 'Groupe dissous',
     authorityLost: 'Gestionnaire du groupe modifié',
@@ -845,7 +854,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Retirer la pièce jointe',
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
-    memberQueued: 'En attente',
+    memberQueued: 'en attente',
     groupWorking: 'Le groupe travaille…',
     statusWorking: 'au travail',
     statusStalled: 'aucun progrès depuis {time}',
@@ -873,7 +882,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'Détails du groupe',
     stopGroup: 'Arrêter le groupe',
     pendingApproval: '{name} demande une approbation. À vous de décider.',
-    pendingRetry: 'Le tour de {name} s’est arrêté avant la fin. Réessayer ?',
+    pendingRetry: "Le tour de {name} ne s’est pas terminé ici. Réessayer ?",
     pendingDiscard: 'Le tour de {name} a peut-être fait un travail non enregistré. L’abandonner ?',
     membersFixed: 'Les membres sont fixés à la création du groupe.',
     rowWorking: 'Au travail',
@@ -934,6 +943,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Messages précédents, en lecture seule. Ils restent sur ce Desktop et ne sont pas copiés dans un nouveau groupe.'
   },
   de: {
+    ...GROUP_REASON_LOCALES["de"],
     roomStopped: 'Gruppe angehalten',
     roomDisbanded: 'Gruppe aufgelöst',
     authorityLost: 'Gruppenverwaltung gewechselt',
@@ -964,7 +974,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Anhang entfernen',
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
-    memberQueued: 'In der Warteschlange',
+    memberQueued: 'in der Warteschlange',
     groupWorking: 'Die Gruppe arbeitet…',
     statusWorking: 'arbeitet',
     statusStalled: 'kein Fortschritt seit {time}',
@@ -992,7 +1002,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'Gruppendetails',
     stopGroup: 'Gruppe stoppen',
     pendingApproval: '{name} bittet um Freigabe. Du entscheidest.',
-    pendingRetry: 'Der Zug von {name} endete vorzeitig. Erneut versuchen?',
+    pendingRetry: "Der Zug von {name} wurde hier nicht abgeschlossen. Erneut versuchen?",
     pendingDiscard: 'Der Zug von {name} hat womöglich nicht erfasste Arbeit getan. Verwerfen?',
     membersFixed: 'Mitglieder werden beim Erstellen der Gruppe festgelegt.',
     rowWorking: 'Arbeitet',
@@ -1053,6 +1063,7 @@ export const CANONICAL_GROUP_LOCALES = {
     earlierMessages: 'Frühere Nachrichten, nur lesbar. Sie bleiben auf diesem Desktop und werden nicht in eine neue Gruppe kopiert.'
   },
   es: {
+    ...GROUP_REASON_LOCALES["es"],
     roomStopped: 'Grupo detenido',
     roomDisbanded: 'Grupo disuelto',
     authorityLost: 'Propietario del grupo cambiado',
@@ -1082,7 +1093,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Quitar adjunto',
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
-    memberQueued: 'En cola',
+    memberQueued: 'en cola',
     groupWorking: 'El grupo está trabajando…',
     statusWorking: 'trabajando',
     statusStalled: 'sin avances desde hace {time}',
@@ -1110,7 +1121,7 @@ export const CANONICAL_GROUP_LOCALES = {
     groupDetails: 'Detalles del grupo',
     stopGroup: 'Detener el grupo',
     pendingApproval: '{name} pide aprobación. Tú decides.',
-    pendingRetry: 'El turno de {name} se detuvo antes de terminar. ¿Reintentar?',
+    pendingRetry: "El turno de {name} no terminó aquí. ¿Reintentar?",
     pendingDiscard: 'El turno de {name} pudo hacer trabajo no registrado. ¿Descartarlo?',
     membersFixed: 'Los miembros se fijan al crear el grupo.',
     rowWorking: 'Trabajando',

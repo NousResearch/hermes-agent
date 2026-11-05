@@ -114,7 +114,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const stopPending = useRef(false)
   // One cancellation intent survives uncertain replies until new work starts or Stop is confirmed.
   const stopIntent = useRef<string | null>(null)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState<'' | 'nothingRunning' | 'stopped'>('')
   const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
@@ -192,6 +192,11 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (alive.current && version === revision.current) {
       seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
       setState(snapshot)
+
+      if (snapshot.driver_status && !snapshot.driver_status.working && !snapshot.driver_status.counts?.stopping) {
+        setNotice(current => current === 'stopped' ? '' : current)
+      }
+
       setEvents(current => {
         const next = fresh ? log : [...current, ...log.filter(event => event.seq > since)]
 
@@ -398,7 +403,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       if (replay && !cancelled && state?.driver_status?.working) {cancelled = await requestStop(true)}
 
       if (alive.current) {
-        setNotice(cancelled ? labels.stopped : labels.nothingRunning)
+        setNotice(cancelled ? 'stopped' : 'nothingRunning')
         await refresh()
       }
     } catch (e) {
@@ -480,7 +485,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         onDisband={end} onRename={rename} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
-        notice={notice} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
+        notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(String(e)))}
         readError={readError} unavailable={Boolean(state && !driver)} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}

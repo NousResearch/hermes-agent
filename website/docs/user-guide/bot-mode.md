@@ -417,10 +417,13 @@ that gateway to stop the run the home knows of; if it cannot confirm (the gatewa
 down, or the home never learned the run's id), the turn stays deferred, and nothing
 is sent that could start it. A Stop of a running turn that its gateway does not
 confirm within a minute stops holding the group chat: the turn is recorded as deferred,
-not cancelled, and the group chat takes the next message. Disband drops that member's
-route, so the home sends nothing more for the turn, and the grant's revoke follows
-once the member gateway answers. A deferred turn with a known run receipt may first
-wait for its exact Stop request, up to the client's 30-second timeout per member.
+not cancelled, and the group chat takes the next message. **Disband** waits for the
+same confirmation: it is refused (still stopping, or the member gateway is unreachable)
+until every member gateway confirms its turns ended, then revokes each member's grant
+at that gateway before the room is removed. While a member gateway is down the room
+and its route are kept; run Disband again once it is back. A deferred turn with a known
+run receipt may first wait for its exact Stop request, up to the client's 30-second
+timeout per member.
 
 ### Transferring hosted room authority
 

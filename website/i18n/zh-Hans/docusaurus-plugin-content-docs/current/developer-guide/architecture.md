@@ -41,7 +41,7 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 ┌───────────────────┐              ┌──────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
 │ (SQLite + FTS5)   │              │ Terminal (7 backends) │
-│ hermes_state.py   │              │ Browser (5 backends)  │
+│ persistence/      │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
@@ -56,7 +56,8 @@ hermes-agent/
 ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 ├── model_tools.py            # 工具发现、schema 收集、分发
 ├── toolsets.py               # 工具分组与平台预设
-├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
+├── persistence/              # 存储契约；persistence/sqlite/ 是带 FTS5 的 SQLite 会话/状态后端
+├── persistence_assembly.py   # open_persistence()：打开 profile 存储的唯一入口
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── batch_runner.py           # 批量轨迹生成
 │
@@ -143,7 +144,7 @@ hermes-agent/
     → runtime_provider.resolve_runtime_provider()
     → API 调用（chat_completions / codex_responses / anthropic_messages）
     → tool_calls? → model_tools.handle_function_call() → 循环
-    → 最终响应 → 显示 → 保存至 SessionDB
+    → 最终响应 → 显示 → 保存至会话存储
 ```
 
 ### Gateway 消息

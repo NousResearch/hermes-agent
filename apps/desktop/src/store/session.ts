@@ -602,7 +602,7 @@ export function resolveComposerSessionKey(
  *
  *  Two reasons the server drops a row we must keep:
  *
- *  1. A brand-new session's first user message isn't flushed to the SessionDB
+ *  1. A brand-new session's first user message isn't flushed to the session store
  *     until its turn is persisted, so `listSessions(min_messages=1)` skips
  *     sessions that are mid-first-response. Because every `message.complete`
  *     triggers a full refresh, a hard replace makes concurrent new chats vanish
@@ -1562,7 +1562,7 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // list refresh — so the green dot survives an app restart, and a session that
 // finished while the app was CLOSED still comes up unread. The explicit
 // Mark-as-unread toggle rides the BACKEND watermark instead
-// (SessionDB.set_session_read, session-unread-remote.ts). Written by
+// (the store's sessions.set_read, session-unread-remote.ts). Written by
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 

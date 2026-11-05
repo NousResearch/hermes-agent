@@ -1,11 +1,9 @@
-"""Session store handles and the storage interface handles beside them. Bodies are rebound onto server.py's globals at
-install time (method_ctx.bind_module), so they reference server.py globals bare.
+"""Session store handles and their storage interface handles. Bodies are rebound onto server.py's globals at install
+time (method_ctx.bind_module), so they reference server.py globals bare.
 
-Every store this gateway opens is itself a storage interface handle. Where a caller holds a store and wants the handle
-beside it, the launch store is its own handle and a dedicated store gets a reference of its own on the same profile,
-released with :func:`_release_persistence`. A store that is not a handle (a legacy store object a caller passes in)
-gets a handle opened beside it on the same file and in the same access mode; a handle that cannot open is None and the
-store beside it is unaffected.
+Every store this gateway opens is itself a storage interface handle. Where a caller holds a store and wants its handle,
+the launch store is its own handle and a dedicated store gets a reference of its own on the same profile, released with
+:func:`_release_persistence`. A store that is not a handle has none (None).
 """
 
 from __future__ import annotations
@@ -13,9 +11,6 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import bind_module
-
-# The launch store ``_get_db()`` holds and the handle beside it.
-_launch_beside = (None, None)
 
 
 def _is_handle(db) -> bool:
@@ -37,24 +32,14 @@ def _release_db(db) -> None:
 
 
 def _launch_persistence():
-    """The handle beside the launch store, opened on first use and kept as long as that store; None while no launch
-    store is held or while the handle cannot open."""
-    global _launch_beside
-    from persistence_beside import close_beside, open_beside
-    store, handle = _launch_beside
-    if _db is None or _is_handle(_db):
-        return _db
-    if store is not _db or handle is None:
-        close_beside(handle)
-        handle = open_beside(_launch_home())
-        _launch_beside = (_db, handle)
-    return handle
+    """The launch store ``_get_db()`` holds, its own handle; None while no launch store is held or while it is not a
+    handle."""
+    return _db if _is_handle(_db) else None
 
 
 def _persistence_beside(db):
-    """The writer handle beside ``db``: the launch handle beside the launch store, else a handle of its own on db's
-    file, released with :func:`_release_persistence`; None without a store."""
-    from persistence_beside import open_beside
+    """The writer handle for ``db``: the launch store for the launch store, else a reference of its own on db's
+    profile, released with :func:`_release_persistence`; None without a store or for one that is not a handle."""
     if db is None:
         return None
     if db is _db:
@@ -62,36 +47,20 @@ def _persistence_beside(db):
     if _is_handle(db):
         from persistence_assembly import open_persistence
         return open_persistence(db.scope)
-    path = getattr(db, "db_path", None)
-    return open_beside(Path(path).parent) if isinstance(path, (str, Path)) else None
+    return None
 
 
 def _release_persistence(handle) -> None:
-    """Release a handle from :func:`_persistence_beside`; the launch handle stays open."""
-    from persistence_beside import close_beside
-    if handle is not _launch_beside[1] and handle is not _db:
-        close_beside(handle)
+    """Release a handle from :func:`_persistence_beside`; the launch store stays open."""
+    if handle is not None and handle is not _db:
+        with contextlib.suppress(Exception):
+            handle.close()
 
 
 @contextlib.contextmanager
 def _persistence_for(db):
-    """The handle beside ``db`` for one call, in db's access mode (a reader beside a read-only store), released on
-    exit; the launch handle stays open. A store that is a handle is its own."""
-    from persistence_beside import close_beside, open_reader_beside
-    if _is_handle(db):
-        yield db
-        return
-    handles = contextlib.ExitStack()
-    path = getattr(db, "db_path", None)
-    if getattr(db, "read_only", False) is True and isinstance(path, (str, Path)):
-        handle = open_reader_beside(Path(path), handles)
-    else:
-        handle = _persistence_beside(db)
-        handles.callback(_release_persistence, handle)
-    try:
-        yield handle
-    finally:
-        close_beside(handles)
+    """``db`` for one call when it is a handle (a store is its own, in its own access mode); None otherwise."""
+    yield db if _is_handle(db) else None
 
 
 def register(server) -> None:

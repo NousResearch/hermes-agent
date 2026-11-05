@@ -6,7 +6,6 @@ import pytest
 
 from gateway.run import _SESSION_DB_UNPINNED
 from gateway.run_runtime_init import GatewayRuntimeInitMixin
-from gateway.session_authority import SessionAuthority
 from hermes_constants import get_hermes_home
 
 
@@ -29,46 +28,10 @@ def connects(monkeypatch):
     return calls
 
 
-def test_runner_handle_is_per_profile_and_opens_nothing(tmp_path, monkeypatch, connects):
+def test_runner_without_a_session_store_has_no_handle(connects):
     runner = _Runner()
-    launch = runner.persistence
-    assert runner.persistence is launch
-    assert launch.scope.profile_dir == get_hermes_home().resolve()
-
-    other = tmp_path / "other"
-    other.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(other))
-    secondary = runner.persistence
-    assert secondary is not launch
-    assert secondary.scope.profile_dir == other.resolve()
-
-    authority = SessionAuthority(runner, profile_id=str(other), instance_id="owner", epoch=1,
-                                 persistence=secondary)
-    assert authority.persistence is secondary
-    assert connects == []
-    assert not (other / "state.db").exists()
-    secondary.ready()
-    assert (other / "state.db").exists()
-
-    runner.close_all_persistence_handles()
-    assert runner.persistence is not secondary
-
-
-def test_runner_handle_is_absent_while_it_cannot_open_and_opens_on_a_later_read(monkeypatch):
-    import persistence_assembly
-
-    runner = _Runner()
-    real = persistence_assembly.open_persistence
-
-    def fail(*args, **kwargs):
-        raise ValueError("unknown persistence provider 'nope'")
-
-    monkeypatch.setattr(persistence_assembly, "open_persistence", fail)
     assert runner.persistence is None
-    monkeypatch.setattr(persistence_assembly, "open_persistence", real)
-    handle = runner.persistence
-    assert handle is not None and runner.persistence is handle
-    runner.close_all_persistence_handles()
+    assert connects == []
 
 
 def test_session_store_owns_a_handle_per_path_that_the_runner_borrows(tmp_path, monkeypatch, connects):
@@ -89,7 +52,6 @@ def test_session_store_owns_a_handle_per_path_that_the_runner_borrows(tmp_path, 
     runner = _Runner()
     runner.session_store = store
     assert runner.persistence is secondary
-    runner.close_all_persistence_handles()
     secondary.ready()  # the runner closes none it borrowed
     assert (other / "state.db").exists()  # and the count above would see an open
     store.close_all_db_handles()

@@ -1046,13 +1046,13 @@ class AIAgent(
             self._owns_session_db = False
             # A registry-lent store's close() releases one reference, so the registry closes on the last caller.
             # See #90837.
-            from persistence_beside import close_beside
             persistence, self.persistence = getattr(self, "persistence", None), None
             try:
                 if session_db is not persistence:
                     session_db.close()
             finally:
-                close_beside(persistence)
+                if persistence is not None:
+                    _quietly(persistence.close)
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only

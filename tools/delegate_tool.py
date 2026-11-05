@@ -325,8 +325,9 @@ def _build_child_agent(
                 if child_session_db is not None:
                     with _quiet(None):
                         child_session_db.close()
-                from persistence_beside import close_beside
-                close_beside(child_persistence)
+                if child_persistence is not None:
+                    with _quiet(None):
+                        child_persistence.close()
                 raise
         # Shared pool lets children rotate credentials on rate limits. A profile child loads ITS profile's pool
         # (inside the scope) and never shares the launching parent's.

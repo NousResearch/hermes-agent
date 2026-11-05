@@ -19,7 +19,6 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -129,17 +128,10 @@ def _first_user_preview(history: list[dict[str, Any]], default: str) -> str:
                  if m.get("role") == "user" and str(m.get("content") or "").strip()), default)
 
 
-def _open_beside(db: Any) -> Any:
-    """A storage interface handle on ``db``'s store file: ``db`` itself when it is one; None without one (no store, a
-    store without a path, or a file other than its folder's ``state.db``, the one file a handle opens)."""
+def _store_handle(db: Any) -> Any:
+    """The storage interface handle of ``db``: ``db`` itself when it is one, else None."""
     from persistence_assembly import Persistence
-    from persistence_beside import open_beside
-    if isinstance(db, Persistence):
-        return db
-    path = getattr(db, "db_path", None)
-    if not isinstance(path, (str, Path)) or Path(path).name != "state.db":
-        return None
-    return open_beside(Path(path).parent)
+    return db if isinstance(db, Persistence) else None
 
 
 # Message-dict key -> ``NewMessage`` field for the keys a transcript write persists.
@@ -228,7 +220,7 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
         # The storage interface handle on the same store file; every session read and write goes through it.
-        self._persistence = _open_beside(db)
+        self._persistence = _store_handle(db)
         self._cwd_backfilled = False
 
     # ---- public API ---------------------------------------------------------
@@ -390,7 +382,7 @@ class SessionManager:
             except Exception:
                 logger.debug("Session store unavailable for ACP persistence", exc_info=True)
         if self._db_instance is not None and self._persistence is None:
-            self._persistence = _open_beside(self._db_instance)
+            self._persistence = _store_handle(self._db_instance)
         if self._persistence is not None and not self._cwd_backfilled:
             # Rows minted before the adapter wrote the cwd column still carry the workspace
             # in model_config; one idempotent UPDATE per process repairs them (#115705).
@@ -404,7 +396,7 @@ class SessionManager:
         return self._db_instance
 
     def _get_persistence(self):
-        """The storage interface handle beside the store ``_get_db`` holds; ``None`` while there is none."""
+        """The storage interface handle of the store ``_get_db`` holds; ``None`` while there is none."""
         return self._persistence if self._get_db() is not None else None
 
     def _persist(self, state: SessionState) -> None:

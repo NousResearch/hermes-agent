@@ -506,6 +506,9 @@ class LSPClient:
     def _notify_cancel_nowait(self, req_id: int) -> None:
         """Best-effort ``$/cancelRequest``; a late answer to ``req_id`` is dropped by
         ``_dispatch_response`` because the id is no longer pending."""
+        # LSP allows no notification but ``exit`` after ``shutdown``, and none before InitializeResult.
+        if self._stopping or self._state != "running":
+            return
         if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
             return
         try:

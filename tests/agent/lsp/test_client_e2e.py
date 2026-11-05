@@ -77,7 +77,8 @@ async def test_client_receives_published_errors(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_abandoned_request_is_cancelled_and_its_late_answer_is_dropped(tmp_path: Path):
     """A timed-out request sends ``$/cancelRequest`` for its id; the server's late answer to
-    that id must not crash the reader or resolve the next request."""
+    that id must not crash the reader or resolve the next request.  An abandoned ``shutdown``
+    sends no cancel."""
     f = tmp_path / "x.py"
     f.write_text("print('hi')\n", encoding="utf-8")
     trace = tmp_path / "cancel-trace.txt"
@@ -99,6 +100,11 @@ async def test_abandoned_request_is_cancelled_and_its_late_answer_is_dropped(tmp
         assert trace.read_text(encoding="utf-8").split() == [str(abandoned_id)]
         assert client.state != "error"
         assert client._pending == {}
+
+        # The mock never answers ``shutdown``: after it the spec allows only ``exit``, so the
+        # abandoned shutdown request must not be cancelled.
+        await client.shutdown()
+        assert trace.read_text(encoding="utf-8").split() == [str(abandoned_id)]
     finally:
         await client.shutdown()
 

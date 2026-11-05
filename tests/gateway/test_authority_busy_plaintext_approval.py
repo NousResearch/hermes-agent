@@ -8,7 +8,6 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state_runtime import list_session_admissions
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -57,8 +56,8 @@ async def test_busy_plaintext_yes_resolves_blocking_approval_not_interrupt_or_qu
         assert entry.event.is_set() and entry.result == 'once'
         assert agent.interrupts == []
         admitted = [row for sid in authority.sessions
-                    for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
+                    for row in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
         assert admitted == [], admitted
     finally:
         _gateway_queues.pop(key, None)
-        authority.db.close()
+        runner.session_store.close_all_db_handles()

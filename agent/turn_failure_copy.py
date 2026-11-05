@@ -15,6 +15,9 @@ from typing import Any, Dict, NamedTuple, Optional, Tuple
 from agent.error_classifier import FailoverReason
 from agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
+from persistence.conversation.messages import (
+    CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE,
+)
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
@@ -24,7 +27,7 @@ SITE_FAILURE_CODES = frozenset({
 
 
 def launch_credentials_copy(error: Any) -> str:
-    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    """The refusal for a session whose own launch/route API key changed or is gone (``AuthorityRefusal``
     or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
     started with, so /retry repeats the refusal: the copy names /new on every surface."""
     from agent.i18n import t
@@ -82,12 +85,8 @@ FAILED_TURN_DISPLAY_KIND = "failed_turn"
 # SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
 # and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
 # CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
-CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
-CONTENT_REFUSED_NOTICE = (
-    "This message was refused by the model's safety filter — try a different query."
-)
-# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
-CONTENT_REFUSED_METADATA_KEY = "content_refused"
+# The kind, the notice and the display_metadata key are the stored row shape the store's retention
+# and open-time repair write, so they are defined once, in the transcript contract (imported above).
 
 
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:

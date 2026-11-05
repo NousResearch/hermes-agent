@@ -1,6 +1,8 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useState } from 'react'
 
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
@@ -8,8 +10,10 @@ import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/compo
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import { useI18n } from '@/i18n'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
@@ -17,6 +21,86 @@ const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
 // A usage-window plan gauge exactly as the backend renders it: `[` + 10 cells of
 // `|` then spaces + `]`. Only a window plan's /usage output carries one.
 const USAGE_WINDOW_GAUGE_RE = /\[(?=[| ]{10}\])\|* *\]/
+const PENDING_SKILL_DIFF_COMMAND_RE = /^\/skills$/i
+const PENDING_SKILL_WRITE_HEADER_RE = /^# Pending skill write \S+:/i
+const PENDING_SKILL_LIST_HEADER_RE = /^Pending skills? writes \(\d+\):?$/i
+
+function labelMissingSkillNameInPatchHeading(output: string): string {
+  return output.replace(/^(## op \d+\/\d+: patch)\s+(?:''|"")\s+/gim, '$1 [missing skill name] ')
+}
+
+interface PendingSkillListEntry {
+  automatic: boolean
+  id: string
+  summary: string
+}
+
+function PendingSkillList({ output }: { output: string }) {
+  const [heading = '', ...lines] = output.split('\n')
+  const entries: PendingSkillListEntry[] = []
+  const footer: string[] = []
+  let readingEntries = true
+
+  for (const line of lines) {
+    const match = line.match(/^\s*([a-f\d]{8,})\s+(.+?)\s*$/i)
+
+    if (readingEntries && match) {
+      const summary = match[2]
+      const automatic = /^\[auto\]\s*/i.test(summary)
+
+      entries.push({
+        automatic,
+        id: match[1],
+        summary: automatic ? summary.replace(/^\[auto\]\s*/i, '') : summary
+      })
+
+      continue
+    }
+
+    if (line.trim()) {
+      readingEntries = false
+    }
+
+    if (!readingEntries) {
+      footer.push(line)
+    }
+  }
+
+  return (
+    <div className="mt-1 min-w-0" data-slot="pending-skill-list">
+      <div className="mb-1 text-xs font-medium text-foreground/80">{heading}</div>
+      <div className="max-h-80 overflow-auto rounded border border-border/40 bg-muted/10">
+        {entries.map(entry => (
+          <div
+            className="flex min-w-0 items-start gap-2 border-b border-border/30 px-2 py-1.5 last:border-b-0"
+            data-slot="pending-skill-entry"
+            key={entry.id}
+          >
+            <code className="shrink-0 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[0.65rem] text-foreground/80">
+              {entry.id}
+            </code>
+            {entry.automatic && (
+              <span className="shrink-0 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground">
+                auto
+              </span>
+            )}
+            <span className="min-w-0 whitespace-pre-wrap break-words pt-0.5 font-mono text-[0.65rem] text-muted-foreground">
+              {entry.summary}
+            </span>
+          </div>
+        ))}
+      </div>
+      {footer.join('\n').trim() && (
+        <LinkifiedText
+          className="mt-2 block whitespace-pre-wrap text-xs text-muted-foreground"
+          explicitOnly
+          pretty={false}
+          text={footer.join('\n').trim()}
+        />
+      )}
+    </div>
+  )
+}
 
 interface BackgroundResultProps {
   text: string
@@ -67,6 +151,10 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const { t } = useI18n()
+  const { profile: scopedProfile } = useComposerScope()
+  const activeProfile = useStore($activeGatewayProfile)
+  const pendingSkillProfile = normalizeProfileKey(scopedProfile || activeProfile)
 
   if (!text) {
     return null
@@ -137,6 +225,44 @@ export const SystemMessage: FC = () => {
 
   if (slashStatus?.groups) {
     const output = slashStatus.groups.output.trim()
+
+    const isPendingSkillDiff =
+      PENDING_SKILL_DIFF_COMMAND_RE.test(slashStatus.groups.command.trim()) &&
+      PENDING_SKILL_WRITE_HEADER_RE.test(output)
+
+    const isPendingSkillList =
+      PENDING_SKILL_DIFF_COMMAND_RE.test(slashStatus.groups.command.trim()) &&
+      PENDING_SKILL_LIST_HEADER_RE.test(output.split('\n', 1)[0]?.trim() ?? '')
+
+    if (isPendingSkillDiff || isPendingSkillList) {
+      const diffOutput = isPendingSkillDiff ? labelMissingSkillNameInPatchHeading(output) : output
+
+      return (
+        <MessagePrimitive.Root
+          className="w-full max-w-[44rem] min-w-0 self-center px-2 py-1 text-left"
+          data-role="system"
+          data-slot="aui_system-message-root"
+        >
+          <div className="mb-1 flex min-w-0 items-center justify-between gap-3">
+            <span className="font-mono text-[0.65rem] text-muted-foreground/55">{slashStatus.groups.command}</span>
+            <span
+              className="min-w-0 truncate font-mono text-[0.65rem] text-muted-foreground/55"
+              data-slot="pending-skill-profile"
+              title={t.sidebar.row.ownedByProfile(pendingSkillProfile)}
+            >
+              {t.sidebar.row.ownedByProfile(pendingSkillProfile)}
+            </span>
+          </div>
+          {isPendingSkillDiff ? (
+            <MarkdownTextContent isRunning={false} text={diffOutput} />
+          ) : (
+            <PendingSkillList output={output} />
+          )}
+          <MessageTimelineTimestamp className="mt-1 block" />
+        </MessagePrimitive.Root>
+      )
+    }
+
     // Single-line status (e.g. "model → x") reads best centered inline; padded
     // multiline output (catalogs, usage tables) needs left-aligned, wider room
     // or the column alignment breaks.

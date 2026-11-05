@@ -22,6 +22,7 @@ import {
 import { defaultRemarkPlugins } from 'streamdown'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -749,6 +750,12 @@ function MarkdownTextSurface({
         // right rail; every other language falls back to the Shiki-highlighted
         // code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
+          const language = props.language.trim().toLowerCase()
+
+          if (language === 'diff' || language === 'patch') {
+            return <FileDiffPanel className="my-2 mx-0 mb-0" diff={props.code} />
+          }
+
           const artifact =
             disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
 

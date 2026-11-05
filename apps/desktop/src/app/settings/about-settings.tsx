@@ -59,12 +59,12 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
     <SettingsContent>
       <VersionHero version={version} />
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        {!(cloudOwned.client && cloudOwned.backend) && (
+        {!cloudOwned.client && (
           <>
             <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
             <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
-              {!cloudOwned.client && <UpdateStatusCard target="client" version={version} />}
-              {!cloudOwned.client && <UpdateChannelRow />}
+              <UpdateStatusCard target="client" version={version} />
+              <UpdateChannelRow />
               {/* Client and remote backend updates are independent. Only the client has release notes. */}
               {showBackend && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
             </div>

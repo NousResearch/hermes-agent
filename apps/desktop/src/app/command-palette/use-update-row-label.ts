@@ -4,7 +4,7 @@ import { useMemo } from 'react'
 import { useI18n } from '@/i18n'
 import { rollbackSentence } from '@/lib/update-copy'
 import { resolveVersionStatus } from '@/lib/version-status'
-import { $cloudOwnsUpdates } from '@/store/cloud-updates'
+import { $cloudOwnsUpdates, updateTargetFor } from '@/store/cloud-updates'
 import { $connection } from '@/store/session'
 import { $backendUpdateApply, $backendUpdateStatus, $desktopVersion, $updateApply, $updateStatus } from '@/store/updates'
 
@@ -12,8 +12,8 @@ import { $backendUpdateApply, $backendUpdateStatus, $desktopVersion, $updateAppl
  * The palette's Update row label: the same install the statusbar names, same
  * target selection, same resolver. Reduced to the label string: an in-flight
  * apply rewrites these stores on every progress line, and only a changed
- * string should rebuild the palette's groups. Null when Hermes Cloud owns that
- * target's updates, so the row is not listed at all.
+ * string should rebuild the palette's groups. Null in a Webapp served by
+ * Hermes Cloud, where nothing is updatable, so the row is not listed at all.
  */
 export function useUpdateRowLabel(): null | string {
   const { t } = useI18n()
@@ -23,9 +23,9 @@ export function useUpdateRowLabel(): null | string {
   const clientApply = useStore($updateApply)
   const backendStatus = useStore($backendUpdateStatus)
   const backendApply = useStore($backendUpdateApply)
-  const cloudOwned = useStore($cloudOwnsUpdates)
-  const backend = connection?.mode === 'remote'
-  const hidden = cloudOwned[backend ? 'backend' : 'client']
+  // Desktop connected to Cloud: the row names (and updates) this machine's own app.
+  const hidden = useStore($cloudOwnsUpdates).client
+  const backend = updateTargetFor(connection) === 'backend'
 
   return useMemo(() => {
     if (hidden) {

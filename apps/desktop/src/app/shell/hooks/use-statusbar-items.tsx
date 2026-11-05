@@ -110,12 +110,11 @@ function versionItem(
   status: ReturnType<typeof resolveVersionStatus>,
   applying: boolean,
   toggleLabel: string,
-  cloudOwned: boolean
+  hidden = false
 ): StatusbarItem {
   return {
     className: status.hasUpdate ? 'text-primary hover:text-primary' : undefined,
-    // Hermes Cloud updates its agents itself: no version/update pill to open.
-    hidden: status.unknown || cloudOwned,
+    hidden: status.unknown || hidden,
     icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
     id: `version-${target}`,
     label: status.label,
@@ -459,6 +458,7 @@ export function useStatusbarItems({
       version: desktopVersion?.appVersion
     })
 
+    // A Webapp served by Hermes Cloud: Cloud updates it, so there is no version/update pill to open.
     return versionItem('client', status, applying, copy.toggleVersion, cloudOwnsUpdates.client)
   }, [
     cloudOwnsUpdates.client,
@@ -473,7 +473,8 @@ export function useStatusbarItems({
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
-    if (connection?.mode !== 'remote') {
+    // Hermes Cloud updates its agents itself: no backend pill, as outside remote mode.
+    if (connection?.mode !== 'remote' || cloudOwnsUpdates.backend) {
       return null
     }
 
@@ -492,7 +493,7 @@ export function useStatusbarItems({
       version: statusSnapshot?.version
     })
 
-    return versionItem('backend', status, applying, copy.toggleBackendVersion, cloudOwnsUpdates.backend)
+    return versionItem('backend', status, applying, copy.toggleBackendVersion)
   }, [
     cloudOwnsUpdates.backend,
     connection?.mode,

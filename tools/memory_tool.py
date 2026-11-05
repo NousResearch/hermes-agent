@@ -425,7 +425,9 @@ MEMORY_SCHEMA = {
                             "type": "string",
                             "description": ("REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces "
                                             "exactly this span (it must occur once in the entry); 'remove' deletes the "
-                                            "whole entry. Omit for 'add'."),
+                                            "whole entry. A full pasted entry is also accepted by 'remove' when it "
+                                            "clearly identifies exactly one entry (fuzzy-matched); prefer ~10-40 chars. "
+                                            "Omit for 'add'."),
                         },
                     },
                     "required": ["action"],

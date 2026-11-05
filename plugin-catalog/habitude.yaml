@@ -2,7 +2,7 @@ name: habitude
 repo: https://github.com/legott-ai/habitude-agent-integrations
 sha: 5802d0c9680f93a56440439bbfba189c80f1ec3f
 subdir: hermes
-description: Read-only journal reflection skill with opt-in local Vault MCP setup.
+description: "Read-only journal reflection skill with opt-in local Vault MCP setup. Disclosure — after you run the bundled setup and add its local stdio MCP server yourself, the plugin reads Markdown notes from the one Vault directory you name (read-only), keeps its settings in ~/.config/habitude-agent/config.json and a search index in ~/.cache/habitude-agent/ (outside the Hermes profile), and returned journal excerpts are sent to your configured model provider; it makes no network calls of its own."
 maintainer: IkwhanChang
 tier: community
 category: tools

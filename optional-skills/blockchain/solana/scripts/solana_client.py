@@ -19,14 +19,17 @@ Environment:
   SOLANA_RPC_URL  Override the default RPC endpoint (default: mainnet-beta public)
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
 import urllib.error
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 RPC_URL = os.environ.get(
     "SOLANA_RPC_URL",
@@ -48,10 +51,10 @@ KNOWN_TOKENS: dict[str, tuple] = {
     "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So":  ("mSOL",  "Marinade Staked SOL"),
     "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": ("stSOL", "Lido Staked SOL"),
     "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3": ("PYTH",  "Pyth Network"),
-    "RLBxxFkseAZ4RgJH3Sqn8jXxhmGoz9jWxDNJMh8pL7a":  ("RLBB",  "Rollbit"),
+    "RLBxxFkseAZ4RgJH3Sqn8jXxhmGoz9jWxDNJMh8pL7a":  ("RLB",   "Rollbit"),
     "hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux":  ("HNT",   "Helium"),
-    "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof":  ("RNDR",  "Render"),
-    "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p91oHQQ":  ("WEN",   "Wen"),
+    "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof":  ("RENDER", "Render"),
+    "WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk":  ("WEN",   "Wen"),
     "85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ": ("W",     "Wormhole"),
     "TNSRxcUxoT9xBG3de7PiJyTDYu7kskLqcpddxnEJAS6":  ("TNSR",  "Tensor"),
     "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7":  ("DRIFT", "Drift"),
@@ -60,11 +63,12 @@ KNOWN_TOKENS: dict[str, tuple] = {
     "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm": ("WIF",   "dogwifhat"),
     "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5":  ("MEW",   "cat in a dogs world"),
     "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82":  ("BOME",  "Book of Meme"),
-    "A8C3xuqscfmyLrte3VwJvtPHXvcSN3FjDbUaSMAkQrCS": ("PENGU", "Pudgy Penguins"),
+    "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv": ("PENGU", "Pudgy Penguins"),
 }
 
 # Reverse lookup: symbol → mint (for the `price` command).
 _SYMBOL_TO_MINT = {v[0].upper(): k for k, v in KNOWN_TOKENS.items()}
+_SYMBOL_TO_MINT["RNDR"] = _SYMBOL_TO_MINT["RENDER"]  # legacy ticker alias
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +128,53 @@ def _rpc_call(method: str, params: list | None = None, retries: int = 2) -> Any:
     return None
 
 
+def _requested_tx_version(err: Any) -> Optional[int]:
+    """If the RPC rejected a request because the transaction version is newer than
+    maxSupportedTransactionVersion (-32015), return the version it asks for."""
+    if isinstance(err, dict) and err.get("code") == -32015:
+        m = re.search(r'maxSupportedTransactionVersion"?:\s*(\d+)', str(err.get("message", "")))
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _rpc_tx_versioned(method: str, first_param: Any, opts: dict) -> Any:
+    """Call getTransaction/getBlock, raising maxSupportedTransactionVersion when the
+    node reports a newer transaction version. Returns (result, error)."""
+    opts = dict(opts)
+    for _ in range(3):
+        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                              "params": [first_param, opts]}).encode()
+        body = None
+        for attempt in range(3):
+            req = urllib.request.Request(RPC_URL, data=payload,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.load(resp)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                sys.exit(f"RPC HTTP error: {exc}")
+            except urllib.error.URLError as exc:
+                sys.exit(f"RPC connection error: {exc}")
+            err = body.get("error")
+            if isinstance(err, dict) and err.get("code") == 429 and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            break
+        err = body.get("error") if body else None
+        if err is None:
+            return body.get("result") if body else None, None
+        wanted = _requested_tx_version(err)
+        if wanted is not None and wanted > opts.get("maxSupportedTransactionVersion", 0):
+            opts["maxSupportedTransactionVersion"] = wanted
+            continue
+        return None, err
+    return None, err
+
+
 # Keep backward compat — the rest of the code uses `rpc()`.
 rpc = _rpc_call
 
@@ -142,7 +193,17 @@ def rpc_batch(calls: list) -> list:
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.load(resp)
+                body = json.load(resp)
+            if isinstance(body, list):
+                return body
+            # Some RPC providers reject batch requests with a single error object.
+            err = body.get("error") if isinstance(body, dict) else body
+            if isinstance(err, dict) and err.get("code") == 429 and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            # Fall back to sequential single calls.
+            return [{"id": i, "result": _rpc_call(c["method"], c.get("params"))}
+                    for i, c in enumerate(calls)]
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
@@ -243,7 +304,7 @@ def cmd_stats(_args):
         {"method": "getVersion"},
     ])
 
-    by_id = {r["id"]: r.get("result") for r in results}
+    by_id = {r.get("id"): r.get("result") for r in results if isinstance(r, dict)}
 
     slot         = by_id.get(0)
     epoch_info   = by_id.get(1)
@@ -252,9 +313,12 @@ def cmd_stats(_args):
     version      = by_id.get(4)
 
     tps = None
+    tps_non_vote = None
     if perf_samples:
         s = perf_samples[0]
         tps = round(s["numTransactions"] / s["samplePeriodSecs"], 1)
+        if "numNonVoteTransactions" in s:
+            tps_non_vote = round(s["numNonVoteTransactions"] / s["samplePeriodSecs"], 1)
 
     total_supply = lamports_to_sol(supply["value"]["total"])      if supply else None
     circ_supply  = lamports_to_sol(supply["value"]["circulating"]) if supply else None
@@ -266,6 +330,7 @@ def cmd_stats(_args):
         "epoch":                  epoch_info.get("epoch")     if epoch_info else None,
         "slot_in_epoch":          epoch_info.get("slotIndex") if epoch_info else None,
         "tps":                    tps,
+        "tps_non_vote":           tps_non_vote,
         "total_supply_SOL":       round(total_supply, 2) if total_supply else None,
         "circulating_supply_SOL": round(circ_supply, 2)  if circ_supply  else None,
         "validator_version":      version.get("solana-core")  if version   else None,
@@ -353,13 +418,13 @@ def cmd_wallet(args):
     # Sort: tokens with known USD value first (highest→lowest), then unknowns
     enriched.sort(key=lambda x: (x.get("value_usd") is not None, x.get("value_usd") or 0), reverse=True)
 
+    # Compute portfolio total over ALL non-dust tokens (before applying --limit)
+    total_usd = sum(t.get("value_usd", 0) for t in enriched)
+
     # Apply limit unless --all
     total_tokens = len(enriched)
     if not show_all and len(enriched) > limit:
         enriched = enriched[:limit]
-
-    # Compute portfolio total
-    total_usd = sum(t.get("value_usd", 0) for t in enriched)
     sol_value_usd = round(sol_price * sol_balance, 2) if sol_price else None
     if sol_value_usd:
         total_usd += sol_value_usd
@@ -385,6 +450,8 @@ def cmd_wallet(args):
             output["nfts"].append(f"... and {len(nfts) - 10} more")
     if total_usd > 0:
         output["portfolio_total_usd"] = round(total_usd, 2)
+    if not skip_prices and fungible and sol_price is None and not prices:
+        output["warning"] = "Price data unavailable (CoinGecko rate-limited or unreachable). USD values omitted."
 
     print_json(output)
 
@@ -395,10 +462,12 @@ def cmd_wallet(args):
 
 def cmd_tx(args):
     """Full transaction details by signature."""
-    result = rpc("getTransaction", [
-        args.signature,
+    result, err = _rpc_tx_versioned(
+        "getTransaction", args.signature,
         {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
-    ])
+    )
+    if err is not None:
+        sys.exit(f"RPC error: {err}")
 
     if result is None:
         sys.exit("Transaction not found (may be too old for public RPC history).")
@@ -456,7 +525,10 @@ def cmd_token(args):
     if mint_info is None or mint_info.get("value") is None:
         sys.exit("Mint account not found.")
 
-    parsed       = mint_info["value"]["data"]["parsed"]["info"]
+    data = mint_info["value"].get("data")
+    if not isinstance(data, dict) or data.get("parsed", {}).get("type") != "mint":
+        sys.exit("Address is not an SPL token mint (did you pass a wallet or token account?).")
+    parsed       = data["parsed"]["info"]
     decimals     = parsed.get("decimals", 0)
     supply_raw   = int(parsed.get("supply", 0))
     supply_human = supply_raw / (10 ** decimals) if decimals else supply_raw
@@ -498,7 +570,7 @@ def cmd_token(args):
 
 def cmd_activity(args):
     """Recent transaction signatures for an address."""
-    limit  = min(args.limit, 25)
+    limit  = max(1, min(args.limit, 25))
     result = rpc("getSignaturesForAddress", [args.address, {"limit": limit}])
 
     txs = [
@@ -541,6 +613,16 @@ def cmd_nft(args):
     })
 
 
+def _try_get_block(slot: int, opts: dict) -> Optional[dict]:
+    """getBlock that returns None for skipped / not-yet-available slots instead of exiting."""
+    result, err = _rpc_tx_versioned("getBlock", slot, opts)
+    if err is None:
+        return result
+    if isinstance(err, dict) and err.get("code") in (-32004, -32007, -32009):
+        return None  # block not available / slot skipped
+    sys.exit(f"RPC error: {err}")
+
+
 # ---------------------------------------------------------------------------
 # 7. Whale Detector (enhanced with USD values)
 # ---------------------------------------------------------------------------
@@ -549,16 +631,20 @@ def cmd_whales(args):
     """Scan the latest block for large SOL transfers."""
     min_lamports = int(args.min_sol * LAMPORTS_PER_SOL)
 
-    slot  = rpc("getSlot")
-    block = rpc("getBlock", [
-        slot,
-        {
-            "encoding": "jsonParsed",
-            "transactionDetails": "full",
-            "maxSupportedTransactionVersion": 0,
-            "rewards": False,
-        },
-    ])
+    block_opts = {
+        "encoding": "jsonParsed",
+        "transactionDetails": "full",
+        "maxSupportedTransactionVersion": 0,
+        "rewards": False,
+    }
+    slot = rpc("getSlot")
+    block = None
+    # The newest slot can be skipped or not yet available; walk back a few slots.
+    for candidate in range(slot, slot - 5, -1):
+        block = _try_get_block(candidate, block_opts)
+        if block is not None:
+            slot = candidate
+            break
 
     if block is None:
         sys.exit("Could not retrieve latest block.")
@@ -581,12 +667,13 @@ def cmd_whales(args):
             if change >= min_lamports:
                 k        = account_keys[i]
                 receiver = k["pubkey"] if isinstance(k, dict) else k
-                sender   = None
-                for j in range(len(pre)):
-                    if pre[j] - post[j] >= min_lamports:
-                        sk     = account_keys[j]
-                        sender = sk["pubkey"] if isinstance(sk, dict) else sk
-                        break
+                # Attribute to the account whose balance dropped the most in this tx
+                sender = None
+                drops = [(pre[j] - post[j], j) for j in range(len(pre)) if pre[j] - post[j] > 0]
+                if drops:
+                    _, j = max(drops)
+                    sk     = account_keys[j]
+                    sender = sk["pubkey"] if isinstance(sk, dict) else sk
                 entry = {
                     "sender":     sender,
                     "receiver":   receiver,
@@ -617,6 +704,9 @@ def cmd_price(args):
 
     # Check if it's a known symbol
     mint = _SYMBOL_TO_MINT.get(query.upper(), query)
+    if mint == query and len(query) < 32:
+        sys.exit(f"Unknown symbol '{query}'. Pass the token's mint address instead "
+                 f"(known symbols: {', '.join(sorted(_SYMBOL_TO_MINT))}).")
 
     # Try to resolve name
     token_meta = resolve_token_name(mint)

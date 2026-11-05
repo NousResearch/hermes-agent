@@ -1694,3 +1694,17 @@ class TestWebappLaunchLinks:
     def test_code_that_builds_such_a_link_is_left_alone(self):
         source = "target.hash = `hermes-session=${token}`\nconst FRAGMENT_KEY = 'hermes-session'\n"
         assert redact_sensitive_text(source, code_file=True) == source
+
+    def test_auth_header_templates_preserved_in_code_files(self):
+        hdr = "Authorization:" + " Bearer "
+        source = (
+            f'curl_fstr = f"{hdr}{{tok}}"\n'
+            f'curl_cmd = "{hdr}$API_TOKEN"\n'
+            f'curl_brace = "{hdr}${{API_TOKEN}}"\n'
+            f'fmt_hdr = "{hdr}%s" % token\n'
+        )
+        assert redact_sensitive_text(source, code_file=True, force=True) == source
+        for secret in ("secretTokenValue123456", "$2b$12$K8abc1234567890xyz", "%2B9f8a7d6c5b4a3f2e1d0c"):
+            line = f'curl_cmd = "{hdr}{secret}"'
+            assert secret not in redact_sensitive_text(line, code_file=True, force=True)
+

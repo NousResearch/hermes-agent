@@ -18,6 +18,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.run_agent_cache import _agent_config_signature_parts, _log_agent_cache_rebuild, _store_agent_cache_sig_parts
 from gateway.session_api_turn import api_runtime_locked
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
@@ -94,13 +95,14 @@ class GatewaySessionAgentMixin:
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
         return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
 
-    def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count):
+    def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count, parts):
         ctx = self._ctx
         out = self._CachedAgentLookup()
         if not (cache_lock and cache is not None):
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
+            _log_agent_cache_rebuild(self._runner, ctx.session_key, cached, sig, parts)
             if not (cached and cached[1] == sig):
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
@@ -194,18 +196,20 @@ class GatewaySessionAgentMixin:
         ctx = self._ctx
         runner = self._runner
         skip_context_files = self._skip_context_files(platform_key)
-        sig = runner._agent_config_signature(
-            turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
+        sig_kwargs = dict(
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )
+        sig_args = (turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral)
+        sig = runner._agent_config_signature(*sig_args, **sig_kwargs)
+        parts = _agent_config_signature_parts(*sig_args, **sig_kwargs)
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)
         msg_count = self._current_message_count()
-        found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)
+        found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count, parts)
         agent = found.agent
         # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock
         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
@@ -238,5 +242,6 @@ class GatewaySessionAgentMixin:
                     # can skip the meaningless count comparison if the active session_id switches.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
+                    _store_agent_cache_sig_parts(runner, ctx.session_key, parts)
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused

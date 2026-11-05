@@ -188,17 +188,19 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
-        assert "tools.registry_generation" in out
+        assert "tools.registry_surface" in out
 
-    def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
+    def test_extract_includes_live_tool_registry_surface(self, monkeypatch):
         from gateway.run import GatewayRunner
         from tools.registry import registry
 
-        monkeypatch.setattr(registry, "_generation", 12345)
+        before = GatewayRunner._extract_cache_busting_config({})
+        monkeypatch.setattr(registry, "_generation", registry._generation + 1)
 
         out = GatewayRunner._extract_cache_busting_config({})
 
-        assert out["tools.registry_generation"] == 12345
+        assert out["tools.registry_surface"] == before["tools.registry_surface"]
+        assert isinstance(out["tools.registry_surface"], str)
 
     # -- Provider-declared identity (MemoryProvider.identity_signature) ------
 
@@ -264,7 +266,7 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "p"}} if provider else {})
 
         assert self._provider_declared_keys(out) == []
-        assert "tools.registry_generation" in out
+        assert "tools.registry_surface" in out
         assert calls == ([] if provider is None else [("p", False)])
 
 class TestAgentCacheLifecycle:

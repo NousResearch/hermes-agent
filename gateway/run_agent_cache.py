@@ -4,7 +4,9 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import logging
 import threading
 import time
@@ -44,6 +46,41 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _agent_config_signature_parts(model, runtime, enabled_toolsets, ephemeral_prompt,
+                                  cache_keys=None, user_id=None, user_id_alt=None, skip_context_files=False):
+    """Short hashes of signature inputs, safe to retain without storing their raw values."""
+    components = {
+        "model": model, "credential": str(runtime.get("api_key", "") or ""),
+        "route": [runtime.get(k, "") for k in ("base_url", "provider", "requested_provider", "api_mode")],
+        "capabilities": sorted((runtime.get("capabilities") or {}).items()),
+        "toolsets": sorted(enabled_toolsets) if enabled_toolsets else [],
+        "ephemeral_prompt": ephemeral_prompt or "", "user_id": str(user_id or ""),
+        "user_id_alt": str(user_id_alt or ""), "skip_context_files": bool(skip_context_files),
+    }
+    if isinstance(cache_keys, dict):
+        components.update(cache_keys)
+    return {key: hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:16]
+            for key, value in components.items()}
+
+
+def _log_agent_cache_rebuild(runner, session_key, cached, sig, parts):
+    previous = getattr(runner, "_agent_cache_sig_parts", None)
+    if not isinstance(previous, dict) or not cached or cached[1] == sig:
+        return
+    old = previous.get(session_key)
+    changed = sorted(k for k in old.keys() | parts.keys() if old.get(k) != parts.get(k)) if old else []
+    logger.info("Agent cache rebuild for session %s: signature changed (%s)",
+                session_key, ",".join(changed) or "unknown")
+
+
+def _store_agent_cache_sig_parts(runner, session_key, parts):
+    stored = getattr(runner, "_agent_cache_sig_parts", None)
+    if isinstance(stored, dict):
+        stored[session_key] = parts
+        for key in stored.keys() - runner._agent_cache.keys():
+            stored.pop(key, None)
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -52,8 +89,8 @@ class GatewayAgentCacheMixin:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
         is the raw file (no DEFAULT_CONFIG merge), so absent keys and non-dict sections take the
         DEFAULT_CONFIG value — what the agent was actually built with — while an explicit ``null`` stays
-        None so opting out of a non-None default still rebuilds. Includes the live tool registry
-        generation: MCP reloads mutate the registry without touching config.yaml."""
+        None so opting out of a non-None default still rebuilds. The key follows the tool surface's
+        content, so an identical re-registration no longer rebuilds."""
         out: dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
@@ -64,14 +101,34 @@ class GatewayAgentCacheMixin:
                 out[f"{section}.{key}"] = section_val if key == "enabled" else default
             else:
                 out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
-        try:
-            from tools.registry import registry
-            out["tools.registry_generation"] = getattr(registry, "_generation", None)
-        except Exception:
-            out["tools.registry_generation"] = None
         for key, value in cls._memory_provider_identity_signature(cfg_get(cfg, "memory", "provider")).items():
             out[f"memory.{key}"] = value
+        try:
+            out["tools.registry_surface"] = cls._tool_registry_surface_signature()
+        except Exception:
+            out["tools.registry_surface"] = None
         return out
+
+    _TOOL_SURFACE_MEMO: dict[tuple, str] = {}
+
+    @classmethod
+    def _tool_registry_surface_signature(cls) -> str:
+        from tools.registry import _session_slot_key, registry
+        with registry._lock:
+            key = (id(registry), registry._generation, registry.current_scope_key(), _session_slot_key())
+            if key not in cls._TOOL_SURFACE_MEMO:
+                surface = [
+                    (e.name, e.toolset, json.dumps(e.schema, sort_keys=True, default=str), e.description,
+                     e.requires_env, e.is_async, e.emoji, e.max_result_size_chars, e.execution_timeout,
+                     e.dynamic_schema_overrides is not None)
+                    for e in sorted(registry.get_all_entries(), key=lambda e: e.name)
+                ]
+                blob = json.dumps([surface, sorted(registry.get_registered_toolset_aliases().items())],
+                                  sort_keys=True, default=str)
+                if len(cls._TOOL_SURFACE_MEMO) >= 256:
+                    cls._TOOL_SURFACE_MEMO.clear()
+                cls._TOOL_SURFACE_MEMO[key] = hashlib.sha256(blob.encode()).hexdigest()[:16]
+            return cls._TOOL_SURFACE_MEMO[key]
 
     # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
     _MEMORY_IDENTITY_PROVIDER_MEMO: dict[str, Any] = {}

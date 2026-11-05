@@ -173,6 +173,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
   from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
   wrote a secondary profile's memories into the default profile's store, silently.
+- **Agent cache.** The key follows the tool surface's content; signature-change rebuilds log the changed parts at INFO.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between

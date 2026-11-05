@@ -1,0 +1,39 @@
+name: api-architect
+repo: https://github.com/monyinet/api-architect
+sha: "5a9705f24b7e4290301745140790fe3ccfafe239"
+description: >-
+  Compile API specs into first-class Hermes tools. Takes any OpenAPI 3 / Swagger 2 /
+  Postman v2.1 spec by URL, compiles endpoints + params with per-endpoint provenance
+  into a schema-checked manifest, and serves four tools: architect_learn (fetch +
+  compile), architect_commit (human-visible draft→active review), architect_list
+  (manifests persist across sessions) and api_call (schema-checked execution —
+  invalid params fail locally, never as server 400s, so the model self-corrects).
+  Cuts HTML deep-scraping by design: no spec, no invented endpoints. Disclosure —
+  network: fetches user-supplied spec URLs and calls API hosts the user explicitly
+  committed via architect_commit; private networks (loopback, RFC1918, link-local,
+  ULA — including numeric/decimal/hex and IPv6-mapped smuggled forms) are denied by
+  default with an opt-in allow_private_hosts setting; redirects are not followed;
+  request timeout + response size caps; no telemetry, nothing leaves the machine
+  except the calls the user asked for. Credentials: only through Hermes routes
+  (config_schema type secret, read via agent.secret_scope at call time); manifests
+  store the slot NAME, never the value; no .env / auth.json / keychain reads; no
+  OAuth flows. Safety: non-GET endpoints always require interactive approval and
+  fail clean under unattended runs (cron/gateway); the spec's own metadata never
+  authorizes anything. Zero python_dependencies (stdlib only). 234 stdlib tests at
+  the pinned commit + real E2E (learn → draft refusal → commit → HTTP 200 call;
+  destructive confirm gate; invented endpoints and SSRF refused).
+maintainer: monyinet
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/monyinet/api-architect/5a9705f24b7e4290301745140790fe3ccfafe239/assets/hero.png"
+capabilities:
+  provides_tools:
+  - architect_learn
+  - architect_commit
+  - architect_list
+  - api_call
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

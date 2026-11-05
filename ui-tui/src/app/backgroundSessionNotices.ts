@@ -40,6 +40,15 @@ export function createBackgroundSessionWatch() {
       }
     },
 
+    /** *sid* was just left mid-turn: it is ours and busy, whatever the last poll sampled (a turn
+     * started after an idle poll and finished before the next one still gets its notice). */
+    handoff(sid: null | string) {
+      if (sid) {
+        shown.add(sid)
+        last.set(sid, 'busy')
+      }
+    },
+
     /** Whether a session this view showed is live off screen (only then is a status read worth it). */
     watching(rows: LiveRow[], focused: null | string): boolean {
       return rows.some(row => {
@@ -97,7 +106,8 @@ export async function backgroundSessionNotices(
   watch: BackgroundSessionWatch,
   gw: Pick<GatewayClient, 'isCanonical' | 'request'>,
   rows: LiveRow[],
-  focused: null | string
+  focused: null | string,
+  fresh: () => boolean = () => true
 ): Promise<string[]> {
   if (!gw.isCanonical || !watch.watching(rows, focused)) {
     return watch.update(rows, focused)
@@ -105,23 +115,31 @@ export async function backgroundSessionNotices(
 
   const raw = await gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: focused })
 
-  return watch.update(asRpcResult<SessionActiveListResponse>(raw)?.sessions ?? rows, focused)
+  return fresh() ? watch.update(asRpcResult<SessionActiveListResponse>(raw)?.sessions ?? rows, focused) : []
 }
 
 // One per process, like the overlay and server-request stores: the TUI has one transcript.
 const watch = createBackgroundSessionWatch()
 
+/** A session this view leaves while its turn runs (`/new` mid-turn, the switcher). */
+export const noteBackgroundHandoff = (sid: null | string) => watch.handoff(sid)
+
 /** The live-session poll's entry: marks the focused session as shown and writes the notices for
- * the sessions this view left running into the focused transcript. */
+ * the sessions this view left running into the focused transcript. *isCurrent* is the poll
+ * effect's liveness: a reply that lands after the view switched sessions is dropped whole (the
+ * watch is not advanced either, so the next poll still sees the transition). */
 export function noteLiveSessions(
   gw: Pick<GatewayClient, 'isCanonical' | 'request'>,
   rows: LiveRow[],
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  isCurrent: () => boolean = () => true
 ) {
   const focused = getUiState().sid
   watch.focus(focused)
 
-  void backgroundSessionNotices(watch, gw, rows, focused)
+  const fresh = () => isCurrent() && getUiState().sid === focused
+
+  void backgroundSessionNotices(watch, gw, rows, focused, fresh)
     .then(notices => notices.forEach(sys))
     .catch(() => {})
 }

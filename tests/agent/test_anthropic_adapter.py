@@ -380,7 +380,51 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
         assert resolve_anthropic_token() == "pool-oauth-token"
-        assert captured == {"clear_expired": False, "refresh": False}
+        # exclude_sources is informational (skip_borrowed=True from resolve_anthropic_token); it
+        # carries no mutation, unlike clear_expired/refresh which must stay False here.
+        assert captured == {
+            "clear_expired": False, "refresh": False, "exclude_sources": frozenset({"claude_code"}),
+        }
+
+    def test_pool_resolution_with_model_honors_configured_strategy(self, monkeypatch, tmp_path):
+        """A real API-call resolve (model given) must route through CredentialPool.select() and
+        persist the request_count bump, so a second pooled account is actually reachable on a
+        brand-new session/turn instead of only once right after the first account 429s and never
+        again (the starvation bug this behavior exists to prevent)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+        entry_a = PooledCredential.from_dict("anthropic", {
+            "id": "a", "auth_type": "oauth", "access_token": "token-a", "priority": 0, "request_count": 0,
+        })
+        entry_b = PooledCredential.from_dict("anthropic", {
+            "id": "b", "auth_type": "oauth", "access_token": "token-b", "priority": 1, "request_count": 0,
+        })
+        persisted = {"count": 0}
+
+        class FakePool:
+            def __init__(self):
+                self.entries = {"a": entry_a, "b": entry_b}
+
+            def select(self, *, model=None, exclude_sources=frozenset()):
+                # least_used: pick whichever has the lower request_count, same tie-break as the
+                # real CredentialPool (first by priority order on a tie).
+                chosen = min(self.entries.values(), key=lambda e: (e.request_count, e.priority))
+                chosen.request_count += 1
+                return chosen
+
+            def _persist(self):
+                persisted["count"] += 1
+
+        pool = FakePool()
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        picks = [resolve_anthropic_token(model="claude-sonnet-5") for _ in range(4)]
+        assert picks == ["token-a", "token-b", "token-a", "token-b"]
+        assert persisted["count"] == 4  # every real selection must flush so it survives a fresh load_pool()
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

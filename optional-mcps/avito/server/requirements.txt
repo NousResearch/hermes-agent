@@ -1,0 +1,11 @@
+anyio==4.15.1
+avito-api==0.5.0
+httpx==0.28.1
+httpx2==2.16.0
+mcp==2.3.0
+mcp-types==2.3.0
+pydantic==2.14.2
+pydantic_core==2.50.2
+sse-starlette==3.6.0
+starlette==1.10.0
+uvicorn==0.54.0

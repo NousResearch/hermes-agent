@@ -1957,20 +1957,22 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     # ---- selection ---------------------------------------------------------
 
-    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock(model=model)
+    def select(self, *, model: Optional[str] = None, exclude_sources: frozenset = frozenset()) -> Optional[PooledCredential]:
+        entry, pending_refresh = self._select_under_lock(model=model, exclude_sources=exclude_sources)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
-                entry, _ = self._select_under_lock(model=model)
+                entry, _ = self._select_under_lock(model=model, exclude_sources=exclude_sources)
         if entry is not None:
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self, *, model: Optional[str] = None) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
+    def _select_under_lock(
+        self, *, model: Optional[str] = None, exclude_sources: frozenset = frozenset(),
+    ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked(model=model)
+            return self._select_unlocked(model=model, exclude_sources=exclude_sources)
 
     def _refresh_pending_entries(self, pending: list[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -2029,6 +2031,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        exclude_sources: frozenset = frozenset(),
     ) -> tuple[list[PooledCredential], list[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2038,6 +2041,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         xai-oauth), which are returned as *pending_refresh* so the caller
         refreshes them outside the lock instead of stalling every pool
         consumer during cross-process flock acquisition + OAuth network I/O.
+        *exclude_sources* drops entries whose ``source`` matches (e.g. a borrowed
+        ``claude_code`` row that a caller wants to resolve through its own
+        refreshable-file path instead of leasing from the pool).
         """
         now = time.time()
         cleared_any = False
@@ -2046,6 +2052,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         pending_refresh: list[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
+            if exclude_sources and entry.source in exclude_sources:
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
@@ -2124,13 +2132,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        exclude_sources: frozenset = frozenset(),
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        available, pending_refresh = self._available_entries(
+            clear_expired=True, refresh=refresh, model=model, exclude_sources=exclude_sources,
+        )
         if not available:
             self._current_id = None
             self._log_no_available_entries()

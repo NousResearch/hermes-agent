@@ -84,7 +84,18 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Extension point for always-on built-in hooks; currently none shipped."""
+        """Always-on built-in hooks. ``start-bot-desktop`` is a no-op unless VNC_RELAY_HOST is set."""
+        from gateway.builtin_hooks import start_bot_desktop
+
+        self._handlers.setdefault("agent:start", []).append(start_bot_desktop.handle)
+        self._loaded_hooks.append(
+            {
+                "name": "start-bot-desktop",
+                "description": "Bot Desktop + vncviewer (active when VNC_RELAY_HOST is set)",
+                "events": ["agent:start"],
+                "path": "builtin",
+            }
+        )
 
     def discover_and_load(self) -> None:
         """Register built-in hooks, then load every valid hook dir under the active profile's ``hooks/``."""

@@ -161,4 +161,17 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "info", help="Show a profile's distribution manifest (version, requirements, source)")
     profile_info.add_argument("profile_name", help="Profile to inspect")
 
+    profile_update_clients = profile_subparsers.add_parser(
+        "update-clients",
+        help="Update all profiles starting with 'client' or 'device'",
+        description="Re-pull distributions and apply updates for every profile whose name "
+            "starts with 'client' or 'device'. Skips profiles without a distribution.yaml. "
+            "User data (memories, sessions, auth, .env) is never touched. "
+            "config.yaml is preserved unless --force-config is passed.")
+    profile_update_clients.add_argument(
+        "--force-config", action="store_true",
+        help="Also overwrite config.yaml (normally preserved to keep user overrides)")
+    profile_update_clients.add_argument(
+        "-y", "--yes", action="store_true", help="Skip confirmation")
+
     profile_parser.set_defaults(func=cmd_profile)

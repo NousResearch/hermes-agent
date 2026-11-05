@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -24,10 +25,14 @@ _CONFIG = ('model:\n  default: frozen-model\n  provider: custom\n  base_url: htt
            '  api_key: sk-rename-test\n')
 
 
-def _actor(authority, transport='socket'):
+def _owner(profile_id, transport='socket'):
     from gateway.session_contract import Principal
-    return Principal('owner', authority.profile_id,
+    return Principal('owner', str(profile_id),
                      frozenset({'session:create', 'session:read', 'session:control'}), transport)
+
+
+def _actor(authority, transport='socket'):
+    return _owner(authority.profile_id, transport)
 
 
 def _own_api_and_history(authority):
@@ -192,6 +197,107 @@ async def test_migrate_identity_restores_the_chats_of_an_already_served_renamed_
         answer = await asyncio.to_thread(migrate_profile_identity_verb(runner), {'old': 'alpha', 'new': 'beta'})
         assert answer['ok'] is True, answer
         _assert_restored(authority, beta.resolve(), 'beta', [native, legacy])
+    finally:
+        _close(runner)
+        for home in (root, alpha, beta):
+            process_ownership.release(home)
+
+
+def _custom_root(tmp_path, monkeypatch):
+    """``HERMES_HOME`` at a custom path named like the rename target, ``<dir>/beta``, holding profile
+    ``alpha``; ``<dir>/alpha`` is another home, named like the rename source."""
+    root = tmp_path.resolve() / 'beta'
+    (root / 'profiles' / 'alpha').mkdir(parents=True, mode=0o700)
+    for home in (root, root / 'profiles' / 'alpha'):
+        (home / 'config.yaml').write_text('{}')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    import hermes_state
+    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
+    return root
+
+
+def _claim_history(db, owner):
+    """An unrouted CLI chat in *db* whose sidebar control the home *owner* claimed."""
+    from hermes_state_mutation_binding import authorize_history
+    db.create_session(HISTORY_SID, source='cli')
+    assert db._execute_write(lambda conn: authorize_history(conn, _owner(owner), HISTORY_SID, claim=True))
+
+
+def _controls_history(db, owner):
+    """Whether the home *owner* may control the claimed chat in *db*: False when it is refused."""
+    from hermes_state_mutation_binding import authorize_history
+    from hermes_state_runtime import RuntimeStoreError
+    with db._read_ctx() as conn:
+        try:
+            return authorize_history(conn, _owner(owner), HISTORY_SID)
+        except RuntimeStoreError as refused:
+            assert refused.reason == 'permission_denied'
+            return False
+
+
+def test_a_launch_home_named_like_the_rename_target_keeps_refusing_another_homes_history(tmp_path, monkeypatch):
+    """Renaming profile ``alpha`` to ``beta`` under ``HERMES_HOME=<dir>/beta`` re-owns the profile's records
+    in ``profiles/beta``. The launch store's history, claimed by the other home ``<dir>/alpha``, is not the
+    renamed profile's: the launch owner stays refused."""
+    from hermes_cli.profiles import rename_profile
+    from hermes_state import SessionDB
+    root = _custom_root(tmp_path, monkeypatch)
+    other, profile = root.with_name('alpha'), root / 'profiles' / 'alpha'
+    for home, owner in ((root, other), (profile, profile)):
+        db = SessionDB(home / 'state.db')
+        try:
+            _claim_history(db, owner)
+        finally:
+            db.close()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch('hermes_cli.profiles.check_alias_collision', return_value='skip'))
+        stack.enter_context(patch('hermes_cli.profiles._live_default_multiplexer', return_value=False))
+        rename_profile('alpha', 'beta')
+
+    renamed = root / 'profiles' / 'beta'
+    launch, profile_db = SessionDB(root / 'state.db'), SessionDB(renamed / 'state.db')
+    try:
+        assert _controls_history(profile_db, renamed)
+        assert not _controls_history(launch, root)
+        assert _controls_history(launch, other)
+    finally:
+        launch.close()
+        profile_db.close()
+
+
+@pytest.mark.asyncio
+async def test_the_live_migrate_identity_verb_keeps_refusing_another_homes_history_in_the_launch_store(
+        tmp_path, monkeypatch):
+    """The live multiplexer's ``migrate-profile-identity`` verb also rekeys its launch store: under
+    ``HERMES_HOME=<dir>/beta`` it re-owns only the renamed profile's records, never the other home's."""
+    from gateway.run_profile_reconcile import migrate_profile_identity_verb
+    from gateway.run_runtime import (initialize_gateway_runtime, release_profile_home, reserve_profile_home,
+                                     serve_profile_runtime, unserve_profile_runtime)
+    from gateway.runtime_ownership import process_ownership
+
+    root = _custom_root(tmp_path, monkeypatch)
+    other, alpha, beta = root.with_name('alpha'), root / 'profiles' / 'alpha', root / 'profiles' / 'beta'
+    homes = [('default', root), ('alpha', alpha)]
+    process_ownership.reserve([home for _, home in homes])
+    runner = _runner(root, homes)
+    try:
+        await initialize_gateway_runtime(runner)
+        launch = runner.session_authorities.for_home(root)
+        _claim_history(launch.db, other)
+        _claim_history(runner.session_authorities.for_home(alpha).db, alpha)
+        assert await unserve_profile_runtime(runner, alpha)
+        release_profile_home(runner, alpha)
+        os.rename(alpha, beta)
+        reserve_profile_home(runner, 'beta', beta)
+        authority = await serve_profile_runtime(runner, 'beta', beta)
+
+        answer = await asyncio.to_thread(migrate_profile_identity_verb(runner), {'old': 'alpha', 'new': 'beta'})
+        assert answer['ok'] is True, answer
+        assert _controls_history(authority.db, authority.profile_id)
+        assert not _controls_history(launch.db, launch.profile_id)
+        assert _controls_history(launch.db, other)
     finally:
         _close(runner)
         for home in (root, alpha, beta):

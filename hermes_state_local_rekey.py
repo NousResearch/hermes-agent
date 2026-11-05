@@ -23,15 +23,17 @@ The id, the transcript and every client's reference to the chat stay what they w
 import json
 from pathlib import Path
 
+from hermes_constants import get_default_hermes_root
 from hermes_state_runtime import _json
 
 
 def renamed_owner_ids(db_path, old_name, new_name):
     """``(old, new)`` owner ids of profile *new_name*, formerly *old_name*, when *db_path* is its own store:
     its resolved home, as the serving authority spells it, before and after the directory moved. None for
-    any other store (the launch root's). Resolved, so a symlinked ``profiles/`` still names the profile."""
+    any other store, including a launch home that is merely named *new_name*. Resolved, so a symlinked
+    ``profiles/`` still names the profile."""
     home = Path(db_path).resolve().parent
-    if home.name != new_name:
+    if home != (get_default_hermes_root() / 'profiles' / new_name).resolve():
         return None
     return str(home.with_name(old_name)), str(home)
 

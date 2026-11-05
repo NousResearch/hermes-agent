@@ -76,18 +76,21 @@ def test_reused_guidance_is_marked_as_predating_the_tool_results(monkeypatch, tm
     first, second, ref_runs = _prepared(monkeypatch, tmp_path)
 
     assert len(ref_runs) == 1, "user_turn fanout reuses the first run's advisors"
-    assert _STALE_GUIDANCE_NOTE not in first["guidance"]
-    assert _STALE_GUIDANCE_NOTE in second["guidance"]
+    assert "Later user messages and tool results take precedence" in first["guidance"]
+    assert "Later user messages and tool results take precedence" in second["guidance"]
+    assert second["messages"][len(first["messages"]) - 1]["content"] == first["guidance"]
+    assert second["messages"][-1]["role"] == "tool"
     # The advice itself is still handed over unchanged.
     assert "call the clarify tool with three questions" in second["guidance"]
 
 
-def test_fresh_guidance_carries_no_note(monkeypatch, tmp_path):
+def test_fresh_guidance_has_an_updated_observation_boundary(monkeypatch, tmp_path):
     """per_iteration advisors see the tool result themselves, so nothing is stale."""
     from agent.moa_loop import _STALE_GUIDANCE_NOTE
 
     first, second, ref_runs = _prepared(monkeypatch, tmp_path, fanout="per_iteration")
 
     assert len(ref_runs) == 2
-    assert _STALE_GUIDANCE_NOTE not in first["guidance"]
-    assert _STALE_GUIDANCE_NOTE not in second["guidance"]
+    assert second["guidance_anchor"] > first["guidance_anchor"]
+    assert "Later user messages and tool results take precedence" in first["guidance"]
+    assert "Later user messages and tool results take precedence" in second["guidance"]

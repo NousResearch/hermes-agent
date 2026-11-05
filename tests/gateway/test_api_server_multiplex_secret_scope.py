@@ -14,6 +14,7 @@ pre-``_profile_scope`` helper); no live gateway or network.
 
 from __future__ import annotations
 
+import gateway.run  # noqa: F401  settle gateway.run's module init at collection time
 import pytest
 
 from agent import secret_scope as ss
@@ -40,6 +41,45 @@ class TestProfileScopeDefaultFallback:
             # Legacy single-profile path: unscoped get_secret reads os.environ.
             assert ss.get_secret("OPENROUTER_BASE_URL") == "https://from-environ.example/v1"
         assert ss.current_secret_scope() is None
+
+
+# Regression coverage for #134095: the prefix-less default scope is a routed-profile
+# decision and must resolve from the launch home, not a live-mirrored HERMES_HOME.
+class TestProfileScopeResolvesLaunchHome:
+    def test_default_scope_ignores_live_hermes_home_mirror(self, adapter, tmp_path, monkeypatch):
+        """An embedding host that mirrors the active turn's profile into HERMES_HOME while
+        the listener serves a prefix-less request must not make that request swap scopes:
+        auth was checked against the launch profile's key, so the runtime scope (session
+        DB, secret scope, home override) has to stay the launch profile's."""
+        from hermes_constants import pin_process_hermes_home
+
+        launch_home = tmp_path / "profiles" / "default"
+        other_home = tmp_path / "profiles" / "worker"
+        launch_home.mkdir(parents=True)
+        other_home.mkdir(parents=True)
+        (launch_home / ".env").write_text("LAUNCH_MARKER=launch\n", encoding="utf-8")
+        (other_home / ".env").write_text("WORKER_MARKER=worker\n", encoding="utf-8")
+
+        pin_process_hermes_home(launch_home)
+        monkeypatch.setenv("HERMES_HOME", str(other_home))
+        ss.set_multiplex_active(True)
+        try:
+            with adapter._profile_scope(None):
+                assert ss.get_secret("LAUNCH_MARKER") == "launch"
+                assert ss.get_secret("WORKER_MARKER") is None
+        finally:
+            pin_process_hermes_home(None)
+
+    def test_default_scope_follows_process_home_when_not_pinned(self, adapter, tmp_path, monkeypatch):
+        """Without a pin the routing home is the process home, so an ordinary multiplex
+        gateway keeps entering the home HERMES_HOME names (unchanged behavior)."""
+        home = tmp_path / "profiles" / "default"
+        home.mkdir(parents=True)
+        (home / ".env").write_text("HOME_MARKER=present\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ss.set_multiplex_active(True)
+        with adapter._profile_scope(None):
+            assert ss.get_secret("HOME_MARKER") == "present"
 
 
 # Regression coverage for #72041: profile-bound API authentication

@@ -1,7 +1,7 @@
 name: changefreeze
 repo: https://github.com/arults/hermes-changefreeze
-sha: 21cfa3c3f6c9c6a3856991e562f999b04d4c8061
-description: "Schedule-based change freeze for Hermes: while a freeze window is active, deploy/push-shaped shell commands (git push, kubectl apply, terraform apply, npm/docker publish, helm upgrade, …) are blocked or escalated to Hermes' human-approval gate via pre_tool_call. Manage with /freeze and tools changefreeze_set / status / ledger / allow_once / patterns. Durable local ledger. Stdlib only — no network, no LLM in the hot path, no secrets. Disclosure — matches shell tool arguments with local regex patterns and writes decision rows (tool name, action, truncated args, timestamps) to plugin-data; never sends data off-machine."
+sha: 4bc0dc432caecbec378c7197c20d4514a51d756e
+description: "An AI helper can ship code at a bad time and break something that is live. ChangeFreeze lets you set a quiet window. During that window, Hermes asks you before it ships. Everyday work still runs. When the window ends, shipping continues again. Local only — no off-machine data."
 maintainer: arults
 tier: community
 category: tools

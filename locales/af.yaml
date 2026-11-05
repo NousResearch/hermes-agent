@@ -1480,6 +1480,8 @@ platform:
     prompt_other: "✏️ Ander (tik antwoord)"
     prompt_expired: ⌛ Daardie navraag wag nie meer op 'n antwoord nie. Stuur jou antwoord as 'n gewone boodskap.
 slash:
+  rewind:
+    description: "Spoel terug na 'n vroeëre opdrag om dit te wysig & weer te stuur, of vurk van daar af (Esc Esc)"
   approve:
     description: "Keur 'n hangende gevaarlike opdrag goed"
   bg:
@@ -1707,6 +1709,20 @@ slash:
   quit:
     description: "Verlaat die CLI (gebruik --delete om ook sessiegeskiedenis te verwyder)"
 cli:
+  backtrack:
+    title: "↺ Spoel terug — kies 'n vroeëre opdrag"
+    keys_hint: "↑/↓ kies · Enter wysig & stuur weer · f vurk van hier · Esc sluit"
+    preview_label: "Opdrag {number} van {total}:"
+    more_lines: "… ({count} meer reëls)"
+    editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
+    edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
+    rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."
+    forked: "⑂ Gevurk voor opdrag {number}; die oorspronklike sessie {parent} is onveranderd. Wysig die opdrag hieronder en druk Enter om te stuur."
+    nothing: "(._.) Geen vroeëre opdragte om na terug te spoel nie."
+    target_changed: "(x_x) Die sessie het verander sedert jy opdrag {number} gekies het; niks is verwyder nie. Jou wysiging is terug in die opsteller."
+    invalid: "(._.) Geen opdrag {value} nie — kies 1 tot {total}."
+    usage: "Gebruik: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Terugspoel het misluk; geskiedenis is nie verander nie: {error}"
   modern:
     thought_for: "Het {seconds}s gedink"
     thought: "Het gedink"

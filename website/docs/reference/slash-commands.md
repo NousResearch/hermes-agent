@@ -43,6 +43,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
+| `/rewind [N \| fork N]` | **Backtrack** (classic CLI; also `Esc Esc` on an idle, empty prompt). Opens a picker of your earlier prompts, newest first, with a preview of the selected one. `Enter` puts it back in the composer for editing: sending the edit cuts the session back to just before that prompt (the later messages are archived, as with `/undo`) and sends the new text; cancelling with `Esc Esc`, `Ctrl+C` or an empty submit removes nothing. `f` forks instead: a new branched session holding only the history before that prompt, with the prompt prefilled (not sent); the original session is kept as it was. `/rewind N` edits prompt N directly and `/rewind fork N` forks before it. |
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context (flush memories + summarize). `/compress here [N]` summarizes everything except the most recent N exchanges (default 2), kept verbatim — pick your own compression boundary. A focus topic narrows what a full summary preserves. |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |

@@ -13,7 +13,18 @@ export const overlaysEn = {
       once: 'Allow once',
       session: 'Allow this session',
       always: 'Always allow',
-      deny: 'Deny'
+      deny: 'Deny',
+      tell: 'No, and tell Hermes what to do instead',
+      tellHint: 'type what Hermes should do instead · Enter deny and send · Esc back'
+    },
+    rewind: {
+      title: '↺ rewind — pick an earlier prompt to edit and resend',
+      detail: 'Sending the edit removes that prompt and everything after it from this session.',
+      editing: (turn: string) => `editing prompt ${turn}`,
+      preview: (turn: string) => `prompt ${turn}`,
+      marker: '↺ selected in the rewind picker',
+      listHint: '↑/↓ select · Enter edit & resend · f fork from here · Esc close',
+      editHint: 'Enter rewind here and send · Esc back to the list'
     },
     clarify: {
       other: 'Other (type your answer)',

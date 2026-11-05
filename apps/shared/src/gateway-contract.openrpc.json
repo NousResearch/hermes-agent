@@ -34133,6 +34133,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "undo_since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Since"
           }
         },
         "required": [
@@ -34154,6 +34166,17 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39862,6 +39885,17 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "undo_hint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoRollbackHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -45942,6 +45976,45 @@
         ],
         "title": "UndoIntent",
         "type": "string"
+      },
+      "UndoRollbackHint": {
+        "additionalProperties": false,
+        "description": "``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,\nso the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;\n``text`` is the rendered line in the backend's language.",
+        "properties": {
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Number"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "more": {
+            "default": 0,
+            "title": "More",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UndoRollbackHint",
+        "type": "object"
       },
       "Usage": {
         "additionalProperties": true,

@@ -11,6 +11,8 @@ refusal reaches the editor as a reply naming the command, never a failed prompt.
 """
 from __future__ import annotations
 
+import contextlib
+
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 
 
@@ -151,8 +153,14 @@ async def _rewind(agent, client, session_id, command, arg):
         return None, text
     removed = content if isinstance(content, str) else ''
     count = result['rewound_count']
-    return (f"Undid {turns} turn{'s' if turns != 1 else ''} ({count} message(s)).\n"
-            + (f"Removed message: {removed}" if removed else '')).rstrip(), None
+    reply = (f"Undid {turns} turn{'s' if turns != 1 else ''} ({count} message(s)).\n"
+             + (f"Removed message: {removed}" if removed else '')).rstrip()
+    with contextlib.suppress(Exception):  # advisory: an older owner refuses ``undo_since``, as main prints nothing
+        listed = await client.rpc('rollback.list', session_id=session_id,
+                                  undo_since=(result.get('target_message') or {}).get('timestamp'))
+        if hint := (listed.get('undo_hint') or {}).get('text'):
+            reply += '\n' + hint
+    return reply, None
 
 
 async def _steer(agent, session_id, text):

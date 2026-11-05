@@ -3981,3 +3981,10 @@ plan_usage:
   large_notice_limit: "Крупная модель: достигнут {name} ({resets})."
   large_notice_limit_stops: "Крупная модель: достигнут {name} ({resets}), до сброса она не запустится."
   large_notice_percent: "Крупная модель: расходует больше лимита плана на сообщение. Месячный лимит крупных моделей: использовано {percent}."
+shared:
+  # /undo's pointer at the /rollback command that restores the undone turns' files
+  # (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    restore: "↶ Файлы, изменённые в отменённых ходах: {files}. Чтобы восстановить их: /rollback {number}"
+    list: "↶ Файлы, изменённые в отменённых ходах: {files}. Выполните /rollback, чтобы увидеть контрольные точки и восстановить одну."
+    more: "ещё {count}"

@@ -22,8 +22,9 @@ from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
+from hermes_cli.web_server_surface import policy
 from hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
-from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import (
     AudioTranscriptionRequest,
     STTLeaseRequest,
@@ -149,7 +150,7 @@ async def transcribe_audio_upload(
 
 
 @router.get("/api/audio/voice-config")
-async def get_client_voice_config(profile: Optional[str] = None):
+async def get_client_voice_config(request: Request, profile: Optional[str] = None):
     """The active profile's STT/TTS config for CLIENT-DIRECT voice.
 
     Lets the desktop cut the audio relay hop: mic audio goes straight to the
@@ -162,11 +163,13 @@ async def get_client_voice_config(profile: Optional[str] = None):
     Same trust boundary as every profile-scoped route: the caller is an
     authenticated client that can already drive the agent. Keys in the
     response are held in client memory only, never persisted client-side.
-    Gate: ``voice.client_direct`` in config.yaml (default true).
+    Gate: ``voice.client_direct`` in config.yaml (default true), and the
+    serving surface (``client_direct_voice``: the Webapp always relays).
     """
     from tools.voice_client_config import resolve_client_voice_config
+    client_direct = policy(request.app.state).client_direct_voice
     try:
-        result = await _run_config_scoped(profile, resolve_client_voice_config)
+        result = await _run_config_scoped(profile, lambda: resolve_client_voice_config(client_direct))
     except HTTPException:
         raise  # an unknown ?profile= is the scope's 404, not a reason to fall back to relay
     except Exception:

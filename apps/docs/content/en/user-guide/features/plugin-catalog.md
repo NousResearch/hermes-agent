@@ -19,13 +19,13 @@ category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Verified / Community), capability chips, and
 copyable install commands for every entry.
 
-Every entry also has its own page at `/docs/plugins/<name>` (click a card):
-the full description and any disclosure, the pinned commit, tools, hooks and
-environment variables, the Desktop install button and CLI command, optional
-screenshots and the README from the reviewed commit, plus a **More by this
-author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
-everything they maintain in the catalog. Both are generated at build time from
-the same catalog files, so a merged PR is the only way a page changes.
+Every entry also has its own marketplace page at `/marketplace/<name>` (click a
+card): the full description and any disclosure, the pinned commit, the install
+command, optional screenshots and the README from the reviewed commit, plus a
+**More by this author** shelf. Authors have a page at
+`/marketplace/by/<maintainer>` listing everything they maintain in the catalog.
+Both are built from the same catalog files, so a merged PR is the only way a
+page changes.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -62,7 +62,7 @@ directory of the hermes-agent repository, declaring:
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
 | `image` | Banner image for the catalog card and the plugin page hero, shown at 2:1 (1200×600 works; other shapes are centre-cropped); an `https` URL on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` (optional). Pin it to the entry's commit (`raw.githubusercontent.com/owner/repo/<sha>/...`) so it never changes under the review |
 | `screenshots` | Up to 6 images shown as a gallery on the plugin page, same host rule as `image` (optional). Pin them to the entry's commit too |
-| `readme` | The plugin page renders the repository README (the entry's `subdir` first, else the repo root) by default. It is fetched **from the pinned commit** at docs build time — never from a branch — so the page shows the README the reviewer read and changes only when the pin does. Set `false` to hide it. GitHub and GitLab repos (optional, default `true`) |
+| `readme` | The plugin page renders the repository README (the entry's `subdir` first, else the repo root) by default. It is fetched **from the pinned commit** — never from a branch — so the page shows the README the reviewer read and changes only when the pin does. Set `false` to hide it. GitHub and GitLab repos (optional, default `true`) |
 
 ## Trust model
 

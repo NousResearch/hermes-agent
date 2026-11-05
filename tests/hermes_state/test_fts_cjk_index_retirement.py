@@ -6,7 +6,6 @@ import sqlite3
 
 import pytest
 
-import hermes_state
 from hermes_cli import sessions_cmd
 from hermes_state import SessionDB
 
@@ -88,7 +87,7 @@ def _store_snapshot(db_path) -> tuple:
 
 
 def test_repair_check_only_leaves_the_store_unchanged(cjk_db, monkeypatch):
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", cjk_db)
+    monkeypatch.setenv("HERMES_HOME", str(cjk_db.parent))
     before = _store_snapshot(cjk_db)
 
     assert not sessions_cmd._cmd_repair(argparse.Namespace(check_only=True, no_backup=False))

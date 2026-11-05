@@ -365,6 +365,30 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}, host:
 // to whichever surface mounted it. If a host had to opt in, the composer and
 // the kanban board would end up disagreeing about what "my models" means —
 // which is exactly the drift extracting this component was meant to prevent.
+describe('custom provider variant selection', () => {
+  it('emits the row key when fast mode switches the active custom model', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'A relay',
+          slug: 'minimax-cn',
+          aliases: ['custom:a-relay', 'custom:minimax-cn'],
+          models: ['relay-model', 'relay-model-fast'],
+          capabilities: { 'relay-model': { fast: false, reasoning: false } }
+        }
+      ]
+    })
+    const select = renderMenu({ model: 'relay-model', provider: 'custom:minimax-cn' })
+    await screen.findByText('Relay Model')
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByRole('switch'))
+
+    expect(select).toHaveBeenCalledWith('relay-model-fast', 'custom:minimax-cn')
+  })
+})
+
 describe('the catalog owns model curation', () => {
   it('honours the stored Edit Models shortlist', async () => {
     setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))

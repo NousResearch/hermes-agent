@@ -38,17 +38,33 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useQuery } = await import('@tanstack/react-query')
-  const { catalogProviderMatches, useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+  const { catalogProviderMatches, catalogProviderSelectionId, useI18n } =
+    await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
 
   return {
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
     catalogProviderMatches,
+    catalogProviderSelectionId,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
-    Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    Select: ({ children, onValueChange }: { children: ReactNode; onValueChange: (value: string) => void }) => (
+      <div
+        onClick={event => {
+          const option = (event.target as HTMLElement).closest('[data-select-value]')
+
+          if (option) {
+            onValueChange(option.getAttribute('data-select-value') ?? '')
+          }
+        }}
+      >
+        {children}
+      </div>
+    ),
     SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-    SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    SelectItem: ({ children, value }: { children: ReactNode; value: string }) => (
+      <div data-select-value={value}>{children}</div>
+    ),
     SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectValue: () => null,
     useI18n,
@@ -81,12 +97,12 @@ function mount(bot: null | RosterRow) {
 }
 
 /** Mount with the selection a saved bot profile would carry into the editor. */
-function mountWithSelection(bot: null | RosterRow, value: { model: string; provider: string }) {
+function mountWithSelection(bot: null | RosterRow, value: { model: string; provider: string }, onChange = vi.fn()) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   )
 
-  return render(<ModelPicker bot={bot} onChange={vi.fn()} value={value} />, { wrapper })
+  return render(<ModelPicker bot={bot} onChange={onChange} value={value} />, { wrapper })
 }
 
 /** The fallback the picker paints when the catalog is unavailable. */
@@ -214,6 +230,21 @@ describe('the manual-entry form vs the dropdowns (#121875)', () => {
 })
 
 describe('a saved custom provider', () => {
+  it.each([
+    { aliases: ['custom:a-relay', 'custom:minimax-cn'], expected: 'custom:minimax-cn' },
+    { aliases: [], expected: 'minimax-cn' }
+  ])('selecting the bot provider emits $expected', async ({ aliases, expected }) => {
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [{ aliases, models: ['relay-model'], name: 'A relay', slug: 'minimax-cn' }]
+    })
+    const onChange = vi.fn()
+    mountWithSelection(remoteBot, { model: '', provider: '' }, onChange)
+
+    fireEvent.click(await screen.findByText('A relay (minimax-cn)'))
+
+    expect(onChange).toHaveBeenCalledWith({ provider: expected, model: 'relay-model' })
+  })
+
   it('matches its catalog row through the custom:<key> alias', async () => {
     // model.options reports a user-defined provider as `custom:<key>`, while
     // the catalog row carries the bare key as its slug plus the alias list.

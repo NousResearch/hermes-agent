@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { catalogProviderSelectionId, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { $daybreakByProfile, daybreakKey, setDaybreak, syncDaybreak } from '@/store/daybreak'
 import {
@@ -172,13 +172,15 @@ export function useModelMenuController({
       sessionId: activeSessionId,
       isCurrent: dimension => {
         const stamp = stamps.get(dimension)!
+        const providerRow = modelOptions.data?.providers.find(provider => provider.slug === row.provider)
+        const selectionId = providerRow ? catalogProviderSelectionId(providerRow) : row.provider
 
         return (
           optionEdits.get(stamp.ownerKey) === stamp.owner &&
           latestHostScope.current === hostScope &&
           view.$runtimeId.get() === activeSessionId &&
           (!view.$model.get() || view.$model.get().replace(/-fast$/, '') === row.model) &&
-          (!view.$provider.get() || view.$provider.get() === row.provider)
+          (!view.$provider.get() || view.$provider.get() === selectionId)
         )
       },
       onFailure: (dimension, confirmed) => {

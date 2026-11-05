@@ -14,7 +14,12 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  catalogProviderMatches,
+  catalogProviderSelectionId,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -158,7 +163,7 @@ export function ModelPickerDialog({
     : null
 
   const selectModel = (provider: ModelOptionProvider, model: string) => {
-    onSelect({ provider: provider.slug, model })
+    onSelect({ provider: catalogProviderSelectionId(provider), model })
     onOpenChange(false)
   }
 

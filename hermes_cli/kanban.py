@@ -138,6 +138,11 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
 
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …``; returns a shell-style exit code."""
+    with kb.scoped_kanban_event_origin("cli"):
+        return _kanban_command(args)
+
+
+def _kanban_command(args: argparse.Namespace) -> int:
     action = getattr(args, "kanban_action", None)
     if not action:
         parser = getattr(args, "_kanban_parser", None)
@@ -185,7 +190,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
             kb.init_db()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- the CLI boundary reports the failure instead of a traceback
             return _err(f"kanban: could not initialize database: {exc}")
 
         handler = _HANDLERS.get(action)

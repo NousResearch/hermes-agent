@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -24,6 +25,26 @@ if TYPE_CHECKING:
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+
+
+def auto_subscribe_delivery_mode() -> str:
+    """Read the calling profile's delivery policy for new chat auto-subscriptions."""
+    from hermes_cli.config import cfg_get
+    from hermes_cli.config_effective import load_user_config_effective
+
+    default = "notify+wake"
+    logger = logging.getLogger(__name__)
+    try:
+        mode = cfg_get(load_user_config_effective(fail_closed=True),
+                       "kanban", "auto_subscribe_delivery_mode", default=default)
+    except Exception as exc:
+        logger.warning("Cannot read kanban.auto_subscribe_delivery_mode; using %s: %s", default, exc, exc_info=True)
+        return default
+    if mode not in _NOTIFY_DELIVERY_MODES:
+        logger.warning("Invalid kanban.auto_subscribe_delivery_mode %r; using %s", mode, default)
+        return default
+    return mode
+
 
 _SCALAR_TYPES = (str, int, float, bool)
 

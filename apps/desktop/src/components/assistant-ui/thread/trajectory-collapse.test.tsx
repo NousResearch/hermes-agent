@@ -6,8 +6,9 @@ import { $trajectoryCollapsedByDefault } from '@/store/trajectory-disclosure'
 
 import { stubThreadEnvironment } from '../test-utils'
 
-import { Thread } from '.'
 import { planTrajectoryCollapse } from './trajectory-collapse'
+
+import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const options = { messageComplete: true, preferenceOn: true }
@@ -19,6 +20,7 @@ beforeEach(() => $trajectoryCollapsedByDefault.set(true))
 
 function assistantMessage(running = false): ThreadMessage {
   const start = createdAt.getTime() / 1000
+
   return {
     id: 'assistant-1',
     role: 'assistant',
@@ -57,6 +59,7 @@ function Harness({ assistant }: { assistant: ThreadMessage }) {
     ] as ThreadMessage[],
     onNew: async () => {}
   })
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread />

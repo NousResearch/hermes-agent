@@ -33,7 +33,6 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
-import { $trajectoryCollapsedByDefault, setTrajectoryCollapsedByDefault } from '@/store/trajectory-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
@@ -46,6 +45,7 @@ import {
 } from '@/store/titlebar-app-actions'
 import { $hideCodeDiffs, $toolViewMode, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
+import { $trajectoryCollapsedByDefault, setTrajectoryCollapsedByDefault } from '@/store/trajectory-disclosure'
 import {
   $translucency,
   beginTranslucencyPeek,
@@ -131,6 +131,34 @@ function ResumeLastSessionSetting() {
       label={a.resumeLastSessionTitle}
       onChange={update}
     />
+  )
+}
+
+// Chat-display toggles backed by their own renderer stores: each subscribes
+// here, so flipping one re-renders these rows instead of the whole page.
+function TranscriptLayoutSettings() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const hideThreadTimeline = useStore($hideThreadTimeline)
+  const trajectoryCollapsedByDefault = useStore($trajectoryCollapsedByDefault)
+
+  return (
+    <>
+      <ToggleRow
+        checked={hideThreadTimeline}
+        description={a.hideThreadTimelineDesc}
+        id={settingElementId(ids.hideThreadTimeline)}
+        label={a.hideThreadTimelineTitle}
+        onChange={setHideThreadTimeline}
+      />
+      <ToggleRow
+        checked={trajectoryCollapsedByDefault}
+        description={a.trajectoryCollapsedDesc}
+        id={settingElementId(ids.trajectoryCollapsed)}
+        label={a.trajectoryCollapsedTitle}
+        onChange={setTrajectoryCollapsedByDefault}
+      />
+    </>
   )
 }
 
@@ -418,10 +446,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
-  const hideThreadTimeline = useStore($hideThreadTimeline)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
-  const trajectoryCollapsedByDefault = useStore($trajectoryCollapsedByDefault)
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
@@ -924,25 +950,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('chat-display') && (
-            <ToggleRow
-              checked={hideThreadTimeline}
-              description={a.hideThreadTimelineDesc}
-              id={settingElementId(ids.hideThreadTimeline)}
-              label={a.hideThreadTimelineTitle}
-              onChange={setHideThreadTimeline}
-            />
-          )}
-
-          {show('chat-display') && (
-            <ToggleRow
-              checked={trajectoryCollapsedByDefault}
-              description={a.trajectoryCollapsedDesc}
-              id={settingElementId(ids.trajectoryCollapsed)}
-              label={a.trajectoryCollapsedTitle}
-              onChange={setTrajectoryCollapsedByDefault}
-            />
-          )}
+          {show('chat-display') && <TranscriptLayoutSettings />}
 
           {show('general') && (
             <ToggleRow

@@ -82,3 +82,16 @@ def test_validator_rejects_wrong_refusal_or_exit_status(artifact):
         result = subprocess.CompletedProcess(["hermes", "update"], status, message, "")
         with pytest.raises(RuntimeError, match="wrong updater refusal"):
             validate_update_refusal(root, result)
+
+
+@pytest.mark.platforms("posix")
+def test_installed_bundle_smoke_imports_the_doctor_entry_surface():
+    from scripts.termux.validate_installed import CLI_IMPORT_SMOKE_PROGRAM
+
+    # The smoke runs on the assembled bundle, so every entry surface has to be
+    # importable there; hermes_cli.doctor is pinned because the 9b6965c1759
+    # canary shipped a doctor.py whose doctor_state.py lacked an imported
+    # symbol and `hermes doctor` crashed on user devices (#128664).
+    compile(CLI_IMPORT_SMOKE_PROGRAM, "<cli-import-smoke>", "exec")
+    for module in ("cli", "run_agent", "tui_gateway.server", "hermes_cli.doctor"):
+        assert module in CLI_IMPORT_SMOKE_PROGRAM, module

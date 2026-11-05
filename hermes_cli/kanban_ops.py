@@ -92,13 +92,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
     if getattr(args, "json", False):
+        candidates = [
+            {"task_id": tid, "assignee": who, "workspace": ws}
+            for (tid, who, ws) in res.spawned
+        ]
         _print_json({
+            "dry_run": bool(args.dry_run),
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
                          "reaped_terminal_workers")},
-            "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
-            ],
+            "spawned": [] if args.dry_run else candidates,
+            "planned": candidates if args.dry_run else [],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [

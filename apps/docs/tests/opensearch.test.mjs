@@ -13,7 +13,7 @@ test('the English descriptor points at the English search page and itself', () =
   assert.ok(xml.includes('<ShortName>Hermes Agent</ShortName>'));
   assert.ok(xml.includes('<InputEncoding>UTF-8</InputEncoding>'));
   assert.ok(xml.includes(
-    '<Url type="text/html" method="get" template="https://hermes-agent.nousresearch.com/docs/search/?q={searchTerms}"/>',
+    '<Url type="text/html" method="get" template="https://hermes-agent.nousresearch.com/docs/search?q={searchTerms}"/>',
   ));
   assert.ok(xml.includes(
     '<Url type="application/opensearchdescription+xml" rel="self" template="https://hermes-agent.nousresearch.com/docs/opensearch.xml" />',
@@ -21,13 +21,13 @@ test('the English descriptor points at the English search page and itself', () =
   assert.ok(xml.includes(
     '<Image width="16" height="16" type="image/x-icon">https://hermes-agent.nousresearch.com/docs/img/favicon.ico</Image>',
   ));
-  assert.ok(xml.includes('<moz:SearchForm>https://hermes-agent.nousresearch.com/docs/</moz:SearchForm>'));
+  assert.ok(xml.includes('<moz:SearchForm>https://hermes-agent.nousresearch.com/docs</moz:SearchForm>'));
 });
 
 test('the Chinese descriptor localizes search while sharing the canonical icon', () => {
   const xml = openSearchXml('zh-Hans');
   assert.ok(xml.includes(
-    '<Url type="text/html" method="get" template="https://hermes-agent.nousresearch.com/docs/zh-Hans/search/?q={searchTerms}"/>',
+    '<Url type="text/html" method="get" template="https://hermes-agent.nousresearch.com/docs/zh-Hans/search?q={searchTerms}"/>',
   ));
   assert.ok(xml.includes(
     '<Url type="application/opensearchdescription+xml" rel="self" template="https://hermes-agent.nousresearch.com/docs/zh-Hans/opensearch.xml" />',
@@ -35,7 +35,7 @@ test('the Chinese descriptor localizes search while sharing the canonical icon',
   assert.ok(xml.includes(
     '<Image width="16" height="16" type="image/x-icon">https://hermes-agent.nousresearch.com/docs/img/favicon.ico</Image>',
   ));
-  assert.ok(xml.includes('<moz:SearchForm>https://hermes-agent.nousresearch.com/docs/zh-Hans/</moz:SearchForm>'));
+  assert.ok(xml.includes('<moz:SearchForm>https://hermes-agent.nousresearch.com/docs/zh-Hans</moz:SearchForm>'));
 });
 
 test('writeOpenSearch publishes both descriptors and reports the files it wrote', (t) => {

@@ -73,6 +73,43 @@ def test_get_config_for_named_profile_expands_only_its_own_secrets(client, two_h
     assert probe_a["a_ref"] == A_VAL and probe_a["b_ref"] == "${B_ONLY_TOKEN}"
 
 
+def test_console_sessions_repair_checks_the_requested_profile_store(two_homes, monkeypatch):
+    """The dashboard's A→B→A scope must choose each request's state.db at call time."""
+    import hermes_state
+    from hermes_cli.console_engine import HermesConsoleEngine
+    from hermes_cli.web_routers.chat_ws import _execute_console_line
+    from hermes_state import SessionDB
+
+    root, b = two_homes
+    launch_db = root / "state.db"
+    selected_db = b / "state.db"
+    SessionDB(db_path=launch_db).close()
+    selected_db.write_bytes(b"not a sqlite database")
+
+    # Model a dashboard process that imported hermes_state while launched in A.
+    monkeypatch.setattr(hermes_state, "_IMPORT_DEFAULT_DB_PATH", launch_db)
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", launch_db)
+
+    engine = HermesConsoleEngine()
+
+    def check(profile):
+        return _execute_console_line(
+            engine,
+            "sessions repair --check-only",
+            confirmed=True,
+            profile=profile,
+        )
+
+    before = check(None)
+    selected = check("b")
+    after = check(None)
+
+    assert before.status == "ok" and f"{launch_db} opens cleanly" in before.output
+    assert selected.status == "error"
+    assert f"{selected_db} does not open cleanly" in selected.output
+    assert after.status == "ok" and f"{launch_db} opens cleanly" in after.output
+
+
 def test_console_send_for_named_profile_does_not_write_process_env(two_homes, monkeypatch):
     """``send`` loads the target profile's ``.env`` for the gateway config loader; inside a
     multi-profile host that must land in the request's scope, never ``os.environ``."""

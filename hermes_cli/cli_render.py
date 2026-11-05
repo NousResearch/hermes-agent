@@ -1008,12 +1008,15 @@ def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
     return [*rows, row] if row.strip() or not rows else rows
 
 
-def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
+def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False,
+                     break_long_words: bool = False) -> list[str]:
     """Wrap panel text to ``width`` terminal cells; ``keep_ws`` preserves whitespace (command/detail
     previews). Each source line wraps on its own: a newline inside a row would break the panel's
-    right border."""
+    right border. ``break_long_words`` hard-splits a word wider than the row (a URL or hash), for
+    panels that never clip their rows."""
     width = max(8, width)
-    kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
+    kw = (dict(replace_whitespace=False, drop_whitespace=False) if keep_ws
+          else dict(break_long_words=break_long_words, break_on_hyphens=False))
     rows = []
     for part in (text.expandtabs(4).splitlines() if keep_ws else [text]):
         # Only wide visible characters take the cell path: get_cwidth counts \n and \t as 0, which

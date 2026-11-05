@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from contextlib import redirect_stderr, redirect_stdout
 import dataclasses
 from dataclasses import dataclass
@@ -21,6 +22,92 @@ from typing import Optional
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
+# First-byte window for implicit piped stdin (see _read_stdin_prompt). Files
+# and already-fed pipes resolve instantly; this only delays the idle-open-pipe
+# daemon shape, where one second is noise next to the LLM roundtrip itself.
+_STDIN_FIRST_BYTE_TIMEOUT = 1.0
+
+
+def _read_stdin_prompt(
+    prompt: str, timeout: float = _STDIN_FIRST_BYTE_TIMEOUT
+) -> tuple[str, Optional[str]]:
+    """Fold piped stdin into the oneshot prompt without ever hanging (#70647).
+
+    ``hermes -z "ask" < file`` / ``producer | hermes -z "ask"`` used to
+    silently discard the piped data. The obvious fix — ``sys.stdin.read()``
+    when stdin is not a TTY — introduces a worse failure: a wrapper/daemon
+    that launches ``hermes -z`` with stdin attached to an open pipe it never
+    writes nor closes would block until EOF forever (today it returns fine).
+
+    First-byte handshake: read on a daemon thread and commit to a full
+    blocking read-until-EOF only once the first chunk (or EOF) arrives within
+    ``timeout`` seconds. An idle pipe that produced nothing in that window is
+    treated as absent stdin — same as the pre-fix behavior, never a hang.
+    A single code path for every platform (``select.select`` would need a
+    Windows-specific fallback for non-socket fds); the reader-thread idiom
+    matches the npm-runner reader in main.py.
+
+    Known trade-off (deliberate, documented): a producer slower than
+    ``timeout`` to emit its FIRST byte is indistinguishable from an idle
+    daemon pipe and its data is dropped — which is the pre-fix status quo,
+    now bounded to that window. Once any byte lands, the read blocks to EOF
+    like any Unix filter, so slow *streams* are never truncated.
+
+    Returns ``(effective_prompt, error)``; ``error`` is a preformatted
+    stderr line, set only when piped data existed but could not be read.
+    """
+    try:
+        if sys.stdin is None or sys.stdin.closed or sys.stdin.isatty():
+            return prompt, None
+    except Exception:
+        # Exotic stdin stand-ins (closed/detached wrappers raising on
+        # isatty()): nothing usable to read, run with the bare prompt.
+        return prompt, None
+
+    first_chunk = threading.Event()
+    chunks: list[str] = []
+    errors: list[Exception] = []
+
+    def _reader() -> None:
+        try:
+            head = sys.stdin.read(1)
+        except Exception as exc:
+            errors.append(exc)
+            first_chunk.set()
+            return
+        first_chunk.set()
+        if not head:
+            return  # immediate EOF: empty pipe / </dev/null
+        chunks.append(head)
+        try:
+            rest = sys.stdin.read()
+        except Exception as exc:
+            errors.append(exc)
+            return
+        if rest:
+            chunks.append(rest)
+
+    reader = threading.Thread(target=_reader, name="oneshot-stdin-read", daemon=True)
+    reader.start()
+
+    if not first_chunk.wait(timeout):
+        # Nothing arrived and no EOF: an open pipe nobody is feeding. Treat
+        # stdin as absent instead of hanging. The reader thread stays parked
+        # on read(); it is a daemon thread and oneshot terminates through
+        # _exit_after_oneshot, so it can never keep the process alive.
+        return prompt, None
+
+    # Data (or EOF, or a read error) started flowing inside the window —
+    # commit to the full read, exactly like any Unix filter would.
+    reader.join()
+
+    if errors:
+        return prompt, "hermes -z: failed to read piped stdin.\n"
+
+    stdin_content = "".join(chunks)
+    if not stdin_content:
+        return prompt, None
+    return f"{prompt}\n\n{stdin_content}", None
 _ALL_TOOLSETS = {"all", "*"}
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
@@ -272,6 +359,24 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # Piped stdin is part of the prompt (issue #70647): `hermes -z "ask" < file`
+    # used to silently discard the file. Must run BEFORE the stderr/stdout
+    # redirect so a read failure reaches the terminal. NOTE: open PR #70710
+    # defines a same-named helper at this same call site for the explicit
+    # `-z -` convention (prompt == "-" REPLACES the prompt with stdin, hard
+    # error on tty/empty stdin). On merge, that dash branch slots in at the
+    # top of _read_stdin_prompt and this implicit-append behavior becomes its
+    # `prompt != "-"` fallthrough.
+    prompt, stdin_error = _read_stdin_prompt(prompt)
+    if stdin_error:
+        # Piped data existed but could not be read: running with the bare
+        # prompt would re-create the very bug this fixes (agent acts on wrong
+        # input, tokens billed). Fail as a usage error like the guards above.
+        sys.stderr.write(stdin_error)
+        return 2
+
+    # Auto-approve any shell / tool approvals.  Non-interactive by
+    # definition — a prompt would hang forever.
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"

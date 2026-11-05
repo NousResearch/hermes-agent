@@ -9,6 +9,7 @@ import pytest
 
 from gateway.message_timestamps import render_user_content_with_timestamp
 from gateway.run import _build_gateway_agent_history, _select_cached_agent_history
+from tests.fixtures.storage_read import conversation
 
 
 STAMP = datetime(2026, 8, 20, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
@@ -46,13 +47,13 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
 @pytest.fixture
 def responses_agent(tmp_path, monkeypatch):
     """Use the real agent/Responses converter; replace only the network call."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     captured = []
     responses = []
     sid = "sanitized-timestamp-replay"
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(
         "hermes_cli.plugins.invoke_hook",
         lambda hook, **kw: [{"context": POLICY}] if hook == "pre_llm_call" else [],
@@ -81,7 +82,7 @@ def responses_agent(tmp_path, monkeypatch):
             api_key="test-key", base_url="http://127.0.0.1:1/v1", provider="openai-compat",
             model="test-model", api_mode="codex_responses", max_iterations=4,
             enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
-            skip_memory=True, save_trajectories=False, session_db=db, session_id=sid,
+            skip_memory=True, save_trajectories=False, session_db=db, persistence=db, session_id=sid,
         )
         agent._cached_system_prompt = "Stable synthetic system prompt."
         agent.valid_tool_names = {"read_file"}
@@ -116,15 +117,12 @@ def test_full_builder_to_responses_keeps_cross_turn_prefix(responses_agent, tmp_
     assert continuation[:len(first_input)] == first_input
     assert any(item.get("call_id") == "call_test" and item.get("type") == "function_call_output" for item in continuation)
 
-    history = db.get_messages_as_conversation(sid)
+    history = conversation(db, sid)
     if resume == "db":
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        reopened = SessionDB(db_path=tmp_path / "state.db")
-        try:
-            history = reopened.get_messages_as_conversation(sid)
-        finally:
-            reopened.close()
+        with open_persistence(profile_scope(home=tmp_path)) as reopened:
+            history = conversation(reopened, sid)
     replay, observed = _build_gateway_agent_history(history, inject_timestamps=timestamps)
     assert observed is None
     if resume == "cached":

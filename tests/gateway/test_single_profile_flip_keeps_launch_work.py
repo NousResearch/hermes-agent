@@ -13,6 +13,7 @@ from gateway.run import GatewayRunner
 from gateway.status import flush_runtime_status, write_runtime_status
 from hermes_cli import gateway_migrate as gm
 from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
@@ -212,11 +213,11 @@ async def _native_turn_across_activation(tmp_path, profile_home):
         return "ok"
 
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    runner = types.SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = types.SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                                    config=GatewayConfig(multiplex_profiles=False),
                                    _handle_message=answer, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(profile_home), instance_id="owner")
-    store._db.create_session("s", source="telegram")
+    seed_session(store.persistence, "s", "telegram")
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c"), "s")
     connection = AuthorityConnection(authority, object(), {"user_id": "owner"})
     try:

@@ -12,6 +12,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from tests.fixtures.storage_seed import seed_session
 
 def _make_event(text="/title", platform=Platform.TELEGRAM,
                 user_id="12345", chat_id="67890"):
@@ -24,17 +25,21 @@ def _make_event(text="/title", platform=Platform.TELEGRAM,
     )
     return MessageEvent(text=text, source=source)
 
-def _make_runner(session_db=None):
-    """Create a bare GatewayRunner with a mock session_store and optional session_db."""
+def _runner_class():
     from gateway.run import GatewayRunner
-    runner = object.__new__(GatewayRunner)
+
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle the slash handlers use, set by the test
+
+    return _Runner
+
+
+def _make_runner(session_db=None):
+    """Create a bare GatewayRunner with a mock session_store and an optional storage interface handle."""
+    runner = object.__new__(_runner_class())
     runner.adapters = {}
     runner._voice_mode = {}
-    # Gateway holds the async facade; the slash handlers await it.
-    if session_db is not None:
-        from hermes_state import AsyncSessionDB
-        session_db = AsyncSessionDB(session_db)
-    runner._session_db = session_db
+    runner.persistence = session_db
 
     # Mock session_store that returns a session entry with a known session_id
     mock_session_entry = MagicMock()
@@ -56,11 +61,10 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_title_conflict(self, tmp_path):
         """Setting a title already used by another session returns error."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("other_session", "telegram")
-        db.set_session_title("other_session", "Taken Title")
-        db.create_session("test_session_123", "telegram")
+        from persistence_assembly import open_persistence, profile_scope
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "other_session", "telegram", title="Taken Title")
+        seed_session(db, "test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
         event = _make_event(text="/title Taken Title")
@@ -71,23 +75,23 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_title_control_chars_sanitized(self, tmp_path):
         """Control characters are stripped and sanitized title is stored."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("test_session_123", "telegram")
+        from persistence_assembly import open_persistence, profile_scope
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
         event = _make_event(text="/title hello\x00world")
         result = await runner._handle_title_command(event)
         assert "helloworld" in result
-        assert db.get_session_title("test_session_123") == "helloworld"
+        assert db.sessions.get_title("test_session_123") == "helloworld"
         db.close()
 
     @pytest.mark.asyncio
     async def test_set_title_propagates_to_telegram_topic_rename(self, tmp_path):
         """/title <name> also renames the visible Telegram topic, not just the DB."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("test_session_123", "telegram")
+        from persistence_assembly import open_persistence, profile_scope
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "test_session_123", "telegram")
 
         runner = _make_runner(session_db=db)
         runner._schedule_telegram_topic_title_rename = MagicMock()
@@ -104,10 +108,9 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_show_title_does_not_rename_topic(self, tmp_path):
         """Showing the title (no arg) must not trigger a topic rename."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("test_session_123", "telegram")
-        db.set_session_title("test_session_123", "Existing Title")
+        from persistence_assembly import open_persistence, profile_scope
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "test_session_123", "telegram", title="Existing Title")
 
         runner = _make_runner(session_db=db)
         runner._schedule_telegram_topic_title_rename = MagicMock()
@@ -134,10 +137,9 @@ class TestResetCommandWithTitle:
         """/new <title> with an already-in-use title returns a warning in the reply."""
         from datetime import datetime
 
-        from gateway.run import GatewayRunner
         from gateway.session import SessionEntry, SessionSource, build_session_key
 
-        runner = object.__new__(GatewayRunner)
+        runner = object.__new__(_runner_class())
         runner.config = GatewayConfig(
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
         )
@@ -174,9 +176,10 @@ class TestResetCommandWithTitle:
         runner._pending_messages = {}
         runner._pending_approvals = {}
         runner._session_db = AsyncMock()
-        runner._session_db.set_session_title.side_effect = ValueError(
+        runner.persistence = MagicMock()
+        runner.persistence.aio.sessions.set_title = AsyncMock(side_effect=ValueError(
             "Title 'Dup' is already in use by session abc-123"
-        )
+        ))
         runner._agent_cache = {}
         runner._agent_cache_lock = None
         runner._is_user_authorized = lambda _source: True
@@ -185,7 +188,7 @@ class TestResetCommandWithTitle:
         event = _make_event(text="/new Dup")
         result = await runner._handle_reset_command(event)
 
-        runner._session_db.set_session_title.assert_called_once()
+        runner.persistence.aio.sessions.set_title.assert_called_once()
         reply = str(result)
         assert "already in use" in reply
         assert "session started untitled" in reply

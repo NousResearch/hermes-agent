@@ -1,4 +1,4 @@
-"""Log-safe URL rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
+"""Log-safe URL and path rendering for adapter logs (split from :mod:`gateway.platforms.base`)."""
 import os
 import re
 from urllib.parse import urlsplit

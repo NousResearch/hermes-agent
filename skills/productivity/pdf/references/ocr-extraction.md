@@ -65,18 +65,19 @@ else
   "$PY" -c "import pymupdf, pymupdf4llm" 2>/dev/null || (
     # concurrency-safe build: see the documents block in SKILL.md
     mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-pdf-pymupdf-venv.XXXXXX)" || exit 1
-    old="$(readlink hermes-pdf-pymupdf-venv)"  # an earlier build that no longer imports, if any
+    old="$(readlink hermes-pdf-pymupdf-venv)"  # the published build, if any (another agent may have just published it)
     python3 -m venv "$stage" &&
       "$stage/bin/python" -m pip install -q --disable-pip-version-check 'pymupdf>=1.26,<3' 'pymupdf4llm>=0.2,<3' &&
       "$stage/bin/python" -c "import pymupdf, pymupdf4llm" &&
       if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-pdf-pymupdf-venv
-      elif [ "$(readlink hermes-pdf-pymupdf-venv)" = "$old" ]; then
+      elif [ "$(readlink hermes-pdf-pymupdf-venv)" = "$old" ] && ! "$old/bin/python" -c "import pymupdf, pymupdf4llm" 2>/dev/null; then
         ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-pdf-pymupdf-venv &&
           case "$old" in hermes-pdf-pymupdf-venv.??????) rm -rf "$old" ;; esac
       fi 2>/dev/null
     [ "$(readlink hermes-pdf-pymupdf-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
   )
 fi
+export PY
 ```
 
 **Via helper script**:
@@ -115,18 +116,19 @@ else
   "$PY" -c "import marker" 2>/dev/null || (
     # concurrency-safe build: see the documents block in SKILL.md
     mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-pdf-marker-venv.XXXXXX)" || exit 1
-    old="$(readlink hermes-pdf-marker-venv)"  # an earlier build that no longer imports, if any
+    old="$(readlink hermes-pdf-marker-venv)"  # the published build, if any (another agent may have just published it)
     python3 -m venv "$stage" &&
       "$stage/bin/python" -m pip install -q --disable-pip-version-check 'marker-pdf>=1.8,<3' &&
       "$stage/bin/python" -c "import marker" &&
       if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-pdf-marker-venv
-      elif [ "$(readlink hermes-pdf-marker-venv)" = "$old" ]; then
+      elif [ "$(readlink hermes-pdf-marker-venv)" = "$old" ] && ! "$old/bin/python" -c "import marker" 2>/dev/null; then
         ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-pdf-marker-venv &&
           case "$old" in hermes-pdf-marker-venv.??????) rm -rf "$old" ;; esac
       fi 2>/dev/null
     [ "$(readlink hermes-pdf-marker-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
   )
 fi
+export PY
 ```
 
 **Via helper script**:

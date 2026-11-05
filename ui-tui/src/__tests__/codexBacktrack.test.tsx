@@ -11,11 +11,12 @@ import { $backtrackPrime, $pendingRewind, cancelPendingRewind, sendPendingRewind
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import type { RewindOverlay } from '../app/interfaces.js'
 import { $overlayState, resetOverlayState } from '../app/overlayStore.js'
-import { $rewindFocus, $rewindScrollRestore } from '../app/rewindFocusStore.js'
+import { $rewindFocus, $rewindScrollRestore, rewindFocusIndex } from '../app/rewindFocusStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { handleEscBacktrack } from '../app/useInputHandlers.js'
 import { RewindBrowse } from '../components/rewindBrowse.js'
 import { useBacktrackHint } from '../components/rewindFocus.js'
+import { pasteTokenLabel } from '../lib/text.js'
 import { fitBrowseHint } from '../lib/transcriptPager.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -467,5 +468,35 @@ describe('leaving an armed edit', () => {
     await flush()
     expect($overlayState.get().rewind).toBeTruthy()
     expect(mutations(request)).toHaveLength(0)
+  })
+})
+
+describe('default browse finds paste and image prompts', () => {
+  const body = Array.from({ length: 7 }, (_, i) => `pasted line ${i + 1}`).join('\n')
+  const label = pasteTokenLabel(body, 7)
+
+  const vision =
+    "[The user sent an image~ Here's what I can see:\nA blue square on red.]\n" +
+    '[If you need a closer look, use vision_analyze with image_url: /cache/native-inputs/a.png ~]\n\n' +
+    'What two colors?'
+
+  const transcript = [
+    { role: 'user', text: 'ALPHA please' },
+    { role: 'assistant', text: 'ALPHA' },
+    { pastes: [{ label, text: body }], role: 'user', text: `see ${label} now` },
+    { role: 'assistant', text: 'ok' },
+    { role: 'user', text: '[[ Image 1 ]] What two colors?' },
+    { role: 'assistant', text: 'Blue and red.' }
+  ]
+
+  it('matches a paste-chip row and an image row painted at send time (no row id)', () => {
+    expect(rewindFocusIndex(transcript, { text: `see ${body} now`, turn: 2 })).toBe(2)
+    expect(rewindFocusIndex(transcript, { text: vision, turn: 3 })).toBe(4)
+  })
+
+  it('a resumed row is found by its row id, whatever its text', () => {
+    const resumed = [{ role: 'user', rowId: 11, text: 'shown differently' }, { role: 'user', rowId: 15, text: 'x' }]
+
+    expect(rewindFocusIndex(resumed, { rowId: 15, text: 'stored text', turn: 1 })).toBe(1)
   })
 })

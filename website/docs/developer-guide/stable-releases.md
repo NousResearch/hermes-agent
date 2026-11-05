@@ -35,7 +35,7 @@ files on `main`.
    `tests/ci/test_stable_release_commit_threading.py` enforces that.
 4. Run the lanes the claim records: by default the whole source, Docker, Nix,
    PM bundle, install/update, Windows, signed-package, and native-upgrade
-   acceptance graph, without macOS Intel and Termux.
+   acceptance graph, without Termux.
 5. Push immutable versioned Docker and R2 artifacts from the tested bytes. The
    Docker image is pushed as soon as its own tests pass, tagged by the attempt
    ref. Do not move `stable` or `latest` aliases yet and do not rebuild for
@@ -111,7 +111,7 @@ a test lane is a suite that gates the release. `release` starts from the
 default set and edits it:
 
 ```sh
-# The default: everything except macOS Intel and Termux
+# The default: everything except Termux
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --remote origin
 # Only the signed Windows bundles and the Docker image, no tests
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows,docker --remote origin
@@ -119,8 +119,8 @@ python scripts/release.py release --commit "$(git rev-parse origin/main)" --only
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --without windows --remote origin
 # Only the Store bundle: no Azure signing anywhere
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows-store --remote origin
-# Everything, plus macOS Intel, without the install/update E2E
-python scripts/release.py release --commit "$(git rev-parse origin/main)" --with macos-intel --without install-e2e --remote origin
+# Everything, plus Termux, without the install/update E2E
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --with termux --without install-e2e --remote origin
 ```
 
 `--only` replaces the default set, `--with` adds lanes and `--without`
@@ -133,7 +133,6 @@ lists every lane.
 | `windows` | on | signed Windows x64 and arm64 MSIX and the universal bundle, which feed the update channel |
 | `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
 | `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
-| `macos-intel` | off | macOS Intel DMG and ZIP: unsupported on `main`, and its runner adds over an hour |
 | `termux` | off | Termux (Android aarch64) APT package |
 | `ci`, `nix`, `docker-tests`, `pm-bundle`, `windows-live`, `install-e2e`, `bootstrap-version` | on | the standalone suites |
 | `termux-checks` | on | Termux verification; runs only with `termux` |
@@ -157,7 +156,8 @@ requires each job they remove to report `skipped`, and every other gated job to
 report `success`. A job that ran although a lane removes it also blocks the
 release. A claim cut before lanes existed (`skipBundles`, `skipTests`,
 `includeMacosIntel`, `includeTermux`) reads as the lane set that gated the same
-jobs. A claim without `lanesRevision` was cut when `windows` also meant the Store
+jobs. macOS Intel is no longer built, so such a claim reads only while its
+`includeMacosIntel` is absent or `false`. A claim without `lanesRevision` was cut when `windows` also meant the Store
 bundle, so its `windows` reads as `windows` plus `windows-store`.
 
 What a release publishes follows what it built:
@@ -186,11 +186,11 @@ What a release publishes follows what it built:
   claim's `smoke` lane. The next full release uses that manifest as its upgrade
   baseline like any other. Cut a normal release after an untested one.
 
-When macOS Intel is left out, its rows are absent from the candidate manifest,
-the release body's downloads table and the downloads page. There is one macOS
-stable feed (`releases/darwin/stable/stable-mac.yml`), and `promote` replaces it
-with the arm64 leg alone, so Intel Macs on that feed get no update until a
-release is cut with `--with macos-intel`. When Termux is left out the APT
+No release builds macOS Intel: the candidate manifest, the release body's
+downloads table and the downloads page carry no Intel Mac row. There is one
+macOS stable feed (`releases/darwin/stable/stable-mac.yml`), and `promote`
+writes it from the arm64 leg alone, so Intel Macs on that feed get no
+update. When Termux is left out the APT
 indexes are not rewritten, so the APT channel stays on its previous release.
 A release that adds a target back after one that left it out has no published
 baseline for it, so that target's upgrade arm is skipped like a first release.
@@ -279,11 +279,24 @@ at `releases/tag/<attempt ref>/index.html` is not an update feed, and an
 attempt installed from it is not upgrade-safe: every attempt of a version has
 the same package version, so the published build never replaces it. The Docker
 image is pushed early under the attempt ref; the `stable` and `latest` aliases
-move with the feed in the publication pass. The Store submission is held: the
-green run submits with auto-publish off. The submission API cannot release a
-held submission, so the publication pass only checks it and prints a GitHub
-warning; once certification passes, click Publish now for that submission in
-Partner Center. A failed submission leaves the publication run red. Stable channel
+move with the feed in the publication pass. The Store build follows the same
+rule: the green run uploads it as an uncommitted draft set to auto-publish, and
+only the publication pass commits it, so it goes live by itself once it passes
+certification. Partner Center refuses to change a committed submission, so the
+draft cannot be committed held earlier and released later. To keep a release's
+Store build back for a manual release, set the repository variable
+`MS_STORE_HOLD` to `true` before the publication pass: the draft is then
+committed with auto-publish off, and once it is certified someone selects
+Publish now in Partner Center. A submission committed held before this change
+also gets that Publish now warning. A submission that
+does not carry the release's Store bundle is left alone while the pass checks
+older published releases for its owner. Store reconciliation runs even when
+the feeds and aliases are already current, so interrupted publication can be
+retried without rewinding them. A held submission records its claim in the
+certification notes: a successor can replace it only after that claim has a
+matching remote abandon marker. Legacy submissions without an owner record
+need manual cleanup in Partner Center. A failed submission becomes a warning;
+the release still publishes. Stable channel
 records carry an optional `archiveRef` naming the attempt ref; `releaseTag`
 stays `vX.Y.Z` and the protected prefix falls back to it when `archiveRef` is
 absent.
@@ -293,10 +306,10 @@ published release with a Termux R2 handoff. Explicit non-publishing desktop buil
 retain no downloadable job artifacts.
 
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
-`darwin-x64`, `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`,
-`linux-arm64`, and `termux`. Stable calls it once per group, except the linux
-groups, which wait for a real Linux build, and the `darwin-x64`, `termux` and
-any other group whose lane the claim leaves out, which it does not call. Each Mac arch and the Windows bundle
+`win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`, `linux-arm64`, and
+`termux`. Stable calls it once per group, except the linux groups, which wait
+for a real Linux build, and the `termux` and any other group whose lane the
+claim leaves out, which it does not call. The Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
 
@@ -306,6 +319,10 @@ cannot delay a bundle; the price is that a broken `main` still pays for signed
 candidates that `acceptance` then refuses.
 The `smoke-win32-universal` job is gone; the per-arch MSIX smokes cover each
 arch, and the Windows install arms install the `.msixbundle` on both arches.
+Stable runs those two MSIX smokes in its `win32-bundle` call, beside assembly,
+not in the per-arch calls: assembly starts as soon as both arches are built
+instead of waiting for the slower arch's smoke, and the bundle call (so
+`candidate-manifest`) still fails when either smoke fails.
 
 ## Tag namespaces and receipts
 

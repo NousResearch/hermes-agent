@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-JOB_GROUPS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64",
+JOB_GROUPS = ("darwin-arm64", "win32-arm64", "win32-x64",
               "win32-bundle", "linux-x64", "linux-arm64", "termux")
 ALL_JOBS = ",".join(JOB_GROUPS)
 
@@ -19,7 +19,6 @@ ALL_JOBS = ",".join(JOB_GROUPS)
 # result requires.
 GROUP_JOBS = {
     "darwin-arm64": ("build-darwin-arm64",),
-    "darwin-x64": ("build-darwin-x64",),
     "win32-arm64": ("build-win32-arm64",),
     "win32-x64": ("build-win32-x64",),
     "win32-bundle": ("assemble-win32-bundle",),
@@ -29,12 +28,14 @@ GROUP_JOBS = {
 # tests runs none of them.
 GROUP_SMOKES = {
     "darwin-arm64": ("smoke-darwin-arm64",),
-    "darwin-x64": ("smoke-darwin-x64",),
     "win32-arm64": ("smoke-win32-arm64",),
     "win32-x64": ("smoke-win32-x64",),
 }
 # The per-arch groups whose smoke installs the signed MSIX.
 SIGNED_WINDOWS_GROUPS = frozenset({"win32-arm64", "win32-x64"})
+# Stable splits the Windows groups across calls. Its bundle call runs both MSIX smokes from the
+# staged handoffs so assembly does not wait for them after each build.
+BUNDLE_WINDOWS_SMOKES = ("smoke-win32-arm64", "smoke-win32-x64")
 
 
 def parse_jobs(raw: str | None) -> dict[str, bool]:
@@ -66,13 +67,15 @@ def selects_all(raw: str | None) -> bool:
 
 
 def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,
-               skip_signed: bool = False) -> list[str]:
+               skip_signed: bool = False, windows_smokes_with_bundle: bool = False) -> list[str]:
     """Jobs the stable phase result judges: an unselected group never fails it.
 
     B4 moved candidate-manifest into stable-release.yml, so the desktop
     workflow no longer owns it and the phase result never names it. A claim
     that skipped tests runs no smoke, so the smokes are not judged. A claim without the signed
     Windows packages smokes none of them (the Store bundle is not install-smoked).
+    With ``windows_smokes_with_bundle`` the MSIX smokes belong to the win32-bundle group, not
+    to the per-arch build groups.
     """
     required = ["validate"]
     if phase == "publish":
@@ -80,11 +83,17 @@ def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = Fals
         return required + ["stable-publish"]
     if phase != "candidate":
         raise ValueError(f"Unknown release phase: {phase}")
+    smokes: dict[str, tuple[str, ...]] = dict(GROUP_SMOKES)
+    if windows_smokes_with_bundle:
+        for group in SIGNED_WINDOWS_GROUPS:
+            del smokes[group]
+        smokes["win32-bundle"] = BUNDLE_WINDOWS_SMOKES
     for group, jobs in GROUP_JOBS.items():
         if selected.get(group):
             required.extend(jobs)
-            if not skip_tests and not (skip_signed and group in SIGNED_WINDOWS_GROUPS):
-                required.extend(GROUP_SMOKES.get(group, ()))
+            windows = group in SIGNED_WINDOWS_GROUPS or group == "win32-bundle"
+            if not skip_tests and not (skip_signed and windows):
+                required.extend(smokes.get(group, ()))
     return required
 
 

@@ -6,6 +6,7 @@ import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
+import { $inputSelection } from '../app/inputSelectionStore.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
@@ -19,7 +20,7 @@ import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
-  inputVisualHeight,
+  composerViewport,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -32,13 +33,16 @@ import { LiveAgentsPanel } from './agentsPanel.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { HalfBlockImage, KittyImage } from './cellImage.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { GoalBar } from './goalBar.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
+import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
-import { PetKitty, PetSprite } from './petSprite.js'
+import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
+import { RewindFocusScroller, useRewindFocusIndex } from './rewindFocus.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -115,8 +119,8 @@ export const PetPane = memo(function PetPane() {
       position="absolute"
       right={PET_RIGHT}
     >
-      {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
-      {!kitty && grid ? <PetSprite grid={grid} /> : null}
+      {kitty ? <KittyImage color={kitty.color} placeholder={kitty.placeholder} /> : null}
+      {!kitty && grid ? <HalfBlockImage grid={grid} /> : null}
     </NoSelect>
   )
 })
@@ -154,6 +158,7 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { nativeMode: boolean }) {
   const ui = useStore($uiState)
+  const T = useT()
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
 
@@ -190,6 +195,8 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
+  const rewindFocusIdx = useRewindFocusIndex(transcript.historyItems)
+
   const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
     if (e.cellIsBlank) {
       actions.clearSelection()
@@ -207,6 +214,8 @@ const TranscriptPane = memo(function TranscriptPane({
               <Text color={ui.theme.color.border}>───</Text>
             </Box>
           )}
+
+          {row.index === rewindFocusIdx && <Text color={ui.theme.color.accent}>{T.prompt.rewind.marker}</Text>}
 
           {row.msg.kind === 'intro' ? (
             nativeMode ? null : (
@@ -297,6 +306,14 @@ const TranscriptPane = memo(function TranscriptPane({
           scrollRef={transcript.scrollRef}
         />
       )}
+
+      {!nativeMode && (
+        <RewindFocusScroller
+          messages={transcript.historyItems}
+          offsets={transcript.virtualHistory.offsets}
+          scrollRef={transcript.scrollRef}
+        />
+      )}
     </>
   )
 })
@@ -328,7 +345,16 @@ const ComposerPane = memo(function ComposerPane({
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
-  const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  // A paste expanded for editing can be taller than the screen: show a window
+  // of rows that follows the cursor instead of pushing it off the bottom.
+  const inputSel = useStore($inputSelection)
+
+  const {
+    height: inputHeight,
+    rows: inputRows,
+    scroll: inputScroll
+  } = composerViewport(composer.input, inputSel, inputColumns, composer.pasteHint === 'collapse', composer.pagerPageSize)
+
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -414,6 +440,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
+      <LoopBar cols={Math.max(1, composer.cols - 2)} />
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
       <StatusRulePane at="top" composer={composer} nativeMode={nativeMode} status={status} />
       <AmbientDock placement="dock-top" />
@@ -460,7 +487,8 @@ const ComposerPane = memo(function ComposerPane({
                 )}
               </Box>
 
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
+              <Box flexGrow={0} flexShrink={0} height={inputRows} overflow="hidden" width={inputColumns}>
+                <Box flexShrink={0} height={inputHeight} marginTop={-inputScroll} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   accentColor={ui.theme.color.accent}
@@ -481,12 +509,15 @@ const ComposerPane = memo(function ComposerPane({
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
+                </Box>
               </Box>
 
               <Box position="absolute" right={0}>
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
+
+            <PasteHint hint={composer.pasteHint} indent={promptWidth} t={ui.theme} />
           </>
         )}
       </Box>
@@ -625,6 +656,7 @@ export const AppLayout = memo(function AppLayout({
               <PromptZone
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
+                onApprovalTell={actions.answerApprovalTell}
                 onClarifyCancel={actions.cancelClarify}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}

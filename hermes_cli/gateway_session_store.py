@@ -19,10 +19,11 @@ import argparse
 import logging
 import os
 import re
+import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ _READS = frozenset({
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({
@@ -41,7 +43,7 @@ _GATEWAY_OWNED = frozenset({
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
 # Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
-_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
+_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
@@ -60,14 +62,23 @@ class GatewaySessionStore:
     """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
     a gateway hang-up stays truthy, and the next call redials."""
 
+    current: dict | None = None  # the opened session's snapshot; never ``__getattr__``'s refusal
+
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self._create_parameters = None
 
     def __bool__(self):
         return not self.connection.final
+
+    def close_reader(self):
+        """Release this viewer's SQLite handles before offline maintenance; keep its RPC store."""
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -116,43 +127,67 @@ class GatewaySessionStore:
         self.connection.state(sid).adopt_snapshot(snapshot)
         return sid
 
-    def attach(self, session_id):
-        """``session.resume`` once per session id this viewer uses (idempotent)."""
+    def attach(self, session_id, *, typed=False):
+        """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
+        key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is. ``typed``
+        (only :meth:`open_session`'s startup resume, where the user typed ``--api-key`` for that session)
+        refuses it instead, as the thin client does."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.call("session.resume", session_id=session_id)
+        snapshot = self.connection.resume(self.call, session_id, typed=typed)
         self._adopt(snapshot)
         return snapshot
 
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
+        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
-                return self._adopt(self.attach(cli.session_id))
+                snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
-                if str(exc) in {"not_found", "permission_denied"}:
+                if str(exc) in RESUME_REFUSALS:
                     return None
                 raise
+            # The CLI sends a coding-posture toolset pick and an env-folded ignore_rules too; only a typed
+            # -t / --ignore-rules is checked.
+            _check_resume_launch({**(launch or {}), "toolsets": getattr(cli, "_typed_toolsets", None),
+                                  "ignore_rules": getattr(cli, "_explicit_ignore_rules", None) or None}, snapshot)
+            return self._adopt(snapshot)
         return self.create(launch)
 
     def create(self, launch=None, title=None, *, record_cwd=True):
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
         title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
-        from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
+        from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
-        params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+        params["cwd"] = _launch_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
-        params["source"] = session_source_for("cli")
+        params["source"] = create_surface(session_source_for("cli"))
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
         # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
         local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
         return self._adopt(snapshot)
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
+        from hermes_cli.gateway_chat import client_env_policy
+        if self._create_parameters is None:
+            described = self.call("runtime.describe")
+            contract = described.get("session_create") if isinstance(described, dict) else None
+            self._create_parameters = list((contract or {}).get("parameters") or [])
+        return client_env_policy(self._create_parameters)
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
@@ -169,8 +204,8 @@ class GatewaySessionStore:
         self._adopt(self.attach(child))
         return child
 
-    def _mutate(self, session_id, operation, payload):
-        snapshot = self.call("session.resume", session_id=session_id)
+    def _mutate(self, session_id, operation, payload, snapshot=None):
+        snapshot = snapshot or self.call("session.resume", session_id=session_id)
         fence = {}
         if operation in _GENERATION_FENCED:
             fence["expected_generation"] = snapshot["execution_generation"]
@@ -201,7 +236,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -254,7 +289,23 @@ class GatewaySessionStore:
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        self._mutate(session_id, "delete", {})
+        snapshot = self.call("session.resume", session_id=session_id)
+        # The owner answers and subscribes under the id it resolved the read to (a compression
+        # segment maps to its logical owner), and reuses a subscription this viewer already holds.
+        resolved = snapshot.get("session_id") or session_id
+        state = self.connection.states.get(resolved)
+        held = state is not None and state.subscription_id is not None
+        try:
+            self._mutate(session_id, "delete", {}, snapshot)
+        except GatewayClientError:
+            # Hand back only the attachment the read made, with a plain detach: an end_reason would
+            # run the owner's viewer close (fencing the session's delegations, ending it at idle).
+            if not held and snapshot.get("subscription_id"):
+                try:
+                    self.call("session.detach", session_id=resolved, subscription_id=snapshot["subscription_id"])
+                except GatewayClientError as exc:
+                    logger.debug("session.detach after a refused delete failed: %s", exc)
+            raise
         self._leave(session_id)
         return True
 
@@ -268,6 +319,8 @@ class GatewaySessionStore:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
                 self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
             except GatewayClientError as exc:
                 logger.debug("redial for session.detach failed: %s", exc)
                 reachable = False
@@ -331,46 +384,82 @@ class GatewaySessionStore:
             "cwd": info.get("cwd"),
             # Main's startup lines under the banner, computed in the gateway (``source: cli`` only).
             "tool_availability_warnings": info.get("tool_availability_warnings"),
-            "browser_backend_notice": info.get("browser_backend_notice"),
         }
-
-
-# Interactive surfaces whose gateway rows are labelled ``local`` (``created_source`` keeps the surface;
-# gateway/session_a2a.storage_source). Producer labels (oneshot, tool, kanban, ...) are stored as is.
-_LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
 
 
 class SurfaceLabelReader:
     """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
     also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made."""
+    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made. The
+    surface predicate runs in SQL, before LIMIT/OFFSET.
+    """
 
     def __init__(self, db):
         self._wrapped = db
+        self._has_column = False
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
-    def _labelled(self, method, requested, limit, offset, call):
+    def _has_created_source_column(self) -> bool:
+        """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
+        cached: a lock or I/O error is not proof of absence, and another connection may add it."""
+        if not self._has_column:
+            rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
+            self._has_column = any(row[1] == "created_source" for row in rows)
+        return self._has_column
+
+    def _expand(self, requested):
+        """``(live source labels, created_source labels)`` or None for a raw source filter.
+
+        Groups come from session_policy.SURFACES and STORED_AS_LOCAL: gui and desktop are one
+        conversation (the in-process agent is desktop, the managed worker creates with gui), acp
+        is stored local too, and tool/oneshot are not cli aliases. Live labels include the other
+        name of a gui/desktop pair, so a row that has not been peer-refreshed (``source='gui'``)
+        still matches ``--source desktop``.
+        """
+        from gateway.session_policy import SURFACE_GROUPS
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
-        surfaces = wanted & _LOCAL_LABELLED
-        if not surfaces:
-            return call(requested, limit, offset)
-        # Over-fetch, then keep only the local rows those surfaces created (ordering is the reader's own).
-        rows = call(sorted(wanted | {"local"}), (limit + offset) * 3 + 50, 0)
-        kept = [row for row in rows if row.get("source") != "local" or row.get("created_source") in surfaces]
-        return kept[offset:offset + limit]
+        created = set()
+        live = set(wanted)
+        for name, group in SURFACE_GROUPS.items():
+            if name in wanted:
+                live |= group
+                created |= group
+        if not created or not self._has_created_source_column():
+            return None
+        return sorted(live | {"local"}), sorted(created)
+
+    def _labelled(self, requested, limit, offset, call):
+        expanded = self._expand(requested)
+        # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
+        # swallows that into an empty page.
+        if expanded is None:
+            return call(requested, limit, offset, None)
+        live, surfaces = expanded
+        return call(live, limit, offset, surfaces)
 
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
-        return self._labelled("search_sessions", source, limit, offset,
-                              lambda src, lim, off: self._wrapped.search_sessions(source=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            source, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.search_sessions(
+                source=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
         requested = sources if sources else ([source] if source else None)
         if not requested:
             return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
-        return self._labelled("list_sessions_rich", requested, limit, offset,
-                              lambda src, lim, off: self._wrapped.list_sessions_rich(sources=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            requested, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.list_sessions_rich(
+                sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
+
+    def session_count(self, source=None, sources=None, **kw):
+        expanded = self._expand(sources or source)
+        if expanded is None:
+            return self._wrapped.session_count(source=source, sources=sources, **kw)
+        live, surfaces = expanded
+        return self._wrapped.session_count(sources=live, local_created_sources=surfaces, **kw)
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
@@ -392,12 +481,71 @@ def _creation_policy(launch):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
     policy = _requested_policy(argparse.Namespace(**fields, source=None))
     policy.pop("source", None)
-    if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
-        policy["run_budget"] = float(launch["run_budget"])
-    if launch.get("verbose"):  # main's `-v` (the thin client refuses it)
-        policy["verbose"] = True
+    policy.update(_classic_only_policy(launch))
     policy.update(env_launch_flags())
     return policy
+
+
+def _launch_cwd():
+    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. TERMINAL_CWD is the
+    folder this CLI has selected (``-w``, ``/worktree new`` and ``/resume`` all move it). A local backend
+    sends it as is, as on main. A docker/ssh one sends it when it is a host directory or the recorded
+    ``-w`` tree (a vanished tree is then refused as on main, not swapped for the checkout); otherwise
+    it is a path inside the sandbox, so the launch dir is sent and the backend keeps its own cwd
+    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    terminal_cwd = os.getenv("TERMINAL_CWD")
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
+    recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
+    if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
+        return os.path.realpath(terminal_cwd)
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    return os.path.realpath(terminal_cwd if terminal_cwd and (local or os.path.isdir(terminal_cwd)) else os.getcwd())
+
+
+def _classic_only_policy(launch):
+    """Main's `--run-budget` and `-v`, which the thin client refuses."""
+    policy = {}
+    if launch.get("run_budget") is not None:
+        policy["run_budget"] = float(launch["run_budget"])
+    if launch.get("verbose"):
+        policy["verbose"] = True
+    return policy
+
+
+# Flags a resume may only repeat (``toolsets`` arrives here only from an explicit ``-t``).
+_RESUME_CHECKED = _LAUNCH_POLICY
+
+
+def _check_resume_launch(launch, snapshot):
+    """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
+    client checks them: the same flags again are fine, a different value is refused, never dropped."""
+    from hermes_cli.gateway_chat import check_resume_policy, resume_policy_error
+    fields = {key: launch.get(key) for key in _RESUME_CHECKED}
+    if isinstance(fields.get("toolsets"), (list, tuple)):
+        fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
+    check_resume_policy(argparse.Namespace(**fields), snapshot)
+    frozen = ((snapshot.get("info") or {}).get("launch_request") or {})
+    differs = [key for key, value in _classic_only_policy(launch).items() if frozen.get(key) != value]
+    if differs:
+        raise resume_policy_error(differs)
+
+
+def move_cli_workspace(cli, wt_info):
+    """``/worktree new``: the session's tools run in the gateway under the cwd frozen in its policy, so
+    move that first (``session.mutate workspace``, Desktop's Move to project; a refusal raises before
+    anything moved). The moved session resumes in the tree, so it is recorded as a ``--tui -w`` tree is:
+    quit removes it when clean and a resume recreates it (N8). Then this process's cwd and TERMINAL_CWD
+    follow, so a later /new creates its session from the tree; a chdir OSError leaves both where they
+    were (the gateway session has moved by then)."""
+    from hermes_cli.gateway_automation import gateway_connection
+    cwd = wt_info["path"]
+    if gateway_connection(cli) is not None:
+        cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
+        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        record_tui_worktree(wt_info)
+    os.chdir(cwd)
+    os.environ["TERMINAL_CWD"] = cwd
 
 
 def session_store():
@@ -411,11 +559,13 @@ def create_titled_session(title):
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
     params = _creation_policy({})
-    params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+    params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
-        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        store = session_store()
+        params.update(store.client_env())
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

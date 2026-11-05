@@ -34,11 +34,7 @@ from tests.fakes.providers.gemini_native import (
     hermes_model,
 )
 
-KNOWN: dict[str, tuple[str, str]] = {
-    "prompt_blocked": (r"terminal Google response was re-sent \d+x",
-                       "#121317 promptFeedback.blockReason is retried 9x as an empty stream and reported as "
-                       "'temporarily unavailable'"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 NEVER = "GEMINI-MUST-NOT-BE-SHOWN"
 QUOTA = "Resource has been exhausted (e.g. check quota)."

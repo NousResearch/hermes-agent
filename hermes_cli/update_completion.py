@@ -91,6 +91,7 @@ def run_completion(request: dict) -> dict:
         # starts runs outside the job), so the lock is never free while it runs.
         proc = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # detached-spawn: ok — awaited; holds the checkout lock fd so an update finishes atomically even if this parent dies
             **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
                {"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}))
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -217,7 +218,12 @@ def _publish_gateway_success(request: dict) -> None:
     if not request.get("gateway_mode"):
         return
     try:
-        (Path(request["home"]) / ".update_exit_code").write_text("0", encoding="utf-8")
+        # Temp + rename (stdlib, like _write_json): the gateway watcher polls this file and reads
+        # an empty one as exit 1.
+        marker = Path(request["home"]) / ".update_exit_code"
+        temporary = marker.with_name(marker.name + ".tmp")
+        temporary.write_text("0", encoding="utf-8")
+        temporary.replace(marker)
     except OSError as exc:
         print(f"  ⚠ Could not publish the gateway's update status: {exc}")
 

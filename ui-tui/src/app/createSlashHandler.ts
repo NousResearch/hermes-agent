@@ -12,7 +12,12 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
-import { describeSlashExecError, isUnsupportedCommand, shouldFallbackToDispatch } from './userMessages.js'
+import {
+  describeSlashExecError,
+  isUnsupportedCommand,
+  RPC_UNKNOWN_METHOD,
+  shouldFallbackToDispatch
+} from './userMessages.js'
 
 /** Shared metrics count each user-typed command once, from the client: the gateway no longer
  *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
@@ -22,6 +27,32 @@ export function reportSlashCommand(gw: GatewayClient, name: string, sid: null | 
     gw.request('shared_metrics.slash_command', { command: name, ...(sid ? { session_id: sid } : {}) }).catch(
       () => undefined
     )
+  }
+}
+
+// Gateways that answered `command.observe` with unknown_method (older than this TUI): not asked again.
+const observeUnsupported = new WeakSet<object>()
+
+/** `SlashRunCtx.ran`: the shared gateway fires `pre_command` for the commands it runs (`slash.exec`,
+ *  `command.dispatch`). A recognized command Ink runs itself is reported the way the classic CLI
+ *  reports its own (`command.observe`, plain data, not awaited) once the handler says it ran: a read
+ *  when it answers, a gateway mutation once accepted. A refusal never calls it, and neither does a
+ *  forward, so no command fires twice. At most once per typed command; the gateway refuses a name
+ *  it does not recognize. */
+function observer(gw: GatewayClient, name: string, arg: string, sid: null | string): () => void {
+  let sent = false
+
+  return () => {
+    if (sent || !gw?.isCanonical || !sid || observeUnsupported.has(gw)) {
+      return
+    }
+
+    sent = true
+    gw.request('command.observe', { arg, name, session_id: sid }).catch((e: unknown) => {
+      if ((e as { code?: number })?.code === RPC_UNKNOWN_METHOD || /unknown_method/.test(rpcErrorMessage(e))) {
+        observeUnsupported.add(gw)
+      }
+    })
   }
 }
 
@@ -69,7 +100,8 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
     if (found) {
       countTyped()
-      found.run(parsed.arg, runCtx, cmd)
+      // A programmatic call (a picker's re-issue, an alias re-dispatch) is not the user's command.
+      found.run(parsed.arg, typed ? { ...runCtx, ran: observer(gw, parsed.name, parsed.arg, sid) } : runCtx, cmd)
 
       return true
     }

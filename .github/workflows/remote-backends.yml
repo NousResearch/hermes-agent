@@ -31,16 +31,16 @@ concurrency:
 env:
   # One small image for both the sshd host and the docker backend's sandbox, pinned
   # by digest so a tag move cannot change what the lane tests.
-  HERMES_TEST_IMAGE_REF: debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+  HERMES_TEST_IMAGE_REF: debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 jobs:
   real-backends:
     name: SSH + Docker backends (real sshd, real daemon)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

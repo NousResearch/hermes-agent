@@ -30,10 +30,10 @@ concurrency:
 jobs:
   core:
     name: Desktop core E2E (Linux)
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -53,20 +53,34 @@ jobs:
           extras: '[]'
           test-environment: 'true'
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall downloads
-      # the binary we launch.
+      # Native addons still need lifecycle scripts. Electron 42 requires
+      # explicit binary preparation before the native fixtures launch.
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+
+      - name: Prepare locked Electron runtime
+        run: node scripts/build/electron-runtime.mjs --source .
 
       - name: Build the desktop app
         working-directory: apps/desktop
         # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
         run: npm run build
 
+      # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
+      # Webapp renderer and a Chromium Playwright can launch.
+      - name: Build the Webapp renderer
+        working-directory: apps/desktop
+        run: npm run build:webapp
+
+      - uses: ./.github/actions/retry
+        with:
+          working-directory: apps/desktop
+          command: npx playwright install --with-deps chromium
+
       # Package the Linux app the way users get it (electron-builder --dir; no
-      # installer formats, no publish). Reuses the npm-installed Electron dist,
-      # so no download. packaged-smoke.spec.ts asserts the asarUnpack contract
+      # installer formats, no publish). The packaging preparer acquires its
+      # pinned archive separately. packaged-smoke.spec.ts asserts the asarUnpack contract
       # on this output (#121097) and boots the packaged binary to a first chat.
       - name: Package the desktop app (electron-builder --dir)
         working-directory: apps/desktop

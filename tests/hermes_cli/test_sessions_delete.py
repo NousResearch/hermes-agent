@@ -69,8 +69,8 @@ def test_sessions_delete_with_unfinished_turn_points_to_discard(tmp_path, monkey
     reopened.close()
 
 
-def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
-    """Run `hermes sessions prune <argv_tail>` against a FakeDB, capturing
+def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0, sub="prune"):
+    """Run `hermes sessions <sub> <argv_tail>` (prune/archive) against a FakeDB, capturing
     the filter kwargs passed to list_prune_candidates. Auto-confirms."""
     import hermes_cli.main as main_mod
     import hermes_state
@@ -116,12 +116,15 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
         def prune_sessions(self, **kwargs):
             return len(rows)
 
+        def archive_sessions(self, **kwargs):
+            return len(rows)
+
         def close(self):
             pass
 
     monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
-        sys, "argv", ["hermes", "sessions", "prune", *argv_tail]
+        sys, "argv", ["hermes", "sessions", sub, *argv_tail]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     main_mod.main()
@@ -136,3 +139,21 @@ def test_sessions_prune_bare_keeps_90_day_default(monkeypatch, capsys):
     assert filters["last_active_before"] == pytest.approx(
         _time.time() - 90 * 86400, abs=60
     )
+
+
+def test_archive_include_open_flag_reaches_selection(monkeypatch, capsys):
+    """`sessions archive --include-open` lifts the ended-only selector: desktop sessions never set
+    ended_at, so without the flag they can never match any filter (#139597)."""
+    filters, _out = _run_prune(
+        monkeypatch, capsys, ["--title", "dupes", "--include-open", "--yes"], sub="archive")
+    assert filters["include_open"] is True
+
+
+def test_archive_without_flag_reports_open_skips(monkeypatch, capsys):
+    """Without --include-open, matches that are still open are skipped silently no longer: the
+    CLI says how many and names the opt-in flag."""
+    filters, out = _run_prune(
+        monkeypatch, capsys, ["--title", "dupes", "--yes"], skipped_open=2, sub="archive")
+    assert "include_open" not in filters
+    assert "2 matching sessions still open" in out
+    assert "--include-open" in out

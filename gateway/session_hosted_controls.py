@@ -2,6 +2,8 @@
 from gateway import hosted_room_driver as tasks
 from hermes_state_runtime import RuntimeStoreError
 from tui_gateway.hosted_room_driver import HostedRoomBinding
+from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
+from tui_gateway.hosted_room_service import attempt_action, task_member_id
 
 
 class HostedControls:
@@ -14,7 +16,7 @@ class HostedControls:
         task = next((t for t in tasks.list_tasks(self.db_path, room_id=room_id)
                      if t['identity'].task_id == task_id), None)
         if (task is None or task['execution_generation'] != execution_generation
-                or (task['payload'].get('target_member_id') or task['payload'].get('target_profile')) != member_id):
+                or task_member_id(task) != member_id):
             raise RuntimeStoreError('stale_generation')
         if not any(m.get('member_id') == member_id
                    and m.get('profile') == task['payload']['target_profile']
@@ -46,6 +48,10 @@ class HostedControls:
             return result
 
     def retry_room_task(self, room_id, *, member_id, task_id, execution_generation):
+        if isinstance(task_id, str) and task_id.startswith(RETRY_TASK_PREFIX):
+            # A stalled room preparation, not an attempt: the shared service retries it.
+            return super().retry_room_task(
+                room_id, task_id=task_id, member_id=member_id, execution_generation=execution_generation)
         with self._policy_lock:
             task, binding = self._control_task(room_id, member_id, task_id, execution_generation)
             # Unknown is not non-admission. Never advance its hosted generation
@@ -68,14 +74,13 @@ class HostedControls:
         result = super().status(room_id)
         if room_id is None:
             return result
-        actions = [a for a in result['pending_actions'] if a['kind'] != 'retry']
+        actions = [a for a in result['pending_actions']
+                   if a['kind'] != 'retry' or str(a.get('task_id', '')).startswith(RETRY_TASK_PREFIX)]
         for task in tasks.list_tasks(self.db_path, room_id=room_id):
             if task['status'] not in {'indeterminate', 'deferred'}:
                 continue
-            member = task['payload'].get('target_member_id') or task['payload']['target_profile']
-            if self._member_is_peer(room_id, member):
+            if self._member_is_peer(room_id, task_member_id(task)):
                 continue
-            actions.append({'kind': 'discard' if task['status'] == 'indeterminate' else 'retry',
-                            'member_id': member, 'task_id': task['identity'].task_id,
-                            'execution_generation': task['execution_generation']})
+            actions.append(attempt_action(
+                'discard' if task['status'] == 'indeterminate' else 'retry', task))
         return {**result, 'pending_actions': actions}

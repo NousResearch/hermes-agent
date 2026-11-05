@@ -562,6 +562,7 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
             _link_or_copy(s, dst / name)
 
 
+@pytest.mark.allow_network  # the old updater's requirements export provisions the PM toolchain
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
     modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.
@@ -577,14 +578,18 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     # The old updater starts under its installed dependencies, then switches code in place.
     # The current test environment deliberately lacks PyYAML; provision the legacy direct
     # requirement in an isolated PM environment rather than mutating the test interpreter.
+    # Core's set comes from uv.lock, overrides included: re-resolving the bare dependency
+    # list cannot satisfy core's [tool.uv] override-dependencies (Pillow over browser-harness).
     from packaging.requirements import Requirement
-    from pm import ensure_environment
+    from pm import build_requirements_environment, export_requirements
 
     legacy_yaml = [r for r in old_deps if Requirement(r).name.lower() == "pyyaml"]
     assert len(legacy_yaml) == 1, f"{tag} no longer declares exactly one PyYAML requirement"
-    legacy_python = ensure_environment(
-        "pre-handoff-updater", [*PYPROJECT["project"]["dependencies"], *legacy_yaml],
-        root=tmp_path / "legacy-deps", explicit=True,
+    exported = tmp_path / "core-requirements.txt"
+    export_requirements(WORKTREE, exported, explicit=True)
+    legacy_python = build_requirements_environment(
+        [*exported.read_text(encoding="utf-8").splitlines(), *legacy_yaml],
+        out=tmp_path / "legacy-deps", lock=WORKTREE / "uv.lock", explicit=True,
     )
     pkg_tops = sorted({p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]})
     old_entries = [n for n in _git("ls-tree", "--name-only", tag).stdout.split()

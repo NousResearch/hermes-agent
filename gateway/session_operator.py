@@ -5,12 +5,25 @@ It never claims unowned legacy history: that still requires the native migration
 path. Only SessionAuthority.submit writes this envelope after authorization;
 public submission parameters cannot supply it.
 """
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError
+
+# Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
+LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
+                                'cli_turn_v1', 'kanban_card_v1'})
+
+
+def is_viewer_input(row):
+    """A row a session viewer submitted through ``session.submit`` (a client's own prompt), not a producer
+    admission: ``local_automation_v1`` (plugin injection, delegation completions, process and watch notices,
+    /loop, heartbeat), a hosted-room task (``hosted:`` request id) or any other envelope."""
+    return (not str(row['request_id']).startswith('hosted:')
+            and {'text'} <= set(row['payload']) <= LOCAL_INPUT_FIELDS | {'local_operator_v1'})
 
 
 def check_local_input(authority, ref, row, *, source=None):
     payload = row['payload']
-    allowed = {'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1', 'cli_turn_v1'}
+    allowed = set(LOCAL_INPUT_FIELDS)
     if 'local_operator_v1' in payload:
         allowed.add('local_operator_v1')
         if payload['local_operator_v1'] != {
@@ -19,7 +32,7 @@ def check_local_input(authority, ref, row, *, source=None):
             raise RuntimeStoreError('permission_denied')
     else:
         source = source or authority.sessions[ref.session_id].source
-        if row['principal_id'] != source.user_id:
+        if not same_owner(source.user_id, row['principal_id']):  # the rule submit() stamped by
             raise RuntimeStoreError('permission_denied')
     if not {'text'} <= set(payload) <= allowed:
         raise RuntimeStoreError('permission_denied')

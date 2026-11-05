@@ -56,3 +56,11 @@ LONG_OLD = "".join(f"{n}|{line}\n" for n, line in enumerate(LONG.splitlines(), 4
 def test_gutter_paste_is_stripped_before_similarity_matching(content, old, new, expected):
     result, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
     assert (err, count, result) == (None, 1, expected)
+
+
+def test_pasted_blank_gutter_lines_are_not_a_whitespace_anchor():
+    # `2|\n3|` strips to "\n", which would match every line break.
+    content = "import os\n\n\ndef a():\n    return 1\n"
+    result, count, _strategy, err = fuzzy_find_and_replace(content, "2|\n3|", "2|", replace_all=True)
+    assert (count, result) == (0, content) and err
+

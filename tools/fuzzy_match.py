@@ -498,7 +498,7 @@ def _gutter_stripped_old(content: str, old_string: str) -> Optional[str]:
     """old_string minus a read_file gutter; None when it has none or the file itself has
     gutter-shaped lines (the pipes may be real content there)."""
     stripped_old = _strip_line_number_gutter(old_string)
-    if stripped_old is None or _GUTTER_LINE.search(content):
+    if stripped_old is None or not stripped_old.strip() or _GUTTER_LINE.search(content):
         return None
     return stripped_old
 

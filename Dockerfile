@@ -528,7 +528,16 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # shim wins PATH resolution. The shim's last act is to exec the venv
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
-ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+#
+# Only root-owned directories go here. This PATH is also the PATH of
+# PID 1, of every with-contenv script and of root `docker exec`, so a
+# directory on the hermes-writable /opt/data volume would let the
+# hermes user choose what those root contexts run. The hermes user's
+# own ~/.local/bin (profile wrappers, pip --user, uv tool) is appended,
+# after the system dirs, only for processes already running as hermes:
+# login shells (profile.d below), the dropped CMD, the dashboard and the
+# supervised gateways.
+ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:${PATH}"
 # Login shells re-read /etc/profile, which resets PATH; this re-adds the dirs above.
 COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # PM's atomic writer creates private facts for source installs. In the

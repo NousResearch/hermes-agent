@@ -1174,6 +1174,9 @@ def build_turn_context(
         agent, user_message, persist_user_message, persist_user_timestamp,
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
+    if (_cp := getattr(agent, "_checkpoint_mgr", None)) is not None and _cp.enabled:
+        # Keyed by the stored user row's timestamp: /undo of that row reverts this turn's file writes.
+        _cp.begin_turn(user_msg["timestamp"], agent.session_id)
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)

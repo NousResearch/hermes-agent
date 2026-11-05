@@ -157,6 +157,8 @@ DEFAULT_EXCLUDES = [
     "*.log",
 ]
 
+_EMPTY_TREE_PREFIX = "4b825dc642cb"
+
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
@@ -849,6 +851,10 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: set[str] = set()
+        # The user turn now running ({"turn_ts", "session"}); tags ledger writes and turn marks so
+        # /undo can put back exactly what that turn wrote (tools/checkpoint_turns.py).
+        self._turn: Optional[dict] = None
+        self._marked_dirs: set[str] = set()
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -857,6 +863,12 @@ class CheckpointManager:
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
+
+    def begin_turn(self, turn_ts: float, session_id: Optional[str]) -> None:
+        """Start a user turn: ``turn_ts`` is its user message's timestamp (the value its transcript
+        row stores), so /undo of that message finds the files this turn wrote."""
+        self._turn = {"turn_ts": float(turn_ts), "session": session_id or ""}
+        self._marked_dirs.clear()
 
     def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
         """Explain why host checkpoints are off limits for a container-backed session.
@@ -899,7 +911,15 @@ class CheckpointManager:
                 store = _store_path()
                 dir_hash = self._ledger_key(str(path))
                 ledger = _load_ledger(store, dir_hash)
-                ledger[str(path)] = {"sha256": digest, "ts": time.time()}
+                entry = {"sha256": digest, "ts": time.time()}
+                if self._turn is not None:  # the newest writing turn: /undo of it or any earlier one reverts this
+                    entry.update(self._turn)
+                    # Earlier Hermes writes, so an /undo that lands on one keeps the file revertible.
+                    previous = ledger.get(str(path))
+                    if isinstance(previous, dict) and previous.get("turn_ts") is not None:
+                        older = [*previous.get("history", []), {k: previous.get(k) for k in ("sha256", "turn_ts", "session")}]
+                        entry["history"] = older[-10:]
+                ledger[str(path)] = entry
                 _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -994,8 +1014,9 @@ class CheckpointManager:
         try:
             from tools.checkpoint_pruning import store_lock
 
+            mark = self._turn if abs_dir not in self._marked_dirs else None
             with store_lock(_resolve_checkpoint_base()):
-                return self._take(abs_dir, reason)
+                return self._take(abs_dir, reason, mark=mark)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1471,8 +1492,9 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
-        """Take a snapshot.  Returns True on success."""
+    def _take(self, working_dir: str, reason: str, *, prune: bool = True, mark: Optional[dict] = None) -> bool:
+        """Take a snapshot.  Returns True on success. ``mark``: the user turn whose pre-state this is;
+        recorded whenever the tree is known (a new snapshot, an unchanged tip, an empty tree)."""
         store = _store_path()
 
         err = _init_store(store, working_dir)
@@ -1547,6 +1569,7 @@ class CheckpointManager:
             )
             if ok_diff:
                 logger.debug("Checkpoint skipped: no changes in %s", working_dir)
+                self._mark_turn(store, working_dir, mark, ref_commit + "^{tree}")
                 return False
         else:
             # No ref yet — skip only if the index is empty.
@@ -1557,6 +1580,8 @@ class CheckpointManager:
             )
             if ok_ls and not ls_out.strip():
                 logger.debug("Checkpoint skipped: empty tree in %s", working_dir)
+                from tools.checkpoint_turns import EMPTY_TREE
+                self._mark_turn(store, working_dir, mark, EMPTY_TREE)
                 return False
 
         # Write tree from per-project index.
@@ -1606,12 +1631,23 @@ class CheckpointManager:
             return False
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
+        self._mark_turn(store, working_dir, mark, tree_sha)
 
         # Count and size budgets share one failure boundary.
         if prune:
             self._prune(store, working_dir, ref)
 
         return True
+
+    def _mark_turn(self, store: Path, working_dir: str, mark: Optional[dict], tree: str) -> None:
+        if mark is None:
+            return
+        if not tree.startswith(_EMPTY_TREE_PREFIX):
+            tree = _git_out(["rev-parse", "--verify", tree], store, working_dir) or ""
+        if tree:
+            from tools.checkpoint_turns import record_turn_mark
+            record_turn_mark(store, working_dir, tree, mark)
+            self._marked_dirs.add(str(_normalize_path(working_dir)))
 
     def _exceeds_size_cap(self, path: Path) -> bool:
         """Whether *path* is larger than ``max_file_size_mb``.

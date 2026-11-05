@@ -40,11 +40,18 @@ function nextHeadingId(text: string, counts: Map<string, number>): string | null
     return null
   }
 
-  const seen = counts.get(base) ?? 0
+  let seen = counts.get(base) ?? 0
+  let id = seen === 0 ? base : `${base}-${seen}`
 
+  while (counts.has(id)) {
+    seen += 1
+    id = `${base}-${seen}`
+  }
+
+  counts.set(id, 0)
   counts.set(base, seen + 1)
 
-  return seen === 0 ? base : `${base}-${seen}`
+  return id
 }
 
 interface HastNode {

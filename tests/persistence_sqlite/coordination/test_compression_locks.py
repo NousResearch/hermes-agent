@@ -1,0 +1,205 @@
+"""Tests for the SQLite backend's compression-lock primitives
+(``SQLiteCoordinationRepository``).
+
+These cover the atomic per-session lock that prevents two compression
+paths from racing on the same ``session_id`` and producing orphan child
+sessions (Damien's "parent → two orphan children" repro shape, see
+``tests/agent/test_compression_concurrent_fork.py`` for the
+behavioural regression test).
+
+Focus here: the lock primitives themselves (acquire, release, TTL,
+diagnostic accessor) — not the wiring into compression.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from persistence.sqlite.conversation._store import core as store_core
+
+
+@pytest.fixture
+def db(backend, scope_a):
+    return backend.open(scope_a).coordination
+
+
+# ----------------------------------------------------------------------
+# Single-holder semantics
+# ----------------------------------------------------------------------
+
+
+def test_acquire_succeeds_when_unlocked(db) -> None:
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="holder1") is True
+    assert db.get_compression_lock_holder(session_id="sess1") == "holder1"
+
+
+def test_acquire_blocks_second_holder(db) -> None:
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="holder1") is True
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="holder2") is False
+    # First holder still owns it
+    assert db.get_compression_lock_holder(session_id="sess1") == "holder1"
+
+
+# ----------------------------------------------------------------------
+# Per-session isolation
+# ----------------------------------------------------------------------
+
+
+def test_locks_are_per_session(db) -> None:
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="holder1") is True
+    # Different session: independent lock
+    assert db.try_acquire_compression_lock(session_id="sess2", holder="holder2") is True
+    assert db.get_compression_lock_holder(session_id="sess1") == "holder1"
+    assert db.get_compression_lock_holder(session_id="sess2") == "holder2"
+
+
+# ----------------------------------------------------------------------
+# TTL / expiry recovery
+# ----------------------------------------------------------------------
+
+
+def test_expired_lock_is_reclaimable(db) -> None:
+    """A crashed compressor must not permanently block the session."""
+    # Acquire with a very short TTL
+    db.try_acquire_compression_lock(session_id="sess1", holder="crashed_holder", ttl_seconds=0.05)
+    time.sleep(0.1)  # health: allow HX013 -- the lock's TTL expiring on the wall clock is the reclaim under test
+    # Holder check honours expiry
+    assert db.get_compression_lock_holder(session_id="sess1") is None
+    # New holder can claim it
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="fresh_holder") is True
+    assert db.get_compression_lock_holder(session_id="sess1") == "fresh_holder"
+
+
+def test_non_expired_lock_is_held(db) -> None:
+    db.try_acquire_compression_lock(session_id="sess1", holder="holder1", ttl_seconds=60)
+    # Immediately after, still held
+    assert db.try_acquire_compression_lock(session_id="sess1", holder="holder2") is False
+
+
+def test_non_expired_lock_from_dead_pid_is_reclaimed(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No ``os.name`` pin: the probe below injects a fake ``psutil``, and
+    # ``_process_is_gone`` consults psutil *before* its POSIX/nt split — the
+    # nt early-return is unreachable here on any host, so faking the platform
+    # bought nothing.  The holder is stamped with this process's own PID
+    # namespace (same-namespace kernel proof is still proof; foreign and
+    # unstamped holders defer to TTL — see test_lease_pid_namespace.py).
+    from hermes_state_pidns import holder_namespace_token
+    dead_holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder=dead_holder, ttl_seconds=300
+    ) is True
+
+    probed: list[int] = []
+
+    def process_is_gone(pid: int) -> bool:
+        probed.append(pid)
+        return False
+
+    monkeypatch.setattr(
+        store_core, "psutil", SimpleNamespace(pid_exists=process_is_gone)
+    )
+
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder="pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+    assert probed == [424242]
+
+
+def test_probe_doubt_keeps_lease_until_ttl(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that errors out is doubt, not proof of death → TTL protects."""
+    # Stamped with this process's own namespace so the probe path is actually
+    # reached (unstamped holders are gated before the probe — see
+    # test_lease_pid_namespace.py).
+    from hermes_state_pidns import holder_namespace_token
+    holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=doubt"
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder=holder, ttl_seconds=300
+    ) is True
+
+    def probe_blows_up(pid: int) -> bool:
+        raise RuntimeError("transient probe failure")
+
+    monkeypatch.setattr(
+        store_core, "psutil", SimpleNamespace(pid_exists=probe_blows_up)
+    )
+
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder="pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+    assert db.get_compression_lock_holder(session_id="sess1") == holder
+
+
+def test_non_expired_lock_from_live_pid_is_not_reclaimed(db) -> None:
+    live_holder = f"pid={os.getpid()}:tid=1:agent=abc:nonce=live"
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder=live_holder, ttl_seconds=300
+    ) is True
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder="pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+
+
+def test_unstructured_holder_waits_for_ttl(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder="legacy_holder", ttl_seconds=300
+    ) is True
+    monkeypatch.setattr(
+        store_core,
+        "psutil",
+        SimpleNamespace(
+            pid_exists=lambda _pid: pytest.fail(
+                "unstructured holder must not probe a PID"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        store_core.os,
+        "kill",
+        lambda *_args: pytest.fail("unstructured holder must not probe a PID"),
+    )
+    assert db.try_acquire_compression_lock(
+        session_id="sess1", holder="pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+
+
+# ----------------------------------------------------------------------
+# Concurrency: real threads racing on the same session_id
+# ----------------------------------------------------------------------
+
+
+def test_concurrent_acquire_only_one_winner(db) -> None:
+    """Damien's race shape: N threads call acquire on the same session_id;
+    exactly one must win, the rest must be cleanly rejected."""
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+    lock = threading.Lock()
+
+    def try_acquire(idx: int) -> None:
+        holder = f"thread_{idx}"
+        barrier.wait()  # synchronize start
+        got = db.try_acquire_compression_lock(session_id="contended_session", holder=holder)
+        with lock:
+            results.append(got)
+
+    threads = [threading.Thread(target=try_acquire, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one thread acquired
+    assert sum(1 for r in results if r is True) == 1
+    assert sum(1 for r in results if r is False) == 7
+    # The single winner still owns it
+    assert db.get_compression_lock_holder(session_id="contended_session") is not None

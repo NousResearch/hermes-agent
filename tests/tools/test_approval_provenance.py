@@ -76,3 +76,21 @@ def test_approvals_off_keeps_the_bare_result_for_covered_commands(guard, monkeyp
         "approved": True, "message": None}
     assert guard("chmod 777 build-out", "local", approval_callback=_no_prompt) == {
         "approved": True, "message": None}
+
+
+def test_session_grant_left_by_a_withdrawn_always_answer_is_not_called_a_session_answer(monkeypatch):
+    from hermes_cli.config import get_config_path
+    from tools import terminal_tool
+
+    monkeypatch.setattr(approval_module, "_permanent_baseline_by_home", {})
+    config = get_config_path()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("command_allowlist: []\n", encoding="utf-8")
+    approval_module._persist_choice("prov-sess", "always", ["world/other-writable permissions"])
+    config.write_text("command_allowlist: []\n", encoding="utf-8")  # operator withdraws the 'always' entry
+
+    monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: _no_prompt)
+    verdict = terminal_tool._run_approval_guards("chmod 777 build-out", "local", {}, force=False)
+    assert verdict.note == (
+        "Command was flagged (world/other-writable permissions) and auto-approved by "
+        "an approval the user gave earlier in this session.")

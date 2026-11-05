@@ -1,7 +1,7 @@
 """Why a flagged command ran without a prompt.
 
 When a prior user decision (a ``command_allowlist`` entry, an 'always' approval, or an
-'approve for session' answer) covers every finding in a dangerous command, the guard still
+earlier approval in this session) covers every finding in a dangerous command, the guard still
 approves silently; these helpers attach that provenance to the guard result and turn it into
 the terminal tool's ``approval`` note, so the run is explained instead of looking like a bypass.
 Provenance never decides anything: callers build it only after the approval check passed.
@@ -30,7 +30,9 @@ def allowlisted_result(rule: str, description: str) -> dict:
 _SCOPE_PHRASES = {
     "allowlist": "the command_allowlist entry `{rule}` in config.yaml",
     "permanent": "an 'always' approval the user saved earlier",
-    "session": "an 'approve for session' answer earlier in this session",
+    # Both a 'session' and an 'always' answer session-approve their keys, so a session-only grant may
+    # be what is left of an 'always' answer whose command_allowlist entry the operator removed.
+    "session": "an approval the user gave earlier in this session",
 }
 
 

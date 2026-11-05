@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -23,6 +24,12 @@ def protected_home(tmp_path, monkeypatch):
     root.mkdir()
     (root / "file.txt").write_text("unchanged", encoding="utf-8")
     (root / "empty").mkdir()
+    # The shapes a default install puts in the home for the checkout's boot probes: a linked
+    # worktree's git dir and the payload manifest beside the tree.
+    (root / ".git" / "worktrees" / "suite").mkdir(parents=True)
+    (root / "manifest.json").write_text('{"repo": "hermes-agent"}', encoding="utf-8")
+    (root / "installs" / "0123456789abcdef").mkdir(parents=True)
+    (root / "installs" / "0123456789abcdef" / "facts.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [root])
     yield root
     # Restore access before tmp_path/pytest cleanup even when an assertion fails.
@@ -260,3 +267,45 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+def test_linked_worktree_git_dir_follows_the_pointer(tmp_path):
+    """A worktree's ``.git`` is a file naming the main repository's git dir, which a default
+    install keeps under the home; a plain checkout's ``.git`` sits inside the exempt tree."""
+    from tests.home_io_guard import _linked_worktree_git_dir
+
+    checkout = tmp_path / "worktrees" / "suite"
+    checkout.mkdir(parents=True)
+    main_git = tmp_path / "repo" / ".git" / "worktrees" / "suite"
+    main_git.mkdir(parents=True)
+    (checkout / ".git").write_text(f"gitdir: {main_git}\n", encoding="utf-8")
+    assert _linked_worktree_git_dir(checkout) == main_git.resolve()
+    (checkout / ".git").write_text("gitdir: ../../repo/.git/worktrees/suite\n", encoding="utf-8")
+    assert _linked_worktree_git_dir(checkout) == main_git.resolve()
+    (checkout / ".git").unlink()
+    (checkout / ".git").mkdir()
+    assert _linked_worktree_git_dir(checkout) is None
+
+
+def test_guard_lets_the_checkout_boot_probes_through(protected_home, monkeypatch):
+    """``hermes_bootstrap`` stats the checkout's own update markers on import and PM asks for the
+    payload manifest beside the tree. A default install keeps both inside the home; neither is
+    Hermes state, so a suite run from there must not trip — but changing them stays refused."""
+    from tests import home_io_guard
+
+    git_dir = protected_home / ".git" / "worktrees" / "suite"
+    manifest = protected_home / "manifest.json"
+    normalized = lambda path: os.path.normcase(os.path.abspath(path))
+    monkeypatch.setattr(home_io_guard, "_CHECKOUT_PROBE_TREES", (normalized(git_dir),))
+    monkeypatch.setattr(home_io_guard, "_CHECKOUT_PROBE_FILES", (normalized(manifest),))
+    marker = git_dir / "hermes-update-pull"
+    assert not marker.is_file()  # the interrupted-update fast path
+    with pytest.raises(FileNotFoundError):
+        marker.read_text(encoding="utf-8")
+    assert json.loads(manifest.read_text(encoding="utf-8"))["repo"] == "hermes-agent"
+    for change in (lambda: marker.write_text("claimed", encoding="utf-8"), manifest.unlink,
+                   lambda: (git_dir / "hermes-update-pull.claim").mkdir()):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            change()
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        (protected_home / "config.yaml").read_text(encoding="utf-8")

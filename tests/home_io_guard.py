@@ -50,6 +50,39 @@ _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
 
+def _linked_worktree_git_dir(checkout: Path) -> Path | None:
+    """The git dir a linked worktree's ``.git`` file points at, or ``None`` for a plain checkout.
+
+    ``git worktree add`` writes ``.git`` as a file naming ``<main>/.git/worktrees/<name>``, so a
+    worktree's git dir lives inside the main repository — under the real home for a default
+    install, outside the tree the checkout exemption covers.
+    """
+    dot_git = checkout / ".git"
+    if not dot_git.is_file():
+        return None  # plain checkout: its .git is inside the tree, exempt with it
+    try:
+        text = dot_git.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    target = Path(text[len("gitdir:"):].strip())
+    return (target if target.is_absolute() else checkout / target).resolve()
+
+
+_CHECKOUT_ROOT = Path(__file__).resolve().parent.parent
+# Boot probes ABOUT the checkout that runs the suite, which a default install keeps inside the
+# home: ``hermes_bootstrap`` reads its own git dir for the interrupted-update markers on import
+# (a worktree's git dir sits in the main repository's ``.git``), and PM asks for the sealed
+# payload's ``manifest.json`` beside the tree. Reading them is not Hermes state — the checkout
+# exemption above says the tree is not — but they are reads only: changing the tree a test runs
+# from stays refused.
+_CHECKOUT_PROBE_TREES = tuple(
+    _normcase(os.fspath(p)) for p in (_linked_worktree_git_dir(_CHECKOUT_ROOT),) if p is not None)
+_CHECKOUT_PROBE_FILES = (_normcase(os.path.abspath(_CHECKOUT_ROOT.parent / "manifest.json")),)
+
+
+
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
     if path == prefix:
@@ -62,6 +95,15 @@ def _contains(path: str, prefix: str) -> bool:
     if path == prefix:
         return True
     return prefix.startswith(path) if path == os.sep else prefix.startswith(path + os.sep)
+
+
+def _is_boot_probe(absolute: str) -> bool:
+    """A read or metadata probe the checkout's boot makes about itself — see _CHECKOUT_PROBE_*.
+
+    Reads only: ``hermes_bootstrap``/PM probe these on import, and a test changing the install it
+    runs from is a different bug.
+    """
+    return absolute in _CHECKOUT_PROBE_FILES or any(_within(absolute, tree) for tree in _CHECKOUT_PROBE_TREES)
 
 
 class HomeIOGuard:
@@ -99,21 +141,15 @@ class HomeIOGuard:
             if metadata and (absolute == "/proc" or absolute.startswith("/proc" + os.sep)):
                 return
             resolved = self._refuse_installed_app_change(value, absolute) if destructive else None
+            if not destructive and _is_boot_probe(absolute):
+                return
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
-            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
-            # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
-            # its ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH;
-            # probing there is command lookup, not reading Hermes state. CI has no such entries.
-            if metadata:
-                path = os.environ.get("PATH", "")
-                cwd = os.getcwd() if self._relative_path_entries(path) else None
-                entries = self._path_entries(path, cwd)
-                if os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries):
-                    return
+            if metadata and self._is_command_lookup(absolute):
+                return
             # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
             # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
             # realpath() walking up through its ancestors.
@@ -154,6 +190,18 @@ class HomeIOGuard:
                 pytest.fail(f"TEST BUG: changing the REAL installed Hermes desktop app: {value}\n"
                             "Stub hermes_cli.gui_uninstall.packaged_gui_app_paths to a temporary path.")
         return resolved
+
+    @classmethod
+    def _is_command_lookup(cls, absolute: str) -> bool:
+        """``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
+        realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of its
+        ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH; probing
+        there is command lookup, not reading Hermes state. CI has no such entries.
+        """
+        path = os.environ.get("PATH", "")
+        cwd = os.getcwd() if cls._relative_path_entries(path) else None
+        entries = cls._path_entries(path, cwd)
+        return os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries)
 
     @staticmethod
     def refuse(value):
@@ -196,12 +244,15 @@ class HomeIOGuard:
 
         for module in (builtins, io):
             wrap(module, "open", (("file", None),), destructive=open_writes)
+        # Creating an entry changes the tree like a write does: the checkout's boot probes are
+        # reads only, and neither the home nor an installed app may gain one.
         for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
-            wrap(os, name, (("path", "dir_fd"),), destructive=name != "mkdir")
+            wrap(os, name, (("path", "dir_fd"),), destructive=True)
         for name in ("stat", "lstat", "readlink", "access"):
             wrap(os, name, (("path", "dir_fd"),), metadata=True)
-        for name in ("makedirs", "listdir", "scandir"):
-            wrap(os, name, (("name" if name == "makedirs" else "path", None),))
+        wrap(os, "makedirs", (("name", None),), destructive=True)
+        for name in ("listdir", "scandir"):
+            wrap(os, name, (("path", None),))
         for name in ("rename", "replace"):
             wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")), destructive=True)
         wrap(shutil, "rmtree", (("path", "dir_fd"),), destructive=True)

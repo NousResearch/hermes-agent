@@ -230,9 +230,10 @@ class GatewaySessionStore:
         """Main's ``SessionDB.rewind_user_turn`` (``/undo N``, ``/retry``) as ``session.mutate rewind``.
         The user turn is located on the gateway's snapshot transcript (its rows carry ``row_id``),
         checked against the CLI's warm view exactly as main checks it, then rewound by that row id."""
-        from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
-        from agent.message_content import flatten_message_text
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from session_rules.turns import (
+            history_before_user_originated_turn, retryable_user_text, flatten_message_text,
+        )
+        from session_rules.turns import _is_ephemeral_scaffolding
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)

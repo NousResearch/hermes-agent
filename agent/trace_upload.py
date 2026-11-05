@@ -224,16 +224,20 @@ def _do_upload(
 
 
 def load_session_messages(session_id: str, db_path=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
-    session may still have messages)."""
-    from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path or None)
+    """``(messages, meta)`` from the session store; ``meta`` carries the session's ``model`` and is ``{}`` when the
+    session row is missing (a live, untitled session may still have messages)."""
+    from pathlib import Path
+
+    from persistence_assembly import open_persistence, profile_scope
+
+    persistence = open_persistence(profile_scope(home=Path(db_path).parent) if db_path else profile_scope())
     try:
-        resolved = db.resolve_session_id(session_id) or session_id
-        meta = db.get_session(resolved) or {}
-        return db.get_messages_as_conversation(resolved), meta
+        resolved = persistence.sessions.resolve_id(session_id) or session_id
+        record = persistence.sessions.get(resolved)
+        messages = [m.as_openai_message() for m in persistence.messages.read_conversation(resolved)]
+        return messages, {"model": record.model} if record is not None else {}
     finally:
-        release_or_close(db)
+        persistence.close()
 
 
 def upload_session_trace(

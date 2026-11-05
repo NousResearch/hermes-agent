@@ -2,12 +2,12 @@
 
 A continuing session replays its stored system prompt verbatim so the provider prefix cache stays
 warm, which also means SOUL.md, skills and project-context edits never reach it before ``/new``.
-``hermes sessions refresh-prompts`` records a refresh epoch in the profile's state.db
-(``hermes_state_prompt_refresh``). At the start of the session's next turn this module compares
-that epoch with the one stamped when the session's prompt was built (``model_config``) and, when
-the prompt is older, rebuilds it once through the normal builder: history, session id and the
-tools[] pin are kept, ``on_session_start`` does not fire, and the new bytes plus the epoch are
-persisted so every later turn restores them verbatim. One prefix-cache break per request.
+``hermes sessions refresh-prompts`` records a refresh epoch in the profile's state.db. At the start
+of the session's next turn this module compares that epoch with the one stamped when the session's
+prompt was built (``model_config``) and, when the prompt is older, rebuilds it once through the
+normal builder: history, session id and the tools[] pin are kept, ``on_session_start`` does not
+fire, and the new bytes plus the epoch are persisted so every later turn restores them verbatim.
+One prefix-cache break per request.
 
 No request recorded means the stored prompt is reused exactly as before: the only extra work is
 one ``state_meta`` point read. Nothing watches files and nothing changes mid-turn.
@@ -27,7 +27,11 @@ SESSION_EPOCH_KEY = "prompt_refresh_epoch"
 def requested_epoch(agent: Any) -> int:
     """Newest refresh epoch recorded for the agent's session; 0 without a request (or a store that
     keeps none, such as a managed worker's facade)."""
-    reader = getattr(getattr(agent, "_session_db", None), "prompt_refresh_epoch", None)
+    from agent.agent_init_session import agent_interface
+
+    store = agent_interface(agent)
+    reader = (store.sessions.prompt_refresh_epoch if store is not None
+              else getattr(getattr(agent, "_session_db", None), "prompt_refresh_epoch", None))
     session_id = getattr(agent, "session_id", None)
     if reader is None or not session_id:
         return 0
@@ -41,9 +45,9 @@ def requested_epoch(agent: Any) -> int:
 
 
 def _applied_epoch(session_row: Any) -> int:
-    from hermes_state_sessions import _parse_model_config
+    from persistence.conversation.sessions import parse_model_config
 
-    value = _parse_model_config((session_row or {}).get("model_config")).get(SESSION_EPOCH_KEY)
+    value = parse_model_config((session_row or {}).get("model_config")).get(SESSION_EPOCH_KEY)
     return value if isinstance(value, int) else 0
 
 
@@ -65,11 +69,15 @@ def stamp_prompt_epoch(agent: Any, epoch: int) -> None:
 
 
 def _persist_epoch(agent: Any, epoch: int) -> bool:
+    from agent.agent_init_session import agent_interface
+
     db = getattr(agent, "_session_db", None)
     if not db:
         return True
+    store = agent_interface(agent)
     try:
-        db.patch_session_model_config(agent.session_id, {SESSION_EPOCH_KEY: epoch})
+        (store.sessions.patch_model_config if store is not None
+         else db.patch_session_model_config)(agent.session_id, {SESSION_EPOCH_KEY: epoch})
     except Exception:
         logger.warning("Could not record the prompt refresh epoch (session=%s); the refresh re-fires "
                        "next turn.", agent.session_id, exc_info=True)
@@ -79,6 +87,7 @@ def _persist_epoch(agent: Any, epoch: int) -> bool:
 
 def rebuild_for_refresh(agent: Any, system_message: Any, conversation_history: Any, epoch: int) -> None:
     """Rebuild the session's prompt from current sources and persist it with ``epoch``."""
+    from agent.agent_init_session import agent_interface
     from agent.prompt_builder import clear_skills_system_prompt_cache
     from agent.surface_switch import stage_surface_switch_note
     from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
@@ -96,8 +105,10 @@ def rebuild_for_refresh(agent: Any, system_message: Any, conversation_history: A
     stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
     db = getattr(agent, "_session_db", None)
     if db:
+        store = agent_interface(agent)
         try:
-            db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            (store.sessions if store is not None else db).update_system_prompt(agent.session_id,
+                                                                               agent._cached_system_prompt)
         except Exception:
             logger.warning("Could not persist the refreshed system prompt (session=%s); the refresh "
                            "re-fires next turn.", agent.session_id, exc_info=True)

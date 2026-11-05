@@ -58,6 +58,8 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
                                             fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
+        from agent.primary_auth_fallback import RUNTIME_KEY
+        runner._pre_agent_primary_auth_failure = runtime.get(RUNTIME_KEY)
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
             provider or '', model or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
@@ -110,6 +112,7 @@ class GatewayTurnPrepareMixin:
         # Every exit path starts clean: a stale notice must never attach to another session's next
         # turn (#74349). Set again below only when THIS resolution fell back.
         self._pre_agent_fallback_notice = None
+        self._pre_agent_primary_auth_failure = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
@@ -170,6 +173,8 @@ class GatewayTurnPrepareMixin:
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)
+        from agent.primary_auth_fallback import RUNTIME_KEY
+        self._pre_agent_primary_auth_failure = runtime_kwargs.pop(RUNTIME_KEY, None)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)

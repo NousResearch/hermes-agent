@@ -597,6 +597,8 @@ def _run_agent(
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
             clarify_callback=_oneshot_clarify_callback,
         )
+        from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure
+        attach_primary_auth_failure(agent, runtime.get(RUNTIME_KEY))
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
         agent.suppress_status_output = True
         agent.stream_delta_callback = None

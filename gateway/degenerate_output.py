@@ -191,6 +191,14 @@ TRUNCATION_FOOTER_TEMPLATE = (
     "\n\n... [truncated at {limit} chars; full output saved to {path}]"
 )
 
+# Same pointer, rendered at the HEAD of the body for adapters that split a capped payload across
+# messages. A chunking adapter's first chunk is smaller than the cap and it may drop trailing
+# chunks entirely (Discord: 8 x 2000 = 16000 chars of a 20000-char body), so a tail-only footer is
+# exactly what the reader never receives (PR 148960 review finding 3).
+TRUNCATION_HEAD_TEMPLATE = (
+    "[truncated at {limit} chars; full output saved to {path}]\n\n"
+)
+
 # --- Tokenizer --------------------------------------------------------------
 
 _CJK_RE = re.compile(
@@ -606,6 +614,7 @@ def truncate_for_delivery(
     text: str,
     limit: int = DEFAULT_MAX_DELIVERY_CHARS,
     saved_path: Optional[str] = None,
+    pointer_at_start: bool = False,
 ) -> str:
     """Cap delivery size, keeping a pointer to the full audit copy.
 
@@ -617,6 +626,16 @@ def truncate_for_delivery(
     ``saved_path`` (the on-disk audit copy written by the delivery layer) is
     embedded in the footer when provided; without it a bare truncation notice
     is appended so the reader knows the message was cut.
+
+    ``pointer_at_start`` puts the pointer at the HEAD of the truncated body
+    instead of the tail.  A chunking adapter splits its input into messages
+    smaller than the cap (Discord: 2000-char chunks, at most 8 of them), so a
+    tail footer is unreachable whenever the reader only gets the first chunk —
+    which is also the only case a chunking adapter can deliver at all, since it
+    drops the rest.  The head pointer rides the first chunk; the caller keeps
+    the tail footer too, so a reader of the whole body still sees it.  A
+    non-chunking adapter is unaffected (it needs no chunk-boundary marker, and
+    the delivery layer only asks for this on the chunking branch).
     """
     if text is None:
         return ""
@@ -624,6 +643,13 @@ def truncate_for_delivery(
         return text
     if saved_path:
         footer = TRUNCATION_FOOTER_TEMPLATE.format(limit=limit, path=saved_path)
+        if pointer_at_start:
+            head = TRUNCATION_HEAD_TEMPLATE.format(limit=limit, path=saved_path)
+            if len(head) + len(footer) <= limit:
+                visible = limit - len(footer) - len(head)
+                return head + text[:visible].rstrip() + footer
+            # The limit is too small to carry both pointers — fall back to the tail-only form
+            # instead of making the overflow worse.
     else:
         footer = f"\n\n... [truncated at {limit} chars]"
     visible = max(0, limit - len(footer))

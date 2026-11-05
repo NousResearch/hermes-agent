@@ -242,6 +242,45 @@ class TestTruncateForDelivery:
     def test_zero_limit_disables_the_cap(self):
         assert truncate_for_delivery("x" * 500, limit=0) == "x" * 500
 
+    def test_chunking_pointer_is_visible_in_the_first_chunk(self):
+        """A chunking adapter must receive the audit pointer inside its FIRST wire chunk.
+
+        Regression for PR 148960 review finding 3: a capped body carries its truncation footer at
+        the tail, but a ``splits_long_messages`` adapter splits at ~2000 chars and can drop the
+        trailing chunks entirely (Discord caps at 8 chunks), so the reader got a truncated message
+        with no path to the full output.
+        """
+        payload = "y" * 48_389
+        out = truncate_for_delivery(payload, limit=20_000, saved_path="/tmp/audit.txt",
+                                    pointer_at_start=True)
+        assert len(out) <= 20_000
+        first_chunk = out[:19_944]  # Discord's first wire chunk
+        assert "truncated at 20000 chars" in first_chunk
+        assert "/tmp/audit.txt" in first_chunk
+        # The tail footer still anchors the full body for a reader who sees every chunk.
+        assert out.rstrip().endswith("full output saved to /tmp/audit.txt]")
+
+    def test_chunking_pointer_is_never_worse_than_the_tail_only_cap(self):
+        """The head pointer costs body budget, so the result must stay within the cap."""
+        payload = "z" * 20_001
+        out = truncate_for_delivery(payload, limit=20_000, saved_path="/tmp/audit.txt",
+                                    pointer_at_start=True)
+        assert len(out) <= 20_000
+        assert out.count("/tmp/audit.txt") == 2
+
+    def test_pointer_at_start_without_audit_path_is_a_noop(self):
+        """No audit copy exists: there is nothing to point at, so the tail-only form is kept."""
+        out = truncate_for_delivery("x" * 500, limit=100, pointer_at_start=True)
+        assert out == truncate_for_delivery("x" * 500, limit=100)
+
+    def test_tiny_limit_falls_back_to_the_tail_only_form(self):
+        """A limit too small to carry both pointers must not overflow worse than before."""
+        out = truncate_for_delivery("x" * 500, limit=10, saved_path="/tmp/audit.txt",
+                                    pointer_at_start=True)
+        assert len(out) <= len(truncate_for_delivery("x" * 500, limit=10,
+                                                     saved_path="/tmp/audit.txt"))
+        assert "/tmp/audit.txt" in out
+
 
 # ---------------------------------------------------------------------------
 # Delivery chokepoint
@@ -287,6 +326,11 @@ class TestDeliveryGuard:
 
         delivered = adapter.calls[0]["content"]
         assert len(delivered) <= DEFAULT_MAX_DELIVERY_CHARS
+        # The chunk boundary is where the reader actually cuts off, so the audit pointer must ride
+        # the first chunk, not only the tail (PR 148960 review finding 3).
+        saved = list((tmp_path / "cron" / "output").glob("job1_*.txt"))
+        assert len(saved) == 1
+        assert str(saved[0]) in delivered[:19_944]
 
     @pytest.mark.asyncio
     async def test_normal_report_is_delivered_unchanged(self, tmp_path, monkeypatch):

@@ -132,12 +132,20 @@ def guard_degenerate_output(
 
 def guard_outbound_content(
     content: str, job_id: str, *, limit: int, save_full_output: Callable[[str, str], Path],
+    chunking_adapter: bool = False,
 ) -> tuple[str, Optional[Path], bool]:
     """The outbound guard chain every delivery lane must run: collapse, then the universal cap.
 
     Returns ``(content, audit_path, capped)``. ``capped`` reports that the size cap shortened the
     payload, so a caller that also has an adapter-specific ``MAX_PLATFORM_OUTPUT`` tail skips it (a
     capped payload must not be saved or truncated twice).
+
+    ``chunking_adapter`` asks for the audit pointer at the HEAD of the capped body as well as the
+    tail, because a ``splits_long_messages`` adapter re-splits what it is handed into messages
+    smaller than this cap and may drop the trailing ones entirely — a tail-only footer then never
+    reaches the reader (PR 148960 review finding 3). A caller with no adapter concept (the cron
+    standalone fallback, whose ``_send_to_platform`` also chunks) keeps the tail footer and passes
+    ``False``; local/file delivery never reaches this function.
 
     Two lanes reach a chat: ``DeliveryRouter._deliver_to_platform`` (live adapters) and the cron
     standalone fallback (``cron/scheduler_delivery.py::_deliver_standalone``), which sends through
@@ -162,7 +170,8 @@ def guard_outbound_content(
         logger.warning("Cron output exceeded the delivery cap (%d chars > %d, job=%s) — truncating "
                        "before delivery", len(content), limit, job_id)
         content = truncate_for_delivery(
-            content, limit=limit, saved_path=str(audit_path) if audit_path else None)
+            content, limit=limit, saved_path=str(audit_path) if audit_path else None,
+            pointer_at_start=chunking_adapter)
         return content, audit_path, True
     return content, audit_path, False
 
@@ -413,7 +422,8 @@ class DeliveryRouter:
         # before any adapter-specific handling (including native chunking). The detector must see the
         # full response; truncating a preamble-plus-loop response first would hide the looping tail.
         content, audit_path, capped = guard_outbound_content(
-            content, job_id, limit=self._max_delivery_chars(), save_full_output=self._save_full_output)
+            content, job_id, limit=self._max_delivery_chars(), save_full_output=self._save_full_output,
+            chunking_adapter=bool(getattr(adapter, "splits_long_messages", False)))
         if not capped and audit_path is None:
             # Not over the universal cap and not a degenerate collapse: fall through to the historical
             # MAX_PLATFORM_OUTPUT handling for non-chunking adapters.

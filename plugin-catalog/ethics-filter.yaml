@@ -4,7 +4,7 @@ sha: d1ecb60a48a9f2ffd5f7eab5029c11a5940b2651
 subdir: plugin
 version: "1.1.0"
 title: Ethics Filter
-description: "Universal ethics evaluation engine. Six modules — environmental, fairness, transparency, conscious leadership, ethical framework, compliance — scored against strictness thresholds with tension detection, so any decision comes back GREEN, AMBER or RED with the reasoning attached. Ships the ethics-filter skill (which backs /ethics) and the ethics_evaluate tool; the engine is vendored and needs no pip install. Disclosure — reads the rubrics and constitution templates bundled in the plugin and appends one JSONL record per scored evaluation, including the decision text, context and reasoning it was given, to $ETHICS_FILTER_AUDIT (default ~/.ethics-filter/audit.jsonl, outside the Hermes profile and shared by every profile), which is never rewritten or deleted. With auto_score=true it asks the host agent's own model to score through Hermes, holding no separate key; there are no other network calls."
+description: "Score any decision across six ethics modules — environmental, fairness, transparency, leadership, framework, compliance — and get GREEN, AMBER or RED back with the reasoning attached. Ships /ethics and the ethics_evaluate tool. Disclosure — reads the rubrics and constitution templates bundled in the plugin and appends one JSONL record per scored evaluation (decision text, context and reasoning included) to $ETHICS_FILTER_AUDIT, default ~/.ethics-filter/audit.jsonl outside the Hermes profile; that file is never rewritten or deleted. With auto_score=true it asks the host agent's own model to score through Hermes, holding no separate key; no other network calls."
 maintainer: RegeneratusLabs
 tier: community
 category: tools

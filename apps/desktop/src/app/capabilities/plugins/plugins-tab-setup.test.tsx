@@ -166,7 +166,8 @@ it('pins consent to the captured raw gateway and requires another click for a ch
   expect(screen.getByText('v2')).toBeTruthy()
   expect(original).toHaveBeenCalledTimes(2)
   expect(other).not.toHaveBeenCalled()
-  expect(requestGateway.mock.calls.every(([, params]) => params.action === 'list')).toBe(true)
+  // Reads only (list; main's header also reads auto_update): the consent never rides the generic path.
+  expect(requestGateway.mock.calls.every(([, params]) => ['auto_update', 'list'].includes(params.action))).toBe(true)
   original.mockResolvedValueOnce({ ok: true, plugin: { ...row, status: 'enabled' } })
   fireEvent.click(screen.getByRole('button', { name: 'Set up and enable' }))
   await waitFor(() =>

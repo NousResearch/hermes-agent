@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useEffect } from 'react'
+import { type ComponentProps, useEffect, useRef } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useZoomPan } from '@/components/ui/use-zoom-pan'
@@ -62,7 +62,7 @@ export function ZoomableImage({
       >
         <button
           aria-label={canOpen ? copy.openImage : undefined}
-          className="contents"
+          className="block max-w-full focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2"
           disabled={!canOpen}
           onClick={() => canOpen && openTranscriptLightbox(fullSrc)}
           type="button"
@@ -105,6 +105,8 @@ export function ImageLightbox({
   saving: boolean
   src: string
 }) {
+  const openerRef = useRef<HTMLElement | null>(null)
+
   // Shared pan/zoom mechanics (wheel zoom, drag pan, pinch) come from
   // useZoomPan — the same hook the diagram/artifact viewer uses, so there is a
   // single source of truth for this gesture math. `moved` lets us close the
@@ -180,6 +182,20 @@ export function ImageLightbox({
         // attribute selector out-specifies the plain utilities — hence the
         // important utilities and the data-variant opt-out in styles.css.
         data-variant="media-lightbox"
+        // These viewers open through state rather than DialogTrigger. Preserve
+        // the real opener instead of letting Radix's missing trigger lose focus.
+        onCloseAutoFocus={event => {
+          event.preventDefault()
+          const opener = openerRef.current
+
+          if (opener?.isConnected) {
+            opener.focus({ preventScroll: true })
+          }
+        }}
+        onOpenAutoFocus={() => {
+          const opener = globalThis.document.activeElement
+          openerRef.current = opener instanceof HTMLElement ? opener : null
+        }}
         overlayClassName="bg-black/60"
         showCloseButton={false}
       >

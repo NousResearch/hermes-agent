@@ -13,6 +13,7 @@ import threading
 import time
 
 from agent.i18n import t
+from agent import terminal_image
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
@@ -330,9 +331,10 @@ class CLIStatusBarMixin:
                 context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
-            from agent.context_pin import is_context_pinned
-            snapshot["context_pinned"] = is_context_pinned(
-                context_length, getattr(compressor, "_config_context_length", None))
+            from agent.context_pin import agent_context_marker
+            marker = agent_context_marker(agent)
+            snapshot["context_pinned"] = marker == "pinned"
+            snapshot["context_fallback"] = marker == "fallback"
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 pct = round((context_tokens / context_length) * 100)
@@ -699,7 +701,7 @@ class CLIStatusBarMixin:
             # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
             # while detect_terminal_graphics() still says kitty, hence the narrower gate.
             use_kitty = (
-                configured_mode in ("", "auto", "kitty") and pet_render.supports_kitty_placeholders()
+                configured_mode in ("", "auto", "kitty") and terminal_image.supports_kitty_placeholders()
             )
             renderer_mode = "kitty" if use_kitty else "unicode"
 
@@ -868,7 +870,7 @@ class CLIStatusBarMixin:
             payload = self._pet_kitty_payload_for(state)
             if not payload:
                 return []
-            color = pet_render.kitty_color_hex(payload["image_id"])
+            color = terminal_image.kitty_color_hex(payload["image_id"])
             for y, row in enumerate(payload["placeholder"]):
                 if y:
                     frags.append(("", "\n"))
@@ -1081,7 +1083,8 @@ class CLIStatusBarMixin:
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    pin = t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned") else ""
+                    pin = (t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned")
+                           else t("cli.status_bar.ctx_fallback") if snapshot.get("context_fallback") else "")
                     context_label = f"{mark}{ctx_used}/{ctx_total}{pin}"
                 else:
                     context_label = t("cli.status_bar.ctx_unknown")

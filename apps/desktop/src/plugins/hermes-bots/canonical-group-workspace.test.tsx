@@ -13,6 +13,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { ConfirmDialog } = await import('@/components/ui/confirm-dialog')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore, ConfirmDialog,
+    useQuery: (await import('@tanstack/react-query')).useQuery,
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
@@ -22,9 +23,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 import { host } from '@hermes/plugin-sdk'
 
-import { $canonicalGroupBindings, CanonicalGroupList, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
 import { $groupChatWorkspace } from './group-chat'
 import { GroupChatWorkspace } from './group-chat-view'
 const originalDesktop = window.hermesDesktop
@@ -272,9 +274,9 @@ it('drops a disbanded room from the sidebar list and its bindings, with the disb
   request.mockImplementation(async (_route, method) => method === 'groups.disband' ? (disbanded = true, {})
     : method === 'groups.capabilities' ? { driver: true } : method === 'groups.list' ? { rooms: disbanded ? [] : [room], next_offset: null }
       : roomReads()(method) ?? {})
-  render(<CanonicalGroupList onOpen={vi.fn()} />)
+  renderGatewayRooms()
   await screen.findByRole('button', { name: 'Doomed' })
-  const binding = { connectionId: 'remote', profile: 'team', roomId: 'gone', roomName: 'Doomed' }
+  const binding = { connectionId: 'local', profile: 'default', roomId: 'gone', roomName: 'Doomed' }
   const key = registerCanonicalGroup(binding, room)
   render(<CanonicalGroupWorkspace binding={binding} onBack={vi.fn()} />)
   const disband = await screen.findByRole('button', { name: /disband/i }) as HTMLButtonElement

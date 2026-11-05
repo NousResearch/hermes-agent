@@ -166,6 +166,7 @@ class CLIInitMixin:
         self._tool_output_preview = max(0, _int_or(display.get("tool_output_preview", 3), 3))
         _rs = str(display.get("cli_reasoning_style", "full")).strip().lower()
         self.cli_reasoning_style = _rs if _rs in {"full", "collapsed"} else "full"
+        self._inline_images_mode = display.get("inline_images", "auto")
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))

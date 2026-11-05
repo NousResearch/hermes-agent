@@ -272,6 +272,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+X Ctrl+E` | Emacs-style alternate binding for the external editor (same behavior as `Ctrl+G`). |
 | `Ctrl+S` | **Stash the prompt.** Parks the current draft and clears the composer so you can send something else first. Press `Ctrl+S` again on an empty composer to bring the draft back (cursor at the end, attached images restored). Repeated presses build a stack rather than overwriting, so an earlier draft is never silently lost — with two or more stashed, `Ctrl+S` opens a browse panel (`↑`/`↓` to navigate, `Enter` to restore, `D` to discard, `Esc` or `Ctrl+S` to close). A `📌 N` badge in the status bar shows how many drafts are parked. Multi-line drafts round-trip exactly, including blank lines. The stash lives in memory for the session only — nothing is written to disk, since drafts often contain secrets. |
 | `Ctrl+C` | Clear a typed draft first (even while the agent works); with an empty prompt, interrupt the agent (double-press within 2s to force exit) |
+| `Esc Esc` | With a draft: discard it (Up recalls it). On an idle, empty prompt: open the **backtrack** picker (same as `/rewind`). `↑`/`↓` move through your earlier prompts (newest first, with a preview); `Enter` edits the selected prompt and resends it, cutting the session back to just before it only when you send (cancel with `Esc Esc` or `Ctrl+C` and nothing is removed); `f` forks a new session from just before that prompt with it prefilled, leaving the original untouched; `Esc` closes the picker. |
 | `Alt+↑` | With an empty composer, pull the most recently queued prompt (typed while the agent works) back into the composer for editing. Press `Enter` to queue it again. |
 | `Ctrl+T` / `F6` | Open the full-screen live work monitor (subagents and background processes) without losing the composer draft. The live-work footer appears automatically under the composer: a summary line (`☤ 2 agents · ⚙ 1 shell · ◉ 1 monitor`) and one row per worker, shell, or watched process. Press `↓` on an empty prompt to select a row, `Tab` to jump to the next kind (agents, shells, monitors), `Enter` to open its live log (`Esc` comes straight back), `s` to steer a selected worker from a one-line input (`Enter` sends, `Esc` cancels), `x` twice to stop it, and `Esc`/`↑` to return to the prompt. In the monitor, `s` steers a worker and `x` requests stop with confirmation. `/mouse on` (or `display.cli_mouse: true`) makes the footer clickable: a summary badge selects that kind's first row, a row opens its log. While the footer lists shells or agents, the status bar drops its own shell/agent counters. `/statusbar legend` explains every status-bar glyph (`◎` cache hits, `◷` reply latency, `↑` tokens/s, `⏲` turn time, `✓` idle time). With nothing to list, the footer shows one rotating `✦ Tip:` line instead (`display.cli_footer_tips: false` hides it). See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents). |
 | `Ctrl+O` | Open a full-screen transcript of the last turn: every tool call with its full output, exit code, duration and diff, plus reasoning. `/` finds, `n`/`N` jump between matches, `a` toggles all recent turns, `q`/`Esc` returns to the untouched scrollback. In `display.cli_layout: classic` each completed tool row in scrollback shows a green `✓` or red `✗` with up to `display.tool_output_preview` dim result lines under `⎿` (default 3, `0` = off); consecutive reads and searches fold into one `explored` row. Not bound in vi insert mode. |
@@ -545,6 +546,26 @@ display:
 ```
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.
+
+### Inline Images
+
+Images show up right in the transcript: the ones you attach (`/paste`, `/image`, drag-and-drop) under your message, and the local image a successful tool call produced or looked at (`vision_analyze`, `image_generate`, a browser or computer-use screenshot) under that tool's line. `read_file` cannot read images, so it shows none. The same setting drives the [TUI](./tui.md).
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  inline_images: auto   # auto | kitty | iterm | unicode | off
+```
+
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). In the VS Code terminal the classic CLI asks the terminal at startup whether images are on (`terminal.integrated.enableImages`; the reply takes about 10 ms) and draws full-resolution images when they are, with an occasional tip to turn them on when they are not. Everything else, including tmux, GNU screen, SSH sessions into VS Code, and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
+- **`kitty`** forces the kitty protocol, for example in the classic CLI inside a tmux with `set -g allow-passthrough on`.
+- **`iterm`** forces the iTerm2 protocol in the classic CLI (the TUI falls back to `auto` here).
+- **`unicode`** always uses half-blocks.
+- **`off`** shows file paths only, as before.
+
+Only local files are drawn; remote image URLs are not fetched. Sixel terminals get half-blocks.
+
+After a terminal resize the CLI redraws its transcript. kitty and half-block images come back in the redraw; iTerm2-protocol images (iTerm2, WezTerm, Konsole) leave blank rows in the redrawn screen and stay visible only in the scrollback above it.
 
 ## Session Management
 

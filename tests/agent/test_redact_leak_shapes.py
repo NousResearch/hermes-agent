@@ -171,3 +171,19 @@ class TestUserinfoStopsAtQuote:
 
     def test_userinfo_password_still_masked(self):
         _assert_masked("https://user:FakeSecret9876@host/path", "FakeSecret9876")
+
+class TestNetworkPathUserinfo:
+    """#125664 residual: scheme-less ``//user:pass@host/share`` (SMB/CIFS mounts) under force."""
+
+    @pytest.mark.parametrize("text", ["//user:FakeSecret9876@host/share",
+                                      "mount -t cifs //user:FakeSecret9876@host/share /mnt",
+                                      'src="//user:FakeSecret9876@host/share"'])
+    def test_forced_network_path_password_masked(self, text):
+        _assert_masked(text, "FakeSecret9876")
+        assert "//user:***@host" in redact_sensitive_text(text, force=True)
+
+    @pytest.mark.parametrize("text", ["// TODO: user:note@x", "//user:note@x", "//cdn.example.com/lib.js",
+                                      '<a href="//example.com">', "a//user:FakeSecret9876@h",
+                                      "//user:${SMB_PASSWORD}@host/share"])
+    def test_comments_relative_urls_and_placeholders_unchanged(self, text):
+        _assert_unchanged(text)

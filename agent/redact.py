@@ -744,6 +744,10 @@ _STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
 # The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
 # No ``"``: ``"https://a.com","u:pw@y"`` is two JSON strings, not ``a.com","u`` userinfo.
 _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
+# Scheme-less network path (``mount //user:pass@host/share``), masked under force only: ``//`` must
+# start a token (comments are ``// note``, protocol-relative URLs carry no ``@``) and the password
+# needs 8+ characters, so ``//user:note@x`` stays as written.
+_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
 
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
@@ -1421,6 +1425,13 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     return _redact_userinfo_passwords(text)
 
 
+def _mask_network_path_userinfo(m) -> str:
+    """``//user:pass@host`` without a scheme (#125664 residual); placeholders stay as written."""
+    if _is_userinfo_placeholder(m.group(3)):
+        return m.group(0)
+    return f"{m.group(1)}{m.group(2)}:***@"
+
+
 def _redact_phone(m):
     phone = m.group(1)
     keep = 2 if len(phone) <= 8 else 4
@@ -1536,6 +1547,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # #33801.
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
+    if force and "//" in text:
+        text = _NETWORK_PATH_USERINFO_RE.sub(_mask_network_path_userinfo, text)
 
     # Keyword/value connection strings (``Host=…;Password=…``, libpq ``host=… password=…``):
     # the forms the URL pass above never sees. Gate: a ``password=``/``pwd=`` key in any casing;

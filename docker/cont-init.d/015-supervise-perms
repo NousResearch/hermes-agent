@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Let the unprivileged hermes group query and control the STATIC s6-rc
 # services (dashboard, main-hermes, profile-gateways) without handing
@@ -28,6 +28,10 @@
 # already running by now, so their supervise/ trees exist.
 
 set -eu
+
+# Runs as root: resolve commands from system directories only.
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 # /run/s6-rc/servicedirs holds the live, compiled service directories
 # for every static (s6-rc) service. Symlinks under /run/service/*

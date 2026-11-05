@@ -5078,6 +5078,22 @@ async function ensureRuntime(
     throw bundledError
   }
 
+  // A remote-only (light) artifact has no runtime to install and must never
+  // download or spawn one. Unlike the bundled case this failure is NOT
+  // latched: `bootstrapFailure` is global, so latching it would take down the
+  // primary remote connection too until the app restarts. Keep it local to
+  // this request.
+  if (backend.kind === 'bootstrap-needed' && installShape() === 'light') {
+    rememberLog('[bootstrap] REFUSING installer on a remote-only (light) artifact')
+
+    const remoteOnlyError: Error & { isBootstrapFailure?: boolean } = new Error(
+      'Questa build è remote-only: non ha un runtime locale. Aggiungi il gateway remoto in Impostazioni → Gateways.'
+    )
+
+    remoteOnlyError.isBootstrapFailure = true
+    throw remoteOnlyError
+  }
+
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 

@@ -27,13 +27,13 @@ from __future__ import annotations
 import shutil
 
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_cli.web_server_sessions import _open_session_db_at_path, _session_rows
 from hermes_state import SessionDB
 from hermes_state_repair import _db_fingerprint
 
 
-def _ids(db) -> list:
-    return [row["id"] for row in db.list_sessions_rich(limit=10, compact_rows=True)]
+def _ids(store) -> list:
+    return [row["id"] for row in _session_rows(store, limit=10, compact_rows=True)]
 
 
 def test_poll_observes_a_replaced_state_db(tmp_path):

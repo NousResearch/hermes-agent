@@ -17,7 +17,8 @@ import pytest
 
 from agent import compaction_events
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import CompressionCheckpointUnavailable, CompressionCommitFence, compress_context
+from agent.conversation_compression import CompressionCommitFence, compress_context
+from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
 from agent.transports.codex_app_server_session import TurnResult
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"

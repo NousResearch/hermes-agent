@@ -18,7 +18,6 @@
   "attachments.storage",
   "bot_mode.turn_wait_seconds",
   "browser.allow_unsafe_evaluate",
-  "browser.extension_control.developer_mode",
   "compression.abort_on_summary_failure",
   "compression.max_attempts",
   "computer_use.ax_max_elements",

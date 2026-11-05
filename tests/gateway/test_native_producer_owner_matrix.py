@@ -80,7 +80,7 @@ async def test_slack_upload_failure_owner_scope_keeps_caption_and_result(owners,
 
 @pytest.mark.asyncio
 async def test_signal_pacing_owner_scope_keeps_acquisition_and_upload(owners, tmp_path, monkeypatch):
-    import gateway.platforms.signal as module
+    import plugins.platforms.signal.adapter as module
     root, suppressed = owners
     adapter = module.SignalAdapter(PlatformConfig())
     adapter.gateway_runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))

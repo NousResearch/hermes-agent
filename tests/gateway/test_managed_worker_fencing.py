@@ -8,13 +8,14 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
 
 def hello(process):
     """A direct child's self-introduction (no launcher: chain length 0)."""
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'ancestors': [os.getpid()]}
+    return {'type': 'hello', 'pid': process.pid, 'birth': worker_birth(psutil.Process(process.pid)), 'ancestors': [os.getpid()]}
 
 
 def test_worker_loss_fences_same_generation_parent_result(tmp_path):

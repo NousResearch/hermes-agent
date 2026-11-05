@@ -231,6 +231,27 @@ def _get_pid_cgroup_path(pid: int) -> str | None:
     return next(_pid_unified_cgroup_entries(pid), None)
 
 
+def _systemd_owner_for_pid(pid: int) -> tuple[str, str | None] | None:
+    """``(unit, scope)`` of the systemd unit whose live ``MainPID`` is *pid*; ``None`` when no unit
+    provably owns it (see :func:`_get_systemd_service_for_pid`). Scope is ``user``/``system`` or
+    ``None`` when the cgroup path does not say."""
+    unit = _get_systemd_service_for_pid(pid)
+    if unit is None:
+        return None
+    return unit, _extract_scope_from_cgroup(_get_pid_cgroup_path(pid) or "")
+
+
+def _systemd_restart_commands(unit: str, scope: str | None) -> list[str]:
+    """The command(s) that restart *unit* in its scope; both forms when the scope is unknown."""
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    return {"user": [user_cmd], "system": [system_cmd]}.get(scope or "", [user_cmd, system_cmd])
+
+
+def _format_restart_commands(commands: list[str]) -> str:
+    """Join restart commands as a user-facing hint: each backticked, separated by " or "."""
+    return " or ".join(f"`{c}`" for c in commands)
+
+
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 
@@ -422,6 +443,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
             with open(log_path, "ab") as log_f:
                 proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    # detached-spawn: ok — dashboard service launch, meant to outlive the CLI that starts it
                     start_new_session=True, close_fds=True)
             spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:
@@ -1007,6 +1029,9 @@ def _route_named_profile_dashboard(
         proc = subprocess.Popen(reexec_argv, env=env)
         sys.exit(proc.wait())
     else:
+        from hermes_cli.cpu_profile import write_cpu_profile
+
+        write_cpu_profile()  # exec skips atexit
         os.execvpe(sys.executable, reexec_argv, env)
 
 
@@ -1072,3 +1097,30 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
         # validated "~/dist" would otherwise pass here and still 404 there.
         os.environ["HERMES_WEB_DIST"] = str(_dist_root)
         print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
+
+
+def _dashboard_validate_serve_args(args, headless_backend, token_file):
+    """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
+    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
+    # config.yaml instead of silently starting on defaults where provider
+    # auto-detection can adopt unnamed .env credentials (issue #81952).
+    # Same policy + escape hatch as _guard_noninteractive_user_config.
+    if headless_backend:
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config(
+                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
+            )
+        except InvalidUserConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+    ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
+    if ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", ssh_owner_nonce):
+        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
+    if token_file and not headless_backend:
+        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
+    return ssh_owner_nonce

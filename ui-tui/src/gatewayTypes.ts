@@ -122,6 +122,8 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  /** auto | kitty | iterm | unicode | off (YAML may hand `off` over as false). */
+  inline_images?: boolean | string
   /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
   language?: string
   mouse_tracking?: boolean | null | number | string
@@ -312,6 +314,7 @@ export interface SessionUsageResponse {
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
   credits_lines?: string[]
+  credits_usage_window?: boolean
   input?: number
   model?: string
   output?: number
@@ -501,6 +504,12 @@ export interface ToolsConfigureResponse {
 
 // ── MCP ──────────────────────────────────────────────────────────────
 
+export interface SessionExportResponse {
+  content: string
+  filename?: string
+  format: string
+}
+
 export interface ReloadMcpResponse {
   status?: string
   message?: string
@@ -519,7 +528,6 @@ export interface ProcessStopResponse {
 }
 
 export interface BrowserManageResponse {
-  browser_use?: boolean
   connected?: boolean
   messages?: string[]
   url?: string
@@ -544,10 +552,13 @@ export interface RollbackDiffResponse {
 
 export interface RollbackRestoreResponse {
   error?: string
+  failed_deletes?: string[]
   history_removed?: number
   message?: string
   reason?: string
   restored_to?: string
+  skipped_oversize?: string[]
+  skipped_user_edits?: string[]
   success?: boolean
 }
 

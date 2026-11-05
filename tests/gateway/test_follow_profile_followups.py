@@ -90,12 +90,12 @@ async def test_explicit_create_choices_win_and_session_info_reports_the_next_tur
         assert policy.current_reasoning_config(runner)['effort'] == 'high'
         assert policy.current_service_tier(runner, None) == 'priority'
         # C17: lazy session.info reports what the next turn resolves, for both sessions.
-        for live, effort, tier in ((explicit, 'high', 'priority'), (plain, 'minimal', None)):
+        for live, effort, tier in ((explicit, 'high', 'priority'), (plain, 'minimal', '')):
             policy = policy_for_source(runner, live.source)
             info = local_session_info(authority, _ref(authority, live))
             assert (info['reasoning_effort'], info['service_tier']) == (effort, tier)
             assert policy.current_reasoning_config(runner)['effort'] == effort
-            assert policy.current_service_tier(runner, None) == tier
+            assert (policy.current_service_tier(runner, None) or '') == tier
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -104,6 +104,107 @@ async def test_explicit_create_choices_win_and_session_info_reports_the_next_tur
 def _ref(authority, live):
     sid = next(sid for sid, entry in authority.sessions.items() if entry is live)
     return SimpleNamespace(session_id=sid)
+
+
+async def _pick_reasoning(owner, authority, live, effort):
+    """Desktop's reasoning selector, Ink's and the classic CLI's ``/reasoning <level>``: the owner's verb."""
+    sid = _ref(authority, live).session_id
+    row = authority.db.get_session(sid)
+    reply = await owner.dispatch({'id': 'r', 'method': 'session.mutate', 'params': {
+        'session_id': sid, 'request_id': 'reasoning-' + effort, 'operation': 'reasoning', 'payload': {'effort': effort},
+        'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})
+    assert reply['result']['effort'] == effort, reply
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_a_session_reasoning_pick_wins_over_the_followed_default_after_a_restart(home):
+    """Desktop's reasoning picker and ``/reasoning <level>`` on a Bot Chat (created without ``reasoning``):
+    the acknowledged level is the next turn's, through a profile edit and a fresh owner; an unpicked
+    following chat still runs the profile's current level."""
+    from gateway.session_local import local_session_info
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_policy import policy_for_source
+    _profile(home, 'm', 1, 'k', agent={'reasoning_effort': 'low'})
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._set_session_reasoning_override = lambda key, value: None
+    try:
+        picked = await _create_bot_chat(owner, authority, home, 'picked')
+        plain = await _create_bot_chat(owner, authority, home, 'plain')
+        sid = await _pick_reasoning(owner, authority, picked, 'high')
+        _profile(home, 'm', 1, 'k', agent={'reasoning_effort': 'minimal'})
+        for live, effort in ((picked, 'high'), (plain, 'minimal')):
+            info = local_session_info(authority, _ref(authority, live))
+            assert (policy_for_source(runner, live.source).current_reasoning_config(runner)['effort'],
+                    info['reasoning_effort']) == (effort, effort)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+    store, runner, authority, owner = _owner(home)  # a fresh owner: only the durable receipt carries the pick
+    runner._peek_session_state = lambda key: None
+    try:
+        restore_local_session(authority, sid)
+        assert policy_for_source(runner, authority.sessions[sid].source).current_reasoning_config(runner)['effort'] == 'high'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method,params,expected', [
+    ('config.set', {'key': 'reasoning', 'value': 'minimal', 'scope': 'global'}, 'minimal'),
+    ('slash.exec', {'command': '/reasoning minimal'}, 'minimal'),
+    ('config.set', {'key': 'reasoning', 'value': 'reset'}, 'medium'),
+    ('slash.exec', {'command': '/reasoning reset'}, 'medium'),
+], ids=['config.set-global', 'slash.exec-level', 'config.set-reset', 'slash.exec-reset'])
+async def test_a_later_reasoning_command_replaces_the_pick_after_a_restart(home, tmp_path, monkeypatch, method, params,
+                                                                          expected):
+    """After a pick, ``/reasoning <level> [--global]`` or ``/reasoning reset`` from Desktop, Ink or
+    ``slash.exec`` is the session's level from then on: a fresh owner and a resume keep the command's level,
+    and a reset follows the profile (here moved to ``medium``), on a Bot Chat and on a frozen session."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_policy import policy_for_source
+    from gateway.session_policy_refresh import commit_refresh
+
+    from gateway import session_local
+
+    async def reply(event):  # the messaging handler: its reply and --global's config.yaml write
+        return 'ok'
+    monkeypatch.setattr(session_local, 'authorize_local_source', lambda runner, source: True)
+    monkeypatch.chdir(tmp_path)  # the commands' profile scope is ``_owner``'s relative profile id
+    _profile(home, 'm', 1, 'k', agent={'reasoning_effort': 'low'})
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._set_session_reasoning_override = lambda key, value: None
+    runner._apply_reasoning_selection = lambda *args, **kwargs: 'ok'
+    runner._command_handler_table = lambda names: {'reasoning': reply}
+    try:
+        follow = await _create_bot_chat(owner, authority, home, 'follow')
+        created = await owner.dispatch({'id': 'c', 'method': 'session.create', 'params': {
+            'request_id': 'frozen', 'source': 'gui', 'cwd': str(home)}})
+        sids = [await _pick_reasoning(owner, authority, live, 'high')
+                for live in (follow, authority.sessions[created['result']['session_id']])]
+        for sid in sids:
+            answer = await owner.dispatch({'id': 'x', 'method': method, 'params': {'session_id': sid, **params}})
+            assert 'result' in answer, answer
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+    _profile(home, 'm', 1, 'k', agent={'reasoning_effort': 'medium'})
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._set_session_reasoning_override = lambda key, value: None
+    try:
+        for sid in sids:
+            restore_local_session(authority, sid)
+            await commit_refresh(authority, SessionRef(authority.profile_id, sid))  # the resume's re-read
+        assert [policy_for_source(runner, authority.sessions[sid].source).current_reasoning_config(runner)['effort']
+                for sid in sids] == [expected, expected]
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

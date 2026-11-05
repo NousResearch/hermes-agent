@@ -10,7 +10,7 @@ from agent.reasoning_effort import effort_display_label, route_supported_efforts
 
 
 _T3_RUNTIME_SUFFIX = re.compile(
-    r"(?:^|\n)[ \t]*<runtime_info>[^<]*</runtime_info>"
+    r"(?:^|\n)[ \t]*<runtime_info>In case you're asked: you are running in T3 Code[^<]*</runtime_info>"
     r"(?:\s*<pull_request_linking>[^<]*</pull_request_linking>)?\s*\Z"
 )
 
@@ -101,8 +101,8 @@ def project_options(info, models):
             rows.append((word, f"{word.capitalize()} (paid)"))
     return [
         _option("model", "model", "Model", model_current, model_rows),
-        _option("reasoning", "thought_level", "Reasoning", effort, reasoning_rows),
-        _option("fast", "model_config", "Fast mode", tier, rows,
+        _option("reasoning_effort", "thought_level", "Reasoning", effort, reasoning_rows),
+        _option("service_tier", "other", "Fast mode", tier, rows,
                 "Session scope. Fast tiers may cost more; selecting a model never enables one."),
     ]
 

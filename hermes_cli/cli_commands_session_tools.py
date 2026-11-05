@@ -80,6 +80,17 @@ def _lines(text: str, pad: str = "  ") -> list:
     return [f"{pad}{line}" if line else "" for line in text.splitlines()]
 
 
+def _rollback_kept(result: dict) -> None:
+    """The kept / not-removed path lines of a restore result (in-process CLI and gateway client alike)."""
+    from hermes_cli.cli_commands_mixin import _summarize_paths
+    if skipped := result.get("skipped_user_edits"):
+        _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
+    if oversize := result.get("skipped_oversize"):
+        print(f"  {_gt('rollback.kept_oversize', files=_summarize_paths(oversize))}")
+    if failed := result.get("failed_deletes"):
+        print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
+
+
 def _probe(module: str, name: str, default, *args):
     """``<module>.<name>(*args)`` or ``default`` when the import or the call fails (optional
     subsystems: browser backends, async delegations, wake word, ...)."""
@@ -108,7 +119,7 @@ class CLICommandsSessionToolsMixin:
             return _stop_background_work()
         if getattr(self, "agent", None):
             from agent.interrupt_compat import request_hard_interrupt
-            print(f"  {t('cli.tui.interrupting')}")
+            _cp(f"  {t('cli.tui.interrupting')}")
             request_hard_interrupt(self.agent)
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(_stop_background_work, name="cli-stop").start()
@@ -253,7 +264,7 @@ class CLICommandsSessionToolsMixin:
         self._run_tools_config(tools_action=subcommand, names=names, platform="cli")
         from hermes_cli.tools_config import _get_platform_tools
         from hermes_cli.config import load_config
-        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+        self.enabled_toolsets = sorted(_get_platform_tools(load_config(), "cli"))  # plain data for session.create
         self.new_session()
         _cp(_dim(_t("tools.session_reset")))
 
@@ -270,6 +281,11 @@ class CLICommandsSessionToolsMixin:
             tools_disable_enable_command(Namespace(**ns))
         _cp(*buf.getvalue().splitlines())
 
+    def _handle_autoprune_command(self, cmd: str):
+        """/autoprune [on|off|later|status] — the low-disk auto-prune decision."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+        _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_cli.slash_exec import CommandContext, execute_command
@@ -280,7 +296,8 @@ class CLICommandsSessionToolsMixin:
 
 def _stop_background_work() -> None:
     """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)
-    delegations. Mid-turn it runs on a worker thread and prints its result from there."""
+    delegations. Mid-turn it runs on a worker thread, so it prints through ``_cprint``: a plain
+    print() from off the input loop is buried by the prompt_toolkit redraw."""
     from hermes_cli.gateway_tools import process_registry as _registry, process_view
     process_registry, view = _registry(), process_view()
     if view is not None:
@@ -289,17 +306,17 @@ def _stop_background_work() -> None:
     # Background subagents live in their own registry, not the process registry.
     n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
     if not running and not n_async:
-        return print(f"  {_t('stop.none_running')}")
+        return _cp(f"  {_t('stop.none_running')}")
     if running:
-        print(f"  {_t('stop.stopping', count=len(running))}")
-        print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
+        _cp(f"  {_t('stop.stopping', count=len(running))}")
+        _cp(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
     if n_async:
         if view is not None:
             interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
         else:
             from tools.async_delegation import interrupt_all
             interrupted = interrupt_all(reason='/stop')
-        print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
+        _cp(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
 
 def print_session_diff(cli, result: dict, stat_only: bool) -> None:
@@ -312,7 +329,7 @@ def print_session_diff(cli, result: dict, stat_only: bool) -> None:
         return print(f"  {_t('diff.no_session_changes')}")
     if stat:
         cli._print_diff_text(f"\n{stat}")
-    if diff and not stat_only:
+    if (diff or result.get("diff_lines")) and not stat_only:  # a body cut to nothing still names its lines
         cli._print_diff_body(diff, _t("diff.stat_hint_session"), total=int(result.get("diff_lines") or 0))
 
 

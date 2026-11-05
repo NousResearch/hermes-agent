@@ -29,6 +29,7 @@ export const slashCmdCoreEn = {
       switchSessions: 'switch sessions',
       forgingSession: 'forging session…',
       newSessionStarted: 'new session started',
+      previousKeptRunning: 'new session started · the previous one keeps running in the background (Ctrl+X to switch)',
       cancelLabel: 'No, keep going',
       confirmNew: 'Yes, start a new session',
       confirmClear: 'Yes, clear the session',
@@ -108,6 +109,9 @@ export const slashCmdCoreEn = {
       noConversation: 'no conversation yet',
       noActiveSession: 'no active session — nothing to save',
       saved: (file: string) => `conversation saved to: ${file}`,
+      savedOnHost: (file: string) => `conversation saved as raw JSON on the gateway host: ${file}`,
+      legacyRefused:
+        'not saved: this gateway does not serve /save export (an older gateway, or a sidecar without the session authority), so it cannot write a redacted, named or md/html copy. Attach to the gateway that owns the session or update it, or run plain /save to write raw JSON on the gateway host.',
       failed: 'failed to save'
     },
     focus: {
@@ -147,6 +151,12 @@ export const slashCmdCoreEn = {
     },
     retry: {
       nothing: 'nothing to retry'
+    },
+    // A refused /undo or /retry: main's busy text (tui_gateway/user_messages.py::busy_message).
+    busy: {
+      replying: (command: string) =>
+        `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+      compressing: (command: string) => `session busy — a /compress is running; run /${command} when it finishes.`
     }
   },
   debug: {

@@ -82,7 +82,8 @@ class SessionControlsMixin:
         value = text_selection(args)
         if value and value != "status":
             self._set_control(state, config_id, value)
-        option = next(o for o in self._config_options(state) if o.id == config_id)
+        public_id = {"reasoning": "reasoning_effort", "fast": "service_tier"}[config_id]
+        option = next(o for o in self._config_options(state) if o.id == public_id)
         return f"{option.name}: {option.current_value or 'provider default'} (this session)"
 
     def _reset_controls(self, state):
@@ -93,5 +94,5 @@ class SessionControlsMixin:
         state.agent.reasoning_config = resolve_reasoning_config(config, state.model)
         tier = parse_service_tier((config.get("agent") or {}).get("service_tier"))
         apply_control(state.agent, "fast", service_tier_word(tier))
-        state.control_values.clear()
+        state.control_values = {key: value for key, value in state.control_values.items() if key == 'model'}
         state.control_revision += 1

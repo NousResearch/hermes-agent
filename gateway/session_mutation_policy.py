@@ -1,6 +1,6 @@
-"""Prepare policy-only session reasoning, service tier and workspace edits.
+"""Prepare the policy-only session edits: session-scope reasoning and the workspace (Move to project).
 
-These rewrite the frozen LocalSessionPolicy the next turn runs under, re-bound like a model switch
+Both rewrite the frozen LocalSessionPolicy the next turn runs under, re-bound like a model switch
 (policy identity covers config/cwd, so its config-secret reference is re-fingerprinted).
 """
 import asyncio
@@ -20,46 +20,48 @@ def _rebind(authority, prepared, old, policy, **extra):
 
 
 async def prepare_reasoning(authority, live, payload, prepared):
-    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation."""
-    from gateway.session_policy import restore_policy
+    """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation. ``None``
+    (``/reasoning reset``) gives the level back to the profile."""
+    from gateway.session_policy import pin_reasoning_effort, profile_config, restore_policy, unpin_reasoning
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     frozen = old.config()
-    frozen.setdefault('agent', {})['reasoning_effort'] = payload['effort']
-    # An explicit session level wins over a per-model default, as at creation.
-    frozen['agent'].pop('reasoning_overrides', None)
-    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen), reasoning_pinned=True))
+    if payload['effort'] is not None:
+        pin_reasoning_effort(frozen, payload['effort'], session=True)
+    else:
+        # A bypass launch never reads the profile: its reset is the built-in default.
+        profile = {} if old.ignore_user_config else await asyncio.to_thread(profile_config, authority)
+        unpin_reasoning(frozen, profile)
+    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 
 async def prepare_service_tier(authority, live, payload, prepared):
-    """Validate an explicit paid tier against the next turn's route before freezing it."""
-    from agent.fast_mode import CODEX_TIER_WORDS, STATIC_TIERS, parse_exact_service_tier
-    from gateway.session_policy import restore_policy
+    """A durable tier pick, validated against the owner's next-turn route."""
+    from agent.fast_mode import parse_exact_service_tier, service_tier_word
+    from gateway.session_contract import SessionRef
+    from gateway.session_policy import SESSION_PINS, restore_policy
+    from gateway.session_tui_config import service_tier_options
+    from types import SimpleNamespace
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     tier = parse_exact_service_tier(payload['service_tier']) or None
     if tier is not None:
+        connection = SimpleNamespace(authority=authority)
+        options = await asyncio.to_thread(service_tier_options, connection,
+                                         SessionRef(authority.profile_id, live.source.chat_id), old)
+        from agent.fast_mode import CODEX_TIER_WORDS, STATIC_TIERS
         from gateway.session_authorities import owner_scope
 
-        def offered():
-            from agent.codex_service_tiers import ultrafast_offered
-            from hermes_cli.models import resolve_fast_mode_overrides
-            # Runtime resolution and entitlement reads belong to the owning profile, off-loop.
+        def sendable():
             with owner_scope(authority):
-                model, runtime = authority.runner._resolve_session_agent_runtime(
+                _model, runtime = authority.runner._resolve_session_agent_runtime(
                     source=live.source, session_key=live.route)
-                if (runtime.get('api_mode') == 'codex_app_server'
-                        and tier in STATIC_TIERS and tier not in CODEX_TIER_WORDS):
-                    return False
-                route = {'provider': runtime.get('provider'), 'base_url': runtime.get('base_url')}
-                if not model or resolve_fast_mode_overrides(model, **route, tier=tier) is None:
-                    return False
-                return tier != 'ultrafast' or ultrafast_offered(
-                    model, **route, access_token=runtime.get('api_key'))
-        if not await asyncio.to_thread(offered):
+                return not (runtime.get('api_mode') == 'codex_app_server'
+                            and tier in STATIC_TIERS and tier not in CODEX_TIER_WORDS)
+        if service_tier_word(tier) not in options or not await asyncio.to_thread(sendable):
             raise RuntimeStoreError('fast_unavailable')
     frozen = old.config()
     frozen.setdefault('agent', {})['service_tier'] = tier or 'normal'
-    policy = replace(old, config_json=json.dumps(frozen), service_tier_pinned=True)
-    return _rebind(authority, prepared, old, policy)
+    frozen[SESSION_PINS] = {**(frozen.get(SESSION_PINS) or {}), 'service_tier': True}
+    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 
 async def prepare_workspace(authority, live, payload, prepared):
@@ -83,4 +85,17 @@ async def prepare_workspace(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, policy, git={'branch': branch, 'root': root})
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'service_tier': prepare_service_tier, 'workspace': prepare_workspace}
+async def prepare_edit_policy(authority, live, payload, prepared):
+    """Main's ACP modes (Default / Accept Edits / Don't Ask) as the session's frozen edit approval
+    policy. Only an ACP session's edits ask an editor; selecting the current policy writes nothing."""
+    from gateway.session_policy import restore_policy
+    old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    if old.source != 'acp':
+        raise RuntimeStoreError('invalid_params', field='payload.policy',
+                                detail='only an ACP session has an editor edit approval policy')
+    if old.edit_approval_policy == payload['policy']:
+        return {'status': 'noop', 'edit_approval_policy': old.edit_approval_policy}
+    return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))
+
+
+PREPARE = {'reasoning': prepare_reasoning, 'service_tier': prepare_service_tier, 'workspace': prepare_workspace, 'edit_policy': prepare_edit_policy}

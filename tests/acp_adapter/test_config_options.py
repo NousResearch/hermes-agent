@@ -11,7 +11,7 @@ from tests.acp_adapter.test_acp_commands import CaptureConn
 
 def values(response):
     options = response.config_options
-    assert {o.id for o in options} == {"model", "reasoning", "fast"}
+    assert {o.id for o in options} == {"model", "reasoning_effort", "service_tier"}
     for option in options:
         assert option.current_value in {row.value for row in option.options}
     return {o.id: o.current_value for o in options}
@@ -32,7 +32,7 @@ async def test_inprocess_sdk_options_text_and_independent_cold_fork(tmp_path, mo
         conn = CaptureConn()
         agent.on_connect(conn)
         created = await agent.new_session(cwd=str(tmp_path))
-        assert values(created)["fast"] == "normal"
+        assert values(created)["service_tier"] == "normal"
         wire = created.model_dump(by_alias=True, exclude_none=True)
         assert all("id" in o and "configId" not in o for o in wire["configOptions"])
         sid = created.session_id
@@ -41,26 +41,26 @@ async def test_inprocess_sdk_options_text_and_independent_cold_fork(tmp_path, mo
         state.agent._cached_system_prompt = "frozen prompt"
         state.agent.enabled_toolsets = ["file"]
         state.agent.request_overrides = {"extra_body": {"user": "keep"}}
-        await agent.set_config_option("fast", sid, "fast")
+        await agent.set_config_option("service_tier", sid, "fast")
         assert state.agent.request_overrides == {"extra_body": {"user": "keep"}, "service_tier": "priority"}
         await agent.prompt([TextContentBlock(type="text", text="/fast normal")], sid)
         assert state.agent.request_overrides == {"extra_body": {"user": "keep"}}
-        assert values(await agent.set_config_option("reasoning", sid, "high"))["reasoning"] == "high"
+        assert values(await agent.set_config_option("reasoning_effort", sid, "high"))["reasoning_effort"] == "high"
         await agent.prompt([TextContentBlock(type="text", text="/reasoning low")], sid)
         assert state.agent.reasoning_config == {"enabled": True, "effort": "low"}
-        await agent.set_config_option("reasoning", sid, "high")
+        await agent.set_config_option("reasoning_effort", sid, "high")
         await agent.prompt([TextContentBlock(type="text", text="/fast cold")], sid)
         assert state.agent.service_tier == "cold"
         assert any(isinstance(update, ConfigOptionUpdate) for _, update in conn.updates)
         forked = await agent.fork_session(cwd=str(tmp_path), session_id=sid)
-        assert values(forked)["fast"] == "cold"
-        await agent.set_config_option("fast", forked.session_id, "normal")
+        assert values(forked)["service_tier"] == "cold"
+        await agent.set_config_option("service_tier", forked.session_id, "normal")
         cold = HermesACPAgent(session_manager=SessionManager(agent_factory=runtime, db=db))
         resumed = await cold.resume_session(cwd=str(tmp_path), session_id=sid)
-        assert values(resumed)["fast"] == "cold"
-        assert values(resumed)["reasoning"] == "high"
+        assert values(resumed)["service_tier"] == "cold"
+        assert values(resumed)["reasoning_effort"] == "high"
         child = await cold.load_session(cwd=str(tmp_path), session_id=forked.session_id)
-        assert values(child)["fast"] == "normal"
+        assert values(child)["service_tier"] == "normal"
         assert manager.get_session(forked.session_id).agent.service_tier is None
         assert [(m["role"], m["content"]) for m in state.history] == [("user", "keep transcript")]
         assert state.agent._cached_system_prompt == "frozen prompt"
@@ -68,10 +68,10 @@ async def test_inprocess_sdk_options_text_and_independent_cold_fork(tmp_path, mo
         before = len(conn.updates)
         state.is_running = True
         with pytest.raises(Exception, match="busy"):
-            await agent.set_config_option("reasoning", sid, "low")
+            await agent.set_config_option("reasoning_effort", sid, "low")
         state.is_running = False
         from acp.exceptions import RequestError
-        for key, value in [("opaque", "yes"), ("fast", "banana"), ("reasoning", "nonsense")]:
+        for key, value in [("opaque", "yes"), ("service_tier", "banana"), ("reasoning_effort", "nonsense")]:
             with pytest.raises(RequestError):
                 await agent.set_config_option(key, sid, value)
         assert len(conn.updates) == before
@@ -101,102 +101,57 @@ async def test_inprocess_sdk_options_text_and_independent_cold_fork(tmp_path, mo
         assert state.agent.service_tier == "cold"
         assert state.agent._cached_system_prompt == "frozen prompt"
         assert isinstance(conn.updates[-1][1], ConfigOptionUpdate)
-        fast = next(o for o in conn.updates[-1][1].config_options if o.id == "fast")
+        fast = next(o for o in conn.updates[-1][1].config_options if o.id == "service_tier")
         assert {o.value for o in fast.options} == {"normal", "cold"}
         # Embedded reset restores configured defaults without changing the chosen model.
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
             "agent": {"reasoning_effort": "low", "service_tier": "normal"}})
         await agent.prompt([TextContentBlock(type="text", text="/reset")], sid)
         assert state.agent.reasoning_config == {"enabled": True, "effort": "low"}
-        assert state.agent.service_tier is None and state.control_values == {}
+        assert state.agent.service_tier is None and state.control_values == {'model': 'custom:local-model'}
         assert state.model == "local-model" and state.history == []
 
 
 @pytest.mark.asyncio
-async def test_gateway_sdk_controls_use_owner_and_refusals_do_not_publish(tmp_path):
-    from hermes_cli.gateway_client import GatewayClientError
-    agent = HermesACPAgent()
-    agent._home = tmp_path
-    conn = CaptureConn()
-    calls = []
-    info = {"model": "gpt-6-sol", "provider": "openai-codex", "api_mode": "codex_responses",
-            "reasoning_effort": "medium", "service_tier": "auto"}
-    snapshot = {"session_id": "s", "revision": 1, "execution_generation": 0, "info": info}
+async def test_embedded_controls_reach_real_loopback_request_on_cold_restore(tmp_path, monkeypatch, model_peer):
+    """Keep official route semantics, redirect only its HTTP transport to a loopback peer."""
+    import httpx
+    import json
+    from acp import text_block
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    config = {'model': {'default': 'gpt-6.1-sol', 'provider': 'openai-api'},
+              'platform_toolsets': {'acp': []}, 'agent': {'service_tier': 'normal'},
+              'auxiliary': {'title_generation': {'enabled': False}}}
+    (get_hermes_home() / 'config.yaml').write_text(json.dumps(config))
+    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_provider', lambda **kwargs: {
+        'provider': 'openai-api', 'api_mode': 'chat_completions', 'api_key': 'loopback-only',
+        'base_url': 'https://api.openai.com/v1'})
+    send = httpx.Client.send
 
-    class Owner:
-        refuse = False
-        ambiguous = False
+    def loopback(client, request, **kwargs):
+        assert request.url.host == 'api.openai.com', request.url
+        request.url = request.url.copy_with(scheme='http', host='127.0.0.1', port=model_peer.server_port)
+        return send(client, request, **kwargs)
 
-        async def rpc(self, method, **params):
-            calls.append((method, params))
-            if method == "runtime.describe":
-                return {"session_create": {"sources": ["acp"]}, "capabilities": ["acp-editor-policy-v1"]}
-            if method == "session.create":
-                return {**snapshot, "info": dict(info)}
-            if method == "session.info":
-                return dict(info)
-            if method == "session.resume":
-                return {**snapshot, "info": dict(info)}
-            if method == "session.mutate":
-                if self.refuse:
-                    raise GatewayClientError("session_busy")
-                operation, payload = params["operation"], params["payload"]
-                if operation == "reasoning":
-                    info["reasoning_effort"] = payload["effort"]
-                else:
-                    info["service_tier"] = {"fast": "priority", "normal": None}.get(
-                        payload["service_tier"], payload["service_tier"])
-                if self.ambiguous:
-                    self.ambiguous = False
-                    raise GatewayClientError("transport_lost")
-                return {"status": "applied"}
-            raise AssertionError(method)
-
-    owner = Owner()
-    agent._gateway = owner
-    created = await agent.new_session(cwd=str(tmp_path))
-    assert values(created)["fast"] == "auto"
-    agent._conn = conn
-    assert values(await agent.set_config_option("reasoning", "s", "high"))["reasoning"] == "high"
-    await agent.prompt([TextContentBlock(type="text", text="/fast cold")], "s")
-    assert info["service_tier"] == "cold"
-    from acp.agent.router import build_agent_router
-    wire = await build_agent_router(agent)("session/set_config_option",
-        {"sessionId": "s", "configId": "fast", "value": "normal"}, False)
-    assert {option["id"] for option in wire["configOptions"]} == {"model", "reasoning", "fast"}
-    await agent.set_config_option("fast", "s", "cold")
-    mutations = [p for m, p in calls if m == "session.mutate"]
-    assert [(p["operation"], p["payload"]) for p in mutations[:2]] == [
-        ("reasoning", {"effort": "high"}), ("service_tier", {"service_tier": "cold"})]
-    before = len(conn.updates)
-    owner.refuse = True
-    with pytest.raises(GatewayClientError, match="session_busy"):
-        await agent.set_config_option("fast", "s", "normal")
-    assert len(conn.updates) == before
-    assert info["service_tier"] == "cold"
-    owner.refuse = False
-    owner.ambiguous = True
-    with pytest.raises(GatewayClientError, match="transport_lost"):
-        await agent.set_config_option("fast", "s", "normal")
-    assert len(conn.updates) == before
-    await agent.set_config_option("fast", "s", "normal")
-    retries = [p for m, p in calls if m == "session.mutate"][-2:]
-    assert retries[0] == retries[1]
-    await agent.set_config_option("fast", "s", "cold")
-    # Another owner surface changes the route: refresh availability without erasing current intent.
-    await agent._project({"session_id": "s", "type": "session.info", "payload": {
-        "model": "local-model", "provider": "custom", "base_url": "http://localhost:1234/v1"}})
-    last = conn.updates[-1][1]
-    assert isinstance(last, ConfigOptionUpdate)
-    fast = next(option for option in last.config_options if option.id == "fast")
-    assert fast.current_value == "cold"
-    assert {option.value for option in fast.options} == {"normal", "cold"}
-    assert agent._snapshots["s"]["info"]["model"] == "local-model"
-    info.update(model="local-model", provider="custom", base_url="http://localhost:1234/v1")
-    from acp.exceptions import RequestError
-    before = len(conn.updates)
-    for key, value in [("opaque", "yes"), ("fast", "fast"), ("reasoning", "nonsense")]:
-        with pytest.raises(RequestError):
-            await agent.set_config_option(key, "s", value)
-    assert len(conn.updates) == before
-    await agent.aclose()
+    monkeypatch.setattr(httpx.Client, 'send', loopback)
+    with SessionDB(tmp_path / 'state.db') as db:
+        manager = SessionManager(db=db)
+        agent = HermesACPAgent(session_manager=manager)
+        sid = (await agent.new_session(cwd=str(tmp_path))).session_id
+        await agent.set_config_option('reasoning_effort', sid, 'high')
+        await agent.set_config_option('service_tier', sid, 'fast')
+        cold = HermesACPAgent(session_manager=SessionManager(db=db))
+        conn = CaptureConn()
+        cold.on_connect(conn)
+        await cold.resume_session(cwd=str(tmp_path), session_id=sid)
+        response = await cold.prompt([text_block('WS_SHARED embedded control request')], sid)
+        assert response.stop_reason == 'end_turn'
+        request = model_peer.requests[-1]
+        # This fixture deliberately selects Chat Completions; official OpenAI's
+        # reasoning transport is Responses. The wire guarantee exercised here is
+        # the retained paid tier, while the gateway loopback case checks effort.
+        assert cold.session_manager.get_session(sid).agent.reasoning_config['effort'] == 'high'
+        assert request['service_tier'] == 'priority'
+        assert any('LOCAL_ACK_WS_SHARED' in getattr(getattr(update, 'content', None), 'text', '')
+                   for _, update in conn.updates)

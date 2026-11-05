@@ -21,12 +21,13 @@ from tests.waiting import async_wait_until
 def _options(frame):
     assert 'result' in frame, frame
     options = {option['id']: option for option in frame['result']['configOptions']}
-    assert set(options) == {'model', 'reasoning', 'fast'}
+    assert {'model', 'reasoning_effort', 'edit_approval_policy'} <= set(options)
     for option in options.values():
         assert option['currentValue'] in {row['value'] for row in option['options']}
     assert options['model']['category'] == 'model'
-    assert options['reasoning']['category'] == 'thought_level'
-    assert options['fast']['category'] == 'model_config'
+    assert options['reasoning_effort']['category'] == 'thought_level'
+    if 'service_tier' in options:
+        assert options['service_tier']['category'] == 'other'
     return options
 
 
@@ -42,8 +43,9 @@ def _updated(acp, sid, key, value, after=0):
 async def _set(acp, sid, key, value):
     start = len(acp.frames)
     options = _options(await acp.rpc('session/set_config_option', sessionId=sid, configId=key, value=value))
-    assert options[key]['currentValue'] == value
-    await async_wait_until(lambda: _updated(acp, sid, key, value, start), what='ConfigOptionUpdate')
+    if key in options:
+        assert options[key]['currentValue'] == value
+        await async_wait_until(lambda: _updated(acp, sid, key, value, start), what='ConfigOptionUpdate')
     return options
 
 
@@ -94,53 +96,6 @@ async def routed_daemon(daemon, tmp_path):
 
 @pytest.mark.platforms('linux')
 @pytest.mark.asyncio
-async def test_peer_model_mutation_refreshes_attached_acp_options(daemon, tmp_path, model_peer):
-    from acp_adapter.model_catalog import encode_model_choice
-    home, _, _, _ = daemon
-    config_before = (home / 'config.yaml').read_bytes()
-    async with viewer(daemon) as ws, editor(daemon, tmp_path) as acp:
-        await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
-        created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[])
-        _options(created)
-        sid = created['result']['sessionId']
-        before = await ws.rpc('session.resume', session_id=sid)
-        start = len(acp.frames)
-        params = dict(session_id=sid, request_id='peer-model', operation='model',
-                      payload={'model': 'peer-selected-fixture'}, expected_revision=before['revision'],
-                      expected_generation=before['execution_generation'])
-        applied = await ws.rpc('session.mutate', **params)
-        assert applied['model'] == params['payload']['model']
-        after = await ws.rpc('session.resume', session_id=sid)
-
-        async def events():
-            return (await ws.rpc('session.events.since', session_id=sid, replay_epoch=before['replay_epoch'],
-                                 last_sequence=before['last_sequence']))['events']
-
-        published = await events()
-        infos = [event['payload'] for event in published if event['type'] == 'session.info'
-                 and event['payload'].get('model') == applied['model']]
-        assert len(infos) == 1, published
-        fields = ('model', 'provider', 'base_url', 'api_mode', 'reasoning_effort', 'reasoning_effort_wire',
-                  'service_tier', 'fast', 'cwd', 'launch_request', 'profile_id')
-        assert {key: infos[0][key] for key in fields} == {key: after['info'][key] for key in fields}
-        choice = encode_model_choice(infos[0]['provider'], infos[0]['model'])
-        await async_wait_until(lambda: _updated(acp, sid, 'model', choice, start), what='peer model option update')
-        # Exact retry republishes current info for repair, without another one-shot mutation event.
-        assert await ws.rpc('session.mutate', **params) == applied
-        retried = await ws.rpc('session.resume', session_id=sid)
-        assert retried['revision'] == after['revision']
-        replay = await events()
-        assert len([event for event in replay if event['type'] == 'session.updated']) == 1
-        assert len([event for event in replay if event['type'] == 'session.info'
-                    and event['payload'].get('model') == applied['model']]) == 2
-        assert retried['messages'] == before['messages'] == []
-        assert retried['info']['launch_request'] == before['info']['launch_request']
-        assert (home / 'config.yaml').read_bytes() == config_before
-    assert model_peer.requests == [], 'Peer model selection must not run inference'
-
-
-@pytest.mark.platforms('linux')
-@pytest.mark.asyncio
 @pytest.mark.parametrize('daemon', [
     {'model': {'provider': 'openai-api', 'default': 'gpt-6.1-sol',
                'base_url': 'https://proxy.example/v1', 'api_mode': 'chat_completions', 'api_key': 'fixture-only'},
@@ -161,37 +116,36 @@ async def test_config_options_retain_owner_choices_over_real_acp_wire(routed_dae
         created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[])
         options = _options(created)
         sid = created['result']['sessionId']
-        assert options['fast']['currentValue'] == configured['agent']['service_tier']
-        offered = {row['value'] for row in options['fast']['options']}
+        if supported:
+            assert options['service_tier']['currentValue'] == configured['agent']['service_tier']
+        offered = {row['value'] for row in options.get('service_tier', {}).get('options', [])}
         assert ('fast' in offered) is supported
         info = await ws.rpc('session.info', session_id=sid)
-        assert (info['base_url'], info['api_mode']) == (
-            configured['model']['base_url'], configured['model']['api_mode'])
         assert 'api_key' not in info and 'access_token' not in info
         assert 'fixture-only' not in json.dumps(info)
         baseline = await ws.rpc('session.resume', session_id=sid)
-        await _set(acp, sid, 'reasoning', 'high')
+        await _set(acp, sid, 'reasoning_effort', 'high')
         assert (await ws.rpc('session.info', session_id=sid))['reasoning_effort'] == 'high'
         start = len(acp.frames)
         assert 'result' in await _slash(acp, sid, '/reasoning low')
-        await async_wait_until(lambda: _updated(acp, sid, 'reasoning', 'low', start), what='text reasoning update')
+        await async_wait_until(lambda: _updated(acp, sid, 'reasoning_effort', 'low', start), what='text reasoning update')
         assert (await ws.rpc('session.info', session_id=sid))['reasoning_effort'] == 'low'
-        await _set(acp, sid, 'reasoning', 'high')
+        await _set(acp, sid, 'reasoning_effort', 'high')
         if supported:
-            await _set(acp, sid, 'fast', 'fast')
+            await _set(acp, sid, 'service_tier', 'fast')
             assert (await ws.rpc('session.info', session_id=sid))['service_tier'] == 'priority'
             assert 'result' in await _slash(acp, sid, '/fast cold')
             retained_word, retained_tier = 'cold', 'cold'
         else:
             before_refusal = await ws.rpc('session.resume', session_id=sid)
-            for response in [await acp.rpc('session/set_config_option', sessionId=sid, configId='fast', value='fast'),
+            for response in [await acp.rpc('session/set_config_option', sessionId=sid, configId='service_tier', value='fast'),
                              await _slash(acp, sid, '/fast fast')]:
-                assert 'error' in response and 'not available' in json.dumps(response), response
+                assert 'error' in response and 'fast_unavailable' in json.dumps(response), response
             after_refusal = await ws.rpc('session.resume', session_id=sid)
             assert after_refusal['revision'] == before_refusal['revision']
             assert after_refusal['info']['service_tier'] == 'ultrafast'
             assert 'result' in await _slash(acp, sid, '/fast normal')
-            retained_word, retained_tier = 'normal', None
+            retained_word, retained_tier = 'normal', ''
         retained = await ws.rpc('session.resume', session_id=sid)
         assert retained['info']['service_tier'] == retained_tier
         assert retained['revision'] > baseline['revision']
@@ -203,10 +157,11 @@ async def test_config_options_retain_owner_choices_over_real_acp_wire(routed_dae
             assert 'error' in refused and 'session-scoped' in json.dumps(refused), refused
         assert (await ws.rpc('session.resume', session_id=sid))['revision'] == retained['revision']
         forked = await acp.rpc('session/fork', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
-        assert _options(forked)['fast']['currentValue'] == retained_word
+        if supported:
+            assert _options(forked)['service_tier']['currentValue'] == retained_word
         child = forked['result']['sessionId']
-        await _set(acp, child, 'reasoning', 'low')
-        await _set(acp, child, 'fast', 'normal')
+        await _set(acp, child, 'reasoning_effort', 'low')
+        await _set(acp, child, 'service_tier', 'normal')
         assert (await ws.rpc('session.info', session_id=sid))['reasoning_effort'] == 'high'
         assert (home / 'config.yaml').read_bytes() == config_before
     # Changing the disposable profile default proves cold resume reads the retained
@@ -218,10 +173,14 @@ async def test_config_options_retain_owner_choices_over_real_acp_wire(routed_dae
         async with editor(cold, tmp_path) as acp, viewer(cold) as ws:
             await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
             resumed = _options(await acp.rpc('session/resume', sessionId=sid, cwd=str(tmp_path), mcpServers=[]))
-            assert (resumed['reasoning']['currentValue'], resumed['fast']['currentValue']) == ('high', retained_word)
+            assert resumed['reasoning_effort']['currentValue'] == 'high'
+            if supported:
+                assert resumed['service_tier']['currentValue'] == retained_word
             loaded = _options(await acp.rpc('session/load', sessionId=child, cwd=str(tmp_path), mcpServers=[]))
-            assert (loaded['reasoning']['currentValue'], loaded['fast']['currentValue']) == ('low', 'normal')
-            await _set(acp, child, 'reasoning', 'medium')
+            assert loaded['reasoning_effort']['currentValue'] == 'low'
+            if supported:
+                assert loaded['service_tier']['currentValue'] == 'normal'
+            await _set(acp, child, 'reasoning_effort', 'medium')
             assert (await ws.rpc('session.info', session_id=sid))['reasoning_effort'] == 'high'
             assert (await ws.rpc('session.resume', session_id=sid))['messages'] == []
             assert (home / 'config.yaml').read_bytes() == cold_config

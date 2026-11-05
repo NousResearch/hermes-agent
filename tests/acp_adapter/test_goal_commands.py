@@ -313,7 +313,7 @@ async def test_cancel_during_queued_human_notification_preserves_fifo_and_pauses
 
 
 @pytest.mark.asyncio
-async def test_inprocess_goal_follows_compression_target_on_cold_load(tmp_path):
+async def test_inprocess_goal_follows_compression_target_on_cold_load(tmp_path, monkeypatch):
     from hermes_cli.goals import migrate_goal_to_session
     from tests.acp_adapter.test_config_options import runtime, values
 
@@ -348,12 +348,38 @@ async def test_inprocess_goal_follows_compression_target_on_cold_load(tmp_path):
     state.agent.session_id = child
     agent._handle_slash_command('/goal pause', state)
     assert GoalManager(child).state.status == 'paused'
-    cold = HermesACPAgent(session_manager=SessionManager(agent_factory=runtime_agent))
+    # A post-compression model pick belongs to the stable editor handle, while
+    # the transcript and execution identity stay on its compression tip.
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr('hermes_cli.model_switch.switch_model', lambda **kw: ModelSwitchResult(
+        success=True, target_provider='openai-api', new_model='gpt-6.1-sol'))
+    constructed = []
+
+    def routed_agent(**kwargs):
+        constructed.append(kwargs)
+        result = runtime_agent()
+        result.model = kwargs['model']
+        result.provider = kwargs['requested_provider']
+        result.base_url = kwargs.get('base_url') or 'https://api.openai.com/v1'
+        result.api_mode = kwargs.get('api_mode') or 'responses'
+        result.session_id = kwargs['session_id']
+        return result
+
+    monkeypatch.setattr(manager, '_make_agent', routed_agent)
+    await agent.set_session_model('openai-api:gpt-6.1-sol', root)
+    cold_manager = SessionManager(agent_factory=runtime_agent)
+    monkeypatch.setattr(cold_manager, '_make_agent', routed_agent)
+    cold = HermesACPAgent(session_manager=cold_manager)
     conn = CaptureConn()
     cold.on_connect(conn)
     loaded = await cold.load_session(cwd=str(tmp_path), session_id=root)
-    assert values(loaded)['reasoning'] == 'high'
-    assert values(loaded)['fast'] == 'fast'
+    assert values(loaded)['model'] == 'openai-api:gpt-6.1-sol'
+    assert state.agent.session_id == child
+    assert constructed[-1] == {'session_id': child, 'cwd': str(tmp_path), 'model': 'gpt-6.1-sol',
+                               'api_mode': 'responses', 'requested_provider': 'openai-api',
+                               'base_url': 'https://api.openai.com/v1'}
+    assert values(loaded)['reasoning_effort'] == 'high'
+    assert values(loaded)['service_tier'] == 'fast'
     await cold.prompt([acp.text_block('/goal status')], root)
     assert 'Finish after compaction' in conn.updates[-1][1].content.text
     restored = cold.session_manager.get_session(root)

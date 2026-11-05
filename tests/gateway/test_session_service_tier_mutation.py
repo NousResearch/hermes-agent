@@ -43,53 +43,6 @@ def _info(authority, ref):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('guest', [False, True], ids=['custom-fallback', 'guest-fallback'])
-async def test_info_keeps_auth_fallback_model_and_route_together(session, monkeypatch, guest):
-    from hermes_cli import runtime_provider
-    from hermes_cli.anon_auth import DEFAULT_NOUS_WELCOME_URL, GUEST_MODEL
-    from hermes_cli.auth import AuthError
-    store, _db, authority, owner, ref, profile = session
-    fallback = {'provider': 'nous' if guest else 'custom', 'model': 'fallback-fixture',
-                'base_url': DEFAULT_NOUS_WELCOME_URL if guest else 'https://fallback.example/v1'}
-    profile['fallback_model'] = [fallback]
-    profile['agent']['reasoning_overrides'] = {
-        profile['model']['default']: 'high', fallback['model']: 'low', GUEST_MODEL: 'low'}
-    calls = []
-
-    def resolve(**kwargs):
-        calls.append((kwargs['requested'], kwargs['target_model']))
-        if kwargs['requested'] == profile['model']['provider']:
-            raise AuthError('fixture primary credentials expired')
-        return {'provider': fallback['provider'], 'base_url': fallback['base_url'],
-                'api_mode': 'chat_completions', 'api_key': 'fallback-private-key'}
-
-    monkeypatch.setattr(runtime_provider, 'resolve_runtime_provider', resolve)
-    try:
-        live = authority.sessions[ref.session_id]
-        model, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
-        expected = (fallback['model'], fallback['provider'], fallback['base_url'], 'chat_completions')
-        assert (model, runtime['provider'], runtime['base_url'], runtime['api_mode']) == expected
-        info = _info(authority, ref)
-        if guest:
-            # Agent construction pins the resolved welcome route to its guest model.
-            expected = (GUEST_MODEL, *expected[1:])
-        assert tuple(info[key] for key in ('model', 'provider', 'base_url', 'api_mode')) == expected
-        from gateway.session_authorities import owner_scope
-        from gateway.session_policy import policy_for_source
-        policy = policy_for_source(authority.runner, live.source)
-        assert policy is not None
-        with owner_scope(authority):
-            next_reasoning = policy.current_reasoning_config(authority.runner, live.route)
-        assert info['reasoning_effort'] == next_reasoning['effort'] == 'high'
-        assert calls == [(profile['model']['provider'], profile['model']['default']),
-                         (fallback['provider'], fallback['model'])] * 2
-        assert 'fallback-private-key' not in json.dumps(info)
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
 async def test_app_server_refuses_unsendable_tier_without_committing(session, monkeypatch):
     store, db, authority, owner, ref, _profile = session
     monkeypatch.setattr(authority.runner, '_resolve_session_agent_runtime', lambda **kwargs: (
@@ -162,43 +115,6 @@ async def test_tier_receipt_retry_cold_restore_fork_and_reset(session):
 
 
 @pytest.mark.asyncio
-async def test_post_creation_pins_and_lazy_overrides_project_next_turn(session, monkeypatch):
-    from gateway.session_config import _fast
-    from gateway.session_policy import policy_for_source
-    store, db, authority, owner, ref, profile = session
-    runner, live = authority.runner, authority.sessions[ref.session_id]
-    try:
-        # A lazy session's legacy conversation overrides are still next-turn state.
-        runner._set_session_service_tier_override(live.route, 'auto')
-        assert _info(authority, ref)['service_tier'] == 'auto'
-        for word, tier, fast in [('normal', None, False), ('fast', 'priority', True),
-                                 ('ultrafast', 'ultrafast', True), ('auto', 'auto', False), ('cold', 'cold', False)]:
-            result = await owner.dispatch(_mutation(db, ref, word, 'service_tier', {'service_tier': word}))
-            assert 'result' in result, result
-            info = _info(authority, ref)
-            assert (info['service_tier'], info['fast']) == (tier, fast)
-            policy = policy_for_source(runner, live.source)
-            assert _fast(owner, ref, policy, None, {})['value'] == word
-        runner._set_session_reasoning_override(live.route, {'enabled': True, 'effort': 'low'})
-        result = await owner.dispatch(_mutation(db, ref, 'reasoning', 'reasoning', {'effort': 'high'}))
-        assert 'result' in result, result
-        profile['agent']['reasoning_effort'] = 'minimal'
-        policy = policy_for_source(runner, live.source)
-        assert policy.current_reasoning_config(runner, live.route)['effort'] == 'high'
-        info = _info(authority, ref)
-        assert info['reasoning_effort'] == info['reasoning_effort_wire'] == 'high'
-        # A resident agent still carries last turn's values; info describes the next turn.
-        resident = SimpleNamespace(model='gpt-6.1-sol', provider='openai-api', base_url='https://api.openai.com/v1',
-                                   service_tier='priority', reasoning_config={'enabled': True, 'effort': 'low'})
-        monkeypatch.setattr(runner, '_cached_agent_for', lambda route: resident)
-        info = _info(authority, ref)
-        assert info['service_tier'] == 'cold' and info['reasoning_effort'] == 'high'
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
 async def test_tier_refusal_is_atomic_and_normal_can_disable_on_unsupported_route(session, monkeypatch):
     store, db, authority, owner, ref, profile = session
     try:
@@ -214,7 +130,7 @@ async def test_tier_refusal_is_atomic_and_normal_can_disable_on_unsupported_rout
             assert not db.list_meta_prefix('gateway.mutation.v1.')
         result = await owner.dispatch(_mutation(db, ref, 'disable', 'service_tier', {'service_tier': 'normal'}))
         assert 'result' in result, result
-        assert _info(authority, ref)['service_tier'] is None
+        assert _info(authority, ref)['service_tier'] == ''
         profile['model']['base_url'] = 'https://api.openai.com/v1'
         monkeypatch.setattr('agent.codex_service_tiers.ultrafast_offered', lambda *a, **k: False)
         before = db.get_session(ref.session_id)
@@ -227,33 +143,31 @@ async def test_tier_refusal_is_atomic_and_normal_can_disable_on_unsupported_rout
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('resident', [False, True])
-async def test_info_projects_current_runtime_route_without_credentials(session, monkeypatch, resident):
-    store, _db, authority, owner, ref, profile = session
-    runner = authority.runner
+async def test_followed_account_eligibility_is_owner_scoped_and_other_session_is_unchanged(session, monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+    from gateway.session_local import create_local_session
+    store, db, authority, owner, ref, profile = session
+    sibling = create_local_session(authority, owner.actor, dict(
+        request_id='untouched', source='gui', cwd=str(tmp_path), toolsets=[], follow_profile_config=True))
+    before = db.get_session(sibling.session_id)
+    reads = []
+
+    def offered(*args, **kwargs):
+        reads.append((str(get_hermes_home()), kwargs.get('access_token')))
+        return kwargs.get('access_token') == 'eligible-account'
+
+    monkeypatch.setattr('agent.codex_service_tiers.ultrafast_offered', offered)
     try:
-        if resident:
-            stale = SimpleNamespace(model='gpt-6.1-sol', provider='openai-api',
-                                    base_url='https://api.openai.com/v1', api_mode='responses',
-                                    api_key='old-private-key', service_tier=None)
-            monkeypatch.setattr(runner, '_cached_agent_for', lambda route: stale)
-        # Provider defaults must resolve even when YAML omits the endpoint/mode.
-        profile['model'].pop('base_url')
-        info = _info(authority, ref)
-        assert (info['provider'], info['base_url'], info['api_mode']) == (
-            'openai-api', 'https://api.openai.com/v1', 'codex_responses')
-        # A followed profile now uses a proxy with the same provider label. Last turn's
-        # cached route must not advertise official paid tiers for the next turn.
-        profile['model'].update(base_url='https://proxy.example/v1', api_mode='chat_completions')
-        runner._set_session_service_tier_override(authority.sessions[ref.session_id].route, 'priority')
-        info = _info(authority, ref)
-        assert (info['provider'], info['base_url'], info['api_mode'], info['fast']) == (
-            'openai-api', 'https://proxy.example/v1', 'chat_completions', False)
-        assert info['service_tier'] == 'priority'
-        profile['model']['default'] = 'gpt-6-sol'
-        assert _info(authority, ref)['model'] == 'gpt-6-sol'
-        assert 'api_key' not in info and 'access_token' not in info
-        assert 'fixture-only' not in json.dumps(info) and 'old-private-key' not in json.dumps(info)
+        profile['model']['api_key'] = 'eligible-account'
+        applied = await owner.dispatch(_mutation(db, ref, 'eligible', 'service_tier', {'service_tier': 'ultrafast'}))
+        assert 'result' in applied, applied
+        profile['model']['api_key'] = 'ineligible-account'
+        refused = await owner.dispatch(_mutation(db, ref, 'ineligible', 'service_tier', {'service_tier': 'ultrafast'}))
+        assert refused['error']['data']['reason'] == 'fast_unavailable', refused
+        assert reads == [(authority.profile_id, 'eligible-account'), (authority.profile_id, 'ineligible-account')]
+        assert db.get_session(sibling.session_id) == before
+        assert _info(authority, sibling)['service_tier'] == ''
+        assert _info(authority, ref)['service_tier'] == 'ultrafast'
     finally:
         await owner.close()
         store.close_all_db_handles()

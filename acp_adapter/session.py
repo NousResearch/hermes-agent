@@ -496,8 +496,12 @@ class SessionManager:
         meta = _parse_model_config(row.get("model_config"))
         # ACP choices belong to the stable editor session; compression children
         # carry agent init metadata, not the adapter's authoritative controls.
-        controls = _parse_model_config(controls_row.get("model_config")).get("acp_controls")
-        cwd, model = meta.get("cwd", "."), row.get("model") or None
+        controls_meta = _parse_model_config(controls_row.get("model_config"))
+        controls = controls_meta.get("acp_controls")
+        model_row = row
+        if controls and controls.get("model"):
+            model_row, meta = controls_row, controls_meta
+        cwd, model = meta.get("cwd", "."), model_row.get("model") or None
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
@@ -510,8 +514,8 @@ class SessionManager:
         try:
             agent = self._make_agent(
                 session_id=target, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=meta.get("provider") or model_row.get("billing_provider"),
+                base_url=meta.get("base_url") or model_row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None

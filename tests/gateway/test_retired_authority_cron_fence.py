@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import run_runtime, session_bot, session_cron
-from gateway.session_contract import Principal, Submission
+from gateway.session_contract import SessionActor, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import REF, _Agent, _authority
 
-CRON = Principal('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')
+CRON = SessionActor('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')
 
 
 async def _cron_cancel(authority, receipt):
@@ -24,6 +24,16 @@ def _relay(operation, params):
     async def call(authority, receipt):
         session_bot.relay_operation(SimpleNamespace(authority=authority, actor=CRON), operation, params)
     return call
+
+
+async def _settle(authority, receipt):
+    await session_bot.settle(SimpleNamespace(authority=authority, actor=CRON),
+                             {'id': 'e' * 64, 'profile': 'default', 'message': 'ping'})
+
+
+def _no_receipt(db, home):
+    from tools.bot_live_delivery import read_delivery_result
+    return read_delivery_result(home, 'e' * 64) is None
 
 
 def _outbox(home):
@@ -61,6 +71,7 @@ SITES = {
                         lambda db, home: not (home / 'bot_relay').exists()),
     'bot_relay.roster.sync': (_relay('roster', {'agents': []}), None,
                               lambda db, home: not (home / 'bot_relay').exists()),
+    'bot_relay.settle': (_settle, None, _no_receipt),
 }
 
 

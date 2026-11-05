@@ -83,3 +83,31 @@ async def test_goal_follows_up_in_editor_and_survives_cold_load(daemon, tmp_path
             await _slash(acp, sid, '/goal')
             assert 'No active goal' in json.dumps(acp.frames[before:])
     assert (home / 'config.yaml').read_bytes() == config_before
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('daemon', [{'model': {'default': 'gpt-5'}}], indirect=True)
+async def test_retained_controls_reach_the_next_model_request_after_restart(daemon, tmp_path, model_peer):
+    """Real ACP -> owning gateway -> loopback inference, not just a setter receipt."""
+    async def turn(acp, sid):
+        start = len(acp.frames)
+        result = await _slash(acp, sid, 'WS_SHARED control request')
+        assert result.get('result', {}).get('stopReason') == 'end_turn', result
+        assert 'LOCAL_ACK_WS_SHARED' in json.dumps(acp.frames[start:])
+        request = model_peer.requests[-1]
+        assert request['reasoning_effort'] == 'high', request
+        assert request.get('service_tier') in (None, 'default'), request
+
+    async with editor(daemon, tmp_path) as acp:
+        await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+        sid = (await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[]))['result']['sessionId']
+        assert 'result' in await acp.rpc('session/set_config_option', sessionId=sid,
+                                       configId='reasoning_effort', value='high')
+        assert 'result' in await _slash(acp, sid, '/fast normal')
+        await turn(acp, sid)
+    async with _restarted(daemon, tmp_path) as cold:
+        async with editor(cold, tmp_path) as acp:
+            await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+            assert 'result' in await acp.rpc('session/resume', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+            await turn(acp, sid)

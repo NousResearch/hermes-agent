@@ -120,9 +120,9 @@ hermes acp --check
 
 ### Browser tools (optional)
 
-Browser tools (`browser_navigate`, `browser_click`, etc.) depend on the
-`agent-browser` npm package and Chromium, which aren't part of the Python
-wheel. Install them with:
+Browser tools (`browser_exec` and the CDP tools `browser_cdp`,
+`browser_dialog`, `browser_vault`) need a local Chromium, which isn't part of
+the Python wheel. Install it with:
 
 ```bash
 hermes acp --setup-browser           # interactive (prompts before ~400 MB download)
@@ -133,9 +133,8 @@ This is the standalone command. The terminal-auth flow (`hermes acp --setup`) al
 
 What it does:
 
-- Installs Node.js 26 into `~/.hermes/node/` if missing
-- `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
-- Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
+- Installs Hermes' pinned Chromium (the `chromium` package) through the package manager; no Node.js or npm involved
+- Hermes launches that Chromium itself when `browser_exec` first needs a browser
 
 The bootstrap is idempotent — re-running it is fast and skips work that's already done.
 
@@ -334,6 +333,19 @@ ACP mode uses the same Hermes configuration as the CLI:
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run ACP clients; this opens Hermes' interactive model/provider setup.
 
+### Service-tier picker
+
+ACP clients that render `configOptions` can select **Service tier** for a supported
+model route: **Normal**, **Fast**, **Auto**, **Cold**, and **Ultrafast** when its
+model and account eligibility checks permit it. The gateway supplies the choices
+and validates each selection; unsupported routes do not show the picker.
+
+The selection applies to that session's next turn, not to every Hermes session,
+and does not write `config.yaml`. Reloading the editor preserves the selection
+while the same gateway session remains alive. Changes from another attached
+client update the ACP picker as well. See [the `/fast` reference](../../reference/slash-commands.md)
+for the bounded Auto and Cold modes.
+
 ## Host integration
 
 Older ACP hosts may still set this variable on the Hermes subprocess they
@@ -383,7 +395,8 @@ confirmed unwanted sessions with `hermes sessions delete <id>`.
 
 ### Model, reasoning and fast controls
 
-Hermes advertises native `configOptions` for **Model**, **Reasoning** and **Fast mode**
+Hermes advertises native `configOptions` for **Model**, **Reasoning effort** and,
+when the owner offers eligible choices, **Service tier**
 on new, loaded, resumed and forked sessions. These use the pinned SDK's negotiated
 protocol v1 select options; this does not imply full ACP v2 support. Legacy model
 and mode fields remain available. Hosts decide how to render the selectors; SDK
@@ -395,13 +408,15 @@ show current settings. Changes apply to this session and survive resume and fork
 changing a fork's settings leaves its parent unchanged. `--global` is rejected:
 change profile defaults through Hermes configuration instead.
 
-Reasoning choices follow the current model route's canonical effort vocabulary.
-Fast choices follow route support and Ultrafast availability. **Paid fast tiers can
-increase cost** and require an explicit choice or a previously configured default.
-Selecting a model does not enable a paid tier. `auto` opens a bounded fast window
-on each user turn; `cold` opens one only on a session's first turn. Existing tier
-intent remains visible when switching to a route where it cannot apply; choose
-`normal` to disable it. Unsupported new selections are refused.
+Reasoning uses Hermes' canonical effort vocabulary; the model transport determines
+its supported wire effort. Service-tier choices come from the owning gateway's
+route/account eligibility. **Paid fast tiers can increase cost** and require an
+explicit choice or a previously configured default. Selecting a model does not
+enable a paid tier. `auto` opens a bounded fast window on each user turn; `cold`
+opens one only on a session's first turn. Stored tier intent survives a route
+change; the gateway can omit the tier selector when no choices are offered.
+Use `/fast normal` to disable retained intent even on an unsupported route.
+Unsupported new selections are refused.
 
 Native and text controls use the same mutation boundaries. Busy sessions and
 owner refusals do not publish a successful setting change. Successful changes and

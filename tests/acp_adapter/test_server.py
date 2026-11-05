@@ -47,7 +47,7 @@ def agent(mock_manager):
 async def test_new_session_exposes_controls_and_edit_approval_modes(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert {option.id for option in resp.config_options} == {"model", "reasoning", "fast"}
+    assert {option.id for option in resp.config_options} == {"model", "reasoning_effort", "service_tier"}
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -68,7 +68,7 @@ async def test_set_config_option_retains_edit_approval_compatibility(agent):
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert {option.id for option in update.config_options} == {"model", "reasoning", "fast"}
+    assert {option.id for option in update.config_options} == {"model", "reasoning_effort", "service_tier"}
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -345,7 +345,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert {option["id"] for option in config_result["configOptions"]} == {"model", "reasoning", "fast"}
+        assert {option["id"] for option in config_result["configOptions"]} == {"model", "reasoning_effort", "service_tier"}
 
 
 

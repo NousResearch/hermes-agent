@@ -43,6 +43,21 @@ def control_session(request, tmp_path):
     agent._snapshots["s"] = snapshot
 
     async def rpc(method, **params):
+        if method == "slash.exec":
+            value = params['command'].split(maxsplit=1)
+            if len(value) == 2 and value[1] != 'status':
+                info['reasoning_effort'] = value[1]
+                mutations.append(('reasoning', {'effort': value[1]}))
+            return {'type': 'text', 'output': f"Reasoning: {info['reasoning_effort']} (this session)"}
+        if method == 'config.set':
+            assert params['key'] == 'fast'
+            mutations.append(('service_tier', {'service_tier': params['value']}))
+            info['service_tier'] = None
+            return {'key': 'fast', 'value': params['value']}
+        if method == "config.get":
+            if params['key'] == 'fast':
+                return {'value': 'normal'}
+            return {'value': 'normal', 'options': ['normal']}
         if method == "session.info":
             return dict(info)
         if method == "session.resume":
@@ -65,7 +80,7 @@ def control_session(request, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("suffix", ["", "<runtime_info>Harness context</runtime_info>", RUNTIME_CONTEXT],
+@pytest.mark.parametrize("suffix", ["", RUNTIME_CONTEXT.split("\n\n")[0], RUNTIME_CONTEXT],
                          ids=["plain", "runtime-only", "t3-runtime-and-pr"])
 async def test_text_controls_ignore_only_trailing_runtime_context(control_session, suffix):
     session = control_session

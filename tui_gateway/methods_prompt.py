@@ -5,6 +5,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+import re
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -293,6 +294,11 @@ def _legacy_group_fence_error(rid, session, params):
     second renderer driver)."""
     title = str(session.get("title") or "")
     room_id = title.removeprefix("Group: ").strip() if title.startswith("Group: ") else ""
+    # A retitled pre-migration row keeps its room mapping: the suffix marks state the
+    # gateway's own label write moved aside (#149682). Only gateway room rows carry it —
+    # a user-titled chat with the same wording must keep its base behavior (no fence).
+    if session.get("source") == "bot_room":
+        room_id = re.sub(r" \(standalone( \d+)?\)$", "", room_id).strip()
     if not room_id:
         return None
     try:

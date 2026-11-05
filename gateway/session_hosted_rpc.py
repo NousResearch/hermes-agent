@@ -15,18 +15,35 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 # Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
 _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
+def _rooms_claimed_in(rooms_db, sql, args):
+    """Read a room claim from the canonical coordination registry (read-only)."""
+    import sqlite3
+    conn = sqlite3.connect(f"file:{rooms_db}?mode=ro", uri=True, timeout=5.0)
+    try:
+        return conn.execute(sql, args).fetchone()
+    finally:
+        conn.close()
+
+
 class HostedRoomAuthorityRPC:
     accepts_attachments = True  # submit resolves event-bound bytes per member
 
-    def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
+    def __init__(self, authority, loop, *, room_id, member_id, profile, principal, claim_source=None,
                  authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop
+        # Home (or state.db path) of the authority whose service claimed this room;
+        # None means this authority's own store (the service-constructed case).
+        self.claim_source = claim_source
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
         self.authorize_write = authorize_write
@@ -113,7 +130,74 @@ class HostedRoomAuthorityRPC:
         await tracked_write(self.authority, partial(self.authority.db._execute_write, label))
         return await self._resume(params)
 
+    async def _repair_unlabeled_room_session(self):
+        """Idempotent convergence for a room session committed but never labeled."""
+        from hermes_state_runtime import _epoch
+        room_title = f'Group: {self.room_id}'
+
+        from gateway.hosted_rooms import local_authority_gateway_id
+        # The claiming registry is the claiming service's coordination database: the
+        # authority whose service claimed this room. Service-constructed RPCs claim in
+        # their own store (claim_source=None); member dispatch carries the claiming
+        # home in the binding (source_home). Never shared-state.db — that file is the
+        # handoff source and the profile-gateway grants registry, not where
+        # import_standalone_rooms or the driver bind rooms.
+        source = self.claim_source
+        if source is None:
+            claiming_db = Path(self.authority.db.db_path)
+        else:
+            source = Path(source)
+            claiming_db = source if source.name == 'state.db' else source / 'state.db'
+        same_file = claiming_db == Path(self.authority.db.db_path)
+
+        def repair(conn):
+            _epoch(conn, self.authority.epoch)
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_rooms'").fetchone():
+                # Our own store carries the registry: an in-transaction check is atomic
+                # for rooms claimed here (the default-profile case).
+                if conn.execute(
+                        "SELECT 1 FROM hosted_rooms WHERE room_id=? AND authority_gateway_id=?",
+                        (self.room_id, local_authority_gateway_id())).fetchone() is not None:
+                    conn.execute(
+                        "UPDATE sessions SET title=?, hidden=1 WHERE id=? AND ifnull(title,'')=''",
+                        (room_title, self.ref.session_id))
+                    return
+            if same_file:
+                return  # no other registry to consult for this install
+            conn.execute(
+                "UPDATE sessions SET title=?, hidden=1 WHERE id=? AND ifnull(title,'')=''",
+                (room_title, self.ref.session_id))
+
+        if not same_file:
+            # The claiming registry lives in another file: check the claim just before
+            # the write. A demotion racing inside this window is bounded by the
+            # compare-and-set (only a never-labeled row can be touched).
+            import sqlite3 as _sq
+            sql = "SELECT 1 FROM hosted_rooms WHERE room_id=? AND authority_gateway_id=?"
+            args = (self.room_id, local_authority_gateway_id())
+            try:
+                if _rooms_claimed_in(claiming_db, sql, args) is None:
+                    return  # demoted to a peer: never label a room we no longer serve
+            except (OSError, _sq.Error):
+                return  # registry unreadable: fail closed, the normal path still runs
+        from functools import partial
+        from gateway.session_runtime_workers import tracked_write
+        try:
+            await tracked_write(self.authority, partial(self.authority.db._execute_write, repair))
+        except Exception as exc:  # health: allow BLE001 -- best-effort convergence only
+            # Best-effort: a busy store or still-squatted title must surface through the
+            # normal create/label path on the next attempt, never block the turn.
+            logger.warning("hosted rooms: unlabeled room-session repair deferred for %s (%s)",
+                           self.room_id, exc)
+
     async def _resume(self, params):
+        # Every entry path (create retry, driver resolve_exact, resume) converges here:
+        # a room session committed but never labeled (title squatted by pre-migration
+        # state before the import sweep ran, or a crash between commit and label) would
+        # otherwise strand forever behind a successful-looking resume. (#149682)
+        existing = self.authority.db.get_session(self.ref.session_id)
+        if existing is not None and existing.get('title') is None:
+            await self._repair_unlabeled_room_session()
         await self.authority.resolve(self.principal, self.ref)
         return {'session_id': self.ref.session_id, 'title': f'Group: {self.room_id}'}
 

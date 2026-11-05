@@ -48,6 +48,30 @@ class TestFormatters:
         assert decoded["signal"] == "SIGTERM"
         assert "weird" in decoded
 
+    def test_formats_accepted_planned_stop_provenance_without_raw_marker(self):
+        ctx = sf.snapshot_shutdown_context(
+            None,
+            accepted_planned_stop={
+                "stopper_pid": 41,
+                "target_pid": 42,
+                "target_start_time": 123.5,
+                "written_at": "2026-10-16T04:48:32+00:00",
+                "origin": "--token=not-for-logs",
+            },
+        )
+
+        assert ctx["accepted_planned_stop"] == {
+            "stopper_pid": 41,
+            "target_pid": 42,
+            "target_start_time": 123.5,
+            "written_at": "2026-10-16T04:48:32+00:00",
+        }
+        line = sf.format_context_for_log(ctx)
+        assert "planned_stop_stopper_pid=41" in line
+        assert "planned_stop_target_pid=42" in line
+        assert "planned_stop_written_at=2026-10-16T04:48:32+00:00" in line
+        assert "not-for-logs" not in line
+
 # ---------------------------------------------------------------------------
 # persisted snapshots must never include process argv (#112459)
 # ---------------------------------------------------------------------------

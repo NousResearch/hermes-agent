@@ -1198,6 +1198,10 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             key, sep, value = m.groups()
             quote = value[0] if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0] else ""
             inner = value[1:-1] if quote else value
+            # An empty or docs-placeholder scalar (``""``, ``"<your key>"``, ``"${API_KEY}"``) is not
+            # a credential; masking it hides what the config expects, as _redact_db already rules.
+            if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)):
+                return m.group(0)
             if not _should_redact_assignment(key, inner, check_keyword=True):
                 return m.group(0)
             return f"{key}{sep}{quote}{mask(inner)}{quote}"

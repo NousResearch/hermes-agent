@@ -84,14 +84,14 @@ def codex_account_headers(access_token: str) -> dict[str, str]:
 def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) -> dict[str, list] | None:
     """httpx ``event_hooks`` that zstd-compress Responses request bodies for the official Codex backend.
 
-    Parity with the official Codex client (zstd on ``/responses`` with ChatGPT auth, default since
-    openai/codex#10102). Lossless transport encoding: tokens and prompt caching are unchanged. Uses the
-    stdlib codec (Python 3.14+); without it, or for any other endpoint/proxy, bodies stay raw JSON.
+    Opt-in only: the official backend rejects some valid zstd bodies with an opaque HTTP 400
+    (NousResearch/hermes-agent#148898). Use plain JSON by default so a turn needs no replay.
+    Compression requires the stdlib codec (Python 3.14+) and is never used for proxies.
     """
     if not is_official_codex_base_url(base_url):
         return None
     from hermes_cli.config import cfg_get, load_config_readonly
-    if cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=True) is False:
+    if cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=False) is not True:
         return None
     try:
         from compression import zstd

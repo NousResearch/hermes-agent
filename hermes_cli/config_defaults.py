@@ -115,13 +115,10 @@ DEFAULT_CONFIG = {
         # many slow/unreachable MCP servers.
         # See #63078.
         "build_wait_timeout": 600,
-        # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
-        # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
-        # failover to fallback providers; raise to tolerate longer provider hiccups.
+        # Hermes retries transient API errors around the OpenAI SDK's own retries (max_retries=2).
+        # Set 1 for fast fallback, or raise it to tolerate longer provider hiccups.
         "api_max_retries": 3,
-        # Official ChatGPT Codex /responses transport only. Disable if this backend
-        # rejects zstd-compressed bodies; defaults to official-client parity.
-        "codex_request_compression": True,
+        "codex_request_compression": False,  # Official Codex can reject zstd request bodies.
         # Once api_max_retries AND the fallback chain are spent on a transient outage (5xx,
         # overloaded/529, connect/read timeouts) with nothing delivered yet, wait and retry this many
         # more cycles (jittered 15/30/60/60/60s; a provider Retry-After wins up to 120s) with a

@@ -4,7 +4,7 @@ from pm import install, paths
 from pm._uv import _toolchain
 from pm.lock import Facts, Lockfile
 from pm.registry import get_package
-from pm.store import current_target
+from pm.store import Store, current_target
 
 
 def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypatch):
@@ -62,3 +62,45 @@ def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypa
                                            allow_outdated=True)
     assert fallback is not None
     assert fallback[0].get("uv")["version"] == "2.0"
+
+
+def test_outdated_fallback_preserves_search_root_priority(tmp_path, monkeypatch):
+    first, second = tmp_path / "user-store", tmp_path / "system-store"
+    monkeypatch.setattr(paths, "store_root", lambda: first)
+    target = current_target()
+    package = get_package("uv")
+    pins = Lockfile(tmp_path / "current.json")
+    pins.set_pin("uv", "3.0", {target: {"url": "https://invalid.test/uv",
+                                         "sha256": "3" * 64}})
+
+    for root, version, sha in ((first, "1.0", "1" * 64),
+                               (second, "2.0", "2" * 64)):
+        store = Store(root)
+        entry = store.entry(package.store_entry(version, target))
+        binary = package.binary(entry, target)
+        assert binary is not None
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"fixture")
+        binary.chmod(0o755)
+        Facts(root / "facts.json").record(
+            "uv", version, entry.name, package.env(entry, target), store.root,
+            target=target, artifacts=[sha], digest="f" * 64,
+        )
+
+    # Neither store matches the current pin; the first usable root wins.
+    fallback = install._installed_location(
+        package, pins, target, allow_outdated=True, roots=(first, second),
+    )
+    assert fallback is not None
+    assert fallback[1].root == Store(first).root
+    assert fallback[0].get("uv")["version"] == "1.0"
+
+    # A current pin in a later root still outranks an earlier outdated entry.
+    pins.set_pin("uv", "2.0", {target: {"url": "https://invalid.test/uv",
+                                         "sha256": "2" * 64}})
+    current = install._installed_location(
+        package, pins, target, allow_outdated=True, roots=(first, second),
+    )
+    assert current is not None
+    assert current[1].root == Store(second).root
+    assert current[0].get("uv")["version"] == "2.0"

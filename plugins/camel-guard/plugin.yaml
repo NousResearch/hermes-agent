@@ -1,11 +1,11 @@
 name: camel-guard
-version: "1.1.0"
+version: "1.1.1"
 manifest_version: 2
 requires_hermes: ">=0.22.7"
 description: "Opt-in CaMeL-style capability guard for untrusted tool data."
 author: "nativ3ai"
 license: MIT
-homepage: "https://github.com/nativ3ai/hermes-agent-camel"
+homepage: "https://github.com/nativ3ai/hermes-camel-guard-plugin"
 tags: [security, prompt-injection, guardrails]
 provides_hooks:
   - pre_llm_call

@@ -54,12 +54,14 @@ async def call(connection, method, **params):
     return reply.get('result', reply.get('error', {}).get('message'))
 
 
-async def serve(gateway, monkeypatch, port=None):
+async def serve(gateway, monkeypatch, port=None, *, stop=False):
     app = web.Application()
     for method, path, handler in api_server_room_grants._http_routes(gateway.adapter):
         app.router.add_route(method, path, handler)
     app.router.add_post('/v1/runs', gateway.adapter._handle_runs)
     app.router.add_get('/v1/runs/{run_id}', gateway.adapter._handle_get_run)
+    if stop:
+        app.router.add_post('/v1/runs/{run_id}/stop', gateway.adapter._handle_stop_run)
     server = TestServer(app, port=port)
     await server.start_server()
     url = str(server.make_url('')).rstrip('/')
@@ -77,8 +79,8 @@ async def linked_room(gateway, catalog, room_id='linked'):
 
 
 @pytest_asyncio.fixture
-async def linked_peer(gateway, monkeypatch):
-    server, url = await serve(gateway, monkeypatch)
+async def linked_peer(gateway, monkeypatch, request):
+    server, url = await serve(gateway, monkeypatch, stop=getattr(request, 'param', False))
     try:
         catalog = room_link(gateway.authority)['catalog']
         room = await linked_room(gateway, catalog)
@@ -665,23 +667,43 @@ async def test_a_deferred_peer_turn_offers_retry_on_its_own_generation(gateway, 
 
 
 @pytest.mark.asyncio
-async def test_discard_settles_a_deferred_peer_turn_with_no_receipt_while_its_member_is_down(
-        gateway, monkeypatch, linked_peer):
-    """Without a receipt Stop has no run to stop and Retry fails while the member is unreachable;
-    Discard lets the user settle that turn, so it no longer holds Stop or Disband."""
+async def test_discard_keeps_a_deferred_peer_turn_while_its_member_is_down(gateway, monkeypatch, linked_peer):
+    """Without a receipt nothing proves what the member's gateway did with the turn, so while it is
+    unreachable Discard keeps the turn, as Disband does, and says why."""
     from gateway import hosted_room_driver as driver
     server = linked_peer[0]
     service, db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
     await server.close()
-    assert await call(gateway.owner, 'groups.retry', room_id='linked', member_id='reviewer',
+    assert await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
                       task_id=identity.task_id, execution_generation=1) == 'peer_unreachable'
+    assert driver.get_task(db, identity)['status'] == 'deferred'
     with pytest.raises(RuntimeError, match='still stopping'):
         await asyncio.to_thread(service.stop_room, 'linked', cancel_id='d', require_acknowledged=True)
-    discarded = await call(gateway.owner, 'groups.discard', room_id='linked', member_id='reviewer',
-                           task_id=identity.task_id, execution_generation=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('linked_peer', [True], indirect=True)
+async def test_discard_of_an_admitted_peer_turn_stops_its_run_before_disband(gateway, monkeypatch, linked_peer):
+    """The member's gateway admitted the turn (its run is queued there) and answers. Discard finds
+    that run under the turn's own key and settles the turn only once the member confirms it stopped,
+    so Disband never tombstones the room while the member's run still executes."""
+    from gateway import hosted_room_driver as driver
+    _service, db, identity = await _deferred_unreceipted_peer_turn(gateway, monkeypatch, linked_peer)
+    adapter = gateway.adapter
+    run_id, = list(adapter._run_statuses)
+    assert adapter._run_statuses[run_id]['status'] == 'queued'
+    control = dict(room_id='linked', member_id='reviewer', task_id=identity.task_id, execution_generation=1)
+    # The member's gateway is asked to stop that run; until it confirms, the turn holds.
+    assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
+    assert adapter._run_statuses[run_id]['status'] == 'stopping'
+    assert driver.get_task(db, identity)['status'] == 'deferred'
+    with pytest.raises(RuntimeError, match='still stopping'):
+        await call(gateway.owner, 'groups.disband', room_id='linked')
+    adapter._set_run_status(run_id, 'cancelled')  # the member's run ends
+    discarded = await call(gateway.owner, 'groups.discard', **control)
     assert isinstance(discarded, dict) and discarded['discarded'], discarded
     assert driver.get_task(db, identity)['status'] == 'cancelled'
-    assert await asyncio.to_thread(service.stop_room, 'linked', cancel_id='d2', require_acknowledged=True) == 0
+    assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id='linked')
 
 
 @pytest.mark.asyncio

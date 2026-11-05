@@ -30,6 +30,12 @@ def test_plain_ascii_wraps_exactly_like_textwrap():
     assert _wrap_panel_text(text, 30) == textwrap.wrap(text, 30, break_long_words=False, break_on_hyphens=False)
 
 
+def test_a_combining_accent_stays_with_its_letter_and_rows_fit():
+    rows = _wrap_panel_text("中中中中e\u0301", 8)
+    assert all(get_cwidth(row) <= 8 for row in rows)
+    assert "".join(rows) == "中中中中e\u0301" and not rows[-1].startswith("\u0301")
+
+
 def test_other_panels_keep_long_words_whole():
     """Only the backtrack pager hard-splits: approval/clarify panels keep main's textwrap output."""
     url = "https://example.com/" + "a" * 120

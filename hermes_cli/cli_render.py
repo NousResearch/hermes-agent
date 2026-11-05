@@ -991,6 +991,24 @@ def _clip_cells(text: str, limit: int) -> str:
     return "".join(out) + "…"
 
 
+def _cell_prefix(text: str, width: int) -> str:
+    """The longest prefix of ``text`` within ``width`` cells (at least one character), never
+    splitting a base character from the combining marks after it."""
+    clusters: list[str] = []
+    for ch in text:
+        if clusters and _cells(ch) == 0:
+            clusters[-1] += ch
+        else:
+            clusters.append(ch)
+    used, out = 0, []
+    for cluster in clusters:
+        if out and used + _cells(cluster) > width:
+            break
+        out.append(cluster)
+        used += _cells(cluster)
+    return "".join(out)
+
+
 def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
     """Greedy wrap by terminal cells, for text holding wide characters: CJK text has no spaces to
     break at, so a word wider than the row is split wherever the row ends."""
@@ -1002,7 +1020,7 @@ def _wrap_cells(part: str, width: int, indent: str, keep_ws: bool) -> list[str]:
         else:
             row += token
         while _cells(row) > width:
-            head = _clip_cells(row, width + 1)[:-1]  # the widest prefix that fits, no ellipsis
+            head = _cell_prefix(row, width)
             rows.append(head)
             row = indent + row[len(head):]
     return [*rows, row] if row.strip() or not rows else rows

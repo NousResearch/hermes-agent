@@ -247,10 +247,12 @@ _WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORE
 # the options known to take one, so `powershell -NoProfile wmic ...` keeps wmic as the script.
 _CARRIER_SWITCHES_RE = re.compile(
     r"""(?:\s*+(?:/\w++(?::\S*+)?|-(?:ExecutionPolicy|ep|ex|WindowStyle|w|Version|v|WorkingDirectory|wd"""
-    r"""|ConfigurationName|config|SettingsFile|settings|OutputFormat|of|InputFormat|inp|if|u|p|i|o|l|J|F)"""
-    r"""\s++[^\s;&|]++|-\w++|"[^"\\\n]*+"(?=\s*+["\w\\/])))*+""",
+    r"""|ConfigurationName|config|SettingsFile|settings|OutputFormat|of|InputFormat|inp|if|u|p|i|o|l|J|F|a)"""
+    r"""\s++(?:"[^"\n]*+"|'[^'\n]*+'|[^\s;&|]++)|--?\w*+))*+""",
     re.IGNORECASE,
 )
+# `start "title" prog`: start alone takes a quoted window title before the program.
+_START_TITLE_RE = re.compile(r"""\s*+"[^"\\\n]*+"(?=\s*+["\w\\/])""")
 
 
 class _WmicShadowDeleteMatcher:
@@ -272,20 +274,28 @@ class _WmicShadowDeleteMatcher:
                 if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + _shell_command_segment(text, end)):
                     return match
             elif name in self._CARRIERS and depth < self._MAX_DEPTH:
-                if match := self.search(self._carrier_script(name, _shell_command_segment(text, end)), depth + 1):
-                    return match
+                for script in self._carrier_script(name, _shell_command_segment(text, end)):
+                    if match := self.search(script, depth + 1):
+                        return match
         return None
 
     @staticmethod
-    def _carrier_script(name: str, rest: str) -> str:
-        rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1).lstrip()
+    def _carrier_script(name: str, rest: str) -> tuple[str, ...]:
+        rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1)
+        if name == "start":
+            rest = _CARRIER_SWITCHES_RE.sub("", _START_TITLE_RE.sub("", rest, count=1), count=1)
+        rest = rest.lstrip()
         if name == "ssh":  # the first word after the options is the host
-            rest = re.sub(r"^[^\s;&|]+", "", rest, count=1).lstrip()
+            rest = re.sub(r"^[^\s;&|]+", "", rest, count=1)
+            rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1).lstrip()
         rest = re.sub(r"^-(?:Command|c)\b\s*", "", rest, flags=re.IGNORECASE)
-        if rest[:1] in ("'", '"'):
-            closing = rest.rfind(rest[0])
-            rest = rest[1:closing if closing > 0 else None]
-        return rest.replace('\\"', '"')
+        rest = rest.rstrip().replace('\\"', '"')
+        if rest[:1] not in ("'", '"'):
+            return (rest,)
+        # A leading quote opens either the whole script (`"wmic shadowcopy delete"`) or just the program
+        # word (`"wmic" shadowcopy delete`); the normalized variant drops `\"` pairs, so its closing quote
+        # can be missing. Read it both ways.
+        return (rest, rest[1:-1] if len(rest) > 1 and rest[-1] == rest[0] else rest[1:])
 
 
 class _PipeRemoteToShellMatcher:

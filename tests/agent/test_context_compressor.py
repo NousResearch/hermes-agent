@@ -2848,7 +2848,7 @@ class TestSanitizerPreservesInFlightToolChain:
         the final synthesis built on it were both lost.  The fix preserves the
         trailing in-flight call, so the chain closes and the result survives.
         """
-        from agent.agent_runtime_helpers import repair_message_sequence
+        from session_rules.turns import repair_message_sequence
 
         history = [
             {"role": "user", "content": "Do the work and use the tools."},

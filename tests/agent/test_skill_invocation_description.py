@@ -15,11 +15,8 @@ import pytest
 from agent import skill_bundles
 from agent import skill_commands
 from tools import skills_tool
-from agent.skill_commands import (
-    SKILL_EXCERPT_JOINT,
-    SKILL_SCAFFOLD_SQL_LIKE,
-    describe_skill_invocation,
-)
+from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE
+from session_rules.turns import describe_skill_invocation
 
 SKILL_BODY = "Kick off a task in a fresh isolated git worktree instead of the current checkout."
 

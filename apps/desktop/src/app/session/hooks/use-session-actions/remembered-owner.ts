@@ -10,7 +10,8 @@ import { cachedSessionRow } from './utils'
  * The cached row is the authority, with the same predicate as the click path (openStoredSession)
  * and the boot auto-restore (repairOwnerHintsForRestore). Comparing against the live foreground
  * socket is wrong: hints are minted from the ambient connection at open time, and resumeSession
- * itself moves the foreground. A connection-tagged row that agrees keeps the hint. An untagged or
+ * itself moves the foreground. A row that agrees on both connection and profile keeps the hint.
+ * Copied stored ids may exist in several profiles on the same server. An untagged or
  * disagreeing row drops it: older builds persisted `local` for rows that live on a remote primary
  * (#97809). No row at all keeps it: hidden sessions (Bot Chat, plugin opens) never get a sidebar
  * row, and for them the hint is the only owner record (sdk openSession). Dropping it sent a remote
@@ -26,7 +27,10 @@ export function rememberedOwnerForResume(storedSessionId: string): SessionOwnerR
   const row = cachedSessionRow(storedSessionId)
   const rowRoute = sessionOwnerRouteFromRow(row)
 
-  if (!row || (rowRoute && hint.connectionId === rowRoute.connectionId)) {
+  if (
+    !row ||
+    (rowRoute && hint.connectionId === rowRoute.connectionId && hint.profile === rowRoute.profile)
+  ) {
     return hint
   }
 

@@ -137,3 +137,12 @@ async def test_platform_notices_and_the_inactivity_warning_skip_a_bot_peer(is_bo
 
     assert adapter.send.await_count == sent and adapter.emit_warning.await_count == sent
 
+
+
+@pytest.mark.parametrize("is_bot", [True, False], ids=["bot peer", "human control"])
+def test_the_runtime_footer_is_not_sent_to_a_bot_peer(monkeypatch, is_bot):
+    import gateway.runtime_footer as footer
+
+    monkeypatch.setattr(footer, "build_footer_line", lambda **kw: "— model · 3s")
+    line = _Runner()._hmwa_runtime_footer_line({"model": "m"}, _source(is_bot), 3.0)
+    assert line == ("" if is_bot else "— model · 3s")

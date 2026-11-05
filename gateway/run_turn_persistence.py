@@ -263,7 +263,8 @@ class GatewayTurnPersistenceMixin:
         the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         from gateway.session_finite import finite_turn_required
-        if finite_turn_required() is True:
+        # A bot peer gets the model's words only: a streamed reply sends the footer as its own message.
+        if finite_turn_required() is True or not automatic_notices_allowed(source):
             return ""
         try:
             from gateway.runtime_footer import build_footer_line as _bfl

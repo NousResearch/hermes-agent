@@ -16,19 +16,24 @@ from agent.delegation_provider import DelegationProvider
 
 
 class _Routes(DelegationProvider):
-    def __init__(self, name):
+    def __init__(self, name, route_keys=()):
         self._name = name
+        self._route_keys = route_keys
 
     @property
     def name(self):
         return self._name
+
+    @property
+    def route_keys(self):
+        return self._route_keys
 
     def route_task(self, task, config):
         return dict(config)
 
 
 def register(ctx):
-    ctx.register_delegation_provider(_Routes("model_map"))
+    ctx.register_delegation_provider(_Routes("model_map", ("daybreak", "", 3, "daybreak")))
     ctx.register_delegation_provider(_Routes("profile_routes"))
 '''
 
@@ -163,6 +168,51 @@ def test_saving_model_routes_replaces_the_block_and_keeps_the_stored_key(client,
                                    "model": "m-faster", "reasoning_effort": "low", "api_key": SECRET,
                                    "request_overrides": {"extra_body": {"seed": 7}}}
     assert "backends" not in _delegation(root)
+
+
+def test_routing_lists_each_backends_declared_route_keys(client):
+    backends = {b["name"]: b["route_keys"] for b in client.get("/api/delegation/routing?profile=work").json()["backends"]}
+    # Blank, non-string and repeated declarations are dropped; a backend that declares nothing lists nothing.
+    assert backends == {"default": [], "model_map": ["daybreak"], "profile_routes": []}
+
+
+def test_a_declared_route_key_round_trips_and_removing_it_turns_it_off(client, homes):
+    _root, work = homes
+    route = {"name": "daybreak", "description": "Sol, reduced guardrails", "provider": "openai-codex",
+             "model": "gpt-6-sol", "service_tier": "fast"}
+    resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [{**route, "daybreak": True}]})
+    assert resp.status_code == 200, resp.text
+    assert _delegation(work)["backends"]["model_map"]["options"][0]["daybreak"] is True
+    # Re-saving what the renderer was shown keeps it (an unrelated edit must never silently drop it).
+    shown = client.get("/api/delegation/routing?profile=work").json()["model_map"]["options"]
+    resp = client.put("/api/delegation/backends/model_map?profile=work",
+                      json={"options": [{**shown[0], "original_name": "daybreak", "reasoning_effort": "high"}]})
+    assert resp.status_code == 200, resp.text
+    assert _delegation(work)["backends"]["model_map"]["options"][0]["daybreak"] is True
+    # The editor turns it off by leaving the key out.
+    assert client.put("/api/delegation/backends/model_map?profile=work", json={"options": [route]}).status_code == 200
+    assert "daybreak" not in _delegation(work)["backends"]["model_map"]["options"][0]
+
+
+def test_an_undeclared_key_survives_only_an_untouched_round_trip(client, homes):
+    _root, work = homes
+    stored = {"name": "deep", "description": "Careful", "provider": "anthropic", "model": "m-deep", "legacy": {"a": 1}}
+    assert client.put("/api/delegation/backends/model_map?profile=work", json={"options": [stored]}).status_code == 200
+    # A key nobody stored (no backend declares it) is dropped, however the renderer sends it.
+    assert "legacy" not in _delegation(work)["backends"]["model_map"]["options"][0]
+
+    block = _delegation(work)
+    block["backends"]["model_map"]["options"][0]["legacy"] = {"a": 1}  # hand-written in config.yaml
+    (work / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["routes"]}, "delegation": block}),
+                                      encoding="utf-8")
+    shown = client.get("/api/delegation/routing?profile=work").json()["model_map"]["options"][0]
+    resp = client.put("/api/delegation/backends/model_map?profile=work",
+                      json={"options": [{**shown, "original_name": "deep", "model": "m-deeper"}]})
+    assert resp.status_code == 200, resp.text
+    assert _delegation(work)["backends"]["model_map"]["options"][0]["legacy"] == {"a": 1}
+    changed = {**shown, "legacy": {"a": 2}}
+    assert client.put("/api/delegation/backends/model_map?profile=work", json={"options": [changed]}).status_code == 200
+    assert "legacy" not in _delegation(work)["backends"]["model_map"]["options"][0]
 
 
 def test_profile_routes_only_name_existing_profiles(client, homes):

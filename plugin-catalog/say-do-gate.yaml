@@ -1,6 +1,6 @@
 name: say-do-gate
 repo: https://github.com/jpaulupshaw/hermes-say-do-gate
-sha: 4e5f56e930ce891ffa5b07b11605f67614f88aa0
+sha: 03402ba924f9db0dbdcfd807df7cd7f3cd131664
 subdir: ""
 description: Checks agent claims against what actually ran this turn. Deterministic, zero tokens.
 maintainer: jpaulupshaw

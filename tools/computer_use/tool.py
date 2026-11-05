@@ -971,10 +971,15 @@ def check_computer_use_requirements() -> bool:
     """The selected ``computer_use.backend``'s ``is_available()``. An unregistered name stays True so the call
     surfaces the "not registered (available: ...)" error instead of the tool silently vanishing."""
     from plugins.computer_use import get_active_provider
+    import logging
+    _log = logging.getLogger(__name__)
     try:
         return get_active_provider().is_available()
     except LookupError:
         return True
+    except Exception as exc:  # surface probe failures instead of silently dropping the tool
+        _log.warning("check_computer_use_requirements raised: %s", exc, exc_info=True)
+        return False
 
 def get_computer_use_schema() -> dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

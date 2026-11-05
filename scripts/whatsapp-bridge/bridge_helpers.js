@@ -86,6 +86,30 @@ export function createBoundedMessageStore(limit = 512) {
   return { remember, get };
 }
 
+export function reactionTarget(messageStore, chatId, messageId, expandAliases) {
+  const cached = messageStore.get(messageId);
+  const key = cached?.key;
+  if (!key?.id || !key.remoteJid || typeof key.fromMe !== 'boolean') return null;
+  const requested = normalizeWhatsAppId(chatId);
+  const actual = normalizeWhatsAppId(key.remoteJid);
+  let targetKey = key;
+  if (actual.endsWith('@g.us')) {
+    const participant = key.participant || (key.fromMe ? cached?.participant : null);
+    if (!participant) return null;
+    targetKey = { ...key, participant };
+  }
+  if (requested !== actual) {
+    // Groups have no phone/LID alias. DM aliases must retain their JID domains
+    // and be backed by the bridge session's persisted phone/LID mapping.
+    const dm = (jid) => /@(?:s\.whatsapp\.net|lid)$/.test(jid);
+    if (!dm(requested) || !dm(actual) || requested.endsWith('@lid') === actual.endsWith('@lid')) return null;
+    if (requested.split('@', 1)[0] === actual.split('@', 1)[0]) return null;
+    const aliases = expandAliases?.(requested) || new Set();
+    if (!aliases.has(actual.split('@', 1)[0])) return null;
+  }
+  return { chatId: actual, key: targetKey };
+}
+
 /**
  * Bounded cache of the already-downloaded media (and plain text) for
  * recently seen inbound messages, keyed by "chatId:messageId".

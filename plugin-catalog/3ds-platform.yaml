@@ -1,0 +1,28 @@
+name: 3ds-platform
+repo: https://github.com/rndaom/Hermes3DS
+sha: 3182c0b1cc97072e6aa047dd463474e3b12b84d7
+subdir: plugin
+title: Nintendo 3DS
+description: 'Talk to Hermes from a Nintendo 3DS: a gateway platform for the Hermes 3DS homebrew app, with streaming replies, approvals and clarify questions, sessions, skills, jobs, model and slash-command pickers, pictures, documents, audio, voice messages, camera photos and spoken replies, over an end-to-end encrypted Noise IK link (LAN, or away from home through Tailscale Funnel).'
+maintainer: rndaom
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/rndaom/Hermes3DS#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/01-chat.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/02-voice.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/04-approvals.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/05-files.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/07-anywhere.png
+  - https://raw.githubusercontent.com/rndaom/Hermes3DS/3182c0b1cc97072e6aa047dd463474e3b12b84d7/docs/media/screens/08-pair.png
+platforms: []
+known_issues:
+  - Needs a Nintendo 3DS or 2DS with custom firmware (Luma3DS) running the Hermes 3DS homebrew app from the same repository.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,5 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
+import { desktopTitlebarHeight, getWindowButtonPosition, macWindowButtonPosition } from '../window-chrome'
+
 import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
@@ -1397,13 +1399,8 @@ const BOOT_FAKE_STEP_MS = (() => {
 
 const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
-const TITLEBAR_HEIGHT = 34
-const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
-
-const WINDOW_BUTTON_POSITION = {
-  x: 12,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
-}
+const TITLEBAR_HEIGHT = desktopTitlebarHeight(IS_MAC)
+const WINDOW_BUTTON_POSITION = macWindowButtonPosition()
 
 // Right-edge window-control reservation lives in titlebar-overlay-width.ts
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
@@ -6014,20 +6011,6 @@ async function waitForHermes(
   })
 }
 
-function getWindowButtonPosition(win = mainWindow) {
-  if (!IS_MAC) {
-    return null
-  }
-
-  // Fullscreen hides the traffic lights — treat as no left-side controls so the
-  // renderer drops the traffic-light dodge inset and Y nudge.
-  if (win?.isFullScreen?.()) {
-    return null
-  }
-
-  return win?.getWindowButtonPosition?.() || WINDOW_BUTTON_POSITION
-}
-
 function getNativeOverlayWidth() {
   return nativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
@@ -6038,7 +6021,7 @@ function getWindowState(win = mainWindow) {
     isMinimized: Boolean(win?.isMinimized?.()),
     isVisible: Boolean(win?.isVisible?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition(win),
+    windowButtonPosition: getWindowButtonPosition(win, IS_MAC),
     darwinMajor: IS_MAC ? DARWIN_MAJOR : 0,
     ...windowControlState(win, !IS_WINDOWS && IS_WSL)
   }
@@ -6569,7 +6552,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 
   // The native window-controls overlay doesn't scale with the page; re-apply
   // it at the new zoom so its height tracks the zoomed titlebar (#81086).
-  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
+  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window), IS_MAC && translucencyBackedWindows.has(window))
 
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
@@ -6609,7 +6592,7 @@ function restorePersistedZoomLevel(window) {
     }
 
     applyZoomLevel(window.webContents, saved)
-    applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
+    applyTitleBarOverlay(window, getTitleBarOverlayOptions(window), IS_MAC && translucencyBackedWindows.has(window))
 
     return
   }
@@ -6618,7 +6601,7 @@ function restorePersistedZoomLevel(window) {
   // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
   // and overwrite if a legacy value is there.
   applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
-  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
+  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window), IS_MAC && translucencyBackedWindows.has(window))
 
   window.webContents
     .executeJavaScript(
@@ -6632,7 +6615,7 @@ function restorePersistedZoomLevel(window) {
       const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
       const applied = applyZoomLevel(window.webContents, level)
       writeZoomState(applied)
-      applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
+      applyTitleBarOverlay(window, getTitleBarOverlayOptions(window), IS_MAC && translucencyBackedWindows.has(window))
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -13602,7 +13585,7 @@ function createWindow() {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
         for (const win of BrowserWindow.getAllWindows()) {
-          applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
+          applyTitleBarOverlay(win, getTitleBarOverlayOptions(win), IS_MAC && translucencyBackedWindows.has(win))
         }
       })
     }
@@ -16494,6 +16477,7 @@ const streamThrottle = createStreamThrottle(undefined, undefined, {
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+
 registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
@@ -16520,9 +16504,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+
       if (owner) {
         streamThrottle.setVoiceActive(owner, false)
       }
+
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16536,9 +16522,11 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+
   if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
     streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
   }
+
   updateStreamThrottleFromActiveWork()
 })
 
@@ -16556,7 +16544,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   // window, not just the primary — instance peers and session windows share the
   // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
   for (const win of BrowserWindow.getAllWindows()) {
-    applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
+    applyTitleBarOverlay(win, getTitleBarOverlayOptions(win), IS_MAC && translucencyBackedWindows.has(win))
   }
 })
 

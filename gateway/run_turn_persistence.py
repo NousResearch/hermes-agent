@@ -49,10 +49,10 @@ logger = logging.getLogger("gateway.run")
 def _acp_launch(runner, source) -> bool:
     """An editor session: ACP shows no reasoning event yet, so its reply keeps the projected block."""
     from gateway.session_setting_commands import local_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         return getattr(local_policy(runner, source), "source", None) == "acp"
-    except RuntimeStoreError:  # a local route with no restored policy is not an editor launch
+    except AuthorityRefusal:  # a local route with no restored policy is not an editor launch
         return False
 
 

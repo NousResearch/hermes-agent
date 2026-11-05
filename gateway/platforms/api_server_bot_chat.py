@@ -10,12 +10,12 @@ session as an API conversation (``run_api_turn``) would be a second writer and i
 """
 import asyncio
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
+from gateway.platforms.api_server_store import authority_store
 from gateway.session_contract import SessionActor
-from hermes_state_runtime import RuntimeStoreError
+from persistence import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ async def create_peer_bot_chat(adapter, body):
             or body.get('id') or body.get('session_id')):
         return None
     from aiohttp import web
-    from gateway.platforms.api_server import _error_response
+    from gateway.platforms.api_server import _error_response, _session_row
     if unsupported := sorted(set(body) - _PEER_CREATE_FIELDS):
         return _error_response(
             f"Bot Chat creation refused: bot_chat_parameters_unsupported ({', '.join(unsupported)}); "
@@ -58,11 +58,11 @@ async def create_peer_bot_chat(adapter, body):
     try:
         authority._require_admission_open()
         ref = await asyncio.shield(track_mutation(authority, _create_bot_chat(authority, actor)))
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         return _error_response(f'Bot Chat creation refused: {exc.reason}', 503, code=exc.reason)
     if ref is None:
         return None
-    row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+    row = _session_row(await asyncio.to_thread(authority_store(authority).sessions.get, ref.session_id))
     return web.json_response({'object': 'hermes.session', 'session': adapter._session_response(row)}, status=201)
 
 
@@ -72,11 +72,12 @@ def _refusal(authority, tip, exc):
     peer nothing to act on. The full clause stays in gateway.log."""
     reason = exc.reason
     if reason == 'not_found' and not str(tip.get('chat_id') or '').startswith('local-'):
-        from hermes_state_local_migration import validate_legacy_row
+        from gateway.session_persistence import owner_rule
+        from session_rules.legacy_local import validate_legacy_row
         try:
-            validate_legacy_row(authority.db, tip)
+            validate_legacy_row(authority_store(authority).sessions.store_owner(), tip, rule=owner_rule())
             reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             from gateway.session_bot import displaceable_bot_chat
             reason = 'bot_chat_not_local'
             if displaceable_bot_chat(authority, tip) is not None:
@@ -89,7 +90,7 @@ def _refusal(authority, tip, exc):
     return reason, f'Bot Chat admission refused: {reason}'
 
 
-async def reset_local_title_owner(db, title, include_hidden, source=None):
+async def reset_local_title_owner(store, title, include_hidden, source=None):
     """``[row]`` for the exact-title lookup of a LOCAL conversation that was reset (``/new``, the
     compression-exhaustion auto-reset), else ``[]``. The listing shows a reset lineage as its latest,
     untitled segment, so ``hermes peer dm`` stopped finding its Bot Chat and its create collided
@@ -97,32 +98,34 @@ async def reset_local_title_owner(db, title, include_hidden, source=None):
     It applies the listing's own filters: hidden only with ``include_hidden``, never an archived
     row (a deliberate archive stays put; the reaper-archive resurrection is the caller's), and
     ``source`` when one is given."""
-    return await asyncio.to_thread(_reset_local_title_owner, db, title, include_hidden, source) if title else []
+    return await asyncio.to_thread(_reset_local_title_owner, store, title, include_hidden, source) if title else []
 
 
-def _reset_local_title_owner(db, title, include_hidden, source=None):
-    row = db.get_session_by_title(title)
-    if (row is None or row.get('end_reason') != 'session_reset' or row.get('archived')
-            or (row.get('hidden') and not include_hidden) or (source and row.get('source') != source)):
+def _reset_local_title_owner(store, title, include_hidden, source=None):
+    from gateway.platforms.api_server import _session_row
+    row = store.sessions.get_by_title(title)
+    if (row is None or row.end_reason != 'session_reset' or row.archived
+            or (row.hidden and not include_hidden) or (source and row.source != source)):
         return []
-    from hermes_state_local import local_receipt
     try:
-        lineage = local_receipt(db, row['id']).get('lineage') or []
-    except RuntimeStoreError:
-        return []
-    return [row] if len(lineage) > 1 else []
+        lineage = store.bindings.receipt(row.session_id).lineage
+    except AuthorityRefusal:
+        # A receipt missing an identity field still answers by the lineage it stores.
+        lineage = store.bindings.conversation_ids(row.session_id)
+    return [_session_row(row)] if len(lineage) > 1 else []
 
 
 def bot_chat_tip(authority, session_id):
     """The canonical Bot Chat's tip row when *session_id* is in its lineage, else None."""
-    db = authority.db
-    row = db.get_session_by_title('Bot Chat')
+    store = authority_store(authority)
+    row = store.sessions.get_by_title('Bot Chat')
     if row is None:
         return None
-    tip = db.get_compression_tip(row['id'])
-    if not tip or db.get_compression_tip(session_id) != tip:
+    tip = store.lineage.tip(row.session_id)
+    if not tip or store.lineage.tip(session_id) != tip:
         return None
-    return db.get_session(tip)
+    record = store.sessions.get(tip)
+    return None if record is None else record.as_session_row()
 
 
 async def admit_peer_turn(runner, session_id, message, author):
@@ -136,9 +139,10 @@ async def admit_peer_turn(runner, session_id, message, author):
     tip = bot_chat_tip(authority, session_id)
     if tip is None:
         return None
-    home = Path(authority.db.db_path).parent.resolve()
+    store = authority_store(authority)
+    home = store.scope.profile_dir
     from gateway.session_bot import displaceable_bot_chat
-    if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:
+    if displaceable_bot_chat(authority, store.sessions.get_by_title('Bot Chat') or tip) is not None:
         # The title is held by an API conversation no FIFO can own (#140769, MSG-21): the owner
         # moves it aside and mints the local Bot Chat for the peer, as ``create_peer_bot_chat`` does.
         actor = SessionActor(_PEER_SUBJECT, authority.profile_id,
@@ -154,7 +158,7 @@ async def admit_peer_turn(runner, session_id, message, author):
         params['author'] = dict(author)
     try:
         record = await deliver(SimpleNamespace(authority=authority, actor=actor), params)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         reason, error = _refusal(authority, tip, exc)
         record = {'status': 'failed', 'delivery_id': key, 'reason': reason, 'error': error}
     return home, record

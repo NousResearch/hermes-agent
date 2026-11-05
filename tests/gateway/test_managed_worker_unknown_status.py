@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, psutil
 from hermes_cli.process_identity import worker_birth
@@ -42,7 +42,7 @@ def _authority_with_a_lost_worker(tmp_path, monkeypatch):
     original = live.event_stream.publish
     monkeypatch.setattr(live.event_stream, 'publish', lambda sid, payload, **kw: (
         published.append((kw.get('event_type', 'message.complete'), payload)), original(sid, payload, **kw))[1])
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
 

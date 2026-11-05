@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — athraigh an tsamhail"
     usage_switch_provider: "`/model <name> --provider <slug>` — athraigh an soláthraí"
     usage_persist: "`/model <name> --global` — coinnigh"
+    usage_reset: "`/model reset` — glan sárú an tseisiúin seo"
+    reset_done: "Glanadh sárú mhúnla an tseisiúin — `{model}` (réamhshocrú an chainéil/domhanda) in úsáid anois. Coinníodh stair an chomhrá."
+    reset_none: "Níl aon sárú múnla gníomhach sa seisiún seo — tá `{model}` (réamhshocrú an chainéil/domhanda) in úsáid cheana."
     err_skew: "Tá an gateway seo ag rith cód ó {boot_rev} ach is {disk_rev} atá sa seiceáil amach ar an diosca anois. D'fhéadfadh athrú samhla tuairt modúil sheanchaite a tharraingt — atosaigh an gateway chun an cód nua a lódáil: hermes gateway restart"
     err_switch_failed: "Theip ar athrú go dtí an tsamhail {model} ({error}); ag fanacht ar {current}."
     err_config_not_updated: "níor nuashonraíodh config.yaml ({error})"
@@ -1368,6 +1371,12 @@ platform:
       unauthorized: "Ní féidir ach le húsáideoir Matrix údaraithe na rialtáin seo a úsáid."
       not_requester: "Ní féidir ach leis an úsáideoir a d'iarr an gníomh seo na rialtáin seo a úsáid."
   feishu:
+    clarify:
+      title: "Tá d'ionchur de dhíth ar Hermes"
+      other: "✏️ Eile (clóscríobh freagra)"
+      awaiting_typed: "Ag fanacht le freagra clóscríofa ó {user}…"
+    picker:
+      apply_error: "Earráid agus an rogha á cur i bhfeidhm: {error}"
     approval:
       action_session: "Seisiún"
       action_always: "I gcónaí"
@@ -1471,6 +1480,8 @@ platform:
     prompt_other: "✏️ Eile (clóscríobh freagra)"
     prompt_expired: ⌛ Níl an leid sin ag fanacht le freagra a thuilleadh. Seol do fhreagra mar ghnáth-theachtaireacht.
 slash:
+  rewind:
+    description: "Athchas go leid níos luaithe chun í a chur in eagar & a athsheoladh, nó gabhlaigh as sin (Esc Esc)"
   approve:
     description: "Ceadaigh ordú contúirteach atá ag fanacht"
   bg:
@@ -1698,6 +1709,20 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  backtrack:
+    title: "↺ Athchas — roghnaigh leid níos luaithe"
+    keys_hint: "↑/↓ roghnaigh · Enter cuir in eagar & athsheol · f gabhlaigh ón áit seo · Esc dún"
+    preview_label: "Leid {number} as {total}:"
+    more_lines: "… ({count} líne eile)"
+    editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
+    edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
+    rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."
+    forked: "⑂ Gabhlaithe roimh leid {number}; níor athraíodh an seisiún bunaidh {parent}. Cuir an leid thíos in eagar agus brúigh Enter chun é a sheoladh."
+    nothing: "(._.) Níl aon leideanna níos luaithe le hathchasadh chucu."
+    target_changed: "(x_x) D'athraigh an seisiún ó roghnaigh tú leid {number}; níor baineadh aon rud. Tá d'eagarthóireacht ar ais sa chumadóir."
+    invalid: "(._.) Níl leid {value} ann — roghnaigh 1 go {total}."
+    usage: "Úsáid: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Theip ar an athchasadh; níor athraíodh an stair: {error}"
   modern:
     thought_for: "Smaoinigh ar feadh {seconds}s"
     thought: "Smaoinigh"
@@ -2009,6 +2034,8 @@ cli:
     usage_switch_reasoning: "athraigh agus socraigh iarracht réasúnaíochta"
     usage_switch_provider: "athraigh an soláthraí"
     usage_refresh: "faigh liostaí beo na samhlacha arís"
+    reset_none: "Ar an réamhshocrú cumraithe cheana ({model}) — níl aon rud le hathshocrú."
+    reset_no_default: "Níl model.default in config.yaml — níl aon rud le filleadh air."
     choice_switch_anyway: "Athraigh ar aon nós"
     desc_switch_anyway: "Úsáid an tsamhail seo don seisiún Hermes reatha."
     choice_cancel: "Cealaigh"
@@ -2159,6 +2186,7 @@ cli:
     images_attached_other: "📎 {count} íomhá ceangailte"
     command_interrupted: "Briseadh isteach ar an ordú."
     welcome: "Fáilte go Hermes Agent! Clóscríobh do theachtaireacht nó /help le haghaidh orduithe."
+    vscode_images_hint: "Is féidir le VS Code íomhánna lánrúin a thaispeáint anseo: cas air terminal.integrated.enableImages sna socruithe."
     activated_skills_label: "Scileanna gníomhachtaithe:"
     redaction_disabled_title: "⚠  Tá ceilt rún DÍCHUMASAITHE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). D'fhéadfadh eochracha API agus comharthaí a bheith le feiceáil focal ar fhocal in aschur comhrá, i JSON na seisiún agus i logaí. Socraigh {setting} i config.yaml chun é a athchumasú."
@@ -2613,6 +2641,7 @@ cli:
     goal_turns: "⊙ sprioc {used}/{max}"
     goal: "⊙ sprioc"
     ctx_pinned: " pionnáilte"
+    ctx_fallback: " cúltaca"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Taisce ({count} mhír)"

@@ -28,6 +28,7 @@ import pytest
 
 import hermes_state_common
 from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
 from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
 pytestmark = pytest.mark.skipif(
@@ -392,8 +393,10 @@ class TestNonContentionErrnoFailsFast:
     ):
         """Gateway-shaped: same SessionDB stays open and retries after deferral."""
         import hermes_state_schema
+        from persistence.sqlite import _schema
 
         monkeypatch.setattr(hermes_state_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
+        monkeypatch.setattr(_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
         db_path = tmp_path / "state.db"
         d = SessionDB(db_path=db_path)
         if not d._fts_enabled:
@@ -415,7 +418,7 @@ class TestNonContentionErrnoFailsFast:
 
         holders = [(4242, str(db_path))]
         monkeypatch.setattr(
-            SessionDB, "_foreign_state_db_holders", lambda self: list(holders)
+            StoreHolder, "_foreign_state_db_holders", lambda self: list(holders)
         )
         d2 = SessionDB(db_path=db_path)
         try:
@@ -574,8 +577,10 @@ class TestDeferredFtsRetryInProcess:
         import hermes_state_registry
         import hermes_state_schema
         import gateway.run as grun
+        from persistence.sqlite import _schema
 
         monkeypatch.setattr(hermes_state_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
+        monkeypatch.setattr(_schema, "_FTS_STALE_RETRY_SECONDS", 0.0)
         db_path = tmp_path / "state.db"
         d = SessionDB(db_path=db_path)
         if not d._fts_enabled:

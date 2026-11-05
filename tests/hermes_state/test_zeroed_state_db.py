@@ -6,15 +6,17 @@ from pathlib import Path
 
 import pytest
 
+import hermes_state_dbfile
+
 
 def test_is_zeroed_state_db_and_quarantine(tmp_path):
     import hermes_state as hs
 
     db = tmp_path / "state.db"
     db.write_bytes(bytes(1024))
-    assert hs.is_zeroed_state_db(db) is True
+    assert hermes_state_dbfile.is_zeroed_state_db(db) is True
 
-    q = hs.quarantine_invalid_state_db(db)
+    q = hermes_state_dbfile.quarantine_invalid_state_db(db)
     assert q is not None
     assert q.exists()
     assert not db.exists()
@@ -38,7 +40,7 @@ def test_is_zeroed_never_probes_special_files(tmp_path):
     # Would hang forever before the regular-file guard if either probe
     # attempted open()+read on the FIFO.
     assert is_zeroed_sqlite_file(fifo) is False
-    assert hs.is_zeroed_state_db(fifo) is False
+    assert hermes_state_dbfile.is_zeroed_state_db(fifo) is False
 
 
 def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
@@ -52,7 +54,7 @@ def test_sessiondb_opens_fresh_after_zeroed_quarantine(tmp_path, monkeypatch):
     try:
         # Fresh DB should open and accept schema
         assert db.exists()
-        assert not hs.is_zeroed_state_db(db)
+        assert not hermes_state_dbfile.is_zeroed_state_db(db)
         # Quarantine retained
         backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
         assert len(backups) == 1
@@ -74,8 +76,8 @@ def test_sessiondb_quarantines_page_zero_clobber_before_open(tmp_path, monkeypat
     (tmp_path / "state.db-wal").write_bytes(b"wal evidence")
     (tmp_path / "state.db-shm").write_bytes(b"shm evidence")
 
-    assert hs.has_invalid_sqlite_header_preopen(db) is True
-    assert hs.is_zeroed_state_db(db) is False
+    assert hermes_state_dbfile.has_invalid_sqlite_header_preopen(db) is True
+    assert hermes_state_dbfile.is_zeroed_state_db(db) is False
 
     sdb = hs.SessionDB(db_path=db)
     try:
@@ -103,13 +105,13 @@ def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = tmp_path / "state.db"
     db.write_bytes(b"")  # 0-byte truncated file
-    assert hs.is_zeroed_state_db(db) is True
+    assert hermes_state_dbfile.is_zeroed_state_db(db) is True
 
     sdb = hs.SessionDB(db_path=db)
     try:
         # Fresh DB should open and accept schema
         assert db.exists()
-        assert not hs.is_zeroed_state_db(db)
+        assert not hermes_state_dbfile.is_zeroed_state_db(db)
         # Quarantine retained for the 0-byte file
         backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
         assert len(backups) == 1
@@ -183,7 +185,7 @@ def test_concurrent_quarantine_no_clobber(tmp_path):
 
     # The live state.db must be a valid (non-zeroed) SQLite database
     assert db.exists()
-    assert not hs.is_zeroed_state_db(db)
+    assert not hermes_state_dbfile.is_zeroed_state_db(db)
     conn = sqlite3.connect(str(db))
     conn.execute("SELECT 1")
     conn.close()
@@ -245,7 +247,7 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
     # Reduce the quarantine lock timeout to keep the test fast. We patch
     # the deadline by calling quarantine directly — it uses a 5s timeout,
     # but we only need to verify it returns None without moving the file.
-    result = hs.quarantine_invalid_state_db(db)
+    result = hermes_state_dbfile.quarantine_invalid_state_db(db)
 
     # Must fail closed: return None without moving the zeroed file
     assert result is None, (
@@ -253,7 +255,7 @@ def test_quarantine_fails_closed_when_lock_held(tmp_path):
         f"(fail-closed when lock is held)"
     )
     assert db.exists(), "Zeroed state.db was moved despite lock being held"
-    assert hs.is_zeroed_state_db(db), "File should still be zeroed (not moved)"
+    assert hermes_state_dbfile.is_zeroed_state_db(db), "File should still be zeroed (not moved)"
 
     # Release the lock so the background thread can exit cleanly
     release_lock.set()
@@ -303,7 +305,7 @@ def test_concurrent_openers_zero_byte_startup_serialization(tmp_path, monkeypatc
     backups = list(tmp_path.glob("state.db.zeroed-*.bak"))
     assert len(backups) == 0, f"Expected 0 quarantine backups, got: {backups}"
     assert db.exists()
-    assert not hs.is_zeroed_state_db(db)
+    assert not hermes_state_dbfile.is_zeroed_state_db(db)
 
 
 def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch):
@@ -321,7 +323,7 @@ def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch
     try:
         assert db.exists() and db.stat().st_size == 0
         # is_zeroed_state_db must recognize the live connection and refuse to declare it zeroed
-        assert hs.is_zeroed_state_db(db) is False
+        assert hermes_state_dbfile.is_zeroed_state_db(db) is False
 
         # SessionDB open must not quarantine this live file
         sdb = hs.SessionDB(db_path=db)

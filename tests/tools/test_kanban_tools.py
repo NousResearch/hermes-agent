@@ -297,6 +297,68 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
         assert (task.status, task.assignee) == ("review", "verifier")
 
 
+@pytest.mark.parametrize("extra", [
+    {"artifacts": ["/nonexistent/bg-156/report.pdf"]},
+    {"metadata": {"artifacts": ["/nonexistent/bg-156/report.pdf"]}},
+])
+def test_request_review_refuses_missing_artifacts_without_mutation(worker_env, extra):
+    """sirron#156: a handoff naming an artifact that does not exist — in the top-level
+    ``artifacts`` param or inside ``metadata`` — used to return ok and park the card in
+    review with zero attachment rows; it must be refused before any state change."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        before_events = kb.list_events(conn, worker_env)
+
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", **extra}))
+
+    assert "artifacts" in out["error"] and "no state change" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+        assert kb.list_events(conn, worker_env) == before_events
+
+
+def test_request_review_accepts_existing_top_level_artifact(worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    report = tmp_path / "report.txt"
+    report.write_text("evidence\n", encoding="utf-8")
+
+    out = json.loads(kt._handle_request_review({"summary": "Ready for review.", "artifacts": [str(report)]}))
+
+    assert out["ok"] is True
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "review"
+
+
+def test_request_review_accepts_existing_metadata_artifact(worker_env):
+    """sirron#156 follow-up: the DB layer stages ``metadata.artifacts`` (see
+    test_review_bound_handoff_preserves_declared_artifacts), so the tool layer must
+    accept an existing file named there and store the attachment row — not refuse it."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kbw
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        ws = kbw.resolve_workspace(kb.get_task(conn, worker_env))
+        kbw.set_workspace_path(conn, worker_env, ws)
+    report = ws / "report.txt"
+    report.write_text("evidence\n", encoding="utf-8")
+
+    out = json.loads(kt._handle_request_review(
+        {"summary": "Ready for review.", "metadata": {"artifacts": [str(report)]}}))
+
+    assert out["ok"] is True, out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "review"
+        assert [a.filename for a in kb.list_attachments(conn, worker_env)] == ["report.txt"]
+
+
 def test_unbound_worker_cannot_mutate_card(monkeypatch, worker_env):
     """A dispatcher-spawned worker that cannot resolve its run id must be refused
     on every run-lifecycle mutation. ``expected_run_id=None`` would silently skip

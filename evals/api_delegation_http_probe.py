@@ -18,18 +18,20 @@ async def probe():
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.session_context import get_session_env
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
     import gateway.session_context as sc
 
-    db = SessionDB(db_path=Path(os.environ["HERMES_HOME"]) / "state.db")
-    db.create_session("parent", source="api_server")
-    db.append_message("parent", "user", "request")
-    db.append_message("parent", "assistant", "acknowledged")
-    db.end_session("parent", "compression")
-    db.create_session("child", source="api_server", parent_session_id="parent")
+    store = open_persistence(profile_scope(home=Path(os.environ["HERMES_HOME"])), eager=True)
+    store.sessions.create(NewSession(session_id="parent", source="api_server"))
+    store.messages.append("parent", NewMessage(role="user", content="request"))
+    store.messages.append("parent", NewMessage(role="assistant", content="acknowledged"))
+    store.sessions.end("parent", "compression")
+    store.sessions.create(NewSession(session_id="child", source="api_server", parent_session_id="parent"))
+    # The adapter opens this home's store itself, with its storage interface handle beside it.
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "fixture-api-key"}))
-    adapter._session_db = db
     captured = []
 
     def create_agent(**kwargs):
@@ -76,8 +78,8 @@ async def probe():
         resumed_history = captured[-1]["history"]
         snapshot = [{"role": "user", "content": "caller snapshot"}]
         adapter._response_store.put("resp-seed", {"conversation_history": snapshot, "session_id": "parent"})
-        db.create_session("declared", source="api_server", session_key="fixture-key")
-        db.append_message("declared", "assistant", "DECLARED_HISTORY")
+        store.sessions.create(NewSession(session_id="declared", source="api_server", session_key="fixture-key"))
+        store.messages.append("declared", NewMessage(role="assistant", content="DECLARED_HISTORY"))
         for name, body, extra_headers in (
             ("session", {"session_id": "parent"}, {}),
             ("caller_history", {"session_id": "parent", "conversation_history": snapshot}, {}),
@@ -93,8 +95,9 @@ async def probe():
             if response.status == 202:
                 await asyncio.wait_for(wait_for_run(), 10)
             runs.append({"name": name, "status": response.status, "runtime": captured[-1] if len(captured) > count else None})
-    result = {"requests": records, "runs": runs, "delivery_error": delivery_error, "unsolicited_calls": calls_after-calls_before, "resumed_history": resumed_history, "durable_child_rows": len(db.get_messages("child"))}
-    db.close()
+    result = {"requests": records, "runs": runs, "delivery_error": delivery_error, "unsolicited_calls": calls_after-calls_before, "resumed_history": resumed_history, "durable_child_rows": len(store.messages.read_transcript("child"))}
+    adapter._close_cached_session_dbs()
+    store.close()
     return result
 
 

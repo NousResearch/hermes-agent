@@ -87,6 +87,8 @@ git diff --cached | grep "^+" | grep -E "execute\(f\"|\.format\(.*SELECT|\.forma
 
 检测项目语言并运行相应工具。将你的变更作为 **baseline_failures**（暂存变更、运行、弹出）捕获变更**前**的失败数量。只有你的变更引入的**新**失败才会阻止提交。
 
+这些步骤在宿主机上运行项目自身的代码，对你自己的工作树来说没有问题。如果审查的是别人的代码（PR、下载的仓库），请改用 `hermes sandbox run --path . -- <测试命令>` 运行其测试：一次性容器，无网络、无凭据，也无法访问你的文件。如果它报告没有容器运行时（退出码 69），不要在宿主机上运行该代码：只通过阅读来审查，并报告 "tests not run: no isolated runtime available (needs Docker or Podman)"。
+
 **测试框架**（根据项目文件自动检测）：
 ```bash
 # Python (pytest)

@@ -44,6 +44,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes fallback` | 管理主模型出错时依次尝试的 fallback provider。 |
 | `hermes gateway` | 运行或管理消息 gateway 服务。 |
 | `hermes proxy` | 本地 OpenAI 兼容代理，附加 OAuth provider 凭据。参见 [订阅代理](../user-guide/features/subscription-proxy.md)。 |
+| `hermes sandbox` | 在一次性容器中运行你不信任的仓库或 PR 的代码（测试、构建、安装），无网络、无凭据、无法访问你的文件。参见 [不受信任的代码](../user-guide/security.md#untrusted-code)。 |
 | `hermes lsp` | 管理 Language Server Protocol 集成（为 write_file/patch 提供语义诊断）。 |
 | `hermes setup` | 全部或部分配置的交互式设置向导。 |
 | `hermes whatsapp` | 配置并配对 WhatsApp 桥接。 |
@@ -447,6 +448,36 @@ hermes kanban boards rm atm10-server --delete
 所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
 
 完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
+
+## `hermes sandbox`
+
+在一次性 Docker 或 Podman 容器中运行他人的代码：pull request 的测试、下载的仓库的构建、安装脚本。代码会被复制到一个临时目录，过程中不执行它所携带的任何内容（不检出、不运行 hook、不使用仓库配置的 git filter，符号链接保留为链接），然后命令在以下条件下运行：
+
+- 无网络（`--network none`），丢弃所有 capabilities，启用 `no-new-privileges`；
+- 只读根文件系统、tmpfs `/tmp`、非特权用户（`65534`）；
+- 不传入宿主机环境变量，除临时副本外不挂载任何宿主机目录，临时副本在运行后删除；
+- CPU 与内存限制取自 `terminal.container_cpu` / `terminal.container_memory`。
+
+```bash
+hermes sandbox run --pr 123 -- python -m pytest -q            # 获取 pull/123/head（从不检出）
+hermes sandbox run --ref origin/feature -- npm test             # 当前仓库的某个 ref，通过 git archive 导出
+hermes sandbox run --path ./downloaded-repo -- make test        # 复制目录（跳过 .git 和特殊文件）
+hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network open -- python -m pytest -q
+```
+
+| 选项 | 含义 |
+|--------|---------|
+| `--pr N` / `--ref REF` / `--path DIR` | 要运行的代码（三选一）。`--pr` 和 `--ref` 读取 `--repo`（默认：当前目录）；`--pr` 从 `--remote`（默认 `origin`）获取。`--path` 拒绝你的主目录、文件系统根目录和 `HERMES_HOME`。 |
+| `--setup CMD` | 先在单独的容器中、在相同限制下运行的 shell 命令（无凭据、无宿主机环境变量、无宿主机挂载）。安装结果写入临时副本（`pip install --user` 写入沙箱自己的 HOME），随后主命令可以使用。 |
+| `--setup-network none\|open` | `--setup` 步骤的网络。`none`（默认）：无网络，与运行步骤相同。`open`：容器运行时的普通网络，下载软件包时需要。使用 `open` 时，代码的安装脚本（`setup.py`、npm 生命周期脚本）可以访问互联网、你的局域网以及本机上的服务（在 Docker Desktop 上即 `host.docker.internal`），并会打印警告。运行步骤始终没有网络。 |
+| `--image IMAGE` | 容器镜像（默认：`terminal.docker_image`）。会绕过镜像的 entrypoint；镜像需要 `env`，使用 `--setup` 时还需要 `sh`。 |
+| `--timeout SECONDS` | 每个步骤的超时（默认 900）；超时的步骤会被删除并以 124 退出。 |
+
+退出码即命令自身的退出码（124 = 某步骤超时，69 = 没有容器运行时）。docker 后端的 `docker_volumes`、`docker_forward_env`、`docker_env`、`docker_extra_args`、`env_passthrough`、`credential_files` 设置均不生效，也没有任何选项可以放宽这些限制。
+
+`hermes sandbox run` 是引导 agent 使用的工具（内置 `github` 技能的 PR 审查通过它运行测试），而不是安全边界：在 local 后端上，agent 仍可以直接运行代码。它与各终端后端的关系见[不受信任的代码](../user-guide/security.md#untrusted-code)。
+
+**没有容器运行时。** `hermes sandbox run` 需要 Docker 或 Podman。没有时它以 69 退出并给出安装指引，不运行任何内容；内置技能随后只通过阅读来审查代码，并说明测试未运行。它绝不会退回到在宿主机上运行代码。
 
 ## `hermes webhook`
 

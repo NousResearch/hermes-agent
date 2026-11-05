@@ -8639,6 +8639,10 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
   // offer the plain-text opt-in on keyring-less Linux instead of failing.
   // Policy-aware: never touches safeStorage while encryption is opted out.
   const secureTokenStorage = probeSecureTokenStorage()
+  // A remote-only artifact keeps the local entry in the stored registry (the
+  // id stays reserved and the normalizer guarantees it) but the renderer must
+  // never see or dial it: there is no runtime on this machine.
+  const remoteOnly = installShape() === 'light'
 
   return {
     version: registry.version,
@@ -8646,7 +8650,9 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
     launchMode: registry.launchMode,
     lastUsed: registry.lastUsed,
     secureTokenStorage,
-    connections: registry.connections.map(sanitizeRegistryConnection),
+    connections: registry.connections
+      .filter(connection => !(remoteOnly && connection.kind === 'local'))
+      .map(sanitizeRegistryConnection),
     // Surface quarantined-entry NOTICES only (reason + best-effort label) —
     // the raw entries can carry token envelopes and stay in the file (#94246).
     quarantined: (registry.quarantined || []).map(q => ({

@@ -36,6 +36,7 @@ import {
   normAuthMode
 } from './connection-config'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
+import { INSTALL_STAMP, installShape } from './install-stamp'
 
 export const REGISTRY_VERSION = 2
 
@@ -531,11 +532,27 @@ function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unk
  */
 export function resolveRegistryLocalRoute(
   profile: null | string | undefined,
-  opts: { globalRemote?: boolean; localProfileExists?: boolean; profileRemoteOverride?: boolean } = {}
+  opts: {
+    globalRemote?: boolean
+    localProfileExists?: boolean
+    profileRemoteOverride?: boolean
+    /** No local runtime exists in this artifact (the light / remote-only variant). */
+    remoteOnly?: boolean
+  } = {}
 ): RegistryLocalRoute {
   const raw = String(profile ?? '').trim()
   const profileKey = raw || 'default'
   const concrete = raw.length > 0
+
+  // A remote-only artifact has no local runtime at all: every 'local' route
+  // must refuse instead of spawning one, whatever the v1 routing table says.
+  if (opts.remoteOnly ?? installShape() === 'light') {
+    return {
+      delegate: false,
+      poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}`,
+      refuse: 'This is a remote-only Hermes Desktop build: it has no local runtime. Add the remote gateway in Settings → Gateways.'
+    }
+  }
 
   // A per-profile SSH/remote override is an explicit per-profile routing
   // decision: the override owns this profile's backend, so the 'local' entry
@@ -594,8 +611,15 @@ export function registryDialConnectionId(connectionId: unknown, primary: unknown
 export function shouldDeferLocalEnumeration(
   route: RegistryLocalRoute,
   poolKeys: Iterable<string>,
-  connectionId: string = LOCAL_CONNECTION_ID
+  connectionId: string = LOCAL_CONNECTION_ID,
+  opts: { remoteOnly?: boolean } = {}
 ): boolean {
+  // A remote-only artifact has nothing to enumerate or dial on this machine:
+  // "This device" is never a real source, pooled child or not.
+  if (opts.remoteOnly ?? installShape() === 'light') {
+    return true
+  }
+
   if (route.delegate) {
     return false
   }
@@ -732,8 +756,13 @@ export function parseRemoteProfileListing(text: string): string[] {
  */
 export function buildAgentRoster(
   enumerations: ConnectionAgents[],
-  opts: { primaryConnectionId?: string } = {}
+  opts: { primaryConnectionId?: string; remoteOnly?: boolean } = {}
 ): RosterAgent[] {
+  // A remote-only artifact must not surface "This device" even if the
+  // registry still carries its mandatory local entry: there is no runtime
+  // behind it and enumerating it would spawn one.
+  const remoteOnly = opts.remoteOnly ?? installShape() === 'light'
+
   // A connection can transiently report the same profile more than once (or
   // arrive twice while registry state is reconciling). A roster row represents
   // one routable identity, so collapse strictly by connection + profile before
@@ -752,6 +781,12 @@ export function buildAgentRoster(
   let order = 0
 
   for (const { connection, installId, profiles, profileMetadata } of enumerations) {
+    if (remoteOnly && connection.kind === 'local') {
+      order += 1
+
+      continue
+    }
+
     for (const profile of profiles || []) {
       const name = String(profile || '').trim() || 'default'
       const key = `${connection.id}\0${name}`

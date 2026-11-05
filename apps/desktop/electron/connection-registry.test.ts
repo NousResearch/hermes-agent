@@ -872,6 +872,29 @@ test('local enumeration: forced-local route defers until a local child exists (r
   assert.equal(shouldDeferLocalEnumeration(route, ['conn:local::default']), false)
 })
 
+test('local enumeration: a remote-only artifact refuses every local route and always defers', () => {
+  // There is no runtime behind "This device" in a light artifact: the route
+  // must refuse instead of spawning, whatever the v1 routing table says.
+  const forced = resolveRegistryLocalRoute('default', { globalRemote: true, remoteOnly: true })
+
+  assert.equal(forced.delegate, false)
+  assert.match(String(forced.refuse ?? ''), /remote-only/)
+
+  const delegated = resolveRegistryLocalRoute('research', { remoteOnly: true })
+
+  assert.equal(delegated.delegate, false)
+  assert.ok(delegated.refuse)
+
+  // Enumeration stays deferred even with a pooled forced-local child: light
+  // never opens one.
+  assert.equal(shouldDeferLocalEnumeration(forced, [], 'local', { remoteOnly: true }), true)
+  assert.equal(shouldDeferLocalEnumeration(forced, ['conn:local::default'], 'local', { remoteOnly: true }), true)
+  assert.equal(
+    shouldDeferLocalEnumeration({ delegate: true, poolKey: 'default' }, [], 'local', { remoteOnly: true }),
+    true
+  )
+})
+
 // --- buildAgentRoster (union roster + @name-device rule) ---
 
 test('roster: unique profiles keep bare handles; duplicates get @name-device', () => {
@@ -892,6 +915,30 @@ test('roster: unique profiles keep bare handles; duplicates get @name-device', (
   assert.equal(byKey.get('local/default'), 'default')
   assert.equal(byKey.get('homelab/coder'), 'coder')
   assert.equal(roster.length, 4)
+})
+
+test('roster: a remote-only artifact drops "This device" from the union', () => {
+  const local = { id: 'local', kind: 'local' as const, label: 'This device' }
+  const homelab = { id: 'homelab', kind: 'remote' as const, label: 'Homelab', url: 'http://h:1' }
+
+  const roster = buildAgentRoster(
+    [
+      { connection: local, profiles: ['default', 'research'] },
+      { connection: homelab, profiles: ['default', 'research'] }
+    ],
+    { remoteOnly: true }
+  )
+
+  assert.equal(
+    roster.some(agent => agent.connectionId === 'local'),
+    false
+  )
+  // Duplicates no longer exist across sources, so the surviving rows keep
+  // their bare handles instead of the @name-device form.
+  const byKey = new Map(roster.map(a => [`${a.connectionId}/${a.profile}`, a.handle]))
+
+  assert.equal(byKey.get('homelab/research'), 'research')
+  assert.equal(roster.length, 2)
 })
 
 test('roster: source profile metadata follows the connection-qualified row', () => {

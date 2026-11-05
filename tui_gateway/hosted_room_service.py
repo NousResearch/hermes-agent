@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
@@ -160,10 +161,11 @@ class HostedRoomService:
         self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
-        # Orders Stop with an approval's live check and dispatch: an Allow either reaches the member
-        # before Stop marks its attempt stopping, or sees the stop and is refused. Taken before
-        # ``_policy_lock``, never inside it.
-        self._approval_stop_lock = threading.RLock()
+        # Orders each room's Stop with its approval's live check and dispatch, which can wait on another
+        # computer: an Allow either reaches the member before Stop marks its attempt stopping, or sees
+        # the stop and is refused. Taken before ``_policy_lock``, never inside it. A room's lock lives
+        # only while someone holds or waits on it.
+        self._approval_stop_locks: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
             self.db_path,
@@ -884,11 +886,20 @@ class HostedRoomService:
         self.runtime.wakeup()
         return event
 
+    def _approval_stop_lock(self, room_id: str):
+        with self._policy_lock:
+            lock = self._approval_stop_locks.get(room_id)
+            if lock is None:
+                lock = self._approval_stop_locks[room_id] = threading.RLock()
+            return lock
+
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         """Stop the room's work; the count leaves out a deferred turn on another gateway that its
         gateway has not confirmed stopped (``_stop_deferred_peer``): it stays deferred."""
-        with self._approval_stop_lock:
+        # Every accepted spelling of a room shares its lock and its cached approvals.
+        room_id = hosted_rooms._room_id(room_id)
+        with self._approval_stop_lock(room_id):
             return self._stop_room(room_id, cancel_id=cancel_id, require_acknowledged=require_acknowledged)
 
     def _stop_room(self, room_id: str, *, cancel_id: str, require_acknowledged: bool) -> int:
@@ -1001,6 +1012,7 @@ class HostedRoomService:
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
         choice: str, request_id: str | None = None) -> Mapping[str, Any]:
         """Resolve one exact local or peer approval and wake room observation."""
+        room_id = hosted_rooms._room_id(room_id)
         key = (room_id, member_id)
         route, client = self.peer_routes.get(key), self.peer_clients.get(key)
         requested_approval_id = str(request_id or "")
@@ -1012,7 +1024,7 @@ class HostedRoomService:
             ) == (requested_approval_id, task_id, execution_generation)
         # The live check and the dispatch hold the Stop lock, so a Stop either lands first (and this
         # Allow is refused) or after the member already has its answer.
-        with self._approval_stop_lock:
+        with self._approval_stop_lock(room_id):
             live = _approvable_attempts(driver.list_tasks(self.db_path, room_id=room_id))
             with self._policy_lock:
                 action = self._pending_actions.get(key)

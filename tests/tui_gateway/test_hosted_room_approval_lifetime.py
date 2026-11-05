@@ -300,7 +300,7 @@ def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(
             self._lock.release()
 
     monkeypatch.setattr(driver, "list_tasks", list_tasks)
-    service._approval_stop_lock = _SignallingLock(threading.RLock())
+    service.planted_lock = service._approval_stop_locks["room"] = _SignallingLock(threading.RLock())
     stopper = threading.Thread(target=lambda: (read.wait(10), service.stop_room("room", cancel_id="stop"),
                                                stop_progress.set()))
     stopper.start()

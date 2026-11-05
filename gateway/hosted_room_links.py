@@ -1,24 +1,25 @@
-"""Private SQLite storage for negotiated hosted-room links.
+"""Private storage for negotiated hosted-room links.
 
-Route metadata and its scoped grant share the gateway's private root ``state.db``. SQLite WAL plus
-``BEGIN IMMEDIATE`` owns concurrency; grants are never included in reprs, status payloads, or exception messages.
+Route metadata and its scoped grant live in the hosted-room file the caller's placement names; grants are never
+included in reprs, status payloads, or exception messages.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from functools import partial
-from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_room_peer import (
-    GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, room_grant_hard_expiry, validate_room_link_url)
-from gateway.hosted_rooms_common import DbPath, compact_json, exact_fields, identifier
+    GatewayRoomCatalog, HostedRoomPeerError, TransportSecurity, validate_room_link_url)
+from gateway.hosted_rooms_common import compact_json, exact_fields, identifier
+from persistence.gateway.hosted_rooms import HostedPlacement
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 
 MAX_LINKS = 512
@@ -104,21 +105,22 @@ def _short_string(value: Any, field: str) -> str:
         invalid=f"{field} is invalid")
 
 
-def _link_rows(db_path: DbPath) -> list[dict[str, Any]]:
-    rows = hosted_rooms.list_room_link_records(db_path)
+def _link_rows(store: Persistence, placement: HostedPlacement) -> list[dict[str, Any]]:
+    rows = hosted_rooms.list_room_link_records(store, placement=placement)
     if len(rows) > MAX_LINKS:
         raise HostedRoomPeerError("stored room link list is invalid")
     return rows
 
 
-def load_room_links(db_path: DbPath) -> tuple[StoredRoomLink, ...]:
-    return tuple(StoredRoomLink.from_record(row) for row in _link_rows(db_path))
+def load_room_links(store: Persistence, *, placement: HostedPlacement) -> tuple[StoredRoomLink, ...]:
+    return tuple(StoredRoomLink.from_record(row) for row in _link_rows(store, placement))
 
 
-def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
+def load_room_links_tolerant(
+    store: Persistence, *, placement: HostedPlacement) -> tuple[tuple[StoredRoomLink, ...], tuple[str, ...]]:
     """Load healthy routes while quarantining malformed rows by identity."""
     links, errors = [], []
-    for row in _link_rows(db_path):
+    for row in _link_rows(store, placement):
         try:
             links.append(StoredRoomLink.from_record(row))
         except Exception:
@@ -126,20 +128,18 @@ def load_room_links_tolerant(db_path: DbPath) -> tuple[tuple[StoredRoomLink, ...
     return tuple(links), tuple(errors)
 
 
-def save_room_link(db_path: DbPath, link: StoredRoomLink) -> None:
+def save_room_link(store: Persistence, link: StoredRoomLink, *, placement: HostedPlacement) -> None:
     hosted_rooms.upsert_room_link_record(
-        db_path, record=link.as_record(), max_links=MAX_LINKS, expiry=room_grant_hard_expiry)
-    if os.name == "posix":
-        with contextlib.suppress(OSError):
-            Path(db_path).chmod(0o600)
+        store, placement=placement, record=link.as_record(), max_links=MAX_LINKS, hold_replaced=True)
 
 
-def mark_room_link_status(db_path: DbPath, *, room_id: str, member_id: str, status: str) -> bool:
+def mark_room_link_status(
+    store: Persistence, *, placement: HostedPlacement, room_id: str, member_id: str, status: str) -> bool:
     if status not in _STATUSES:
         raise HostedRoomPeerError("stored room link status is invalid")
     return hosted_rooms.update_room_link_status(
-        db_path, room_id=_short_string(room_id, "room_id"), member_id=_short_string(member_id, "member_id"),
-        status=status)
+        store, placement=placement, room_id=_short_string(room_id, "room_id"),
+        member_id=_short_string(member_id, "member_id"), status=status)
 
 
 def make_stored_link(

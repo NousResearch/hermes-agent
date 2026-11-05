@@ -64,12 +64,12 @@ def _write_receipt(home, record, expect=_UNCHECKED):
         if expect is not _UNCHECKED and (current or {}).get('status') != expect:
             return False
         if current is not None and current.get('principal_id'):
-            from hermes_state_runtime import RuntimeStoreError
+            from persistence.core.errors import AuthorityRefusal
             fields = ('profile_home', 'session_id', 'principal_id', 'message', 'author')
             if (any(current.get(key) != record.get(key) for key in fields)
                     or current.get('notification_category', 'result') != record.get('notification_category', 'result')
                     or (current.get('admission_id') and current['admission_id'] != record.get('admission_id'))):
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
         merged = {**(current or {}), **record}
         if merged != current:
             _write(path, merged)

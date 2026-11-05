@@ -13,7 +13,7 @@ import json
 import os
 import subprocess
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 TIMEOUT_SECONDS = 30
 _LOCAL_BACKENDS = frozenset({'', 'local'})
@@ -27,7 +27,7 @@ async def shell_exec(connection, ref, params):
     command = params.get('command')
     if (set(params) - {'session_id', 'profile', 'command'} or not isinstance(ref.session_id, str)
             or not ref.session_id or not isinstance(command, str) or not command.strip()):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from gateway.session_busy_controls import authorize
     authorize(connection, ref, params, 'session:control')
     authority = connection.authority
@@ -38,19 +38,19 @@ async def shell_exec(connection, ref, params):
     # Local terminal sessions only: an API, messaging or A2A session has no composer, and running
     # commands for it would be a remote-execution surface with no human at the keyboard.
     if authorize_local_source(authority.runner, live.source) is not True:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     # The frozen terminal policy chose a sandbox (docker, ssh, ...): the owner's host shell is not
     # that backend, so refuse rather than run on the host behind the session's back.
     # The refusal names the backend so the client can say where the command would have run.
     backend = str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower()
     if backend not in _LOCAL_BACKENDS:
-        raise RuntimeStoreError('unsupported_terminal_backend', field='terminal.backend', detail=backend)
+        raise AuthorityRefusal('unsupported_terminal_backend', field='terminal.backend', detail=backend)
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
     if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
-        raise RuntimeStoreError('dangerous_command')
+        raise AuthorityRefusal('dangerous_command')
     return await asyncio.to_thread(_run, command, policy.cwd)
 
 
@@ -61,16 +61,16 @@ def _run(command, cwd):
     # shell=True keeps the user-facing !cmd grammar (pipes, redirects); the child never inherits
     # credentials the long-lived owner holds, nor a launch profile's .env residue in a routed one.
     if not os.path.isdir(cwd):  # a deleted checkout / worktree: never fall back to the owner's cwd
-        raise RuntimeStoreError('cwd_unavailable')
+        raise AuthorityRefusal('cwd_unavailable')
     env = build_subprocess_env(strip_launch_profile=True)
     try:
         result = subprocess.run(command, cwd=cwd, shell=True, env=env, capture_output=True,
                                 text=True, encoding='utf-8', errors='replace', timeout=TIMEOUT_SECONDS,
                                 stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(), check=False)
     except subprocess.TimeoutExpired:
-        raise RuntimeStoreError('command_timeout') from None
+        raise AuthorityRefusal('command_timeout') from None
     except OSError:
-        raise RuntimeStoreError('command_failed') from None
+        raise AuthorityRefusal('command_failed') from None
     # Redact before tailing so a credential crossing the slice boundary cannot survive as fragments.
     stdout = redact_sensitive_text(result.stdout or '', force=True, redact_url_credentials=True)[-4000:]
     stderr = redact_sensitive_text(result.stderr or '', force=True, redact_url_credentials=True)[-2000:]

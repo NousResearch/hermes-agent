@@ -7,7 +7,7 @@ import asyncio
 import json
 from dataclasses import asdict, replace
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def _rebind(authority, prepared, old, policy, **extra):
@@ -46,7 +46,7 @@ async def prepare_workspace(authority, live, payload, prepared):
         # Off-loop: a stat and up to three `git` spawns.
         cwd = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(payload['cwd'])))
         if not os.path.isdir(cwd):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return cwd, git_probe.branch(cwd), git_probe.common_repo_root(cwd)
     cwd, branch, root = await asyncio.to_thread(probe)
     terminal = json.loads(old.terminal_json)
@@ -61,8 +61,8 @@ async def prepare_edit_policy(authority, live, payload, prepared):
     from gateway.session_policy import restore_policy
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     if old.source != 'acp':
-        raise RuntimeStoreError('invalid_params', field='payload.policy',
-                                detail='only an ACP session has an editor edit approval policy')
+        raise AuthorityRefusal('invalid_params', field='payload.policy',
+                               detail='only an ACP session has an editor edit approval policy')
     if old.edit_approval_policy == payload['policy']:
         return {'status': 'noop', 'edit_approval_policy': old.edit_approval_policy}
     return _rebind(authority, prepared, old, replace(old, edit_approval_policy=payload['policy']))

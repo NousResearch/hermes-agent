@@ -9,19 +9,19 @@ import json
 from pathlib import Path
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 async def complete_path(connection, ref, params):
     if (set(params) - {'session_id', 'profile', 'word', 'cwd'}
             or any(not isinstance(value, str) for value in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     word = params.get('word', '')
     if not word or not ref.session_id:
         return {'items': []}
     authority = connection.authority
     if ref.session_id not in authority.sessions:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authorize(connection, ref, params, 'session:read')
     from gateway.session_policy import policy_for_source, terminal_uses_host_cwd
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)

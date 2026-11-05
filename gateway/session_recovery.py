@@ -54,7 +54,7 @@ class SessionRecoveryMixin:
     @staticmethod
     def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
         """Extract the profile namespace encoded in a gateway session key."""
-        from hermes_state_keys import profile_from_session_key
+        from session_keys import profile_from_session_key
         return profile_from_session_key(session_key)
 
     @staticmethod
@@ -165,61 +165,67 @@ class SessionRecoveryMixin:
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
         return self._peer_row(
-            self._db_for_key(session_key), source=source.platform.value, session_key=session_key,
+            self._persistence_for_key(session_key), source=source.platform.value, session_key=session_key,
             user_id=source.user_id,
             chat_id=source.chat_id if allow_peer_fallback else None,
             chat_type=source.chat_type if allow_peer_fallback else None,
             thread_id=source.thread_id, raise_on_lookup_error=raise_on_lookup_error)
 
     @staticmethod
-    def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
+    def _peer_row(store, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
                   **peer: Any) -> Optional[dict[str, Any]]:
-        """``db.find_latest_gateway_session_for_peer`` guarded for a missing store, a SessionDB
-        without the finder, and a failing lookup (debug-logged -> None unless *raise_on_lookup_error*).
-        Extra keyword arguments (user_id/chat_id/chat_type/thread_id) pass through to the finder."""
-        finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
-        if not callable(finder):
+        """``store.routing.latest_session_for_peer`` guarded for a missing store and a failing lookup
+        (debug-logged -> None unless *raise_on_lookup_error*), as the row columns recovery reads. Extra
+        keyword arguments (user_id/chat_id/chat_type/thread_id) pass through to the finder."""
+        if store is None:
             return None
         try:
-            return finder(source=source, session_key=session_key, **peer)
+            found = store.routing.latest_session_for_peer(source=source, session_key=session_key, **peer)
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             if raise_on_lookup_error:
                 raise
             return None
+        if found is None:
+            return None
+        row = found.session
+        return {"id": row.session_id, "session_key": row.session_key, "started_at": row.started_at,
+                "last_activity_at": row.last_activity_at, "message_count": row.message_count,
+                "_has_messages": found.has_messages,
+                "origin_json": None if row.origin is None else json.dumps(dict(row.origin))}
 
     def resolve_session_id_for_key(
         self, session_key: str, *, not_after: Optional[float] = None,
     ) -> Optional[tuple[str, Any]]:
-        """Resolve a gateway session key to ``(session_id, db)`` for shutdown-flush recovery.
+        """Resolve a gateway session key to ``(session_id, store)`` for shutdown-flush recovery.
 
         The routing map (``peek_session_id``) is authoritative: it names the session the message
         was actually routed to at shutdown. When ``sessions.json`` was pruned, fall back to the
         durable row under the exact key (the peer finder keeps the reset fence: rows ended only by
         recoverable reasons match; explicit boundaries do not). A row started after the flush
         (``started_at > not_after``) cannot be the origin and is never adopted. Never mints a
-        session; None means the caller must preserve the flush file. ``db`` is the store owning
-        the key, so the append lands in the right profile partition. When that store cannot be
-        resolved (``_db_for_key`` fails closed for a profile without a reachable home) the answer
+        session; None means the caller must preserve the flush file. ``store`` is the storage handle on
+        the store owning the key, so the append lands in the right profile partition. When that store cannot be
+        resolved (``_persistence_for_key`` fails closed for a profile without a reachable home) the answer
         is None even if the routing map knows the id: appending to the ambient root store would
         split one session identity across two physical stores (#66887/#102157).
         """
         if not session_key:
             return None
-        db = self._db_for_key(session_key)
-        if db is None:
+        store = self._persistence_for_key(session_key)
+        if store is None:
             return None
         session_id = self.peek_session_id(session_key)
         if session_id:
-            return session_id, db
+            return session_id, store
         parts = str(session_key).split(":")
         platform = parts[2] if len(parts) >= 3 and parts[0] == "agent" else None
         if not platform:
             return None
         # No scope/profile fences here, unlike _query_recoverable_row: with no chat tuple the finder
-        # runs only the `s.session_key = ?` branch in the store _db_for_key picked for this key, so a
+        # runs only the `s.session_key = ?` branch in the store _persistence_for_key picked for this key, so a
         # hit carries this very key — same profile namespace and (for scoped Slack) same scope_id slot.
-        row = self._peer_row(db, source=platform, session_key=session_key)
+        row = self._peer_row(store, source=platform, session_key=session_key)
         if not isinstance(row, dict) or not row.get("id"):
             return None
         started_at = row.get("started_at")
@@ -227,7 +233,7 @@ class SessionRecoveryMixin:
         # a row minted in the same second as the flush is still a valid origin.
         if not_after is not None and started_at is not None and math.floor(float(started_at)) > int(not_after):
             return None
-        return str(row["id"]), db
+        return str(row["id"]), store
 
     def _recover_session_from_db(
         self, *, session_key: str, source: SessionSource, now: datetime,
@@ -289,31 +295,26 @@ class SessionRecoveryMixin:
         return entry, migrated_legacy
 
     def _promote_session_reset(self, session_key: str, session_id: str, reason: str, *, log) -> None:
-        """End *session_id* with *reason* via ``promote_to_session_reset`` (``end_session`` on old
-        SessionDBs). Promote, not plain end: a row already ended with a recoverable accidental
-        reason (agent_close / ws_orphan_reap) must be upgraded to the explicit boundary, or
-        stale-route recovery resurrects it over the reset. ``log(exc)`` reports failures."""
+        """End *session_id* with *reason* via ``sessions.promote_to_reset``. Promote, not plain end: a row
+        already ended with a recoverable accidental reason (agent_close / ws_orphan_reap) must be upgraded to the
+        explicit boundary, or stale-route recovery resurrects it over the reset. ``log(exc)`` reports failures."""
         try:
-            db = self._db_for_key(session_key)
-            promote = getattr(db, "promote_to_session_reset", None)
-            if callable(promote):
-                promote(session_id, reason)
-            else:
-                db.end_session(session_id, reason)
+            store = self._persistence_for_key(session_key)
+            store.sessions.promote_to_reset(session_id, reason)
             from gateway.session_bot import release_superseded_bot_chat
-            release_superseded_bot_chat(db, self, session_key, session_id)
+            release_superseded_bot_chat(store, self, session_key, session_id)
             # Stop the departed conversation's schedule in its owning profile, even when
             # the in-memory watch still holds a pre-reset session id.
             heartbeat_key = f"heartbeat:{session_id}"
-            if db.get_meta(heartbeat_key):
-                db.set_meta(heartbeat_key, "")
+            if store.state_meta.get(heartbeat_key):
+                store.state_meta.set(heartbeat_key, "")
         except Exception as exc:
             log(exc)
 
     def _reopen_session_row(self, session_key: str, session_id: str, *, log_prefix: str = "") -> None:
-        """Best-effort ``reopen_session``; failures are debug-logged only."""
+        """Best-effort ``sessions.reopen``; failures are debug-logged only."""
         try:
-            self._db_for_key(session_key).reopen_session(session_id)
+            self._persistence_for_key(session_key).sessions.reopen(session_id)
         except Exception as exc:
             if log_prefix:
                 logger.debug("%s: %s", log_prefix, exc)
@@ -327,29 +328,23 @@ class SessionRecoveryMixin:
         """Persist the routing peer for an existing gateway session row. ``transport_profile`` is the
         entry's persisted receiving-bot profile; when the caller has no entry it is read off the
         source's pinned identity (None = unknown, the column keeps whatever an earlier writer set)."""
-        db = self._db_for_key(session_key)
-        if not db or not source:
-            return
-        recorder = getattr(db, "record_gateway_session_peer", None)
-        if not callable(recorder):
+        store = self._persistence_for_key(session_key)
+        if store is None or not source:
             return
         from gateway.session_api import api_storage_source
         from gateway.session_a2a import storage_source
         from gateway.session_identity import transport_profile_of
+        from gateway.session_route_recovery import _messaging_platform
         peer = dict(
-            source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
+            source=storage_source(store, source, session_id, api_storage_source(store, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
             chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
         try:
-            recorder(
+            store.routing.record_session_peer(
                 session_id, **peer, display_name=display_name or source.chat_name,
                 origin_json=_origin_json(source),
                 include_compression_ancestors=include_compression_ancestors,
+                messaging_lane=_messaging_platform(peer["source"]) is not None,
                 transport_profile=transport_profile or transport_profile_of(source))
-        except TypeError:
-            try:  # older SessionDB without display_name/origin_json kwargs
-                recorder(session_id, **peer)
-            except Exception as exc:
-                logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
         except Exception as exc:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
 
@@ -395,7 +390,7 @@ class SessionRecoveryMixin:
             from hermes_cli.observability.relay_shared_metrics import close_session_run
 
             close_session_run(end_session_id)
-        if self._db_for_key(session_key) and end_session_id:
+        if self._persistence_for_key(session_key) and end_session_id:
             self._promote_session_reset(
                 session_key, end_session_id, end_reason,
                 log=lambda e: logger.warning(
@@ -403,7 +398,7 @@ class SessionRecoveryMixin:
                     "open and may win restart recovery until the next successful peer refresh",
                     end_session_id, session_key, during, e),
             )
-        if self._db_for_key(session_key) and create_kwargs:
+        if self._persistence_for_key(session_key) and create_kwargs:
             self._create_session_row(
                 session_key, create_kwargs, origin, display_name,
                 log=lambda e: logger.warning(
@@ -429,7 +424,7 @@ class SessionRecoveryMixin:
     def _session_create_kwargs(
         *, session_id, session_key, origin, source_value, display_name, parent_session_id,
     ) -> dict[str, Any]:
-        """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
+        """The new row's columns (``_create_session_row`` writes them). Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
         row unroutable."""
         from gateway.session_identity import transport_profile_of
@@ -454,7 +449,11 @@ class SessionRecoveryMixin:
         create is a routing hazard (visible warning), but the row is self-healed with full identity
         by the next per-turn peer refresh."""
         try:
-            self._db_for_key(session_key).create_session(**db_create_kwargs)
+            from persistence.conversation.sessions import NewSession
+            spec = dict(db_create_kwargs)
+            origin_json = spec.pop("origin_json")
+            self._persistence_for_key(session_key).sessions.create(
+                NewSession(**spec, origin=None if origin_json is None else json.loads(origin_json)))
             self._record_gateway_session_peer(
                 db_create_kwargs["session_id"], session_key, origin, display_name=display_name)
         except Exception as e:

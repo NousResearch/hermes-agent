@@ -220,8 +220,8 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch import format_model_for_display
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
-        _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # so the dashboard shows the updated model
+        _store = getattr(self, "persistence", None)
+        if _store is not None:  # so the dashboard shows the updated model
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not
@@ -229,7 +229,7 @@ class GatewayModelCommandsMixin:
                 if not picker and getattr(_sess_entry, "was_auto_reset", False):
                     # See #48031.
                     _sess_entry.was_auto_reset = False
-                await _sess_db.update_session_model(
+                await _store.aio.sessions.update_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider,
                     base_url=result.base_url, api_mode=result.api_mode,
                 )
@@ -684,11 +684,11 @@ class GatewayModelCommandsMixin:
         if previous is None:
             return t("gateway.model.reset_none", model=shown)
         from hermes_cli.model_switch import format_model_for_display
-        _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # the dashboard's session-model column (#34850)
+        _store = getattr(self, "persistence", None)
+        if _store is not None:  # the dashboard's session-model column (#34850)
             try:
                 entry = await self.async_session_store.get_or_create_session(source)
-                await _sess_db.update_session_model(entry.session_id, default_model, provider=default_provider or None)
+                await _store.aio.sessions.update_model(entry.session_id, default_model, provider=default_provider or None)
             except Exception:
                 logger.debug("Failed to persist model reset to DB", exc_info=True)
         if not hasattr(self, "_pending_model_notes"):

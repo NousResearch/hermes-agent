@@ -10,6 +10,7 @@ import sqlite3
 from gateway import hosted_rooms as rooms
 from gateway import hosted_room_work_storage as storage
 from gateway.hosted_rooms_common import identifier, table_exists
+from persistence.gateway.hosted_rooms import DriverStateError
 
 VERSION = 1
 PERMISSION = "work_records"
@@ -229,7 +230,7 @@ def _capture_tasks(conn, room_id):
     for row in rows:
         try:
             payload, encoded, payload_digest = driver._task_payload(json.loads(row["payload_json"]))
-        except (ValueError, driver.DriverStateError):
+        except (ValueError, DriverStateError):
             return [], [], "unsupported_task"
         if payload_digest != row["payload_digest"] or encoded != row["payload_json"] or payload["source_event_seq"] != row["source_event_seq"]:
             return [], [], "unsupported_task"
@@ -262,16 +263,6 @@ def capture_transition_locked(conn, room_id):
         logging.getLogger(__name__).warning("Hosted work evidence unavailable for room %s", room_id, exc_info=True)
     finally:
         conn.execute("RELEASE work_transition_capture")
-
-
-def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | None = None) -> dict:
-    """Commit a new revision only when one consistent source view changes."""
-    with rooms._transaction(db_path, immediate=True) as conn:
-        try:
-            return capture_locked(conn, room_id=room_id, local_gateway_id=local_gateway_id, through_seq=through_seq)
-        except InvalidStoredWorkRecord:
-            pass  # Commit this capture's invalid disposition, not new evidence.
-    raise InvalidStoredWorkRecord("stored work evidence is invalid")
 
 
 def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):

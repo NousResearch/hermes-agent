@@ -14,9 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 import time
-from contextlib import closing
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -181,52 +179,8 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[dict[str, Any]]
     return evidence
 
 
-# Startup-watchdog lease held while the unclean-exit integrity check runs (#115542):
-# ``PRAGMA quick_check(1)`` is one monolithic SQLite operation and per-call leases
-# clamp at 900s, so a single entry lease cannot cover a multi-thousand-second healthy
-# check on a huge store — without renewal the watchdog kills the attempt with exit 75
-# and the restart loop never reaches the cron ticker. The progress handler below renews
-# a phase-owned lease for as long as SQLite is making progress; without a deadline it
-# always returns 0 so it never aborts the check, and the ok/absent/first-complaint
-# verdicts stay fail-closed. When an explicit ``deadline_at`` is supplied the
-# handler returns non-zero once it passes, so SQLite aborts the scan and the caller
-# can bound a pathological store instead of pinning the boot path.
-_INTEGRITY_CHECK_LEASE_PHASE = "state_db_unclean_integrity_check"
-_INTEGRITY_CHECK_LEASE_S = 900.0
-# VM instructions between progress-handler invocations; each invocation is a
-# monotonic-clock compare, renewing at most every _INTEGRITY_CHECK_LEASE_RENEW_S.
-_INTEGRITY_CHECK_PROGRESS_OPS = 100_000
-_INTEGRITY_CHECK_LEASE_RENEW_S = 60.0
 # Bound on the deferred post-connect scan: a pathological store cannot pin its thread forever.
 STATE_DB_INTEGRITY_DEADLINE_S = 1800.0
-
-
-def _install_integrity_check_lease(conn: sqlite3.Connection, *, deadline_at: Optional[float] = None) -> None:
-    """Claim the integrity-check lease and renew it from a SQLite progress handler.
-
-    ``report_startup_progress`` is a no-op when no watchdog is armed and never raises.
-    Without ``deadline_at`` the handler always returns 0 -- it must never abort the verdict
-    PRAGMA.  With ``deadline_at`` (a ``time.monotonic`` timestamp) it returns non-zero once
-    that instant is reached, so SQLite raises ``OperationalError: interrupted`` and the
-    caller can bound the scan.  Synchronous by design: no checker worker thread can outlive
-    the check.
-    """
-    from hermes_startup_watchdog import report_startup_progress
-
-    report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
-    last_renew = time.monotonic()
-
-    def _on_progress() -> int:
-        nonlocal last_renew
-        now = time.monotonic()
-        if now - last_renew >= _INTEGRITY_CHECK_LEASE_RENEW_S:
-            last_renew = now
-            report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
-        if deadline_at is not None and now >= deadline_at:
-            return 1
-        return 0
-
-    conn.set_progress_handler(_on_progress, _INTEGRITY_CHECK_PROGRESS_OPS)
 
 
 def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optional[float] = None) -> str:
@@ -245,36 +199,30 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
     return ``"check-incomplete: exceeded <N>s"``.  ``deadline_s=None`` (default) is the
     historic unbounded behaviour -- the progress handler never aborts the PRAGMA.
     """
-    path = _home_path(home, "state.db")
-    if not path.exists():
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin, profile_scope, store_location
+
+    scope = profile_scope(home=_home_path(home))
+    path = store_location(scope)
+    if path is None or not path.exists():
         return "absent"
-    deadline_at: Optional[float] = None
-    if deadline_s is not None:
-        try:
-            deadline_at = time.monotonic() + max(0.0, float(deadline_s))
-        except (TypeError, ValueError):
-            deadline_at = None
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
-            _install_integrity_check_lease(conn, deadline_at=deadline_at)
-            row = conn.execute("PRAGMA quick_check(1)").fetchone()
+        admin = open_store_admin(scope)
     except Exception as exc:
-        if (deadline_at is not None and isinstance(exc, sqlite3.OperationalError)
-                and "interrupt" in str(exc).lower()):
-            limit = max(0.0, float(deadline_s)) if deadline_s is not None else 0.0
-            return f"check-incomplete: exceeded {limit:g}s"
         return f"check-failed: {exc}"
-    return "check-failed: no result" if not row or row[0] is None else str(row[0])
+    return "absent" if isinstance(admin, AdminUnsupported) else admin.integrity_check(deadline_s=deadline_s)
 
 
 def _state_db_journal_mode(path: Path) -> Optional[str]:
     """On-disk journal mode of ``path`` via one ``PRAGMA journal_mode`` read on a short-lived
-    connection (no lock outlives it); ``None`` when undeterminable.  Never raises."""
+    connection (no lock outlives it); ``None`` when undeterminable or on a backend without the
+    admin capability.  Never raises."""
     try:
-        from hermes_state_wal import _on_disk_journal_mode
+        from persistence.core.admin import AdminUnsupported
+        from persistence_assembly import open_store_admin
 
-        with closing(sqlite3.connect(str(path), timeout=1.0)) as conn:
-            return _on_disk_journal_mode(conn) or None
+        admin = open_store_admin(path)
+        return None if isinstance(admin, AdminUnsupported) else admin.journal_mode()
     except Exception:
         logger.debug("Could not read state.db journal mode", exc_info=True)
         return None
@@ -370,8 +318,10 @@ def run_deferred_integrity_check(
     on-disk mode decides, not config; an undeterminable mode is skipped too.
     """
     try:
-        path = _home_path(home, "state.db")
-        mode = _state_db_journal_mode(path) if path.exists() else "wal"
+        from persistence_assembly import profile_scope, store_location
+
+        path = store_location(profile_scope(home=_home_path(home)))
+        mode = _state_db_journal_mode(path) if path is not None and path.exists() else "wal"
         if mode != "wal":
             verdict = (f"skipped: rollback-journal store (journal_mode={mode or 'unknown'}), "
                        "scan would block live writes")

@@ -29,7 +29,9 @@ async def refine_local_session(runner, source, focus):
         return None
     from gateway.session_contract import SessionRef
     from gateway.session_local_recovery import transcript_target
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import policy_for_source
+    from persistence.conversation.messages import ConversationRequest
     policy = policy_for_source(runner, live.source)
     if policy is None:
         return None
@@ -37,7 +39,8 @@ async def refine_local_session(runner, source, focus):
 
     def load():
         target = transcript_target(authority, ref)
-        return target, authority.db.get_messages_as_conversation(target, include_ancestors=True)
+        rows = authority_persistence(authority).messages.read_conversation(target, ConversationRequest(include_lineage=True))
+        return target, [row.as_openai_message() for row in rows]
 
     target, history = await asyncio.to_thread(load)
     if not history:

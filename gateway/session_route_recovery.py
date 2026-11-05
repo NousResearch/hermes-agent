@@ -23,10 +23,11 @@ from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API row
 ``_publish_route``: a row that ended for a recoverable reason (``agent_close``, ``ws_orphan_reap``,
 ...) is mounted live too, as the lane's next message would reopen it.
 """
-import json
 from datetime import datetime
 
 from gateway.config import Platform
+from gateway.session_persistence import authority_persistence, owner_rule
+from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
 
 
 def _messaging_platform(label):
@@ -54,15 +55,15 @@ def _row_source(row, platform, profile):
     """The row's persisted origin, else its columns (``channel_directory`` reads rows the same way)."""
     from gateway.session import SessionSource
     try:
-        return SessionSource.from_dict(json.loads(row['origin_json']))
+        return SessionSource.from_dict(dict(row.origin))
     except (TypeError, ValueError, KeyError):
         pass
-    if row.get('chat_id') is None:
+    if row.chat_id is None:
         return None
     source = SessionSource(
-        platform=platform, chat_id=str(row['chat_id']), user_id=row.get('user_id'),
-        chat_type=row.get('chat_type') or 'dm', thread_id=row.get('thread_id'),
-        chat_name=row.get('display_name'))
+        platform=platform, chat_id=str(row.chat_id), user_id=row.user_id,
+        chat_type=row.chat_type or 'dm', thread_id=row.thread_id,
+        chat_name=row.display_name)
     if profile is not None:
         source.profile = profile
     return source
@@ -82,18 +83,18 @@ def _row_entry(row, platform, route, profile):
     source = _row_source(row, platform, profile)
     if source is None or source.platform != platform:
         return None
-    started = datetime.fromtimestamp(row['started_at']) if row.get('started_at') else datetime.now()
-    return SessionEntry(session_key=route, session_id=row['id'], created_at=started, updated_at=started,
+    started = datetime.fromtimestamp(row.started_at) if row.started_at else datetime.now()
+    return SessionEntry(session_key=route, session_id=row.session_id, created_at=started, updated_at=started,
                         origin=source, platform=platform, chat_type=source.chat_type,
-                        transport_profile=row.get('transport_profile'))
+                        transport_profile=row.transport_profile)
 
 
 def _mount_plan(authority, sid):
     """``(route, entry, routed)`` for a row a route or a messaging-platform row can stand for, else
     None. Reads only: ``restore_routed_session`` mounts it, the stored picker lists it."""
-    row = authority.db.get_session(sid)
-    route = row.get('session_key') if row is not None else None
-    platform = _messaging_platform(row['source']) if route else None
+    row = authority_persistence(authority).sessions.get(sid)
+    route = row.session_key if row is not None else None
+    platform = _messaging_platform(row.source) if route else None
     if platform is None or authority.logical_owner(sid) != sid:
         return None  # a compression continuation: its lineage root is the mount (session.resume maps it)
     store = authority.runner.session_store
@@ -135,8 +136,8 @@ def mountable(authority, sid):
 def messaging_owner_ref(authority, ref):
     """The mount a messaging row resumes on: its compression lineage root, where the lane's turns
     publish their events (``logical_owner``). Any other row keeps *ref*."""
-    row = authority.db.get_session(ref.session_id)
-    if row is None or not row.get('session_key') or _messaging_platform(row['source']) is None:
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    if row is None or not row.session_key or _messaging_platform(row.source) is None:
         return ref
     from gateway.session_contract import SessionRef
     owner = authority.logical_owner(ref.session_id)
@@ -149,12 +150,12 @@ def handed_off_ref(authority, session_id):
     authority mounts. Its title stays the conversation's, so ``/resume <title>`` and the Bots roster's
     registry lookup open it on that lane (#143286). None for any other row."""
     from gateway.session_contract import SessionRef
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, client_label
+    from session_rules.legacy_local import client_label
     ref = messaging_owner_ref(authority, SessionRef(authority.profile_id, session_id))
-    row = authority.db.get_session(ref.session_id) or {}
-    created = row.get('created_source')
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    created = row.created_source if row is not None else None
     # An adopted phone-app chat keeps the app's label as its created_source (bind_legacy_target).
-    if (created not in LEGACY_LOCAL_SOURCES and not client_label(created)) or not mountable(authority, ref.session_id):
+    if (created not in LEGACY_LOCAL_SOURCES and not client_label(created, owner_rule())) or not mountable(authority, ref.session_id):
         return None
     return ref
 
@@ -163,7 +164,8 @@ def superseded_hand_off(authority, ref):
     """Whether the lane that took over *ref* (a ``handed_off_ref``) has since moved on to another
     conversation (``/new``, a reset): the chat is history now, read-only on that lane."""
     live = authority.sessions.get(ref.session_id)
-    route = (authority.db.get_session(ref.session_id) or {}).get('session_key')
+    row = authority_persistence(authority).sessions.get(ref.session_id)
+    route = row.session_key if row is not None else None
     # The routing entry moves at the platform's /new; the lane publishes its new conversation (and so
     # supersedes a mounted one) only at its next inbound.
     return bool(live is not None and live.detached) or _names_another_conversation(authority, ref.session_id, route)
@@ -172,16 +174,14 @@ def superseded_hand_off(authority, ref):
 async def conversation_head(runner, session_id):
     """``(authority, local owner or None, row id)`` a repoint of *session_id* onto a messaging lane
     carries (``/handoff``, a platform ``/resume``): a local conversation's current head
-    (``hermes_state_local.handoff_head``), never an earlier ``/new`` segment, which would move that
+    (``bindings.handoff_head``), never an earlier ``/new`` segment, which would move that
     history onto the lane while the live conversation stays local, its receipt released (#143286)."""
-    import asyncio
     from gateway.session_authorities import active_authority
-    from hermes_state_local import handoff_head
     authority = active_authority(runner)
-    db = authority.db if authority is not None else getattr(runner._session_db, '_db', runner._session_db)
-    if db is None:
+    store = authority_persistence(authority) if authority is not None else runner.persistence
+    if store is None:
         return authority, None, session_id
-    return (authority, *await asyncio.to_thread(handoff_head, db, session_id))
+    return (authority, *await store.aio.bindings.handoff_head(session_id))
 
 
 def follow_hand_off(authority, source, route, owner, local_owner):

@@ -8,7 +8,7 @@ persisted user row stays the words the user typed and the frozen system prefix i
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 SURFACES = frozenset({'hud', 'voice-live'})
 _VOICE_CONTEXT_LIMIT = 6000
@@ -26,13 +26,13 @@ def admit_surface(params):
     (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode turn: it runs on ``auxiliary.voice_chat``."""
     surface, context, interrupted, voice_turn = (params.get(key) for key in _SUBMIT_FIELDS)
     if surface is not None and surface not in SURFACES:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     # The spoken transcript only makes sense for a live-voice delegation; anywhere else it is
     # a client smuggling model input past the persisted row.
     if context is not None and (surface != 'voice-live' or not isinstance(context, str)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if any(flag is not None and type(flag) is not bool for flag in (interrupted, voice_turn)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     committed = {}
     if surface:
         committed['surface'] = surface
@@ -50,7 +50,7 @@ def restore_surface(committed):
     the admission validator: only an object admission itself could have committed is accepted."""
     if (not isinstance(committed, dict) or not committed or set(committed) - set(_SUBMIT_FIELDS)
             or admit_surface(committed).get('surface_v1', {}) != committed):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return committed
 
 

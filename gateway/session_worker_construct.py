@@ -84,6 +84,10 @@ class _PrefillPublication:
         """This attempt's snapshot, read by its commit before the transaction (off the owner loop)."""
         self.box = (_read_prefill(self.authority, self.policy),)
 
+    def hold(self):
+        """Hold this attempt's snapshot before its write, unless the session already has one."""
+        _held_prefill(self.authority).setdefault(self.session_id, self.box)
+
     def publish(self):
         _held_prefill(self.authority)[self.session_id] = self.box
 

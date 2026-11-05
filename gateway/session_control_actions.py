@@ -8,7 +8,7 @@ capability, local-source, admission and busy rules), answered with the owner's c
 import asyncio
 import logging
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +25,13 @@ _ENVELOPE = ('type', 'output', 'notice', 'message', 'display')
 
 def _validate(action, args):
     if not isinstance(args, dict) or set(args) - {'text', 'index'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if action == 'subgoal.remove' and (type(args.get('index')) is not int or args['index'] < 1):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if action == 'subgoal.add' and (not isinstance(args.get('text'), str) or not args['text'].strip()):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if action not in _ACTION_COMMANDS and action not in _SUBGOAL_ACTIONS:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
 
 
 async def _subgoal(connection, ref, params, action, args):
@@ -46,15 +46,15 @@ async def _subgoal(connection, ref, params, action, args):
     authorize(connection, ref, params, 'session:control')
     live = authority.sessions[ref.session_id]
     if authorize_local_source(authority.runner, live.source) is not True:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     authority._require_admission_open()
     with _profile_runtime_scope(Path(authority.profile_id)):
         mgr, _entry = await authority.runner._get_goal_manager_for_event(
             MessageEvent(text='/subgoal', source=live.source))
         if mgr is None:
-            raise RuntimeStoreError('command_unavailable', detail=t('gateway.goal.unavailable'))
+            raise AuthorityRefusal('command_unavailable', detail=t('gateway.goal.unavailable'))
         if not mgr.has_goal():
-            raise RuntimeStoreError('goal_not_active', detail=t('gateway.subgoal.no_goal'))
+            raise AuthorityRefusal('goal_not_active', detail=t('gateway.subgoal.no_goal'))
         try:
             if action == 'subgoal.add':
                 added = mgr.add_subgoal(args['text'].strip())
@@ -67,9 +67,9 @@ async def _subgoal(connection, ref, params, action, args):
                 output = (t('gateway.subgoal.cleared_one' if count == 1 else 'gateway.subgoal.cleared_other', count=count)
                           if count else t('gateway.subgoal.none_to_clear'))
         except IndexError as exc:
-            raise RuntimeStoreError('invalid_params', field='index', detail=str(exc)) from exc
+            raise AuthorityRefusal('invalid_params', field='index', detail=str(exc)) from exc
         except (RuntimeError, ValueError) as exc:
-            raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
+            raise AuthorityRefusal('invalid_params', detail=str(exc)) from exc
     return {'type': 'exec', 'output': output}
 
 
@@ -89,7 +89,7 @@ def publish(authority, session_id, *, only_if_present=False, only_if_changed=Fal
     ticket = live.control_seq
     try:
         snapshot = _read_control_snapshot(authority, session_id)
-    except RuntimeStoreError:  # unreadable row: the change itself already landed; the next publish repaints
+    except AuthorityRefusal:  # unreadable row: the change itself already landed; the next publish repaints
         logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
         return
     _publish_snapshot(authority, live, session_id, snapshot, ticket,
@@ -108,7 +108,7 @@ async def publish_async(authority, session_id, *, only_if_present=False, only_if
     ticket = live.control_seq
     try:
         snapshot = await asyncio.to_thread(_read_control_snapshot, authority, session_id, scoped=True)
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
         return
     if authority.sessions.get(session_id) is not live:  # closed or re-mounted while the read ran
@@ -140,15 +140,15 @@ def _publish_snapshot(authority, live, session_id, snapshot, ticket, *, only_if_
 
 async def control(connection, ref, params):
     if set(params) - {'session_id', 'profile', 'action', 'args'} or not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     action = params.get('action')
     if not isinstance(action, str):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     args = {} if params.get('args') is None else params['args']
     action = action.strip()
     _validate(action, args)
     if ref.session_id not in connection.authority.sessions:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     scope = {key: params[key] for key in ('session_id', 'profile') if key in params}
     # Other viewers (another Desktop window, Ink) repaint their cards from session.control.update, not the
     # reply: execute_command publishes it for the automation commands, the criterion buttons here.

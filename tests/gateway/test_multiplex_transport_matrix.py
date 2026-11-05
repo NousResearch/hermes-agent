@@ -202,6 +202,7 @@ async def test_detached_voice_resolves_secondary_transport_after_turn(
         runner._profile_adapters["team_b"][Platform.TELEGRAM] = target
     elif transport_state == "offline":
         runner._profile_adapters["team_b"] = {}
+        runner._profile_bot_platforms = {"team_b": {Platform.TELEGRAM}}
         runner._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
     tasks = tuple(runner._background_tasks)
     release.set()

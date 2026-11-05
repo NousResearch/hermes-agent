@@ -192,3 +192,38 @@ def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_pa
     [warning] = [w for w in report.warnings if w.startswith("private core attribute access")]
     sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
     assert sites == ["engine.py:5 db._row_to_message_dict", "engine.py:6 runner._evict_cached_agent"], sites
+
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _published_entries() -> list[str]:
+    import json
+
+    data = json.loads((_ROOT / "hermes_cli" / "data" / "plugin_api.json").read_text(encoding="utf-8-sig"))
+    return [entry for group in data["groups"] for entry in group["entries"]]
+
+
+def test_every_published_plugin_api_entry_passes_validate(tmp_path):
+    """hermes_cli/data/plugin_api.json is the list validate enforces: every entry imports without a
+    warning, while an unlisted name of a listed name-only module still warns."""
+    imports = [f"from {m} import {n}" if n else f"import {m}"
+               for m, _, n in (entry.partition(":") for entry in _published_entries())]
+    imports.append("from hermes_cli.plugins import get_plugin_manager")
+    plugin = _plugin(tmp_path / "api", {"uses_api.py": "\n".join(imports) + "\n"})
+
+    [warning] = _private_warnings(validate_plugin_dir(plugin))
+
+    sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
+    assert sites == [f"uses_api.py:{len(imports)} hermes_cli.plugins.get_plugin_manager"], sites
+
+
+def test_public_api_docs_page_is_generated_from_the_data_file():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("gen_plugin_api_docs", _ROOT / "scripts" / "gen_plugin_api_docs.py")
+    assert spec and spec.loader
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"

@@ -316,17 +316,20 @@ class SessionManager:
             self._persist(state)
         return state
 
-    def _get_db(self):
+    def _get_db(self, *, strict: bool = False):
         """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
         error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
         ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
         registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896).
+        Recovery uses strict acquisition to distinguish an unavailable DB from a missing session."""
         if self._db_instance is None:
             try:
                 from hermes_state_registry import acquire
                 self._db_instance = acquire(get_hermes_home() / "state.db")
             except Exception:
+                if strict:
+                    raise
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         if self._db_instance is not None and not self._cwd_backfilled:
             # Rows minted before the adapter wrote the cwd column still carry the workspace
@@ -446,14 +449,14 @@ class SessionManager:
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load an ACP session from the database into memory, recreating the AIAgent."""
-        db = self._get_db()
+        db = self._get_db(strict=True)
         if db is None:
             return None
         try:
             row = db.get_session(session_id)
         except Exception:
             logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
-            return None
+            raise
         if row is None or row.get("source") != "acp":
             return None
 
@@ -475,7 +478,7 @@ class SessionManager:
             history = db.get_messages_as_conversation(session_id, repair_alternation=True)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
-            history = []
+            raise
 
         try:
             agent = self._make_agent(
@@ -484,7 +487,7 @@ class SessionManager:
                 base_url=meta.get("base_url") or row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
-            return None
+            raise
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))

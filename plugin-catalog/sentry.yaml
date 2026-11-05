@@ -1,7 +1,7 @@
 name: sentry
 title: Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
-sha: e1b2e679c28cd4dc43e1108ce40a383f6b6451b5
+sha: a7032a518e0f864d51cab8343ddef8d30d938eb7
 version: "0.1.0"
 description: >-
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came
@@ -11,7 +11,9 @@ description: >-
   a policy: credential reads, and writes into files the agent reads as instructions (AGENTS.md,
   SKILL.md, hook handlers, Hermes' own config), are refused; network egress and writes outside the
   workspace go to Hermes's approval gate. Deterministic enforcement at the tool boundary — a prompt
-  or a skill can ask a model to ignore injected instructions, this refuses the follow-through.
+  or a skill can ask a model to ignore injected instructions, this refuses the follow-through. A call
+  is evaluated as the call it really makes: tool_call, execute_code and process_manage are unwrapped
+  to what they actually run, and taint is copied into subagents.
   Eight rules, each tunable to allow/monitor/escalate/block; a receipts ledger; a `hermes sentry`
   CLI with a dry-run policy tester. Disclosure — no network access, no credentials, no
   python dependencies and no core overrides: it reads tool arguments and results in-process, writes
@@ -32,5 +34,6 @@ capabilities:
     - transform_tool_result
     - pre_tool_call
     - pre_llm_call
+    - subagent_start
   provides_middleware: []
   requires_env: []

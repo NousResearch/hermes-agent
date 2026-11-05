@@ -160,13 +160,40 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
-  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
-    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+  it.each(['interrupt', 'steer'] as const)(
+    'rejects tile %s RPC failure without converting it to a queue signal',
+    async mode => {
+      requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+      const { result } = renderTileActions()
+      await act(async () => {
+        await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+      })
+      expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(
+        mode === 'steer' ? 'session.steer' : 'session.redirect',
+        { session_id: RUNTIME_SESSION_ID, text: 'keep correction' }
+      )
+    }
+  )
+
+  it.each([{}, { status: 'rejected' }, { status: 'rejected', delivered: true }])(
+    'does not authorize a tile replay for an ambiguous receipt %j',
+    async receipt => {
+      requestGatewayMock.mockResolvedValue(receipt)
+      const { result } = renderTileActions()
+      await act(async () => {
+        await expect(result.current.steerPrompt('exact tile correction', 'steer')).rejects.toThrow()
+      })
+      expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith('session.steer', {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'exact tile correction'
+      })
+    }
+  )
+
+  it('authorizes tile fallback only with explicit delivered:false', async () => {
+    requestGatewayMock.mockResolvedValue({ status: 'rejected', delivered: false })
     const { result } = renderTileActions()
-    await act(async () => {
-      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
-    })
-    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
+    await act(async () => expect(await result.current.steerPrompt('exact tile correction', 'steer')).toBe(false))
   })
 
   // #141644: a correction the owner refused before any agent saw it hands the words back (false)

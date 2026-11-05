@@ -2983,8 +2983,8 @@ describe('usePromptActions redirectPrompt', () => {
     })
   })
 
-  it('reports rejection so the caller queues when the turn already ended', async () => {
-    const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
+  it('reports a proven undelivered rejection so the caller queues when the turn already ended', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'rejected', delivered: false }) as never)
 
     let handle: HarnessHandle | null = null
     await actRender(

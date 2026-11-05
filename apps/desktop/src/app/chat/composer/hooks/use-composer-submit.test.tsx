@@ -141,6 +141,8 @@ function renderSubmitHook({
   )
 
   return {
+    draftRef,
+    draftScopeRef,
     loadIntoComposer,
     stashAt,
     clearDraft,
@@ -170,19 +172,18 @@ describe('useComposerSubmit external request routing', () => {
     vi.restoreAllMocks()
   })
 
-  it.each(['interrupt', 'steer'] as const)(
-    'keeps a rejected %s draft in the local queue without submit admission',
-    async mode => {
-      const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
-      h.onSteer.mockRejectedValue(new Error('correction unsupported'))
-      act(() => h.hook.result.current.submitDraft())
-      await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['keep guidance']))
-      expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
-      expect(h.onSubmit).not.toHaveBeenCalled()
-      expect(h.queueCurrentDraft).not.toHaveBeenCalled()
-      clearQueuedPrompts('stored-session')
-    }
-  )
+  it.each(['interrupt', 'steer'] as const)('retains an unconfirmed %s draft without submit admission', async mode => {
+    const h = renderSubmitHook({ busy: true, busyInputMode: mode, text: 'keep guidance' })
+    h.onSteer.mockRejectedValue(new Error('correction unsupported'))
+    act(() => h.hook.result.current.submitDraft())
+    await waitFor(() => expect(h.onSteer).toHaveBeenCalled())
+    expect(h.draftRef.current).toBe('keep guidance')
+    expect(getQueuedPrompts('stored-session')).toEqual([])
+    expect(h.onSteer).toHaveBeenCalledWith('keep guidance', mode)
+    expect(h.onSubmit).not.toHaveBeenCalled()
+    expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+    clearQueuedPrompts('stored-session')
+  })
 
   it('routes a refused native steer through canonical queue admission', async () => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
@@ -507,18 +508,23 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('puts a refused steer back in the composer when there is no queue to hold it', async () => {
-    // A brand-new chat is busy while its first session.create is in flight but
-    // has no queue key yet. The steer clears the draft first, so a refusal must
-    // restore the words rather than drop the only copy (#68927).
-    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
+  it('retains a refused steer in the composer when there is no queue to hold it', async () => {
+    // No queue key exists during the first session.create: retain the only copy (#68927).
+    const { hook, draftRef, loadIntoComposer, onSteer } = renderSubmitHook({
+      busy: true,
+      sessionKey: null,
+      text: 'keep me'
+    })
+
     onSteer.mockResolvedValueOnce(false)
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+    await waitFor(() => expect(onSteer).toHaveBeenCalled())
+    expect(draftRef.current).toBe('keep me')
+    expect(loadIntoComposer).not.toHaveBeenCalled()
   })
 
   it('says so when a refused steer is queued for the next turn instead', async () => {
@@ -535,15 +541,17 @@ describe('useComposerSubmit busy-turn routing', () => {
     clearQueuedPrompts('stored-session')
   })
 
-  it('queues a steer whose redirect RPC fails instead of losing it', async () => {
-    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
+  it('retains a steer whose redirect RPC times out without replaying it', async () => {
+    const { hook, draftRef, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
     onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))
 
     act(() => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
+    await waitFor(() => expect(onSteer).toHaveBeenCalled())
+    expect(draftRef.current).toBe('still here')
+    expect(getQueuedPrompts('stored-session')).toEqual([])
     clearQueuedPrompts('stored-session')
   })
 

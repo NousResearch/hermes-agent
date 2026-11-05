@@ -759,7 +759,7 @@ _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@]+)@")
 # pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
 _BASIC_PAIR_ASSIGN_RE = re.compile(
     r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
-    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2(?![^\s;,&|)])"
+    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2(?![^\s;,&|)\]}\"'`])"
 )
 
 # ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed

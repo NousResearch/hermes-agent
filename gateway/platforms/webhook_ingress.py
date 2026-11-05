@@ -1,8 +1,10 @@
 """Receipt-only adapter ingress: the authority, not an HTTP/WS task, owns execution."""
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.platforms.api_server_store import authority_store
+from persistence import AuthorityRefusal
 
 
 @asynccontextmanager
@@ -13,11 +15,11 @@ async def producer_scope(adapter, event):
     from gateway.session_authorities import authority_for_home
     runner = getattr(adapter._message_handler, '__self__', None)
     if getattr(runner, 'session_authority', None) is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     registered, profile = runner._owning_profile(adapter, adapter.platform)
     home = getattr(runner, '_native_transport_homes', {}).get(profile)
     if not registered or home is None:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     source = event.source
     # Identity is pinned through the runner's single canonicalization seam (a secondary's own
     # bot, or the primary's routed profile); a rejected primary route is refused downstream.
@@ -37,7 +39,7 @@ async def producer_scope(adapter, event):
     if authority is None or getattr(authority, 'retiring', False):
         _refuse_parked(runner, getattr(source, 'profile', None) or profile)
     if authority is None:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     with native_callback(runner, event, home, profile):
         async with _async_profile_runtime_scope(runtime_home):
             yield authority
@@ -233,7 +235,7 @@ async def _release_preparation(authority, payload):
     another admission or an in-flight capture holds is kept, as for a refused admission."""
     from gateway.session_ingress_media import release_unheld_media
     if media := payload['native_text_v1'].get('media'):
-        await asyncio.to_thread(release_unheld_media, authority.db, media, retain_history=False)
+        await asyncio.to_thread(release_unheld_media, authority.persistence, media, retain_history=False)
 
 
 async def _prepared(authority, event):
@@ -255,18 +257,16 @@ async def _prepared(authority, event):
 
 
 def _committed(authority, principal, request_id):
-    """The rows of this delivery's identity in the FIFO."""
-    return authority.db._read_all('SELECT admission_id FROM session_admissions '
-        'WHERE principal_id=? AND request_id=?', (principal, request_id))
+    """The admissions of this delivery's identity in the FIFO."""
+    return authority_store(authority).admissions.match(principal_id=principal, request_id=request_id)
 
 async def _webhook_retry(authority, event, payload, rows):
     # One-shot finalization ends the route. Resolve an existing provider receipt
     # before SessionStore would rotate it into a new physical session.
     from gateway.session_ingress_media import ingress_fingerprint
-    from hermes_state_runtime import get_session_admission
     if not rows:
         return None
-    row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
+    row = asdict(authority_store(authority).admissions.get(admission_id=rows[0].admission_id))
     retained = row['payload']['native_text_v1']
     if 'ingress_sha256' in retained:
         # Committed rewritten: the provider resends the delivery as received.
@@ -281,7 +281,7 @@ async def _webhook_retry(authority, event, payload, rows):
                 payload['native_text_v1'].pop('provenance', None)
         same = row['payload'] == payload
     if len(rows) != 1 or not same:
-        raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
     event._webhook_duplicate = True
     receipt = authority._receipt(row)
     finalize_webhook(authority, receipt)
@@ -290,54 +290,36 @@ async def _webhook_retry(authority, event, payload, rows):
 
 def finalize_webhook(authority, receipt):
     """End only the settled admitted generation, atomically with the epoch fence."""
-    import time
     if receipt.status != 'terminal' or receipt.execution_generation is None:
         return False
-    sid = receipt.ref.session_id
-    def write(conn):
-        return authority.db._end_and_bump(conn, """
-            UPDATE sessions SET ended_at=?, end_reason=?
-            WHERE id=? AND ended_at IS NULL AND runtime_generation=?
-              AND EXISTS (SELECT 1 FROM runtime_epoch WHERE singleton=1 AND epoch=?)
-              AND EXISTS (SELECT 1 FROM session_admissions WHERE admission_id=?
-                AND target_session_id=? AND status='terminal' AND generation=? AND owner_epoch=?)
-              AND NOT EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal')
-            """, (time.time(), 'webhook_complete', sid, receipt.execution_generation,
-                  authority.epoch, receipt.admission_id, sid, receipt.execution_generation,
-                  receipt.authority_epoch, sid), sid, 'webhook_complete')
-    return bool(authority.db._execute_write(write))
+    return authority_store(authority).runtime.end_after_settlement(
+        authority.epoch, session_id=receipt.ref.session_id, admission_id=receipt.admission_id,
+        generation=receipt.execution_generation, admission_epoch=receipt.authority_epoch, reason='webhook_complete')
 
 
 async def recover_webhook_finalizations(authority):
     """Close settled original webhooks only after current route authorization succeeds."""
     from gateway.session_envelope import check_native_route
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError, get_session_admission
 
-    rows = authority.db._read_all("""
-        SELECT a.admission_id FROM sessions AS s
-        JOIN session_admissions AS a ON a.target_session_id=s.id
-        WHERE s.source='webhook' AND s.ended_at IS NULL
-          AND a.status='terminal' AND a.generation IS NOT NULL
-          AND json_extract(a.payload_json, '$.native_text_v1.source.platform')='webhook'
-          AND json_extract(a.payload_json, '$.native_text_v1.automation') IS NULL
-        """)
+    admissions = authority_store(authority).admissions
     results = {}
-    for candidate in rows:
-        row = get_session_admission(authority.db, admission_id=candidate['admission_id'])
-        if row is None:
+    for admission_id in admissions.unfinalized_webhook_admissions():
+        record = admissions.get(admission_id=admission_id)
+        if record is None:
             continue
+        row = asdict(record)
         sid = row['target_session_id']
         try:
             envelope = row['payload']['native_text_v1']
             entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
             if entry is None or authority.logical_owner(entry.session_id) != sid:
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
             adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
             target = authority.physical_target(SessionRef(authority.profile_id, sid))
             await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
             results[sid] = 'finalized' if finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
-        except (KeyError, RuntimeStoreError):
+        except (KeyError, AuthorityRefusal):
             results[sid] = 'unavailable'
     return results

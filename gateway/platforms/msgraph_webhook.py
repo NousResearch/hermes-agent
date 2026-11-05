@@ -329,14 +329,16 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         # continues to reject internal events and arbitrary metadata.
         from datetime import datetime, timezone
         from gateway.platforms.webhook_ingress import producer_scope
+        from gateway.session_authority import admission_row
         from gateway.session_ingress_context import capture_provenance
-        from hermes_state_runtime import admit_session_input, RuntimeStoreError
+        from gateway.session_persistence import authority_persistence
+        from persistence.core.errors import AuthorityRefusal
 
         async with producer_scope(self, event) as authority:
             authority._require_admission_open()
             provenance = capture_provenance(authority.runner, event)
             if provenance is None:
-                raise RuntimeStoreError('permission_denied')
+                raise AuthorityRefusal('permission_denied')
             # The routing reservation writes too: off the owner loop like the admission below.
             ref = authority._publish_route(event.source, *await asyncio.to_thread(authority._reserve_route, event.source))
             route = authority.sessions[ref.session_id].route
@@ -346,14 +348,18 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
                 'event': {'message_id': event.message_id},
                 'automation': {'identity': event.message_id, 'owner': ref.session_id}}
+            store = authority_persistence(authority)
+
+            def admit():
+                row, _created = store.admissions.admit(
+                    epoch=authority.epoch, principal_id='msgraph:' + route, session_id=ref.session_id,
+                    request_id=event.message_id, payload={'text': event.text, 'native_text_v1': envelope},
+                    gate=authority.gate_refusal())
+                return admission_row(row)
             # Off the owner loop and in admission order (``tracked_write``), committed before the
             # 202: a held SQLite writer must not freeze every session while Graph waits.
             from functools import partial
             from gateway.session_runtime_workers import tracked_write
-            return await tracked_write(authority, partial(
-                admit_session_input, authority.db, epoch=authority.epoch,
-                principal_id='msgraph:' + route, session_id=ref.session_id, request_id=event.message_id,
-                payload={'text': event.text, 'native_text_v1': envelope},
-                _authorize_write=authority._admission_gate()),
+            return await tracked_write(authority, admit,
                 then=partial(authority._admitted, ref, event), ordered=True,
                 after=partial(authority._schedule_admitted, ref))

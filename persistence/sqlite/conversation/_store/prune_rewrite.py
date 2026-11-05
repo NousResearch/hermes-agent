@@ -160,7 +160,7 @@ def rewrite_pruned_rows(holder: StoreHolder, session_id: str, changes: list[tupl
     from persistence.sqlite.conversation._store.rules import ABSORBED_ROW_IDS
     from persistence.sqlite.conversation._store.rules import DB_ROW_SNAPSHOT
     from persistence.sqlite.conversation._store.transcript_repair import transcript_row_snapshot
-    from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
+    from persistence.sqlite._state.errors import PruneRowStaleError, PruneRowUnresolvedError
 
     def _call_ids(tool_calls: Any) -> list[Any]:
         return [call.get("id") if isinstance(call, dict) else None for call in (_parse_tool_calls(tool_calls) or [])]

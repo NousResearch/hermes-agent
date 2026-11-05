@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Literal, Optional, TypeVar, cast
 
 from hermes_cli.sqlite_safe_read import connect_tracked
-from hermes_state_holders import read_only_db_uri
+from persistence.sqlite._state.holders import read_only_db_uri
 from persistence import DelegationId, JsonValue, SessionId
 from persistence.authority.subagents import (
     AUTO_RESUME_CANCELLED, AUTO_RESUME_MAX_ATTEMPTS, GATEWAY_SHUTDOWN, SUBAGENT_EXPIRED_RETENTION_SECONDS, AutoRefusal,

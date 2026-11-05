@@ -12,9 +12,12 @@ import sqlite3
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import StateDbCorruptError, classify_persistence_error
-from hermes_state_health import (
-    is_structural_corruption_error, note_storage_error, reset_storage_state, storage_state,
+from persistence.sqlite._state.errors import StateDbCorruptError, classify_persistence_error
+from persistence.sqlite._state.health import (
+    is_structural_corruption_error,
+    note_storage_error,
+    reset_storage_state,
+    storage_state,
 )
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session, list_sessions_rich

@@ -1,6 +1,6 @@
-"""The ``session_rules`` modules import no application package.
+"""The neutral helper modules import no application package at load.
 
-Each module may import the standard library, ``psutil``, the persistence contracts and the other ``session_rules`` modules, and nothing else; a database driver (``sqlite3``, ``_sqlite3``) and the SQLite backend (``persistence.sqlite``) are refused although they sit under those roots. Each is imported in a fresh interpreter whose import system refuses every other top-level name and records the attempt, so a module that reaches any other package fails to load, and a refused import its own ``try`` swallows still fails the case.
+Each module may import the standard library, ``psutil``, the persistence contracts, ``session_rules``, the other neutral modules and the few non-application modules in ``ALLOWED_AT_LOAD`` (directly or through another neutral module); a ``session_rules`` module may not import a database driver (``sqlite3``, ``_sqlite3``) or the SQLite backend (``persistence.sqlite``), which the top-level SQLite helpers here do by design. Each is imported in a fresh interpreter whose import system refuses every other top-level name and records the attempt, so a module that reaches an application package at load fails, and a refused import its own ``try`` swallows still fails the case. The services a module reads at run time (configuration, the plugin hook dispatcher, the gateway's media release) are imported inside the function that uses them.
 """
 
 from __future__ import annotations
@@ -16,14 +16,34 @@ import session_rules
 
 ROOT = Path(__file__).resolve().parents[2]
 
-NEUTRAL_MODULES = ("session_rules", *sorted(f"session_rules.{info.name}" for info in pkgutil.iter_modules(session_rules.__path__)))
+TOP_LEVEL_NEUTRAL = (
+    "lineage_adoption",
+    "process_identity",
+    "session_keys",
+    "session_rescue",
+    "session_retention",
+    "sqlite_support",
+    "storage_errors",
+    "storage_limits",
+    "storage_user_copy",
+)
 
-# Runs in the fresh interpreter: refuse and record every import outside the neutral roots, and a database driver
+NEUTRAL_MODULES = (
+    *TOP_LEVEL_NEUTRAL,
+    "session_rules",
+    *sorted(f"session_rules.{info.name}" for info in pkgutil.iter_modules(session_rules.__path__)),
+)
+
+# Non-application modules the neutral modules import at load (``session_rescue``, ``session_retention``,
+# ``sqlite_support`` and every module importing one of them).
+ALLOWED_AT_LOAD = ("hermes_constants", "hermes_dir_acl", "hermes_startup_watchdog")
+
+# Runs in the fresh interpreter: refuse and record every import outside the allowed roots, and a database driver
 # when argv[1] is a session_rules module, then import argv[1].
 _IMPORT_BLOCKED = """
 import importlib, sys
 
-ALLOWED = {"persistence", "psutil", "session_rules", *sys.stdlib_module_names}
+ALLOWED = {"persistence", "psutil", "session_rules", *sys.stdlib_module_names, *sys.argv[2].split(",")}
 refused = []
 
 
@@ -45,7 +65,9 @@ if refused:
 
 
 def _import_in_fresh_process(module: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-c", _IMPORT_BLOCKED, module], cwd=ROOT, capture_output=True, text=True, timeout=60, check=False)
+    allowed = ",".join((*TOP_LEVEL_NEUTRAL, *ALLOWED_AT_LOAD))
+    return subprocess.run([sys.executable, "-c", _IMPORT_BLOCKED, module, allowed], cwd=ROOT, capture_output=True,
+                          text=True, timeout=60, check=False)
 
 
 @pytest.mark.parametrize("name", NEUTRAL_MODULES)

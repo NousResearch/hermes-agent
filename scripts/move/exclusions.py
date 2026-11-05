@@ -81,7 +81,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/update_owning_install.py", 'owner = venv.parent if (venv.parent / "hermes_cli" / "main.py").is_file() else _pm_environment_owner(venv)', SHIPPED),
     ("hermes_cli/update_owning_install.py", 'if install_key(owner) != state.name or not (owner / "hermes_cli" / "main.py").is_file():', SHIPPED),
     ("hermes_cli/update_owning_install.py", 'code = subprocess.call([sys.executable, "-m", "hermes_cli.main", *sys.argv[1:]], cwd=owner, env=env)', SHIPPED),
-    ("hermes_state_holders.py", "def _argv_scoped_to_other_home(", IDENTITY),
+    ("persistence/sqlite/_state/holders.py", "def _argv_scoped_to_other_home(", IDENTITY),
     ("scripts/code_health/py_rules.py", "def argv_identity(", IDENTITY),
     ("scripts/desktop-update/posix.sh", 'UPDATE_INVOKE=("$bin/python" -m hermes_cli.main)', SHIPPED),
     ("scripts/desktop-update/posix.sh", 'if [ -f "$INSTALL_ROOT/hermes_cli/_launchers.py" ]; then', SHIPPED),
@@ -111,7 +111,7 @@ BY_HAND: tuple[tuple[str, str], ...] = (
     ("hermes_cli/update_cmd_windows.py", "def _is_entry("),
     ("hermes_cli/update_receipt.py", 'if (parent / "hermes_cli" / "main.py").is_file():'),
     ("hermes_cli/windows_ssh_runtime.py", 'launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]'),
-    ("hermes_state_holders.py", "_HERMES_PYTHON_MODULES = frozenset({"),
+    ("persistence/sqlite/_state/holders.py", "_HERMES_PYTHON_MODULES = frozenset({"),
     ("tools/skill_lock.py", 'if verb == "hermes" or (verb.startswith("python") and "hermes_cli.main" in args):'),
 )
 

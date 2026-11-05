@@ -21,9 +21,13 @@ import struct
 import threading
 import time
 
-import hermes_state_dbfile as dbfile
-from hermes_state_dbfile import (
-    _DARWIN_FD_INO_OFFSET, _DARWIN_FD_PATH_OFFSET, _DARWIN_FD_DEV_OFFSET, _DARWIN_FD_RECORD_SIZE, _iter_darwin_sidecar_holders,
+from persistence.sqlite._state import dbfile
+from persistence.sqlite._state.dbfile import (
+    _DARWIN_FD_INO_OFFSET,
+    _DARWIN_FD_PATH_OFFSET,
+    _DARWIN_FD_DEV_OFFSET,
+    _DARWIN_FD_RECORD_SIZE,
+    _iter_darwin_sidecar_holders,
 )
 
 # Far below the 5s production budget so the suite stays fast; far above zero

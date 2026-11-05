@@ -261,7 +261,7 @@ class TestReadOnlyHolder:
 
 class TestOpenFailureLatch:
     def test_a_failed_open_is_the_last_open_failure_the_notice_names(self, db_path, monkeypatch):
-        import hermes_state_guard
+        from persistence.sqlite._state import guard as hermes_state_guard
         import storage_user_copy
 
         monkeypatch.setattr(storage_user_copy, "_last_init_error", None)

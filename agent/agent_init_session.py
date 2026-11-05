@@ -2,6 +2,7 @@
 interface handle it writes its own store through."""
 
 import os
+import sys
 
 
 def _publish_session_id(session_id: str) -> None:
@@ -28,6 +29,16 @@ def writer_interface(persistence, store):
     beside a store that is a client of the file's owner (a managed worker's, the classic CLI's), whose calls stay
     on that store."""
     return persistence if store is not None and persistence is not None and not persistence.read_only else None
+
+
+def stand_in_interface(session_db):
+    """The storage interface handle a writable ``hermes_state.SessionDB`` forwards to, when ``session_db`` is one, else
+    None. The stand-in carries only the plugin guide's methods, so an agent given it alone writes through the handle;
+    no stand-in exists before ``hermes_state`` is imported."""
+    stand_in = sys.modules.get("hermes_state")
+    if stand_in is None or not isinstance(session_db, stand_in._SessionDB) or session_db.read_only:
+        return None
+    return session_db._store
 
 
 def agent_interface(agent):

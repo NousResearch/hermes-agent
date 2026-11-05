@@ -5,7 +5,7 @@ import re
 import sqlite3
 from typing import Sequence
 
-from hermes_state_keys import CRON_PRINCIPAL_ID
+from persistence.sqlite._state.keys import CRON_PRINCIPAL_ID
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")

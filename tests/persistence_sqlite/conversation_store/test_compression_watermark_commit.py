@@ -18,7 +18,7 @@ import time
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import SessionCompressionInProgressError
+from persistence.sqlite._state.errors import SessionCompressionInProgressError
 from persistence.sqlite.conversation._store.compression import publish_compression_child
 from persistence.sqlite.conversation._store.messages import (
     append_message,

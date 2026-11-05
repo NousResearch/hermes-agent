@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_common as common
+from persistence.sqlite._state import common
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.search import search_messages
 from persistence.sqlite.conversation._store.sessions import create_session
@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_state_common import fts_rebuild_admission
+from persistence.sqlite._state.common import fts_rebuild_admission
 
 with fts_rebuild_admission(Path(sys.argv[1]), timeout_seconds=0) as acquired:
     assert acquired

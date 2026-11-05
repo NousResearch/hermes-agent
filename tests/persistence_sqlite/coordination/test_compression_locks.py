@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from persistence.sqlite.conversation._store import core as store_core
+import process_identity
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
     # bought nothing.  The holder is stamped with this process's own PID
     # namespace (same-namespace kernel proof is still proof; foreign and
     # unstamped holders defer to TTL — see test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
+    from process_identity import holder_namespace_token
     dead_holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         session_id="sess1", holder=dead_holder, ttl_seconds=300
@@ -103,7 +103,7 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
         return False
 
     monkeypatch.setattr(
-        store_core, "psutil", SimpleNamespace(pid_exists=process_is_gone)
+        process_identity, "psutil", SimpleNamespace(pid_exists=process_is_gone)
     )
 
     assert db.try_acquire_compression_lock(
@@ -119,7 +119,7 @@ def test_probe_doubt_keeps_lease_until_ttl(
     # Stamped with this process's own namespace so the probe path is actually
     # reached (unstamped holders are gated before the probe — see
     # test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
+    from process_identity import holder_namespace_token
     holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=doubt"
     assert db.try_acquire_compression_lock(
         session_id="sess1", holder=holder, ttl_seconds=300
@@ -129,7 +129,7 @@ def test_probe_doubt_keeps_lease_until_ttl(
         raise RuntimeError("transient probe failure")
 
     monkeypatch.setattr(
-        store_core, "psutil", SimpleNamespace(pid_exists=probe_blows_up)
+        process_identity, "psutil", SimpleNamespace(pid_exists=probe_blows_up)
     )
 
     assert db.try_acquire_compression_lock(
@@ -155,7 +155,7 @@ def test_unstructured_holder_waits_for_ttl(
         session_id="sess1", holder="legacy_holder", ttl_seconds=300
     ) is True
     monkeypatch.setattr(
-        store_core,
+        process_identity,
         "psutil",
         SimpleNamespace(
             pid_exists=lambda _pid: pytest.fail(
@@ -164,7 +164,7 @@ def test_unstructured_holder_waits_for_ttl(
         ),
     )
     monkeypatch.setattr(
-        store_core.os,
+        process_identity.os,
         "kill",
         lambda *_args: pytest.fail("unstructured holder must not probe a PID"),
     )

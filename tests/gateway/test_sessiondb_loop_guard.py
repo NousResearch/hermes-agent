@@ -38,7 +38,8 @@ KEPT_ON_LOOP = {
 # turn). Their direct reads (the innermost caller of the store) must never be on the loop again.
 MOVED_OFF_LOOP = {('gateway/session_cron.py', 'operation'), ('gateway/session_cron.py', '_read_admission'),
                   ('gateway/session_authority.py', '_claim_next'), ('gateway/session_results.py', 'admission_result')}
-HOT_READS = {('hermes_state_runtime.py', 'get_session_admission'), ('hermes_state_runtime.py', 'list_session_admissions'),
+HOT_READS = {('persistence/sqlite/authority/_admission_store.py', 'get_session_admission'),
+             ('persistence/sqlite/authority/_admission_store.py', 'list_session_admissions'),
              ('gateway/session_results.py', 'admission_result')}
 
 
@@ -117,20 +118,15 @@ def test_a_backend_repository_call_on_the_loop_is_flagged_at_its_caller(tmp_path
 
 
 def test_uninstall_leaves_the_session_db_members_forwarding_to_the_holder():
-    from hermes_state import SessionDB, _HolderMember
     from persistence.sqlite._holder import StoreHolder
     guard.uninstall()
     before = StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']
     guard.install('record')
     try:
         assert StoreHolder.__dict__['_read_ctx'] is not before[0]
-        assert isinstance(SessionDB.__dict__['_read_ctx'], _HolderMember)
-        assert isinstance(SessionDB.__dict__['_execute_write'], _HolderMember)
     finally:
         guard.uninstall()
     assert (StoreHolder.__dict__['_read_ctx'], StoreHolder.__dict__['_execute_write']) == before
-    assert isinstance(SessionDB.__dict__['_read_ctx'], _HolderMember)
-    assert isinstance(SessionDB.__dict__['_execute_write'], _HolderMember)
 
 
 def test_gateway_startup_installs_the_guard_from_config_yaml(tmp_path, monkeypatch):

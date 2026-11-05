@@ -108,7 +108,7 @@ def test_realign_does_not_stamp_current_while_the_trigram_is_stale(v1_trigram_db
 
 def test_doctor_offers_optimize_storage_for_a_stale_trigram(v1_trigram_db, monkeypatch):
     from hermes_cli import doctor_state
-    from hermes_state_dbfile import collect_state_db_stats
+    from persistence.sqlite._state.dbfile import collect_state_db_stats
 
     stats = collect_state_db_stats(v1_trigram_db)
     monkeypatch.setattr(doctor_state, "STATE_DB_SIZE_WARN_BYTES", 0)
@@ -118,7 +118,7 @@ def test_doctor_offers_optimize_storage_for_a_stale_trigram(v1_trigram_db, monke
 
 def test_fresh_store_is_stamped_on_creation_and_doctor_stays_quiet(tmp_path, monkeypatch):
     from hermes_cli import doctor_state
-    from hermes_state_dbfile import collect_state_db_stats
+    from persistence.sqlite._state.dbfile import collect_state_db_stats
 
     db_path = tmp_path / "state.db"
     db = StoreHolder(db_path=db_path)
@@ -426,7 +426,7 @@ def test_the_base_realign_without_the_trigram_tokenizer_keeps_the_store_open_and
         return real_connect(*args, **kwargs)
 
     with monkeypatch.context() as m:
-        m.setattr("hermes_state_dbfile.sqlite3.connect", connect)
+        m.setattr("persistence.sqlite._state.dbfile.sqlite3.connect", connect)
         db = StoreHolder(db_path=db_path)
         try:
             assert [row["id"] for row in search_messages(db, "deployment")] == [last_id]
@@ -487,7 +487,7 @@ def test_optimize_storage_on_a_newer_layout_finishes_its_work_without_restamping
 def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monkeypatch):
     """optimize-storage interrupted after backfill but before trash teardown: doctor agrees with the update notice."""
     from hermes_cli import doctor_state
-    from hermes_state_dbfile import collect_state_db_stats
+    from persistence.sqlite._state.dbfile import collect_state_db_stats
 
     db_path = tmp_path / "state.db"
     db = StoreHolder(db_path=db_path)

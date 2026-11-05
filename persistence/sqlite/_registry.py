@@ -37,8 +37,8 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
-from hermes_state_common import path_is_under as _path_is_under
-from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
+from persistence.sqlite._state.common import path_is_under as _path_is_under
+from persistence.sqlite._state.common import stat_db_file_identity as _stat_db_file_identity
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
     from persistence.sqlite._holder import StoreHolder
@@ -119,7 +119,7 @@ def _close_quietly(db: StoreHolder, debug_message: str) -> None:
     try:
         db.close()
     except Exception as exc:
-        from hermes_state_dbfile import RetiredGenerationCaptureError
+        from persistence.sqlite._state.dbfile import RetiredGenerationCaptureError
         if isinstance(exc, RetiredGenerationCaptureError):
             logger.error("StoreHolder for %s did not settle at close: %s", _db_path_of(db), exc)
         else:
@@ -201,7 +201,7 @@ def acquire(db_path: Path) -> StoreHolder:
     holds NO entry for the path."""
     raw_path = Path(db_path)
     if os.name != "nt":
-        from hermes_state_dbfile import refuse_planted_state_db_link
+        from persistence.sqlite._state.dbfile import refuse_planted_state_db_link
 
         refuse_planted_state_db_link(raw_path)
     try:
@@ -404,7 +404,7 @@ def _release_header_probes_under(root: Path) -> None:
     spelling (a hard link too) until the close. An untracked ``sqlite3.connect`` that opens between
     the scan and the close is not covered."""
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-    from hermes_state_dbfile import (
+    from persistence.sqlite._state.dbfile import (
         close_header_probe_if_unchanged, header_probes_under, inodes_with_other_descriptors,
     )
 

@@ -45,7 +45,7 @@ def _worker_turn(holder, conn, session_id, payload, operation):
     import time
     from ..authority.coordination import _claim_lease_row
     from ..conversation._store.compression import _session_turn_lease_key_on_conn
-    from ..conversation._store.core import _compression_lock_holder_process_is_dead
+    from process_identity import holder_process_is_dead
     if set(payload) != {'holder', 'ttl_seconds'}:
         raise AuthorityRefusal('invalid_params')
     lease_holder = _text(payload['holder'])
@@ -57,7 +57,7 @@ def _worker_turn(holder, conn, session_id, payload, operation):
     if operation == 'turn.acquire':
         value = _claim_lease_row(conn, 'session_turn_leases', 'conversation_id', key,
             lease_holder, now, now + ttl,
-            lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h))[0]
+            lambda h, e: float(e) <= now or holder_process_is_dead(h))[0]
     else:
         value = conn.execute('UPDATE session_turn_leases SET expires_at=? WHERE conversation_id=? AND holder=?',
                              (now + ttl, key, lease_holder)).rowcount > 0

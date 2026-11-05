@@ -5,17 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_common import SCHEMA_VERSION
 from hermes_cli import sessions_cmd
 from hermes_cli.web_server_sessions import _open_session_db_at_path
-from persistence_assembly import open_store_admin
+from persistence_assembly import open_persistence, open_store_admin, profile_scope
+from tests.fixtures.storage_holder import schema_version
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture(autouse=True)
 def _volume_headroom(monkeypatch):
     """The backup/snapshot guards reserve 2% of the volume: hermetic on a nearly full dev disk."""
-    import hermes_state_repair as repair
+    from persistence.sqlite._state import repair
     monkeypatch.setattr(repair, '_REPAIR_BACKUP_FREE_FRACTION', 0.0)
     # The holder scan sees every process on the host: a developer's running Hermes would hold a
     # real state.db and refuse these tmp_path repairs. Same stub as test_state_db_repair_non_destructive.
@@ -24,9 +24,9 @@ def _volume_headroom(monkeypatch):
 
 def _legacy_store(tmp_path, monkeypatch):
     path = tmp_path / 'state.db'
-    with SessionDB(db_path=path) as db:
-        db.create_session('retained', source='cli')
-        db.append_message('retained', role='user', content='history survives')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'retained', 'cli')
+        seed_messages(store, 'retained', {'role': 'user', 'content': 'history survives'})
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('ALTER TABLE sessions DROP COLUMN runtime_generation')
         conn.execute('ALTER TABLE sessions DROP COLUMN runtime_revision')
@@ -34,7 +34,7 @@ def _legacy_store(tmp_path, monkeypatch):
         for table in ('worker_receipts', 'worker_executions', 'session_admissions', 'runtime_epoch'):
             conn.execute(f'DROP TABLE {table}')
         conn.commit()
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == schema_version()
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(sessions_cmd, 'get_hermes_home', lambda: tmp_path)
     return path
@@ -51,7 +51,7 @@ def test_check_only_reports_drift_without_mutation(tmp_path, monkeypatch):
 @pytest.mark.parametrize('blocker', ['owner', 'ddl', 'incomplete', 'backup'])
 def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocker):
     from gateway.runtime_ownership import ProfileOwnership
-    import hermes_state_repair as repair
+    from persistence.sqlite._state import repair
     from persistence.sqlite.admin import _reconcile as schema
 
     path = _legacy_store(tmp_path, monkeypatch)
@@ -79,10 +79,10 @@ def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocke
 @pytest.mark.parametrize('with_history', [True, False])
 def test_canonical_store_is_unchanged(tmp_path, monkeypatch, with_history):
     path = tmp_path / 'state.db'
-    with SessionDB(db_path=path) as db:
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
         if with_history:
-            db.create_session('normal', source='cli')
-            db.append_message('normal', role='user', content='normal')
+            seed_session(store, 'normal', 'cli')
+            seed_messages(store, 'normal', {'role': 'user', 'content': 'normal'})
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     before = path.read_bytes()
     assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=False)) in (None, 0)
@@ -105,7 +105,7 @@ def test_missing_history_table_is_not_recreated_as_empty(tmp_path, monkeypatch, 
 
 
 def test_snapshot_history_loss_is_not_promoted(tmp_path, monkeypatch):
-    import hermes_state_repair as repair
+    from persistence.sqlite._state import repair
     path = _legacy_store(tmp_path, monkeypatch)
     before = path.read_bytes()
     copy = repair._copy_database_snapshot
@@ -126,9 +126,9 @@ def test_snapshot_history_loss_is_not_promoted(tmp_path, monkeypatch):
 
 def test_repair_restores_missing_indexed_column(tmp_path, monkeypatch):
     path = tmp_path / 'state.db'
-    with SessionDB(db_path=path) as db:
-        db.create_session('retained', source='cli')
-        db.append_message('retained', role='user', content='history survives')
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, 'retained', 'cli')
+        seed_messages(store, 'retained', {'role': 'user', 'content': 'history survives'})
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP INDEX idx_async_delegations_delivery')
@@ -151,5 +151,5 @@ def test_explicit_repair_restores_readonly_history(tmp_path, monkeypatch, backup
         assert [row.as_wire_row()['content'] for row in store.messages.read_transcript('retained')] == ['history survives']
         assert store.sessions.count_sessions() == 1
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == schema_version()
     assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=True)) in (None, 0)

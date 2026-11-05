@@ -25,9 +25,9 @@ from persistence.sqlite import _schema
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import _db_has_legacy_inline_fts, _recover_stale_fts, retry_deferred_fts_recovery
 from persistence.sqlite._schema_ddl import FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
-import hermes_state_holders as state_holders
-from hermes_state_common import FTS_REBUILD_DEFERRAL_KEY
-from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
+from persistence.sqlite._state import holders as state_holders
+from persistence.sqlite._state.common import FTS_REBUILD_DEFERRAL_KEY
+from persistence.sqlite._state.dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store import search
 from persistence.sqlite.conversation._store.search import search_messages
@@ -353,7 +353,7 @@ class TestRuntimeFtsRebuild:
         # Structural corruption quarantines the handle: the typed error wraps
         # the original (cause preserved, SQLite result code copied) and the
         # sticky flag is set, so later writes fail fast.
-        from hermes_state_errors import StateDbCorruptError
+        from persistence.sqlite._state.errors import StateDbCorruptError
 
         assert isinstance(caught.value, StateDbCorruptError)
         assert caught.value.__cause__ is structural
@@ -769,7 +769,7 @@ class TestRuntimeFtsRebuild:
         monkeypatch.setattr(_schema.time, "time", lambda: clock[0])
 
         from hermes_cli.doctor_state import _render_state_db_stats
-        from hermes_state_dbfile import collect_state_db_stats
+        from persistence.sqlite._state.dbfile import collect_state_db_stats
 
         def doctor_blob():
             return " ".join(" ".join(row) for row in _render_state_db_stats(collect_state_db_stats(db_path))).lower()
@@ -969,7 +969,7 @@ class TestPhysicalCorruptionAcceptance:
             # Structural damage quarantines the handle: typed error, sticky
             # flag, later writes fail fast, and close() must not checkpoint
             # the WAL over a damaged page image (the #90950 page-1 clobber).
-            from hermes_state_errors import StateDbCorruptError
+            from persistence.sqlite._state.errors import StateDbCorruptError
 
             assert isinstance(caught.value, StateDbCorruptError)
             assert db._db_corrupt is True

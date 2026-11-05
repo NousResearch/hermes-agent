@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_errors import SessionCompressionInProgressError
+from persistence.sqlite._state.errors import SessionCompressionInProgressError
 from persistence.core.errors import CompressionInProgress
 from persistence.sqlite import _registry as registry
 from persistence.sqlite._holder import StoreHolder

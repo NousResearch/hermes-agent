@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_dbfile as dbfile
+from persistence.sqlite._state import dbfile
 from persistence.sqlite import _registry as registry
 
 

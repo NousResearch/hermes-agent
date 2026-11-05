@@ -30,10 +30,10 @@ from persistence.authority.coordination import (
     RecordedOwner,
 )
 from persistence.authority.subagents import SubagentLimits, SubagentRecovery
+from process_identity import holder_process_is_dead
 
 from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.compression import _session_turn_lease_key_on_conn
-from ..conversation._store.core import _compression_lock_holder_process_is_dead
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._delivery_ledger import LEDGER_PATIENCE_S, DeliveryObligationVerbs
 from .subagents import KEEP_WAITING_UNITS_SQL, SubagentLedgerVerbs, recover_subagents
@@ -58,7 +58,7 @@ _HANDOFF_FAIL_SQL = "UPDATE sessions SET handoff_state = 'failed', handoff_error
 def _require_settled(holder, conn, session_id: str) -> None:
     """Refuse a handoff while durable work owns ``session_id``'s runtime lineage: a queued, started or unknown
     admission, a live worker, or a live turn lease or compression lock, checked on the caller's write."""
-    from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+    from persistence.sqlite._state.errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
 
     from ..workers._runtime_workers import runtime_lineage
     from ._runtime_guards import require_idle
@@ -202,7 +202,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         def _do(conn):
             return _claim_lease_row(
                 conn, "compression_locks", "session_id", session_id, holder, now, expires_at,
-                lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))
+                lambda h, e: e < now or holder_process_is_dead(h))
 
         try:
             with translated():
@@ -270,7 +270,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             conversation_id = _session_turn_lease_key_on_conn(store, conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
-                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
+                lambda h, e: float(e) <= now or holder_process_is_dead(h),
             )[0]
         with translated():
             return bool(store._execute_write(_do, patience_s=patience_s))

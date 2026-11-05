@@ -10,7 +10,7 @@ import os
 import threading
 from pathlib import Path
 
-import hermes_state_repair as repair_module
+from persistence.sqlite._state import repair as repair_module
 from persistence.sqlite import _holder
 from persistence.sqlite._holder import StoreHolder
 

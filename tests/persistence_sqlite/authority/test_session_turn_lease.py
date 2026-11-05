@@ -13,7 +13,7 @@ import pytest
 from persistence import DiskFull
 from persistence.authority.coordination import acquire_turn_lease_waiting
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import SessionTurnLeaseLostError
+from persistence.sqlite._state.errors import SessionTurnLeaseLostError
 from persistence.sqlite.conversation._store.compression import _session_turn_lease_key_on_conn
 from persistence.sqlite.conversation._store.messages import append_message, append_messages_batch, get_messages
 from persistence.sqlite.conversation._store.sessions import create_session, end_session
@@ -482,11 +482,11 @@ def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
 
     Stamped with this process's own PID namespace: same-namespace kernel proof
     is still proof (a foreign or unstamped holder would defer to TTL instead)."""
-    from persistence.sqlite.conversation._store import core
+    import process_identity
     db, lease = store.holder(), store.coordination
     create_session(db, "shared", "test")
 
-    from hermes_state_pidns import holder_namespace_token
+    from process_identity import holder_namespace_token
     dead_holder = f"pid=424242{holder_namespace_token()}:turn=dead:platform=test"
     assert lease.try_acquire_turn_lease(
         session_id="shared", holder=dead_holder, ttl_seconds=300
@@ -499,7 +499,7 @@ def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
         return False
 
     monkeypatch.setattr(
-        core, "psutil", SimpleNamespace(pid_exists=pid_exists)
+        process_identity, "psutil", SimpleNamespace(pid_exists=pid_exists)
     )
 
     fresh_holder = "pid=525252:turn=fresh:platform=test"

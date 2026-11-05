@@ -2,7 +2,7 @@
 
 
 import json
-from hermes_state_keys import admission_fingerprint
+from persistence.sqlite._state.keys import admission_fingerprint
 
 
 RESULT_PREFIX = 'gateway.admission.result.v1.'

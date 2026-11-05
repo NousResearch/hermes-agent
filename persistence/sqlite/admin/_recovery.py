@@ -22,7 +22,7 @@ from .._schema_ddl import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from ..conversation._store.rules import EPOCH_MAX, EPOCH_MIN
 from ..gateway._delivery_ledger import _ensure_obligations_table
 from ..gateway._routes import apply_telegram_topic_migration
-from ._doctor import _db_opens_cleanly
+from .._state.repair import _db_opens_cleanly
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]

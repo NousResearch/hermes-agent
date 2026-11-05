@@ -1,5 +1,6 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
+import logging
 import threading
 from unittest.mock import MagicMock
 
@@ -117,6 +118,16 @@ class TestPlatformRegistry:
         assert reg.unregister("beta") is True
         assert reg.get("beta") is None
         assert reg.unregister("beta") is False  # already gone
+
+    def test_create_adapter_no_entry_logs_reason(self, caplog):
+        """Every other None path logs why; a missing entry must too (#131974) — a platform gated
+        out by plugins.disabled previously failed with no trace at all."""
+        reg = PlatformRegistry()
+        with caplog.at_level(logging.WARNING, logger="gateway.platform_registry"):
+            assert reg.create_adapter("ghost", MagicMock()) is None
+        assert any(
+            "No registry entry for platform 'ghost'" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
 
 
     def test_create_adapter_no_validate(self):

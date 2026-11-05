@@ -190,6 +190,15 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     }
   )
 
+  it.each([{}, { status: 'rejected' }, new Error('lost tile ACK')])('does not replay a hidden tile correction for %j', async receipt => {
+    if (receipt instanceof Error) {requestGatewayMock.mockRejectedValue(receipt)}
+    else {requestGatewayMock.mockResolvedValue(receipt)}
+
+    const { result } = renderTileActions()
+    await act(async () => {await expect(result.current.injectHiddenPrompt('exact hidden tile')).rejects.toThrow()})
+    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith('session.steer', {session_id: RUNTIME_SESSION_ID, text: 'exact hidden tile'})
+  })
+
   it('authorizes tile fallback only with explicit delivered:false', async () => {
     requestGatewayMock.mockResolvedValue({ status: 'rejected', delivered: false })
     const { result } = renderTileActions()

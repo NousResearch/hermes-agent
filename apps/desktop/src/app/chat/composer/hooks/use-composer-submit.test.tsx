@@ -185,6 +185,25 @@ describe('useComposerSubmit external request routing', () => {
     clearQueuedPrompts('stored-session')
   })
 
+  it('blocks repeat Enter and Next while a proven-undelivered fallback awaits canonical admission', async () => {
+    $connection.set({mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted'} as never)
+    const h = renderSubmitHook({busy: true, busyInputMode: 'steer', text: 'original correction'})
+    h.onSteer.mockResolvedValue(false)
+    let accept!: (value: boolean) => void
+    h.onSubmit.mockImplementation(() => new Promise(resolve => {accept = resolve}))
+
+    try {
+      await act(async () => h.hook.result.current.submitDraft())
+      expect(h.onSubmit).toHaveBeenCalledTimes(1)
+      await act(async () => {h.hook.result.current.submitDraft(); h.hook.result.current.queueDraft()})
+      expect(h.onSteer).toHaveBeenCalledTimes(1)
+      expect(h.queueCurrentDraft).not.toHaveBeenCalled()
+      h.draftRef.current = 'new draft'; h.editor.textContent = 'new draft'
+      await act(async () => accept(true))
+      expect(h.draftRef.current).toBe('new draft')
+    } finally {$connection.set(null)}
+  })
+
   it('routes a refused native steer through canonical queue admission', async () => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
     $queuedPromptsBySession.set({})

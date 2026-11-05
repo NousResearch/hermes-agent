@@ -3039,7 +3039,7 @@ describe('usePromptActions redirectPrompt', () => {
     )
 
     await expect(handle!.redirectPrompt('boom')).rejects.toThrow('agent does not support redirect')
-    expect($notifications.get().some(item => item.message?.includes('agent does not support redirect'))).toBe(true)
+    expect($notifications.get().some(item => /unconfirmed|未确认/.test(item.message))).toBe(true)
   })
 
   it('skips the RPC entirely for empty text', async () => {

@@ -10,6 +10,8 @@ The boundary is widened for the companion key only, and only on a ``;``-delimite
 line is not a connection string.
 """
 
+import time
+
 import pytest
 
 from agent.redact import redact_sensitive_text, redact_terminal_output
@@ -109,6 +111,18 @@ class TestAssignedConnectionStrings:
         f"export CONN='Host=db;Password={PW};'",
         f'export CONN="Host=db;Password={PW};"',
         f"export CONN='Server=db;User Id=app;Password={PW}'",
+        # A quote inside a quoted or braced value is data, not a new string: ``don't`` must not
+        # push the password into a different quoting context.
+        f'X=host="don\'t";Password={PW};',
+        f"X=host={{don't}};Password={PW};",
+        f'X=host="it\'s";Database=app;Password={PW};',
     ])
     def test_quoted_assignment_is_still_masked(self, text):
         _assert_masked(text)
+
+    def test_rejected_candidates_stay_linear(self):
+        """A line full of rejected ``password=`` candidates must not rescan the suffix per match."""
+        line = "X=host=db" + ";password= {" * 4000
+        started = time.perf_counter()
+        assert redact_sensitive_text(line, force=True) == line
+        assert time.perf_counter() - started < 3.0

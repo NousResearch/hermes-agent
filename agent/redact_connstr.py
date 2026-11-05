@@ -114,6 +114,38 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     return min(j, n)
 
 
+def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool]]:
+    """Quoting context at each ascending ``index``: (in ``"..."``, in ``'...'``, in a ``{...}``
+    ODBC value). One left-to-right walk over the whole list, so many candidates stay linear.
+
+    The quote kind that is not active is literal inside the active one, and ODBC braces a literal
+    value, so ``host="don't"`` and ``host={don't}`` do not open a string.
+    """
+    states, pos = [], 0
+    in_dq = in_sq = in_brace = False
+    for index in indexes:
+        while pos < index:
+            ch = line[pos]
+            if in_dq:
+                if ch == '"':
+                    in_dq = False
+            elif in_sq:
+                if ch == "'":
+                    in_sq = False
+            elif in_brace:
+                if ch == "}":
+                    in_brace = False
+            elif ch == '"':
+                in_dq = True
+            elif ch == "'":
+                in_sq = True
+            elif ch == "{" and pos and line[pos - 1] == "=":
+                in_brace = True
+            pos += 1
+        states.append((in_dq, in_sq, in_brace))
+    return states
+
+
 def _redact_kv_connection_line(line: str, code_file: bool) -> str:
     if not _KV_CONNSTR_GATE_RE.search(line):
         return line
@@ -125,36 +157,39 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         if companion is None:
             return line
     # Assigned companions only license semicolon-prefixed passwords, not a neighbouring PWD
-    # environment variable. A single scan avoids rescanning overlapping runs for every key.
+    # environment variable.
     pw_re = _KV_ASSIGNED_PW_RE if assigned else _KV_CONNSTR_PW_RE
+    matches = list(pw_re.finditer(line))
+    if not matches:
+        return line
     # An assigned companion and a ``;``-prefixed password can still sit in different shell
     # assignments (``env X=host=db NOTE=";password=off"``), so the password must share the
-    # companion's quoting context. Parity is carried forward: one pass, no per-match rescan.
-    companion_dq = line.count('"', 0, companion.start()) % 2 == 1
-    companion_sq = line.count("'", 0, companion.start()) % 2 == 1
-    inside_dq, inside_sq, quote_at = companion_dq, companion_sq, companion.start()
+    # companion's quoting context.
+    if assigned:
+        companion_state = _quote_states(line, [companion.start()])[0]
+        states = _quote_states(line, [m.start() for m in matches])
+    else:
+        companion_state, states = None, []
     out, pos = [], 0
-    for m in pw_re.finditer(line):
-        if assigned:
-            inside_dq ^= line.count('"', quote_at, m.start()) % 2 == 1
-            inside_sq ^= line.count("'", quote_at, m.start()) % 2 == 1
-            quote_at = m.start()
+    for i, m in enumerate(matches):
         if m.start() < pos:  # inside a value already masked
             continue
-        if assigned and (inside_dq, inside_sq) != (companion_dq, companion_sq):
+        if assigned and states[i] != companion_state:
+            continue
+        # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value
+        # followed by the next word. Padding on both sides (``password = x``) is still a conninfo
+        # field. The guard is skipped only where a ``;`` already establishes the grammar on a
+        # plain line; ``X=host=db; password= field`` is prose, not an assigned connection string.
+        # It runs before the value scan so a rejected candidate cannot rescan the rest of the line.
+        eq = line.rindex("=", m.start(), m.end())
+        if (assigned or not semicolon) and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t":
             continue
         # A semicolon-prefixed assigned field uses the ADO.NET/ODBC grammar, not libpq.
         field_semicolon = semicolon or assigned
         vstart = m.end()
         vend = _kv_value_end(line, vstart, field_semicolon)
         value = line[vstart:vend]
-        # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value followed
-        # by the next word. Padding on both sides (``password = x``) is still a conninfo field. The
-        # guard is skipped only where a ``;`` already establishes the grammar on a plain line;
-        # ``X=host=db; password= field`` is prose, not an assigned connection string.
-        eq = line.rindex("=", m.start(), m.end())
-        if not value or ((assigned or not semicolon) and line[m.end() - 1] in " \t"
-                         and line[eq - 1] not in " \t"):
+        if not value:
             continue
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a

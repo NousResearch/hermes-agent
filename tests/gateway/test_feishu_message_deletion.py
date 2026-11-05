@@ -6,9 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.event import MessageEvent
-from tests.gateway import test_feishu
+from tests.gateway import test_feishu, test_feishu_processing_badges
 
 fake_lark_requests = test_feishu.fake_lark_requests
+_reaction_adapter = test_feishu_processing_badges._reaction_adapter
 
 
 @pytest.mark.parametrize("thread_id", [None, "omt_current"])
@@ -18,7 +19,7 @@ def test_send_delete_next_turn_preserves_only_live_badge_targets(
     fake_lark_requests, monkeypatch, thread_id, newer_reply, delete_outcome,
 ):
     monkeypatch.setenv("FEISHU_REACTIONS", "true")
-    adapter, tracker = test_feishu._reaction_adapter()
+    adapter, tracker = _reaction_adapter()
     deleted_messages = []
     metadata = {"thread_id": thread_id}
     event = MessageEvent(
@@ -72,7 +73,7 @@ def test_send_delete_next_turn_preserves_only_live_badge_targets(
 
 
 def test_delete_retires_every_alias_of_the_exact_message(fake_lark_requests):
-    adapter, _tracker = test_feishu._reaction_adapter()
+    adapter, _tracker = _reaction_adapter()
     adapter._last_bot_messages.update({
         ("oc_chat", None): "om_preview",
         ("oc_chat", "omt_preview"): "om_preview",

@@ -5,10 +5,38 @@ summary + live human ask in one row) keeps its hidden handoff scaffold as the ne
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 _HISTORY_CHANGED = "session history changed before the rewind could be persisted"
+
+logger = logging.getLogger("hermes")
+
+
+def erase_refused_turn_from_transcript(session_db: Any, session_id: Any) -> bool:
+    """Owner-side durable erase of a just-safety-refused turn, for surfaces that own a direct
+    ``SessionDB`` (CLI, ACP). The agent flushed the turn-start user row before the refusal was known,
+    so a clean in-memory history alone would still let a ``/resume`` or a fresh session load re-send
+    the blocked content and re-lock the chat. Rewind that whole turn — the user row, any tool rounds
+    that ran, and the refusal — the same rewind ``/undo`` uses, so the chat is not locked even after a
+    reload (the user keeps SEEING the message; only the model-facing conversation loses it). The
+    managed-worker (Bot Chat) path erases owner-side through its async store instead. Best-effort: a
+    refusal must never crash turn teardown, and if the erase fails the user still has the refusal
+    notice. Returns True when a turn was erased.
+
+    This lives OUTSIDE the agent core on purpose: it is an OWNER-side operation (the owner holds a
+    direct, mutable transcript), never a call the worker agent makes on its ``RuntimeSessionStore``.
+    """
+    if session_db is None or not session_id:
+        return False
+    try:
+        session_db.rewind_user_turn(session_id, -1)
+    except Exception:  # best-effort; a refusal must never crash turn teardown
+        logger.warning(
+            "content-policy refusal: could not erase the refused turn for %s", session_id, exc_info=True)
+        return False
+    return True
 
 
 class RewindTargetUnavailableError(ValueError):

@@ -951,6 +951,20 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if "messages" in result and isinstance(result["messages"], list):
                 state.history = result["messages"]
                 self.session_manager.save_session(session_id)
+                # Safety refusal: erase the whole refused turn (user row + any tool rounds + the
+                # refusal) from the durable transcript so a fresh session load isn't re-sent the
+                # blocked content and locked. state.history is already the clean pre-refusal history.
+                # An OWNING agent flushed the refused turn incrementally and save_session skipped the
+                # replace, so it is still durable — rewind it. A non-owning agent's save_session ran
+                # replace_messages(clean history), which already erased it; rewinding again would
+                # drop a prior accepted turn.
+                if result.get("failure_reason") == "content_policy_blocked" and getattr(
+                    state.agent, "_session_db_created", False
+                ):
+                    from hermes_state_rewind import erase_refused_turn_from_transcript
+                    erase_refused_turn_from_transcript(
+                        getattr(state.agent, "_session_db", None),
+                        getattr(state.agent, "session_id", session_id))
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)

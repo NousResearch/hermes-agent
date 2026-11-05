@@ -367,6 +367,8 @@ _YAML_ASSIGN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+_YAML_CFG_WORD_RE = re.compile(_YAML_CFG_NAMES, re.IGNORECASE)
+
 # Word-boundary validation for the key patterns above: their classes allow
 # arbitrary affixes (``client_secret``, ``s3.secret-key``), which also matched
 # prose CONTAINING a keyword (``Secretary:``, ``tokenizer:``). A keyword counts
@@ -541,6 +543,11 @@ _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORE
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
 # The backreference keeps the key's and value's escape depth equal.
 _JSON_FIELD_ESCAPED_RE = re.compile(rf'((\\+)"{_JSON_KEY_NAMES}\2")\s*:\s*\2"([^"\\]+)\2"', re.IGNORECASE)
+# Any other identifier-shaped key (``"API_TOKEN"``, ``"DB_PASSWORD"``, ``"client_secret"``): the closed
+# list above misses affixed names that the ENV and YAML passes already accept (#147240). The callback
+# applies the YAML pass's word set at a word boundary, then the shared assignment gate.
+_JSON_ANY_KEY_FIELD_RE = re.compile(r'("([A-Za-z0-9_.\-]{1,128}+)")\s*+:\s*+"([^"\\\n]++)"')
+_JSON_KEY_NAMES_FULL_RE = re.compile(_JSON_KEY_NAMES, re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
 # tracebacks and pytest failure introspection bypass the double-quoted JSON rule
@@ -787,7 +794,23 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
 
+def _compile_prefix_after_sep_matcher(patterns: list) -> re.Pattern[str]:
+    """Known-prefix credentials glued to an identifier by ``-``/``_`` (``backup-sk-…``, ``x-ghp_…``),
+    which the matcher above rejects so that ``scikit-learn`` stays whole. The match is kept only
+    when _is_opaque_prefixed_token says the body is opaque (#147240)."""
+    return re.compile(r"(?<=[A-Za-z0-9][-_])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+
+
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
+_PREFIX_AFTER_SEP_RE = _compile_prefix_after_sep_matcher(_PREFIX_PATTERNS)
+# A real key body has a 16+ char run with no separator mixing two of lower/upper/digit;
+# ``sk-prod-deployment-01`` and ``fc-feature-flags-v2`` do not.
+_OPAQUE_TOKEN_RUN_RE = re.compile(
+    r"(?=[A-Za-z0-9]*?[0-9])(?=[A-Za-z0-9]*?[A-Za-z])[A-Za-z0-9]{16,}|(?=[a-z0-9]*?[A-Z])(?=[A-Z0-9]*?[a-z])[A-Za-z0-9]{16,}")
+
+
+def _is_opaque_prefixed_token(token: str) -> bool:
+    return any(_OPAQUE_TOKEN_RUN_RE.fullmatch(run) for run in re.split(r"[^A-Za-z0-9]+", token))
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
@@ -1215,6 +1238,23 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
+    """``"API_TOKEN": "…"`` style fields whose key carries a YAML secret word with affixes."""
+    key = m.group(2)
+    if _JSON_KEY_NAMES_FULL_RE.fullmatch(key):  # the closed-list pass already decided this field
+        return m.group(0)
+    if not (_has_word_bounded_keyword(key, _YAML_CFG_WORD_RE) or _has_password_keyword(key)):
+        return m.group(0)
+    value = m.group(3)
+    if _DSN_PW_PLACEHOLDER_RE.fullmatch(value) or not _should_redact_assignment(key, value, check_keyword=True):
+        return m.group(0)
+    # A key that does not END in the credential word (``password_policy``, ``secret_ref``) is
+    # metadata about one, the dict policy (is_secret_field_name): only an opaque value is masked.
+    if not _is_python_repr_secret_key(key) and not _looks_like_opaque_credential(value):
+        return m.group(0)
+    return f'{m.group(1)}: "{mask(value)}"'
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -1253,6 +1293,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         if '\\"' in text:
             text = _JSON_FIELD_ESCAPED_RE.sub(
                 _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
+        text = _JSON_ANY_KEY_FIELD_RE.sub(lambda m: _redact_json_affixed_key(m, mask), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
@@ -1512,6 +1553,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+        if "-" in text or "_" in text:
+            text = _PREFIX_AFTER_SEP_RE.sub(
+                lambda m: _prefix_sub(m.group(1)) if _is_opaque_prefixed_token(m.group(1)) else m.group(0), text)
 
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1889,9 +1933,10 @@ def _plugin_patterns() -> list:
 def _rebuild_prefix_matcher() -> None:
     """Recompile the prefix alternation and pre-screen substrings; callers read the
     module globals at call time, so the swap propagates immediately."""
-    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    global _PREFIX_RE, _PREFIX_AFTER_SEP_RE, _PREFIX_SUBSTRINGS
     combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = _compile_prefix_matcher(combined)
+    _PREFIX_AFTER_SEP_RE = _compile_prefix_after_sep_matcher(combined)
     _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
 
 

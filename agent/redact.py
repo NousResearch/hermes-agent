@@ -742,7 +742,8 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # (~55s per sub() on a 320KB compaction payload).
 _STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
 # The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
-_URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@]+)@")
+# No ``"``: ``"https://a.com","u:pw@y"`` is two JSON strings, not ``a.com","u`` userinfo.
+_URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
 
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,

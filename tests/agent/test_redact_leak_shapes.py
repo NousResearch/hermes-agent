@@ -159,3 +159,15 @@ class TestPrefixedKeyAfterSeparator:
                                       "deploy-sk-prod-deployment-01", "build_hf_transformers_cache"])
     def test_identifiers_kept(self, text):
         _assert_unchanged(text)
+
+
+class TestUserinfoStopsAtQuote:
+    """A ``"`` ends a JSON string, so ``"https://a.com","u:pw@y"`` holds no ``user:pass@`` userinfo."""
+
+    @pytest.mark.parametrize("text", ['["https://a.com","u:longpassword1@y"]',
+                                      '"https://example.com","x@y.com"'])
+    def test_adjacent_json_strings_stay_intact(self, text):
+        _assert_unchanged(text)
+
+    def test_userinfo_password_still_masked(self):
+        _assert_masked("https://user:FakeSecret9876@host/path", "FakeSecret9876")

@@ -407,3 +407,44 @@ async def test_global_switch_reports_failed_stale_override_cleanup(tmp_path, mon
     assert "store locked" in confirmation
     assert "Saved to config.yaml" not in confirmation
     assert runner._session_model_override(session_key)["model"] == "gpt-5.5"
+
+
+class _FakeChoicePickerAdapter:
+    """Choice-picker-capable adapter (class attribute, as the gate checks) capturing the tap."""
+
+    def __init__(self):
+        self.captured_callback = None
+
+    async def send_choice_picker(self, *, on_choice_selected, **kwargs):
+        self.captured_callback = on_choice_selected
+        return types.SimpleNamespace(success=True)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_picker_tap_writes_the_routed_profile_config(tmp_path, monkeypatch):
+    """The tap fires later, on the adapter's callback task, outside the command's routed profile
+    scope. Like the /model picker, it must re-enter the profile the command ran for — a routed
+    user's show/hide tap must not rewrite the launch (default) profile's config.yaml."""
+    import gateway.run as gateway_run
+    from agent.secret_scope import set_multiplex_active
+
+    homes = {name: tmp_path / name for name in ("default", "named")}
+    for name, home in homes.items():
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({"marker": name}), encoding="utf-8")
+    named_adapter = _FakeChoicePickerAdapter()
+    runner = _make_named_runner(monkeypatch, _FakeChoicePickerAdapter(), named_adapter, homes["named"])
+    monkeypatch.setattr(gateway_run, "_hermes_home", homes["default"])
+    event = MessageEvent(text="/reasoning", message_type=MessageType.TEXT, source=SessionSource(
+        platform=Platform.TELEGRAM, chat_id="named-chat", chat_type="dm", profile="named"))
+
+    set_multiplex_active(True)
+    try:
+        with gateway_run._profile_runtime_scope(homes["named"]):
+            assert await runner._handle_reasoning_command(event) is None
+        await named_adapter.captured_callback("named-chat", "show")  # the tap: no routed scope
+    finally:
+        set_multiplex_active(False)
+
+    assert yaml.safe_load((homes["default"] / "config.yaml").read_text(encoding="utf-8")) == {"marker": "default"}
+    assert "show_reasoning" in (homes["named"] / "config.yaml").read_text(encoding="utf-8")

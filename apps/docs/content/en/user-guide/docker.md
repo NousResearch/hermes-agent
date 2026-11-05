@@ -179,7 +179,7 @@ An unauthenticated public dashboard was the entry point for the June 2026 MCP-co
 
 Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
 
-## Running the Webapp {#running-the-webapp}
+## Running the Webapp [#running-the-webapp]
 
 The image ships the [Webapp](./desktop.md) (Hermes Desktop in a browser) prebuilt; the gateway serves it on its own port when the mounted `config.yaml` turns it on (see [Configuration → Webapp](./configuration.mdx#webapp)):
 
@@ -208,7 +208,7 @@ docker run -d \
 
 A non-loopback `host` needs one of the [dashboard's auth providers](#running-the-dashboard), and the listener refuses to start without one. Without `public_url`, links printed by `hermes webapp` inside the container use the container's own address, not the published one.
 
-### Behind a tunnel or reverse proxy {#webapp-behind-a-proxy}
+### Behind a tunnel or reverse proxy [#webapp-behind-a-proxy]
 
 When Cloudflare Tunnel, Caddy, Traefik or nginx runs in another container and serves the Webapp at its own HTTPS address, set all three of these:
 
@@ -254,7 +254,7 @@ networks:
 
 Give the tunnel's public hostname the service `http://hermes:9120`.
 
-### Next to the dashboard {#webapp-next-to-the-dashboard}
+### Next to the dashboard [#webapp-next-to-the-dashboard]
 
 The dashboard (`HERMES_DASHBOARD=1`, port 9119) and the Webapp (port 9120) can run in one container, each at its own hostname: `dashboard.public_url` is the dashboard's address and `webapp.public_url` the Webapp's, and neither reads the other's. They share their sign-in providers, so the username/password, Nous and OIDC settings above sign in to both.
 

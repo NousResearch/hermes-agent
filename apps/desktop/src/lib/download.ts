@@ -1,3 +1,6 @@
+import { mediaName } from '@/lib/media'
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
+
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/bmp': '.bmp',
   'image/gif': '.gif',
@@ -18,8 +21,14 @@ export function imageFilename(src?: string): string {
     return 'image'
   }
 
+  if (isWindowsAbsolutePath(src)) {
+    return mediaName(src)
+  }
+
   try {
-    return new URL(src, window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
+    const url = new URL(src, window.location.href)
+
+    return url.pathname.split('/').filter(Boolean).pop() ? mediaName(url.href) : 'image'
   } catch {
     return src.split(/[\\/]/).filter(Boolean).pop() || 'image'
   }

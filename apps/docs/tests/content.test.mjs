@@ -33,6 +33,18 @@ test('Markdown links resolve relative paths, bare names, overrides and locale fa
   assert.throws(() => resolveDocumentLink(source, './missing.md', root), /missing\.md/);
 });
 
+test('a trailing slash on an extensionless sibling link resolves like the bare form', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hermes-doc-links-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'en/user-guide/features'), { recursive: true });
+  writeFileSync(join(root, 'en/user-guide/features/kanban.md'), '# Kanban');
+  const source = join(root, 'en/user-guide/features/cron.md');
+  writeFileSync(source, '# Cron');
+  for (const href of ['./kanban', './kanban/', './kanban/#board', '../features/kanban/?view=1']) {
+    assert.equal(resolveDocumentLink(source, href, root), '/user-guide/features/kanban' + href.slice(href.search(/[?#]|$/)), href);
+  }
+});
+
 test('extensionless relative links resolve pages, fall back across locales and reject escapes', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'hermes-doc-links-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -2152,6 +2152,16 @@ class TestReferencedSupportPaths:
             "references/type-architecture.md",
         }
 
+    def test_ignores_truncated_directory_placeholders(self):
+        # ``references/sources/<source>.md`` truncates to ``references/sources/`` at ``<``;
+        # normalization strips the trailing slash, which used to admit the directory as a
+        # real support path and reject the whole bundle (#134628).
+        md = (
+            "2. The category playbook `references/sources/<source>.md` for the selected MCP, "
+            "plus [docs](references/sources/overview.md).\n"
+        )
+        assert _referenced_support_paths(md) == {"references/sources/overview.md"}
+
     def test_keeps_real_backtick_references(self):
         md = "Run `python3 scripts/self_check.py <file>` and see `references/guide.md`.\n"
         assert _referenced_support_paths(md) == {

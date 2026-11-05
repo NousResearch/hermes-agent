@@ -22,6 +22,19 @@ export const chromeEn = {
     interruptHint: 'Ctrl+C to interrupt…',
     pasteExpandHint: 'Ctrl+P expand paste to read / edit',
     pasteCollapseHint: 'editing pasted text · Ctrl+P collapse',
+    // Ctrl+S stash. The wording matches the classic CLI's `prompt_stash.py` hints and its
+    // `cli.status_bar.stash_*` panel strings word for word.
+    stash: {
+      browseHint: (count: number) => `Ctrl+S to browse ${count} stashed drafts`,
+      footer: '↑↓ Enter=restore  D=delete  Esc',
+      header: (count: number) => `📌 Stash (${count} ${count === 1 ? 'item' : 'items'})`,
+      more: (count: number) => `… ${count} more`,
+      restoreHint: (preview: string) => `Ctrl+S to restore: ${preview}`,
+      ageHours: (hours: number) => `${hours}h ago`,
+      ageJustNow: 'just now',
+      ageMinutes: (minutes: number) => `${minutes} min ago`,
+      ageSeconds: (seconds: number) => `${seconds}s ago`
+    },
     placeholders: {
       ask: 'Ask me anything…',
       explain: 'Try "explain this codebase"',
@@ -52,6 +65,7 @@ export const chromeEn = {
     modelPicker: 'open model picker (keeps your draft; applies to next turn mid-stream)',
     homeEnd: 'home / end of line',
     undoRedo: 'undo / redo input edits',
+    stashDraft: 'park this draft, or restore / browse parked drafts',
     deleteWord: 'delete word',
     killLine: 'kill to line start / end (repeat across lines)',
     jumpWord: 'jump word',

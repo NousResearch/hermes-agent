@@ -9,6 +9,7 @@ import {
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
+  resolveStashPanelKey,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -239,5 +240,29 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('resolveStashPanelKey — the Ctrl+S browse panel owns its five keys', () => {
+  const base = { downArrow: false, escape: false, return: false, upArrow: false }
+
+  it.each([
+    [{ upArrow: true }, '', 'up'],
+    [{ downArrow: true }, '', 'down'],
+    [{ return: true }, '', 'restore'],
+    [{ escape: true }, '', 'close'],
+    [{}, 'd', 'delete'],
+    [{}, 'D', 'delete']
+  ] as const)('%o + %s → %s', (patch, ch, expected) => {
+    expect(resolveStashPanelKey({ ...base, ...patch }, ch)).toBe(expected)
+  })
+
+  it('leaves every other key to the composer', () => {
+    expect(resolveStashPanelKey(base, 'x')).toBeNull()
+    expect(resolveStashPanelKey(base, '')).toBeNull()
+  })
+
+  it('prefers the arrows over a printable d, so a held arrow never deletes a draft', () => {
+    expect(resolveStashPanelKey({ ...base, upArrow: true }, 'd')).toBe('up')
   })
 })

@@ -37,6 +37,7 @@ export function hotkeys(): [string, string][] {
     ['Ctrl+O', h.modelPicker],
     [action + '+A/E', h.homeEnd],
     [action + '+Z / ' + action + '+Y', h.undoRedo],
+    ['Ctrl+S', h.stashDraft],
     [action + '+W', h.deleteWord],
     [action + '+U/K', h.killLine],
     [action + '+←/→', h.jumpWord],

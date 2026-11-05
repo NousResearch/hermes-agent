@@ -43,16 +43,18 @@ import { MessageLine } from './messageLine.js'
 import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { RewindFocusScroller, useRewindFocusIndex } from './rewindFocus.js'
+import { StashChrome } from './stashPanel.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
 
-/** Blank-input hint: live STT text while dictating (stt.streaming) always wins; else a rotating
- *  placeholder on a fresh transcript, or the busy hint. */
-const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string) =>
-  voicePartial || (freshTranscript ? placeholder() : busyHint)
+/** Blank-input hint: live STT text while dictating (stt.streaming) always wins; then the busy
+ *  hint, then the Ctrl+S stash hint, then a rotating placeholder on a fresh transcript. That is
+ *  the classic CLI's order (`_get_placeholder`): busy states first, stash before the example. */
+const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string, stashHint: string) =>
+  voicePartial || busyHint || stashHint || (freshTranscript ? placeholder() : '')
 
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
 const PET_PAD_LEFT = 2
@@ -423,6 +425,18 @@ const ComposerPane = memo(function ComposerPane({
         t={ui.theme}
       />
 
+      {/* CLI parity: the classic CLI keeps a `📌 N` badge in its status bar whenever a draft is
+          parked, so the stash stays visible while you type. Both the badge and the browse panel
+          live in StashChrome so this pane stays a plain render. */}
+      <StashChrome
+        cols={composer.cols}
+        cursor={composer.stashPanelCursor}
+        indicator={composer.stashIndicator}
+        open={composer.stashPanelOpen}
+        rows={composer.stashRows}
+        t={ui.theme}
+      />
+
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.muted}>
           {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
@@ -495,11 +509,19 @@ const ComposerPane = memo(function ComposerPane({
                   color={ui.theme.color.text}
                   columns={inputColumns}
                   cursorSnapshotRef={cursorSnapshotRef}
+                  // The Ctrl+S browse panel owns ↑/↓/Enter/D/Esc while it is up, so the
+                  // composer must not consume them (the classic CLI binds them eagerly).
+                  focus={!composer.stashPanelOpen}
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
+                  placeholder={composerHint(
+                    voicePartial,
+                    composer.empty,
+                    ui.busy ? T.composer.interruptHint : '',
+                    composer.stashHint
+                  )}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent

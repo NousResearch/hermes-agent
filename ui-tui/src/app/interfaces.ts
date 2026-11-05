@@ -3,6 +3,7 @@ import type { Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
+import type { StashAction } from '../domain/promptStash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   BillingCardInfo,
@@ -13,6 +14,7 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
+import type { StashPanelRow } from '../hooks/usePromptStash.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
@@ -443,6 +445,16 @@ export interface ComposerActions {
   collapsePaste: (value?: string) => string
   /** Ctrl+P: expand the paste chip at `cursor` / collapse the expanded one. False = nothing to toggle. */
   togglePaste: (cursor: number) => boolean
+  /** Ctrl+S: park the draft / restore it / open or close the browse panel. */
+  stashToggle: () => StashAction
+  /** Browse panel: move the highlight by `delta` rows. */
+  stashMove: (delta: number) => void
+  /** Browse panel: restore the highlighted draft (Enter). False = nothing to restore. */
+  stashRestore: () => boolean
+  /** Browse panel: discard the highlighted draft (D). False = nothing to drop. */
+  stashDelete: () => boolean
+  /** Browse panel: close without restoring (Esc). */
+  stashClose: () => void
 }
 
 export interface ComposerRefs {
@@ -465,6 +477,14 @@ export interface ComposerState {
   pasteExpanded: boolean
   queueEditIdx: null | number
   queuedDisplay: string[]
+  /** Placeholder hint while a draft is parked ('' when the stash is empty). */
+  stashHint: string
+  /** `📌 N` / `📌 N ▲` / '' — the classic CLI's status-bar indicator. */
+  stashIndicator: string
+  stashPanelCursor: number
+  stashPanelOpen: boolean
+  /** One row per parked draft, newest first. */
+  stashRows: StashPanelRow[]
   tokens: ComposerToken[]
 }
 
@@ -658,6 +678,13 @@ export interface AppLayoutComposerProps {
   pasteHint: null | 'collapse' | 'expand'
   queueEditIdx: null | number
   queuedDisplay: string[]
+  /** Placeholder hint while a Ctrl+S draft is parked ('' when the stash is empty). */
+  stashHint: string
+  /** `📌 N` while drafts are parked ('' when none) — the classic CLI's status-bar badge. */
+  stashIndicator: string
+  stashPanelCursor: number
+  stashPanelOpen: boolean
+  stashRows: StashPanelRow[]
   submit: (value: string) => void
   updateInput: StateSetter<string>
   voiceRecordKey: ParsedVoiceRecordKey

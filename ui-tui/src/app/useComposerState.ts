@@ -13,6 +13,7 @@ import { collapsePasteSpan, expandPasteChip, insideSpan, type PasteSpan, shiftSp
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
+import { usePromptStash } from '../hooks/usePromptStash.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
@@ -194,6 +195,18 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     setHistoryIdx(null)
     historyDraftRef.current = ''
   }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setPasteSpan, setQueueEdit])
+
+  // Ctrl+S stash. The decision table is the classic CLI's (`hermes_cli/prompt_stash.py`),
+  // ported in `domain/promptStash.ts`; this hook only applies its outcome to the composer.
+  const promptStash = usePromptStash({
+    clear: clearIn,
+    getInput: () => inputRef.current,
+    getTokens: () => tokensRef.current,
+    setComposerTokens,
+    setHistoryIdx,
+    setInput,
+    setQueueEdit
+  })
 
   /**
    * Fold the expanded paste back into a chip; its payload is the text as
@@ -649,6 +662,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInput,
       setInputBuf,
       setQueueEdit,
+      stashClose: promptStash.actions.closePanel,
+      stashDelete: promptStash.actions.deleteAtCursor,
+      stashMove: promptStash.actions.moveCursor,
+      stashRestore: promptStash.actions.restoreAtCursor,
+      stashToggle: promptStash.actions.toggle,
       takeQueue: takeQ,
       syncTokens,
       togglePaste
@@ -671,6 +689,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setHistoryIdx,
       setInput,
       setQueueEdit,
+      promptStash,
       takeQ,
       setInputBuf,
       syncTokens,
@@ -702,9 +721,14 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pasteExpanded,
       queueEditIdx,
       queuedDisplay,
+      stashHint: promptStash.state.hint,
+      stashIndicator: promptStash.state.indicator,
+      stashPanelCursor: promptStash.state.panelCursor,
+      stashPanelOpen: promptStash.state.panelOpen,
+      stashRows: promptStash.state.rows,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, promptStash, tokens]
   )
 
   return {

@@ -48,21 +48,32 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
-# One serial per live schema-override callable: an id can be reused once its object is collected.
-_OVERRIDE_SERIALS: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+# One serial per live schema-override callable, by identity: an id can be reused once its object is
+# collected, and two equal callables can still return different schemas.
+_OVERRIDE_SERIALS: dict[int, tuple[weakref.ref, int]] = {}
 _OVERRIDE_SERIAL_COUNTER = itertools.count(1)
 
 
+def _forget_override_serial(key: int, dead: weakref.ref) -> None:
+    if _OVERRIDE_SERIALS.get(key, (None,))[0] is dead:  # a newer callable may already hold this id
+        _OVERRIDE_SERIALS.pop(key, None)
+
+
 def _override_serial(callback: Any, generation: int) -> Any:
-    """Identity of a tool's dynamic schema override; the registry generation when it cannot be weakly keyed."""
+    """Identity of a tool's dynamic schema override; the registry generation when it cannot be weakly referenced."""
     if callback is None:
         return None
+    key = id(callback)
+    held = _OVERRIDE_SERIALS.get(key)
+    if held is not None and held[0]() is callback:
+        return held[1]
     try:
-        if callback not in _OVERRIDE_SERIALS:
-            _OVERRIDE_SERIALS[callback] = next(_OVERRIDE_SERIAL_COUNTER)
-        return _OVERRIDE_SERIALS[callback]
+        ref = weakref.ref(callback, lambda dead: _forget_override_serial(key, dead))
     except TypeError:
         return f"generation:{generation}"
+    serial = next(_OVERRIDE_SERIAL_COUNTER)
+    _OVERRIDE_SERIALS[key] = (ref, serial)
+    return serial
 
 def _agent_config_signature_parts(model, runtime, enabled_toolsets, ephemeral_prompt,
                                   cache_keys=None, user_id=None, user_id_alt=None, skip_context_files=False):
@@ -123,7 +134,8 @@ class GatewayAgentCacheMixin:
             out[f"memory.{key}"] = value
         try:
             out["tools.registry_surface"] = cls._tool_registry_surface_signature()
-        except Exception:
+        except Exception:  # the turn must not fail on a key part; None still rebuilds when it recovers
+            logger.debug("Tool surface fingerprint unavailable", exc_info=True)
             out["tools.registry_surface"] = None
         return out
 

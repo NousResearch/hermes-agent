@@ -84,6 +84,19 @@ def test_swapping_one_schema_override_for_another_changes_surface(registry):
     def second():
         return {"description": "Second"}
 
+    class Equal:
+        def __init__(self, text):
+            self.text = text
+
+        def __eq__(self, other):
+            return isinstance(other, Equal)
+
+        def __hash__(self):
+            return 0
+
+        def __call__(self):
+            return {"description": self.text}
+
     class Unweakable:
         __slots__ = ()
 
@@ -96,6 +109,14 @@ def test_swapping_one_schema_override_for_another_changes_surface(registry):
     assert _surface() != original
     _register(registry, dynamic_schema_overrides=first)
     assert _surface() == original
+    # Equal is not the same: two live callables that compare equal can still return different schemas.
+    a, b = Equal("A"), Equal("B")
+    _register(registry, dynamic_schema_overrides=a)
+    equal_first = _surface()
+    _register(registry, dynamic_schema_overrides=b)
+    assert _surface() != equal_first
+    _register(registry, dynamic_schema_overrides=a)
+    assert _surface() == equal_first
     # A callable that cannot be weakly keyed falls back to the registry generation: every change rebuilds.
     _register(registry, dynamic_schema_overrides=Unweakable())
     fallback = _surface()

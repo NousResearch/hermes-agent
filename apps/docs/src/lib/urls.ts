@@ -42,9 +42,9 @@ export function publicHref(href: string): string {
   return hasPrefix(path.split(/[?#]/, 1)[0], DOCS_BASE_PATH) ? path : `${DOCS_BASE_PATH}${path}`;
 }
 
-/** The public URL for a page: slashless, because the production edge answers
- * `/docs/x/` with a 308 to `/docs/x`. The export keeps its `x/index.html`
- * folder layout, so the static origin behind the edge serves both forms. */
+/** The public URL for a page: slashless, like every link the site renders
+ * (trailingSlash is off). The production edge answers `/docs/x/` with a 308
+ * to `/docs/x` and serves `/docs/x` from the export's `x/index.html`. */
 export function canonicalUrl(href: string): string {
   const url = new URL(publicHref(href), SITE_URL);
   url.pathname = url.pathname.replace(/\/+$/, '');

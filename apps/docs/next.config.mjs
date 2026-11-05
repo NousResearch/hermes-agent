@@ -9,7 +9,7 @@ export default withMDX({
   output: 'export',
   agentRules: false,
   basePath: '/docs',
-  trailingSlash: true,
+  trailingSlash: false,
   images: { unoptimized: true },
   reactStrictMode: true,
   serverExternalPackages: ['shiki', 'fumadocs-mdx'],

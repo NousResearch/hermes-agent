@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse } from 'parse5';
-import { DOCS_BASE_PATH, SITE_URL, publicHref } from '../src/lib/urls.ts';
+import { DOCS_BASE_PATH, SITE_URL, canonicalUrl, publicHref } from '../src/lib/urls.ts';
 import { htmlPath } from './postbuild.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,7 +137,8 @@ export function checkExportLinks(appDir, fail, ctx) {
     }
     if (!statSync(file, { throwIfNoEntry: false })?.isFile()) continue; // missing page: owned too
     const page = readPage(cache, file);
-    const pageBase = publicHref(route === '/' ? '/' : `${route}/`);
+    // The browser's base: pages are served slashless, so `x` resolves beside the page.
+    const pageBase = new URL(canonicalUrl(route)).pathname;
     for (const href of page.hrefs) {
       if (!href) continue;
       if (href.startsWith('#')) {

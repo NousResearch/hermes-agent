@@ -186,7 +186,9 @@ class _ModelCatalog:
         self.seen_ids.add(choice_id)
         self.seen_semantic_ids.add(semantic_id)
 
-    def add_inventory_rows(self, rows: list, provider_label: Callable[[str], str]) -> None:
+    def add_inventory_rows(
+        self, rows: list, provider_label: Callable[[str], str], choice_provider: Callable[[str], str]
+    ) -> None:
         for row in rows:
             raw_row_provider = str(row.get("slug") or "").strip().lower()
             row_provider = self.normalize_provider(raw_row_provider)
@@ -202,11 +204,7 @@ class _ModelCatalog:
             if not row_provider or not isinstance(row_models, (list, tuple)):
                 continue
             provider_name = str(row.get("name") or "").strip() or provider_label(row_provider)
-            encoded_provider = (
-                "custom:ollama" if raw_row_provider == "ollama"
-                else raw_row_provider if raw_row_provider.startswith("custom:")
-                else row_provider
-            )
+            encoded_provider = choice_provider(raw_row_provider)
             for model_entry in row_models:
                 if isinstance(model_entry, dict):
                     model_entry = model_entry.get("id") or model_entry.get("model") or model_entry.get("name")
@@ -230,16 +228,19 @@ class _ModelCatalog:
                 self.empty_authoritative.add(str(named_slug).strip().lower())
                 continue
             for named_model, named_desc in named_catalog:
-                is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
+                is_current = self.semantic(named_slug) == self.semantic(current_choice_provider) and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
 
-def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
+def build_model_state(
+    model: str, provider: str, base_url: str, requested_provider: str | None = None
+) -> SessionModelState | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
-    from hermes_cli.models import normalize_provider, provider_label
+    from hermes_cli.models import CANONICAL_PROVIDERS, normalize_provider, provider_label
+    from hermes_cli.runtime_provider import canonical_custom_identity
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(
@@ -253,7 +254,25 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
 
     named_catalogs = _named_custom_provider_catalogs()
     named_slugs = {str(slug).strip().lower() for slug, _label, _models in named_catalogs}
-    current_choice_provider = str(provider or "").strip().lower()
+    requested_provider_id = str(requested_provider or "").strip().lower()
+    if not requested_provider_id.startswith("custom:"):
+        requested_provider_id = ""
+    canonical_provider_ids = {entry.slug for entry in CANONICAL_PROVIDERS}
+
+    def canonical_choice_provider(provider_id: str) -> str:
+        raw = str(provider_id or "").strip().lower()
+        if raw == "ollama":
+            return "custom:ollama"
+        if raw == "custom" and requested_provider_id:
+            return requested_provider_id
+        if raw.startswith("custom:"):
+            return raw
+        normalized = normalize_provider(raw)
+        if normalized in canonical_provider_ids:
+            return normalized
+        return canonical_custom_identity(config_provider=raw) or normalized
+
+    current_choice_provider = canonical_choice_provider(requested_provider_id or provider)
     current_base = base_url.strip().rstrip("/").lower()
     # ``build_models_payload`` represents configured ``providers:`` entries by their raw
     # config key. ACP ids must instead use the durable ``custom:<key>`` identity so the
@@ -281,7 +300,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         current_choice_provider=current_choice_provider,
         current_base_url=current_base,
     )
-    cat.add_inventory_rows(inventory_rows, provider_label)
+    cat.add_inventory_rows(inventory_rows, provider_label, canonical_choice_provider)
     cat.add_named_catalogs(named_catalogs, current_choice_provider)
     available_models = cat.models
 

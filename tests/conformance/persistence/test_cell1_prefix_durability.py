@@ -30,16 +30,17 @@ from tests.conformance.persistence._harness import (
 WRITER = r"""
 import json, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 db_path = Path({db_path!r})
 journal = Path({journal!r})
-db = SessionDB(db_path=db_path)
-db.create_session("cell1", source="conformance")
+db = open_persistence(profile_scope(home=db_path.parent))
+seed_session(db, "cell1", "conformance")
 i = 0
 with journal.open("a", buffering=1) as j:
     while True:
-        rowid = db.append_message("cell1", "user", content=f"m{{i}}")
+        [rowid] = seed_messages(db, "cell1", {{"role": "user", "content": f"m{{i}}"}})
         # fsync-journal the acknowledged index AFTER append returns —
         # exactly the probe's definition of "claimed durable".
         j.write(json.dumps({{"i": i, "rowid": rowid}}) + "\n")
@@ -83,7 +84,7 @@ def test_acknowledged_appends_survive_sigkill(tmp_path, requested_mode):
     child_env = {}
     if requested_mode is not None:
         # Steer the CHILD's own resolver via an isolated HERMES_HOME config:
-        # pre-seeding the file alone is not enough — SessionDB.__init__ runs
+        # pre-seeding the file alone is not enough — the store's open runs
         # apply_wal_with_fallback(), which upgrades a non-WAL file to WAL
         # whenever the configured mode says so (the resolver's downgrade
         # gates may still refuse; effective_mode_or_skip audits post-run).

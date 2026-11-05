@@ -17,8 +17,12 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
             os.environ.pop(key, None)
     os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"))
     from cron.jobs import create_job, save_job_output
+    from gateway.config import PlatformConfig
+    from gateway.platforms.api_server import APIServerAdapter
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import ConversationRequest
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
     from tools.cronjob_tools import _manual_run_completion
     from tools.process_registry_notifications import format_process_notification
 
@@ -38,11 +42,9 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
         "plain": dict(common, status="completed", summary="Plain result"),
         "malformed": dict(common, status="completed"),
     }
-    db = SessionDB(db_path=home / "delivery.db")
-
-    class DeliveryStore:
-        def _ensure_session_db(self):
-            return db
+    store = open_persistence(profile_scope(), eager=True)
+    # The adapter opens this home's store itself.
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
 
     cases = {}
     for name, event in events.items():
@@ -52,10 +54,11 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
             envelope = report
         elif name == "malformed":
             envelope = "[ASYNC DELEGATION COMPLETE — malformed]\nPRIVATE INSTRUCTIONS"
-        db.create_session(session_id=name, source="desktop")
-        asyncio.run(persist_delegation_delivery(DeliveryStore(), text=envelope, session_id=name, evt=event))
-        rows = db.get_messages_as_conversation(name, include_row_ids=True)
+        store.sessions.create(NewSession(session_id=name, source="desktop"))
+        asyncio.run(persist_delegation_delivery(adapter, text=envelope, session_id=name, evt=event))
+        rows = [m.as_openai_message() for m in store.messages.read_conversation(name, ConversationRequest(include_row_ids=True))]
         cases[name] = dict(envelope=envelope, rows=rows, stored_exactly=rows[0]["content"] == envelope)
     output.write_text(json.dumps({"report": report, "cases": cases}, indent=2), encoding="utf-8")
     print(json.dumps({"cases": len(cases), "stored_exactly": all(c["stored_exactly"] for c in cases.values()), "producer": "cron save/formatter -> process formatter -> durable delivery -> SQLite readback", "model_requests": 0}))
-    db.close()
+    adapter._close_cached_session_dbs()
+    store.close()

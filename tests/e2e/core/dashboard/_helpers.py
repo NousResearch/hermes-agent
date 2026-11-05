@@ -352,14 +352,15 @@ def run_py(sb: Sandbox, code: str, *args: str, hermes_home: Path | None = None,
 
 SEED_SESSIONS = """
 import sys
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 prefix, n = sys.argv[1], int(sys.argv[2])
-db = SessionDB()
+db = open_persistence(profile_scope())
 for i in range(n):
     sid = f"{prefix}-{i:04d}"
-    db.create_session(sid, source="cli", model="seed")
-    db.append_message(sid, "user", f"hello {sid}")
-    db.append_message(sid, "assistant", f"answer {sid}")
+    seed_session(db, sid, "cli", model="seed")
+    seed_messages(db, sid, {"role": "user", "content": f"hello {sid}"},
+                  {"role": "assistant", "content": f"answer {sid}"})
 db.close()
 print("seeded", n)
 """

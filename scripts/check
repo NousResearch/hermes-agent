@@ -115,6 +115,7 @@ _GUARDS = {
     "case-collisions": ["scripts/check-case-collisions.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
+    "backend-imports": ["scripts/ci/check_backend_imports.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).

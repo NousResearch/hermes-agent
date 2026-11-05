@@ -93,6 +93,9 @@ export function resolveDocumentLink(sourceFile, href, contentDir) {
   // The normalized target must stay inside the author's locale tree: findDocument
   // rejoins with path.join, so a bare '..' or an un-normalized '/docs/a/../../x.md'
   // would otherwise be re-anchored onto files outside the locale before reading.
+  // `./kanban/` names the same page as `./kanban`; drop the slash before the
+  // `.md`/`.mdx` and `/index` candidates are built.
+  if (kind === 'page') target = target.replace(/\/+$/, '');
   const normalized = path.posix.normalize(target);
   if (path.posix.isAbsolute(normalized) || normalized === '..' || normalized.startsWith('../')) {
     throw new Error(`Link ${href} in ${relativeSource} escapes the content directory`);

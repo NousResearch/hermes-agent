@@ -2,17 +2,7 @@ name: athena
 repo: https://github.com/athenaforhermes/athena
 sha: "3ef0dbddf18545f2a2d5b2e192dada16e3b0eda8"
 title: Athena
-description: >-
-  The local AI-app store for Hermes: browse a constantly growing catalogue of apps,
-  install an app from any git repository, launch it, read its logs and stop it. It
-  declares HF_TOKEN and GITHUB_TOKEN so Hermes offers to set them, and reads each one
-  through Hermes' own secret route rather than scavenging another program's token
-  store. An app is handed a credential only after you approve that app, as an
-  environment variable for the life of its process - never written to disk and never
-  sent anywhere by Athena itself. Apps run on your machine on loopback; third-party
-  install scripts run as you, and the README states the network endpoints, the WSL/QEMU
-  command paths and the GitHub publish path in full. The panel and the CLI are two
-  doors into the same engine. Agent control is in active development.
+description: "The local AI-app store for Hermes: browse a constantly growing catalogue of apps, install an app from any git repository, launch it, read its logs and stop it. It declares HF_TOKEN and GITHUB_TOKEN so Hermes offers to set them, and reads each one through Hermes' own secret route rather than scavenging another program's token store. An app is handed a credential only after you approve that app, as an environment variable for the life of its process - never written to disk and never sent anywhere by Athena itself. Apps run on your machine on loopback; third-party install scripts run as you, and the README states the network endpoints, the WSL/QEMU command paths and the GitHub publish path in full. The panel and the CLI are two doors into the same engine. Agent control is in active development. Disclosure — installs apps by cloning third-party git repositories and running their own install and launch scripts on your machine as you (each install and first launch asks through Hermes' approval prompt); provisions a pinned app engine from npm at setup after consent; hands HF_TOKEN / GITHUB_TOKEN to an app only after you approve that app, as an environment variable of its process; sends the GitHub token only to GitHub hosts; can manage WSL/QEMU machines and publish your store to a GitHub repository you name."
 maintainer: athenaforhermes
 tier: community
 category: platform

@@ -93,7 +93,7 @@ class TestClarifyPrimitive:
 
         entry = cm.register("id-pend", "sk-pend", "Pick", ["A", "B"])
         assert cm.get_pending("id-pend") is entry
-        cm.resolve_gateway_clarify("id-pend", "A")
+        cm.resolve_gateway_clarify("id-pend", "A", session_key="sk-pend")
         assert cm.get_pending("id-pend") is None
         assert cm.get_pending("never-registered") is None
 
@@ -335,7 +335,7 @@ class TestUnlimitedWait:
         assert not t.is_alive()
         assert box["r"] == cm.CANCELLED
         assert not cm.has_pending("sk")
-        assert cm.resolve_gateway_clarify("u2", "late") is False
+        assert cm.resolve_gateway_clarify("u2", "late", session_key="sk") is False
 
 
 class TestMultiSelectTextFallback:

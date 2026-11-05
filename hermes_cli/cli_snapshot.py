@@ -102,7 +102,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     from hermes_cli.profiles import parked_marker_path
     from hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home
-    from hermes_state_registry import close_all_under
+    from persistence_assembly import close_stores_under
     home = get_hermes_home().resolve()
     observed = discover_gateway_endpoint(home)
     if observed.state != "ready" or observed.endpoint is None:
@@ -116,7 +116,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
         except RuntimeError as exc:
             raise GatewayClientError(f"Nothing was restored: {exc}.") from exc
     store.close_reader()
-    close_all_under(home)
+    close_stores_under(home)
     # A final viewer cannot redial from an idle poll while maintenance is replacing its database.
     store.connection.close()
     unserved = False

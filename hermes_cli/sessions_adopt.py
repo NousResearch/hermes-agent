@@ -14,55 +14,47 @@ from collections import Counter
 import sqlite3
 import sys
 
+from persistence import STORE_FAILURES
+
 _PROGRESS_EVERY = 25
 
 
-def adoptable_sessions(path) -> list[dict]:
-    """This store's unadopted pre-gateway local chats: one compression tip each, oldest first.
+def adoptable_sessions(path) -> list:
+    """This store's unadopted pre-gateway local chats (session records): one compression tip each, oldest first.
 
     The same eligibility the owner applies on resume (``validate_legacy_row``), read-only, so the
     count a dry run reports is what an adoption run attempts. A row the owner already bound is not
     offered again, which makes a second run a no-op."""
-    from hermes_state import SessionDB
-    from gateway.owner_identity import host_owner_subject
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, not_client_labels, validate_legacy_row
-    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_persistence import owner_rule
+    from persistence.core.errors import AuthorityRefusal
+    from persistence_assembly import open_persistence_reader
+    from session_rules.legacy_local import validate_legacy_row
 
-    db = SessionDB(db_path=path, read_only=True)
-    try:
+    rule = owner_rule()
+    with open_persistence_reader(path) as store:
         # Local surfaces' labels, or any label a client app chose (not a platform, automation or
-        # foreign writer): validate_legacy_row judges each row; the filter keeps cron/subagent bulk out.
-        local = tuple(sorted(LEGACY_LOCAL_SOURCES))
-        refused = tuple(sorted(not_client_labels()))
-        with db._read_ctx() as conn:
-            ids = [row[0] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(local))})"
-                f" OR (source NOT IN ({','.join('?' * len(refused))}) AND ifnull(session_key,'')=''"
-                " AND ifnull(chat_id,'')='' AND ifnull(origin_json,'')='') ORDER BY started_at, id",
-                local + refused)]
-            bound = {row[0] for row in conn.execute(
-                'SELECT key FROM state_meta WHERE key LIKE ? OR key LIKE ?', (POLICY_PREFIX + '%', LEGACY_PREFIX + '%'))}
+        # foreign writer): validate_legacy_row judges each row; the scan keeps cron/subagent bulk out.
+        scan = store.bindings.legacy_adoption_scan(rule)
+        own_profile = store.sessions.store_owner()
         found, seen = [], set()
-        for sid in ids:
-            tip_id = db.get_compression_tip(sid) or sid
+        for sid in scan.session_ids:
+            tip_id = store.lineage.tip(sid)
             if tip_id in seen:
                 continue
             seen.add(tip_id)
-            tip = db.get_session(tip_id)
-            key = tip and (tip.get('chat_id') or tip_id)
-            if tip is None or POLICY_PREFIX + key in bound or LEGACY_PREFIX + key in bound:
+            tip = store.sessions.get(tip_id)
+            if tip is None or (tip.chat_id or tip_id) in scan.marked:
                 continue
+            row = {'source': tip.source, 'user_id': tip.user_id, 'session_key': tip.session_key,
+                   'chat_id': tip.chat_id, 'origin_json': tip.origin is not None, 'profile_name': tip.profile_name}
             try:
                 # The host runs this command: judge each row for the owner the adoption resumes as, so a
                 # chat a phone app stored under the dashboard login (``basic:admin``) is offered too.
-                validate_legacy_row(db, tip, subject=host_owner_subject())
-            except RuntimeStoreError:
+                validate_legacy_row(own_profile, row, subject=rule.host_subject, rule=rule)
+            except AuthorityRefusal:
                 continue
             found.append(tip)
         return found
-    finally:
-        db.close()
 
 
 async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
@@ -77,11 +69,11 @@ async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
     async with connect_gateway(max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES) as client:
         for done, row in enumerate(rows, 1):
             try:
-                snapshot = await client.rpc('session.resume', session_id=row['id'])
+                snapshot = await client.rpc('session.resume', session_id=row.session_id)
             except GatewayRPCError as exc:
                 skipped[_refusal(exc)] += 1
                 continue
-            await client.rpc('session.detach', session_id=snapshot.get('session_id') or row['id'],
+            await client.rpc('session.detach', session_id=snapshot.get('session_id') or row.session_id,
                              subscription_id=snapshot['subscription_id'])
             adopted += 1
             if done % _PROGRESS_EVERY == 0:
@@ -103,15 +95,15 @@ def _refusal(exc) -> str:
     return f'{reason} ({why})'
 
 
-def _unreadable_store(exc: sqlite3.Error, store: str) -> str:
+def _unreadable_store(exc: Exception, store: str) -> str:
     """One line for a store adopt cannot read: what is wrong and what to run. Adopt opens the store
     read-only, so it neither upgrades a store from an older release nor waits out another writer."""
-    from hermes_state_errors import is_sqlite_lock_error
-    from hermes_state_repair import _schema_not_built
+    from sqlite_support import schema_not_built
+    from storage_errors import is_lock_contention
 
-    if is_sqlite_lock_error(exc):
+    if is_lock_contention(exc):
         return f'Error: {store} is locked by another program. Close that program, then run this command again.'
-    if _schema_not_built(exc):
+    if schema_not_built(exc):
         return (f'Error: {store} is from an older Hermes and has not been upgraded ({exc}). Run '
                 '`hermes sessions repair` to upgrade it (it makes a backup first), then run this command again.')
     return f'Error: could not read {store} ({exc}). Run `hermes sessions repair` to check it.'
@@ -129,13 +121,13 @@ def cmd_adopt(args) -> int:
         return 0
     try:
         rows = adoptable_sessions(path)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, *STORE_FAILURES) as exc:
         print(_unreadable_store(exc, f'{display_hermes_home()}/state.db'), file=sys.stderr)
         return 1
     if not rows:
         print('Nothing to adopt: every local chat in this profile already belongs to its gateway.')
         return 0
-    counts = Counter(row['source'] for row in rows)
+    counts = Counter(row.source for row in rows)
     print(f"{len(rows)} pre-gateway chat(s) to adopt ({', '.join(f'{n} {s}' for s, n in sorted(counts.items()))}).")
     if args.dry_run:
         print('Dry run: nothing was adopted.')

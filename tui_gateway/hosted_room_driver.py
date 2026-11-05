@@ -970,8 +970,8 @@ class HostedRoomRuntime:
         return False
 
     def _past_execution_deadline(self, task: Mapping[str, Any]) -> bool:
-        """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A reopened
-        deferred attempt keeps its original start (``reopen_deferred_task`` leaves it)."""
+        """Whether the attempt has run past ``turn_timeout_seconds`` since it started. A retried
+        deferred attempt counts from the retry (``reopen_deferred_task`` restarts its clock)."""
         started = task.get("started_at")
         return started is not None and self.clock() >= float(started) + self.turn_timeout_seconds
 

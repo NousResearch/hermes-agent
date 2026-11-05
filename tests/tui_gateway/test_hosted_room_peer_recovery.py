@@ -380,3 +380,29 @@ def test_a_failing_route_lookup_still_lets_an_uncertain_turn_reach_its_deadline(
     deferred = driver.get_task(turn.db, turn.identity)
     assert (deferred["status"], deferred["execution_generation"]) == ("deferred", 1)
     assert "route is gone" in str(runtime.status()["last_error"])
+
+
+def test_a_retried_deferred_peer_turn_gets_its_own_time_limit(tmp_path, monkeypatch):
+    """Retry of a turn deferred long ago follows its run on the member's gateway; that attempt's
+    time limit counts from the retry, so it is not stopped at once as past the first start's."""
+    stops, peer = [], _RecoveringPeerClient()
+    service, db, identity = _deferred_peer_turn(tmp_path, peer)
+    service.runtime.turn_timeout_seconds = 300
+    monkeypatch.setattr(peer, "prepare", lambda **_: peer.session)
+    monkeypatch.setattr(peer, "history", lambda **_: [])
+    monkeypatch.setattr(peer, "status", lambda **_: {
+        "active": True, "status": "running", "task_id": identity.task_id, "execution_generation": 1})
+    peer.stop_receipt = lambda **kwargs: stops.append(kwargs) or {"status": "cancelled"}
+    now = [100.0 + 7200]  # two hours after the first start
+    service.runtime.clock = lambda: now[0]
+
+    retried = service.retry_room_task("room-1", task_id=identity.task_id)
+    assert (retried["status"], retried["execution_generation"]) == ("indeterminate", 1)
+    binding = service.bindings()[0]
+    lease = service.runtime._ensure_lease(binding)
+    now[0] += 60
+    assert service.runtime._reconcile_indeterminate(binding, lease) is True
+    assert driver.get_task(db, identity)["status"] == "indeterminate" and not stops
+    now[0] += 300
+    service.runtime._reconcile_indeterminate(binding, lease)
+    assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]

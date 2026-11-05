@@ -14,7 +14,12 @@ import { TextInput } from './textInput.js'
 const VISIBLE = 8
 const PREVIEW_LINES = 3
 
-const CONTEXT_MIN_ROWS = 6
+// Rows the context-view picker draws besides the list, the context window and the wrapped hint:
+// border (2), title, detail, blank, and the context box's margin, border (2) and label.
+const PICKER_FIXED_ROWS = 9
+// Rows native mode lays out around the picker at the bottom of the screen: the prompt cell's padding
+// (2), the composer's spacer row, the status rule and its margin, and the terminal's cursor row.
+export const NATIVE_CHROME_ROWS = 6
 
 const lines = (text: string) => text.trim().split('\n')
 const firstLine = (text: string) => lines(text)[0] ?? ''
@@ -35,9 +40,15 @@ export function rewindContextRows(target: RewindTarget, width: number, labels: R
   ]
 }
 
-/** How many context rows fit: about half of what the list and the picker chrome leave. */
-export const rewindContextWindow = (termRows: number, listRows: number) =>
-  Math.max(CONTEXT_MIN_ROWS, Math.floor((termRows - 14 - Math.min(listRows, VISIBLE)) / 2))
+/** List and context rows sharing what the terminal leaves the picker: the list takes at most a third
+ * (a window around the selection), the selected exchange the rest; neither goes under one row. Native
+ * mode writes the whole layout, so anything taller pushes the heading and selection off the top. */
+export function rewindPickerBudget(termRows: number, entries: number, hintRows: number) {
+  const free = termRows - NATIVE_CHROME_ROWS - PICKER_FIXED_ROWS - hintRows
+  const list = Math.min(entries, VISIBLE, Math.max(1, Math.floor(free / 3)))
+
+  return { context: Math.max(1, free - list), list }
+}
 
 /**
  * The rewind picker: earlier prompts newest first; Enter opens the picked one for editing, and
@@ -73,7 +84,11 @@ export function RewindPicker({
       ? rewindContextRows(rows[idx], width - 4, { noReply: R.noReply, prompt: R.promptLabel, reply: R.replyLabel })
       : []
 
-  const contextWindow = rewindContextWindow(stdout?.rows ?? 24, rows.length)
+  const hint = contextView ? R.listHintContext : R.listHint
+  // Text width inside the picker: the prompt cell's padding, then this box's border and padding.
+  const hintRows = wrapAnsi(hint, Math.max(8, cols - 6), { hard: true, trim: false }).split('\n').length
+  const budget = rewindPickerBudget(stdout?.rows ?? 24, rows.length, hintRows)
+  const contextWindow = budget.context
   const maxContextOffset = Math.max(0, contextRows.length - contextWindow)
   const shownOffset = Math.min(contextOffset, maxContextOffset)
 
@@ -118,11 +133,11 @@ export function RewindPicker({
     }
   })
 
-  const { items, offset } = windowItems(rows, idx, VISIBLE)
+  const { items, offset } = windowItems(rows, idx, contextView ? budget.list : VISIBLE)
 
   return (
     <Box borderColor={t.color.accent} borderStyle="round" flexDirection="column" paddingX={1}>
-      <Text bold color={t.color.accent}>
+      <Text bold color={t.color.accent} wrap="truncate-end">
         {R.title}
       </Text>
 
@@ -201,7 +216,7 @@ export function RewindPicker({
             </Box>
           ) : null}
 
-          <Text color={t.color.muted}>{contextView ? R.listHintContext : R.listHint}</Text>
+          <Text color={t.color.muted}>{hint}</Text>
         </Box>
       )}
     </Box>

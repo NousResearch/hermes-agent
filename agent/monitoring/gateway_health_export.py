@@ -48,6 +48,7 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.gateway.up", "hermes.gateway.state", "hermes.gateway.active_agents", "hermes.gateway.busy",
     "hermes.gateway.drainable", "hermes.gateway.restart_requested", "hermes.gateway.background_work",
     "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
+    "hermes.gateway.loop.responsive", "hermes.gateway.loop.consecutive_misses", "hermes.gateway.loop.response_seconds",
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
     "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
@@ -184,6 +185,19 @@ def _read_runtime_snapshot(config: dict[str, Any]):
     except Exception as exc:
         logger.warning("background-work snapshot unavailable; metric not exported (error_type=%s)", type(exc).__name__)
         logger.debug("background-work snapshot traceback", exc_info=True)
+    try:
+        from gateway.loop_health import probe_snapshot
+        probe = probe_snapshot()
+        if probe is not None:
+            for name, value in (
+                ('responsive', int(probe.misses == 0)), ('consecutive_misses', probe.misses),
+                ('response_seconds', probe.response_seconds),
+            ):
+                gateway_snapshot.metrics.append(GatewayMetric(
+                    name=f'hermes.gateway.loop.{name}', value=value, attributes={}))
+    except Exception as exc:
+        logger.warning('loop probe snapshot unavailable; metric not exported (error_type=%s)', type(exc).__name__)
+        logger.debug('loop probe snapshot traceback', exc_info=True)
     try:
         gateway_snapshot.metrics.extend(_read_cron_snapshot().metrics)
     except Exception as exc:

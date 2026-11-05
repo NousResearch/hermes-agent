@@ -168,6 +168,10 @@ class TestUserinfoStopsAtQuote:
                                       '"https://example.com","x@y.com"'])
     def test_adjacent_json_strings_stay_intact(self, text):
         _assert_unchanged(text)
+        # Strict mode (memory context) masks every userinfo, and must stop at the quote too.
+        assert redact_sensitive_text(text, redact_url_credentials=True) == text
+        assert redact_sensitive_text('{"@context":"https://schema.org","@type":"Thing"}',
+                                     redact_url_credentials=True) == '{"@context":"https://schema.org","@type":"Thing"}'
 
     def test_userinfo_password_still_masked(self):
         _assert_masked("https://user:FakeSecret9876@host/path", "FakeSecret9876")

@@ -740,9 +740,9 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # authority stops at path/query/fragment delimiters. Anchored on the mandatory
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
-_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
-# The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
 # No ``"``: ``"https://a.com","u:pw@y"`` is two JSON strings, not ``a.com","u`` userinfo.
+_STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@\"]+@")
+# The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
 _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
 # Scheme-less network path (``mount //user:pass@host/share``), masked under force only: ``//`` must
 # start a token (comments are ``// note``, protocol-relative URLs carry no ``@``) and the password

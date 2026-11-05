@@ -303,6 +303,37 @@ def test_llms_full_document_links_become_published_urls(mini_docs, tmp_path):
     assert "[gone](./missing.md)" in full
 
 
+def test_llms_full_leaves_indented_code_blocks_alone(mini_docs, tmp_path):
+    """Four-space indented code is code too: its callout and link examples stay
+    verbatim, while the same lines as prose and as list continuations convert."""
+    content = tmp_path / "content" / "en"
+    (content / "user-guide" / "cli.md").write_text(
+        "---\n"
+        "title: CLI\n"
+        "---\n"
+        "\n"
+        "Syntax example:\n"
+        "\n"
+        "    :::tip[Example]\n"
+        "    [x](./installation.md)\n"
+        "    :::\n"
+        "\n"
+        "- A list item that wraps onto\n"
+        "    an indented [continuation](./other.md).\n"
+        "\n"
+        ":::tip[Real one]\n"
+        "converted\n"
+        ":::\n",
+        encoding="utf-8",
+    )
+    full = mini_docs.emit_llms_full()
+
+    assert "    :::tip[Example]\n    [x](./installation.md)\n    :::" in full
+    assert "**Tip — Example**" not in full
+    assert "**Tip — Real one**" in full
+    assert "an indented [continuation](https://hermes-agent.nousresearch.com/docs/user-guide/other)" in full
+
+
 def test_llms_full_leaves_inline_code_link_examples_alone(mini_docs, tmp_path):
     """Link syntax inside inline code — single-line spans, spans that cross a
     line break, and fenced examples — is documentation of the syntax, not a

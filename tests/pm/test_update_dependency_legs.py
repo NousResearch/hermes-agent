@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import sys
@@ -187,7 +188,12 @@ def test_pnpm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, ca
         # pnpm's store is Hermes-owned under the Hermes root: neither the ambient setting nor the user's dirs.
         assert (root / 'home' / 'cache' / 'pnpm' / 'store').is_dir()
         assert not (root / 'ambient-store').exists()
-        assert list(user.iterdir()) == []
+        # pnpm's per-user lock dirs follow the LocalAppData known folder on Windows, which
+        # no pnpm setting moves (on POSIX they go to $XDG_RUNTIME_DIR or /tmp).
+        allowed = r'AppData/Local/pnpm-[a-z-]+-locks/[^/]+' if os.name == 'nt' else r'(?!)'
+        files = [path.relative_to(user).as_posix() for path in user.rglob('*') if path.is_file()]
+        assert [path for path in files if not re.fullmatch(allowed, path)] == []
+        assert os.name == 'nt' or list(user.iterdir()) == []
         lock_bytes = (repo / 'pnpm-lock.yaml').read_bytes()
         (repo / 'package.json').write_text('not json', encoding='utf-8')
         assert cli.cmd_update(args) == 1

@@ -225,6 +225,48 @@ class TestCapabilityProbe:
         assert report.ok, report.failures
 
 
+class TestComputerUseProviderProbe:
+    @pytest.mark.parametrize("kind", [None, "exclusive"])
+    def test_dedicated_provider_registration_passes(self, tmp_path, kind):
+        manifest = dict(BASE_MANIFEST)
+        if kind is not None:
+            manifest["kind"] = kind
+        d = _make_plugin(
+            tmp_path,
+            manifest=manifest,
+            init_py=(
+                "from tools.computer_use.backend import ComputerUseProvider\n"
+                "class Provider(ComputerUseProvider):\n"
+                "    name = 'fixture'\n"
+                "    def create_backend(self, *, permission_mode):\n"
+                "        raise NotImplementedError\n"
+                "def register(ctx):\n"
+                "    assert getattr(ctx, 'profile_path', None) is None\n"
+                "    ctx.register_computer_use_provider(Provider())\n"
+            ),
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert ("capability probe", True, "register() ran in isolation") in report.checks
+
+    def test_builtin_cua_passes_validation(self):
+        plugin = Path(__file__).resolve().parents[2] / "plugins" / "computer_use" / "cua"
+        report = validate_plugin_dir(plugin)
+        assert report.ok, report.failures
+        assert ("capability probe", True, "register() ran in isolation") in report.checks
+
+    @pytest.mark.parametrize("method", ["register_computer_use_providre", "register_nonexistent_provider"])
+    def test_unknown_context_method_still_fails(self, tmp_path, method):
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "kind": "exclusive"},
+            init_py=f"def register(ctx):\n    ctx.{method}(object())\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any("register() raised:" in failure and method in failure for failure in report.failures)
+
+
 class TestModelProviderKind:
     def test_import_time_register_provider_is_the_entry_point(self, tmp_path):
         """``kind: model-provider`` plugins register at import via providers.register_provider and

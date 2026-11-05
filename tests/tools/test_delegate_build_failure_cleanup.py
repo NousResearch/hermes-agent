@@ -153,5 +153,60 @@ class TestBudgetRMWSerialized(unittest.TestCase):
         self.assertEqual(parent._oneshot_children_spawned, chargers * rounds * 2)
 
 
+class TestMixedRouteRefundAmountMatchesCharge(unittest.TestCase):
+    """A failed build must refund exactly what it charged. Mixed-route batches charge
+    ``len(runnable)`` (refused routes never reach construction), so the refund must also be
+    ``len(runnable)`` — refunding ``len(task_list)`` over-credits siblings' prior spend
+    (or, bounded by the guard, leaves the failed charge stuck when prior spend is smaller)."""
+
+    def _delegate_two_tasks(self, parent, routes):
+        return delegate_task(tasks=[{"goal": GOAL_A}, {"goal": GOAL_B}], parent_agent=parent)
+
+    def _mixed_route_patches(self, cap, routes):
+        refused, ok = routes
+        return patch.dict("os.environ", {"HERMES_SINGLE_QUERY_SESSION": "1"}), \
+               patch.object(delegate_tool, "_get_oneshot_max_children", lambda: cap), \
+               patch.object(delegate_tool, "_routes_for", return_value=([refused, ok], None)), \
+               patch("tools.delegation_live_log.create_live_transcripts", return_value=(None, [], [])), \
+               patch.object(delegate_tool, "_announce_batch"), \
+               patch.object(delegate_tool, "_capture_origin", return_value=("", "", None, None, False)), \
+               patch.object(delegate_tool, "_build_children", return_value=([], "child construction failed"))
+
+    def _parent_with_prior_spend(self):
+        parent = MagicMock()
+        parent._delegate_depth = 0
+        parent._session_db = None
+        parent.session_id = "s1"
+        # one prior child already spawned successfully this one-shot run
+        parent._oneshot_children_spawned = 1
+        return parent
+
+    def test_mixed_route_failure_refunds_only_the_runnable_charge(self):
+        """Review sequence: cap 2, prior successful child (spent=1), then a two-task batch
+        with one refused route and one runnable one. Charging the runnable route makes
+        spent=2; when its construction fails, refunding 1 keeps spent=1 — the prior
+        child's usage must survive the failed batch."""
+        refused = TaskRoute(creds=dict(_CREDS), routing_cfg={}, error="backend refused this task")
+        ok = TaskRoute(creds=dict(_CREDS), routing_cfg={})
+        parent = self._parent_with_prior_spend()
+        env, cap, routes_m, live, announce, origin, build = self._mixed_route_patches(2, (refused, ok))
+        with env, cap, routes_m, live, announce, origin, build:
+            result = json.loads(self._delegate_two_tasks(parent, (refused, ok)))
+        self.assertEqual(result.get("error"), "child construction failed")
+        self.assertEqual(parent._oneshot_children_spawned, 1)
+
+    def test_all_runnable_failure_refunds_the_full_charge(self):
+        """Negative control: with every route runnable, charge == refund == len(task_list),
+        so the prior spend comes back untouched."""
+        ok_a = TaskRoute(creds=dict(_CREDS), routing_cfg={})
+        ok_b = TaskRoute(creds=dict(_CREDS), routing_cfg={})
+        parent = self._parent_with_prior_spend()
+        env, cap, routes_m, live, announce, origin, build = self._mixed_route_patches(5, (ok_a, ok_b))
+        with env, cap, routes_m, live, announce, origin, build:
+            result = json.loads(self._delegate_two_tasks(parent, (ok_a, ok_b)))
+        self.assertEqual(result.get("error"), "child construction failed")
+        self.assertEqual(parent._oneshot_children_spawned, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

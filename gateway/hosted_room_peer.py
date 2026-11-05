@@ -514,6 +514,20 @@ def room_grant_hard_expiry(token: str, *, now: float | None = None) -> float:
         return clock(now) + MAX_STATUS_GRANT_TTL_SECONDS
 
 
+def room_grant_matches_scope(
+    token: str, *, room_id: str, member_id: str, home_install_id: str,
+    authority_gateway_id: str, authority_epoch: int) -> bool:
+    """Read the scope the member's revoke endpoint acts on, without authenticating the token.
+    A refused registration must never schedule revocation of a different group's grant."""
+    expected = {"room_id": room_id, "member_id": member_id, "home_install_id": home_install_id,
+                "authority_gateway_id": authority_gateway_id, "authority_epoch": authority_epoch}
+    try:
+        claims = json.loads(_split_token(token)[0].decode("ascii"))
+        return all(claims.get(key) == value for key, value in expected.items())
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, leeway_seconds: float = 5 * 60) -> bool:
     """Read only grant timing to schedule refresh; trust is established by the target, not here."""
     try:

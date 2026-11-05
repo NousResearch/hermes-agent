@@ -205,6 +205,10 @@ class RoomHistoryExpiredError(RoomNotFoundError):
 
 class RoomConflictError(HostedRoomError): """Raised when an idempotency key is reused for different room state."""
 
+class RoomHeldGrantsPendingError(HostedRoomError):
+    """Retry Disband after revoking grants received since its last sweep."""
+    reason = "room_disbanding_retry"
+
 class RoomProbeUnavailableError(HostedRoomError):
     """Raised when a non-blocking ownership probe cannot read the room store."""
 
@@ -689,6 +693,9 @@ def upsert_room_link_record(
                    status=excluded.status,
                    updated_at=excluded.updated_at""",
             tuple(record[column] for column in _LINK_COLUMNS))
+        conn.execute("""DELETE FROM hosted_room_owed_revokes
+                WHERE room_id=? AND member_id=? AND grant_digest=? AND held=1""",
+            (record["room_id"], record["member_id"], grant_digest(str(record["grant"]))))
 
 
 def update_room_link_status(
@@ -744,6 +751,8 @@ def _owe_revoke_locked(
     rows = conn.execute("""SELECT grant_digest, expires_at FROM hosted_room_owed_revokes
             WHERE room_id=? AND member_id=? ORDER BY expires_at, created_at""", member).fetchall()
     if len(rows) >= MAX_OWED_REVOKES_PER_MEMBER:
+        if held:
+            raise HostedRoomError("too many held group chat grant revokes")
         if float(rows[0]["expires_at"]) >= expires_at:
             return  # a longer-lived grant of this member is already owed
         conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
@@ -759,11 +768,12 @@ def _owe_revoke_locked(
 
 def retire_room_link_records(
     db_path: DbPath, *, room_id: str, expiry: Callable[[str], float] | None = None,
-    now: float | None = None) -> int:
+    now: float | None = None, revoked_digests: set[str] | None = None) -> int:
     """Drop one room's persisted peer routes and release the room's held owed revokes. With
     ``expiry`` (when a grant dies) each route's grant becomes an owed revoke in the same
     transaction; without it the caller already revoked every route and every unexpired held grant
-    at its member gateway, so those are forgotten. Returns the routes dropped."""
+    at its member gateway, so those are forgotten. ``revoked_digests`` limits that cleanup to this
+    pass: a held grant received during peer I/O requires another revoke pass. Returns the routes dropped."""
     timestamp = _now(now)
     with _transaction(db_path, immediate=True) as conn:
         rows = conn.execute(
@@ -774,7 +784,11 @@ def retire_room_link_records(
                                target_url=str(row["target_url"]), grant=grant, expires_at=expiry(grant),
                                now=timestamp)
         conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,))
-        if expiry is None:
+        if expiry is None and revoked_digests is not None:
+            conn.executemany("""DELETE FROM hosted_room_owed_revokes
+                    WHERE room_id=? AND held=1 AND grant_digest=?""",
+                ((room_id, digest) for digest in revoked_digests))
+        elif expiry is None:
             conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1", (room_id,))
         else:
             conn.execute("UPDATE hosted_room_owed_revokes SET held=0, next_attempt_at=? WHERE room_id=? AND held=1",
@@ -802,6 +816,21 @@ def owes_room_grant_revokes(db_path: DbPath) -> bool:
         return conn.execute("SELECT 1 FROM hosted_room_owed_revokes LIMIT 1").fetchone() is not None
 
 
+def hold_room_grant_revoke(
+    db_path: DbPath, *, room_id: str, member_id: str, target_url: str, grant: str, expires_at: float,
+    now: float | None = None) -> None:
+    """Durably hold a grant until Disband commits; after its tombstone it is already owed."""
+    with _transaction(db_path, immediate=True) as conn:
+        room = _room_row(conn, "SELECT disbanded_at FROM hosted_rooms WHERE room_id=?", (room_id,), room_id)
+        try:
+            _owe_revoke_locked(conn, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                               expires_at=expires_at, now=_now(now), held=room["disbanded_at"] is None)
+        except OwedRevokesFullError as exc:
+            if room["disbanded_at"] is None:
+                raise HostedRoomError("too many held group chat grant revokes") from exc
+            raise
+
+
 def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = None) -> list[dict[str, Any]]:
     """Owed revokes due now, oldest first; one whose grant has expired is dropped instead. Read-only
     unless an expired row is there to drop, so an idle worker cycle never takes the write lock."""
@@ -818,10 +847,13 @@ def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = N
 
 def held_room_grant_revokes(db_path: DbPath, *, room_id: str, now: float | None = None) -> list[dict[str, Any]]:
     """Retained grants that must be revoked before Disband can forget them."""
-    with _transaction(db_path) as conn:
+    timestamp = _now(now)
+    with _transaction(db_path, immediate=True) as conn:
+        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1 AND expires_at<=?",
+                     (room_id, timestamp))
         rows = conn.execute(
             """SELECT target_url, grant FROM hosted_room_owed_revokes
-                WHERE room_id=? AND held=1 AND expires_at>?""", (room_id, _now(now))).fetchall()
+                WHERE room_id=? AND held=1 AND expires_at>?""", (room_id, timestamp)).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -1319,6 +1351,11 @@ def disband_room(
         if (replay := _disband_replay(conn, room_id, room)) is not None:
             return replay
         _require_authority(room, expected_gateway_id, expected_epoch, "stale hosted room authority")
+        if conn.execute("""SELECT 1 FROM hosted_room_owed_revokes
+                WHERE room_id=? AND held=1 AND expires_at>? LIMIT 1""", (room_id, now)).fetchone():
+            raise RoomHeldGrantsPendingError("Group chat grants still need revoking; retry Disband.")
+        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1 AND expires_at<=?",
+                     (room_id, now))
         disband_bytes = _insert_event(
             conn, room, room_id, int(room["next_seq"]), "system:room-disbanded", "room.disbanded",
             _system_actor_json("room-control"), int(room["authority_epoch"]), _payload_json({"room_id": room_id}), now,

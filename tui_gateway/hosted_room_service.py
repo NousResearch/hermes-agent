@@ -57,6 +57,14 @@ _OWED_REVOKE_MAX_RETRY_SECONDS = 3600.0
 logger = logging.getLogger(__name__)
 
 
+class RoomDisbandRefusedError(hosted_rooms.HostedRoomError, RuntimeError):
+    """An expected Disband refusal shared by both RPC surfaces."""
+
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(message)
+
+
 def task_member_id(task: Mapping[str, Any]) -> str:
     return str(task["payload"].get("target_member_id") or task["payload"]["target_profile"])
 
@@ -342,7 +350,7 @@ class HostedRoomService:
         """Revoke and forget every scoped peer route for one room; an unreachable target
         leaves the room intact for retry rather than a false disband with a live grant.
         Retained grants are revoked individually: an expired route proves nothing about them."""
-        self._revoke_retained_room_grants(room_id)
+        revoked = self._revoke_retained_room_grants(room_id)
         with self._policy_lock:
             routes = [(key, route) for key, route in self.peer_routes.items() if key[0] == room_id]
         for key, route in routes:
@@ -357,14 +365,16 @@ class HostedRoomService:
         with self.peer_route_lock, self._policy_lock:
             if dict(routes) != {key: route for key, route in self.peer_routes.items() if key[0] == room_id}:
                 raise hosted_rooms.RoomConflictError("Group chat peer routes changed during Disband; retry.")
-            hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id)
+            revoked.update(hosted_rooms.grant_digest(route.grant) for _key, route in routes)
+            hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id, revoked_digests=revoked)
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
                     table.pop(key, None)
         self.runtime.wakeup()
         return len(routes)
 
-    def _revoke_retained_room_grants(self, room_id: str) -> None:
+    def _revoke_retained_room_grants(self, room_id: str) -> set[str]:
+        revoked = set()
         for held in hosted_rooms.held_room_grant_revokes(
                 self.db_path, room_id=room_id, now=self.runtime.clock()):
             client = PeerRunsHTTPClient(base_url=held["target_url"], api_key="")
@@ -373,6 +383,22 @@ class HostedRoomService:
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise
+            revoked.add(hosted_rooms.grant_digest(held["grant"]))
+        return revoked
+
+    def hold_grant_revoke(self, *, room_id: str, member_id: str, target_url: str, grant: str) -> None:
+        """Hold until the tombstone; a full live hold is refused, never revoked prematurely."""
+        try:
+            hosted_rooms.hold_room_grant_revoke(
+                self.db_path, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                expires_at=room_grant_hard_expiry(grant))
+        except hosted_rooms.OwedRevokesFullError:  # already tombstoned: no live hold to protect
+            self._revoke_unowed(room_id=room_id, member_id=member_id, target_url=target_url,
+                                grant=grant, client=None)
+            return
+        with self._policy_lock:
+            self._may_owe_revokes = True
+        self.runtime.wakeup()
 
     def owe_grant_revoke(
         self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any = None) -> None:

@@ -257,6 +257,9 @@ class TestAgentCacheMemoryLifecycle:
             await runner._cleanup_old_agent_for_reset(key)
             assert in_session_end.wait(10)
             runner._evict_cached_agent(key)
+            agent.release_clients()  # synchronous soft release (sweep/_retire_agent shape): with
+            # the claim at the /new site it must defer; delete/move the claim and THIS is where
+            # the eviction half-kills the engine ahead of the still-draining session-end worker.
             assert [e for e in events if e.startswith("engine:")] == [], (
                 "soft eviction shut the engine down before the session-end path ran on_session_end")
             let_finish.set()
@@ -298,8 +301,13 @@ class TestAgentCacheMemoryLifecycle:
             agent.release_clients()  # the soft-release entry evictions/_retire_agent share
             assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
                 "soft release did not take over the teardown after the returned claim")
-        finally:
+            # And the hard teardown that follows (gateway shutdown tail shape: close() on the same
+            # agent object) must NOT re-enter the engine: with the soft release owning the teardown,
+            # on_session_end after shutdown() is exactly the finding-3 half-kill.
             agent.close()
+            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
+                "hard cleanup called into the engine AFTER the soft release had shut it down")
+        finally:
             ex = getattr(runner, "_housekeeping_executor", None)  # bypassed above: may never exist
             if ex is not None:
                 ex.shutdown(wait=True)

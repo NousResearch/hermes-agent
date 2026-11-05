@@ -3134,11 +3134,11 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; short-content + no-tool-results-this-turn guardrails always apply (this turn only:
-    ``messages`` is the whole session, so a full-history scan disabled the guard once any tool had
-    ever run, #69778). A response then needs a first-person future ack with an action marker or a
-    bounded pronounless action clause with a transition cue, so "I'll help you brainstorm" stays final."""
-    if tool_results_this_turn(messages):
+    requirement; short-content + no-tool-results-this-turn guardrails always apply (every row after this
+    turn's own user row: ``messages`` is the whole session, #69778, and a nudge row starts no new turn).
+    A response then needs a future ack + action marker, or a bounded pronounless clause + transition cue."""
+    from agent.turn_context import reanchor_current_turn_user_idx as turn_user_idx
+    if any(isinstance(m, dict) and m.get("role") == "tool" for m in messages[turn_user_idx(messages, user_message) + 1:]):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:

@@ -34145,6 +34145,18 @@
             ],
             "default": null,
             "title": "Undo Since"
+          },
+          "undo_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Undo Message Id"
           }
         },
         "required": [

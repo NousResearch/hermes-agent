@@ -193,7 +193,7 @@ async def pause_delegation(connection, ref, params):
     return {'paused': set_spawn_paused(paused)}
 
 
-_ROLLBACK_FIELDS = {'list': {'session_id', 'profile', 'undo_since'}, 'diff': {'session_id', 'profile', 'hash'},
+_ROLLBACK_FIELDS = {'list': {'session_id', 'profile', 'undo_since', 'undo_message_id'}, 'diff': {'session_id', 'profile', 'hash'},
                     'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
 # ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
@@ -216,7 +216,8 @@ async def rollback(connection, ref, params, *, kind):
            for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
                params.get('all') is not None and not isinstance(params['all'], bool)) or (  # nullable: null is omitted
                params.get('undo_since') is not None and (isinstance(params['undo_since'], bool)
-                                                         or not isinstance(params['undo_since'], (int, float)))):
+                                                         or not isinstance(params['undo_since'], (int, float)))) or (
+               params.get('undo_message_id') is not None and type(params['undo_message_id']) is not int):
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -256,11 +257,15 @@ async def rollback(connection, ref, params, *, kind):
                 {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
                 for c in mgr.list_checkpoints(cwd)]}
             if params.get('undo_since') is not None and not refusal:
-                # A rewired classic CLI's /undo: the /rollback line for the span it just undid.
-                # The live transcript is the rewind's kept prefix: its newest row bounds the span from below.
-                from gateway.session_local_recovery import transcript_target
+                # An /undo's /rollback line. ``undo_message_id`` (the rewound user row) fixes the kept prefix
+                # whose newest row bounds the span from below, so a turn started since cannot move it;
+                # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
                 from tools.checkpoint_undo_hint import undo_rollback_hint, undo_span_start
-                kept = authority.db.get_messages_as_conversation(transcript_target(authority, ref))
+                kept = []
+                if (cut := params.get('undo_message_id')) is not None:
+                    from gateway.session_local_recovery import transcript_target
+                    kept = [m for m in authority.db.get_messages_as_conversation(
+                        transcript_target(authority, ref), include_row_ids=True) if m.get('_row_id', cut) < cut]
                 if hint := undo_rollback_hint(mgr, cwd, undo_span_start(params['undo_since'], kept), task_id=None):
                     listed['undo_hint'] = hint.as_dict()
             return listed

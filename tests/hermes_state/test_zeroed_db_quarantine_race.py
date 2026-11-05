@@ -12,6 +12,7 @@ from pathlib import Path
 
 import hermes_state as hs
 import hermes_state_repair
+from persistence.sqlite import _holder
 
 
 def test_preflight_cannot_observe_db_mid_quarantine(tmp_path, monkeypatch):
@@ -21,8 +22,8 @@ def test_preflight_cannot_observe_db_mid_quarantine(tmp_path, monkeypatch):
     late_reached = threading.Event()   # worker 1 hit its preflight check OR the quarantine lock
     quarantined = threading.Event()    # worker 0 finished moving the zeroed file aside
     real_access = os.access
-    real_lock = hs.quarantine_cross_process_lock
-    real_quarantine = hs.quarantine_invalid_state_db
+    real_lock = _holder.quarantine_cross_process_lock
+    real_quarantine = _holder.quarantine_invalid_state_db
     errors: list = [None, None]
 
     def is_late() -> bool:
@@ -43,7 +44,8 @@ def test_preflight_cannot_observe_db_mid_quarantine(tmp_path, monkeypatch):
 
     def worker(idx):
         try:
-            hs.SessionDB(db_path=db).close()
+            # Each opener on a holder of its own, as two processes open: the registry serialises in-process opens.
+            hs.SessionDB(holder=_holder.StoreHolder(db)).close()
         except Exception as exc:  # surfaced by the assertions below
             errors[idx] = exc
 
@@ -59,8 +61,8 @@ def test_preflight_cannot_observe_db_mid_quarantine(tmp_path, monkeypatch):
             quarantined.set()
 
     monkeypatch.setattr(hermes_state_repair.os, "access", gated_access)
-    monkeypatch.setattr(hs, "quarantine_cross_process_lock", signalling_lock)
-    monkeypatch.setattr(hs, "quarantine_invalid_state_db", quarantine_then_release)
+    monkeypatch.setattr(_holder, "quarantine_cross_process_lock", signalling_lock)
+    monkeypatch.setattr(_holder, "quarantine_invalid_state_db", quarantine_then_release)
 
     first = threading.Thread(target=worker, args=(0,), name="first-opener")
     first.start()

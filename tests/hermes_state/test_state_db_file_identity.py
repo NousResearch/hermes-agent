@@ -211,7 +211,7 @@ def _stat_changed(path: Path, recorded) -> bool:
 @pytest.mark.platforms("linux")
 def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
     """The on-write header probe must not drop the writer's DMS lock."""
-    from hermes_state import _read_sqlite_application_id
+    from hermes_state_dbfile import _read_sqlite_application_id
 
     live = tmp_path / "state.db"
     db = _make_db(live, "probe-sess", "seed")
@@ -249,7 +249,7 @@ def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
 
 def test_identity_probe_still_detects_replacement_after_fd_cache(tmp_path):
     """The cached-fd probe rebinds when the path names a new inode."""
-    from hermes_state import _read_sqlite_application_id
+    from hermes_state_dbfile import _read_sqlite_application_id
 
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"

@@ -397,6 +397,22 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
             # entry (#93593). Warn and keep looking instead of returning it.
             return val, env_var
 
+    # New: read config.yaml ``providers.<provider_id>.api_key`` directly. The one-shot CLI path
+    # (``hermes chat --provider openrouter -q …``) selects the provider by name without going
+    # through model.key_env, so an inline config.yaml key must be honored here or the user needs
+    # to also export it as a shell variable for every invocation — inconsistent with the
+    # gateway/Desktop path which reads the embedded key during provider resolution.
+    try:
+        from hermes_cli.config import load_config
+        provs = (load_config() or {}).get("providers") or {}
+        cfg_key = provs.get(provider_id, {}).get("api_key") if isinstance(provs, dict) else None
+        if isinstance(cfg_key, str) and cfg_key.strip():
+            val = _usable_declared_secret(provider_id, cfg_key.strip(), f"config:{provider_id}.api_key")
+            if val:
+                return val, f"config:{provider_id}.api_key"
+    except Exception:
+        pass
+
     # Fallback: credential pool (e.g. zai key stored via auth.json). Prefer the pool's own
     # selection (peek) but try the rest too so one malformed entry doesn't block a valid one.
     pool_source = f"credential_pool:{provider_id}"

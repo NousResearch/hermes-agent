@@ -710,6 +710,30 @@ def test_a_changed_provider_context_pin_reprobes_a_warm_agent(monkeypatch, tmp_p
     assert agent.context_compressor.threshold_tokens == 80_000
 
 
+
+def test_a_changed_provider_pin_reprobes_a_task_that_sets_its_own_url(monkeypatch, tmp_path):
+    """``provider: custom`` with the task's own ``base_url``: the probe still reads the pin of the
+    provider entry at that URL, so lowering only that pin (900K to 80K) re-probes a warm agent."""
+    import json
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    url = "http://gateway.invalid/v1"
+    task = {"provider": "custom", "model": "small", "base_url": url}
+    entry = {"name": "work-gateway", "base_url": url, "models": {"small": {"context_length": 900_000}}}
+    (home / "config.yaml").write_text(json.dumps({"auxiliary": {"compression": task}, "custom_providers": [entry]}))
+    agent = _warm_agent_on(home, [entry])
+    (home / "config.yaml").write_text(json.dumps({"auxiliary": {"compression": task}, "custom_providers": [entry]}))
+    client = MagicMock(base_url=url, api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")):
+        ensure_compression_feasibility_checked(agent, 200_000)
+        assert agent.context_compressor.threshold_tokens == 750_000
+        entry["models"]["small"]["context_length"] = 80_000
+        (home / "config.yaml").write_text(json.dumps({"auxiliary": {"compression": task}, "custom_providers": [entry]}))
+        ensure_compression_feasibility_checked(agent, 200_000)
+    assert agent.context_compressor.threshold_tokens == 80_000
+
 def test_a_route_edited_during_the_probe_is_probed_again(monkeypatch, tmp_path):
     """The latch records the route the probe measured: an edit that lands while the probe runs is
     probed on the next request instead of being labelled with the earlier measurement."""

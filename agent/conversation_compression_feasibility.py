@@ -24,7 +24,8 @@ def _mark_checked(agent: Any, route: tuple) -> None:
 
 def compression_route_identity() -> tuple:
     """The configured compression route a probe measures: the task's provider, model, URL and context
-    length, plus the URL of a ``providers:`` / ``custom_providers:`` entry the task names. A config this
+    length, the URL of a ``providers:`` / ``custom_providers:`` entry the task names, and the context pin
+    a provider entry sets for the compression model at the route's URL. A config this
     cannot read yields ``("unreadable",)``: the main request carries on and the probe reports the problem."""
     try:
         return _route_identity()
@@ -38,15 +39,19 @@ def _route_identity() -> tuple:
     cfg = _get_auxiliary_task_config("compression")
     route = tuple(str(cfg.get(k) or "") for k in ("provider", "model", "base_url", "context_length"))
     provider = route[0].strip()
-    if not provider or provider in ("auto", "main", "custom") or route[2]:
-        return route
     from hermes_cli.config import get_custom_provider_context_length
-    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
-    entry = _get_named_custom_provider(provider, resolve_credentials=False) or {}
-    url, model = str(entry.get("base_url") or ""), route[1] or str(entry.get("model") or "")
-    # The context pin the probe will read for this model at this URL (per-model, else entry-level).
+    if route[2]:
+        url, model, named = route[2], route[1], ()
+    elif not provider or provider in ("auto", "main", "custom"):
+        return route
+    else:
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+        entry = _get_named_custom_provider(provider, resolve_credentials=False) or {}
+        url, model = str(entry.get("base_url") or ""), route[1] or str(entry.get("model") or "")
+        named = (url, str(entry.get("model") or ""))
+    # The context pin the probe reads for this model at this URL (a matching entry's per-model, else entry-level).
     pin = get_custom_provider_context_length(model=model, base_url=url) if url and model else None
-    return route + (url, str(entry.get("model") or ""), str(pin or ""))
+    return route + named + (str(pin or ""),)
 
 
 def _drop_stale_ceiling(agent: Any) -> None:

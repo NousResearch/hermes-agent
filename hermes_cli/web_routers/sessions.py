@@ -557,12 +557,36 @@ async def get_session_stats(profile: Optional[str] = None):
     return await asyncio.to_thread(_with_db, profile, _stats, read_only=True)
 
 
+# --- Channel isolation guard -------------------------------------------------
+# A messaging-surface session is stamped archived+hidden on insert by the
+# state.db trigger ``channel_isolation_ins``, so it never reaches the sidebar.
+# The detail and transcript routes must refuse it too: a stale tab, bookmark or
+# deep link would otherwise still open the channel chat, and a turn taken there
+# keeps that session's route and answers on Telegram.
+# The scope is messaging sources on purpose — ``hidden`` is also set on rows the
+# UI legitimately opens (bot chat, subagent chains), and those must keep working.
+_MESSAGING_HIDDEN_SOURCES = frozenset({
+    "telegram", "a2a", "discord", "matrix", "signal",
+    "whatsapp", "imessage", "slack", "teams",
+})
+
+
+def _is_hidden_messaging(session) -> bool:
+    """True for a messaging-surface session the channel guard hid."""
+    if not session:
+        return False
+    return ((session.get("source") or "").lower() in _MESSAGING_HIDDEN_SOURCES
+            and bool(session.get("hidden")))
+
+
 @manage_router.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
     def _detail(db):
         sid = _resolve_session_id(db, session_id)
         session = db.get_session(sid) if sid else None
         if not session:
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        if _is_hidden_messaging(session):
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always stamp the owner: unowned default-profile rows made multi-profile
         # clients resolve them to whichever gateway happened to be active.
@@ -753,6 +777,8 @@ async def get_session_messages(
         if not sid:
             return None
         sid = db.resolve_resume_session_id(sid)
+        if _is_hidden_messaging(db.get_session(sid)):
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -836,6 +862,8 @@ async def get_session_messages_around(
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
+        if _is_hidden_messaging(db.get_session(sid)):
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
         page = read_around(db, sid, row_id, limit=limit)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")

@@ -353,8 +353,10 @@ class HostedRoomService:
             except PeerRunsHTTPError as exc:
                 if not _grant_revoke_is_terminal(exc):
                     raise
-        hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id)
-        with self._policy_lock:
+        with self.peer_route_lock, self._policy_lock:
+            if dict(routes) != {key: route for key, route in self.peer_routes.items() if key[0] == room_id}:
+                raise hosted_rooms.RoomConflictError("Group chat peer routes changed during Disband; retry.")
+            hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id)
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
                     table.pop(key, None)

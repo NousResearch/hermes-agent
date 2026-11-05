@@ -1,16 +1,16 @@
 name: oura-mcp
 title: Oura
 repo: https://github.com/davidmosiah/oura-mcp
-sha: "9d24a0ae3476b51978ac809a974a025324fb7fea"
+sha: "0f73130546ddfc0f9714f9fe1ea06578b6564ac1"
 subdir: agent-plugin
-description: "Read the user's Oura Ring readiness, sleep, HRV and activity through the local oura MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Runs the `oura-mcp-unofficial@0.7.4` npm package locally over stdio through `npx` (Node.js 20+ required); the package is downloaded from npm on first start. Data source: the official Oura Cloud API v2. Credentials and OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal and stay on the machine (`~/.oura-mcp/`); the plugin declares no environment variables and reads no Hermes credentials. Tools that change state: oura_profile_update (local profile only); oura_exchange_code (stores OAuth tokens locally); oura_revoke_access (revokes the Oura grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
+description: "Read the user's Oura Ring readiness, sleep, HRV and activity through the local oura MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Runs the `oura-mcp-unofficial@0.8.0` npm package locally over stdio through `npx` (Node.js 20+ required); the package is downloaded from npm on first start. Data source: the official Oura Cloud API v2. Credentials and OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal and stay on the machine (`~/.oura-mcp/`); the plugin declares no environment variables and reads no Hermes credentials. Tools that change state: oura_profile_update (local profile only); oura_exchange_code (stores OAuth tokens locally); oura_revoke_access (revokes the Oura grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
 maintainer: davidmosiah
 tier: community
 category: tools
-version: "0.7.4"
+version: "0.8.0"
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/davidmosiah/oura-mcp/blob/9d24a0ae3476b51978ac809a974a025324fb7fea/agent-plugin/README.md
-image: https://raw.githubusercontent.com/davidmosiah/oura-mcp/9d24a0ae3476b51978ac809a974a025324fb7fea/assets/banner.png
+docs_url: https://github.com/davidmosiah/oura-mcp/blob/0f73130546ddfc0f9714f9fe1ea06578b6564ac1/agent-plugin/README.md
+image: https://raw.githubusercontent.com/davidmosiah/oura-mcp/0f73130546ddfc0f9714f9fe1ea06578b6564ac1/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: []

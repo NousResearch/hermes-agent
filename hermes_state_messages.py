@@ -452,7 +452,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             compression_lock_holder=None, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
         self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
             turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-        from agent.transcript_repair import resolve_and_repair_transcript_batch
+        from hermes_state_transcript_repair import resolve_and_repair_transcript_batch
         inserted_rows = resolve_and_repair_transcript_batch(
             conn,
             session_id,
@@ -691,7 +691,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # Every inserter (flush, compaction clone, replace, rotation handoff, import) gets the new rows' own
         # stored-row digest, so a later re-flush of these dicts takes the versioned rewrite path instead of the
         # legacy one. One batched SELECT; hash the STORED rows (column affinity rewrites bind values).
-        from agent.transcript_repair import stamp_inserted_row_snapshots
+        from hermes_state_transcript_repair import stamp_inserted_row_snapshots
         stamp_inserted_row_snapshots(conn, session_id, messages)
         return inserted, tool_calls_total
 
@@ -1580,7 +1580,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         so replay keeps the provider prompt cache byte-stable."""
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
         # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_state_transcript_repair import transcript_row_snapshot
         # Only the unaddressed live replay gets the digest: row-addressed loaders (include_row_ids) keep the
         # legacy resumed-dict path, whose rewrite never re-writes columns the projection does not decode
         # (a CAS-match rewrite of a resumed row would otherwise null token_count).

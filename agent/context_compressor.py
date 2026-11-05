@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
@@ -51,6 +52,7 @@ from agent.model_metadata import (
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -400,7 +402,7 @@ class StaleHeldHistory(RuntimeError):
 
 
 def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str, Any]],
-                           start_watermark: Optional[int] = None) -> Optional[int]:
+                           start_watermark: Optional[int] = None, *, persistence: Any = None) -> Optional[int]:
     """The archive watermark for a commit that rewrites the history this process holds.
 
     Without one, ``archive_and_compact`` archives every active row, including turns another surface appended
@@ -415,15 +417,20 @@ def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str
     Raises :class:`StaleHeldHistory` when the newest held exact row is no longer active. The in-place commit
     falls back to the lease watermark there because its lease rules out an overlapping compaction; prune and
     micro-compaction hold no lease, so for them that fallback would publish a stale generation beside the one
-    that won.
+    that won. ``persistence`` is the storage interface handle the reads go through when the store has one.
     """
-    watermark_of = getattr(session_db, "get_active_message_watermark", None)
-    if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
-        return None
-    if start_watermark is None:
-        start_watermark = watermark_of(session_id)
+    if persistence is not None:
+        if start_watermark is None:
+            start_watermark = int(persistence.messages.active_watermark(session_id).last_active or 0)
+    else:
+        watermark_of = getattr(session_db, "get_active_message_watermark", None)
+        if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
+            return None
+        if start_watermark is None:
+            start_watermark = watermark_of(session_id)
     from agent.conversation_compression import held_archive_watermark
-    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
+    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True,
+                                  persistence=persistence)
 
 
 def stamp_db_persisted_markers(messages: list[dict[str, Any]]) -> None:
@@ -2149,7 +2156,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 class ContextCompressor(
     SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
-    ProactivePruneMixin, CompactionWindowMixin, ContextEngine,
+    ProactivePruneMixin, CompactionWindowMixin, DurableStateMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
@@ -2322,11 +2329,14 @@ class ContextCompressor(
         self._compression_telemetry_seed = None
         self._reset_proactive_prune_rearm()
 
-    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
-        """Bind the current session row so durable cooldowns can round-trip."""
+    def bind_session_state(self, session_db: Any = None, session_id: str = "", *, persistence: Any = None) -> None:
+        """Bind the current session row so durable cooldowns can round-trip. ``persistence`` is the storage
+        interface handle beside ``session_db``; binding the same store again without one keeps its handle."""
         if self.prepared_compaction is not None and (session_id or "") != self._session_id:
             self.prepared_compaction.discard("session rebind")
-        self._session_db = session_db
+        if persistence is None and session_db is not None and session_db is getattr(self, "_session_db", None):
+            persistence = getattr(self, "_persistence", None)
+        self._session_db, self._persistence = session_db, persistence
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._cooldown_persist_failed = False
@@ -2349,7 +2359,10 @@ class ContextCompressor(
         super().on_session_start(session_id, **kwargs)
         boundary_reason = kwargs.get("boundary_reason")
         old_session_id = kwargs.get("old_session_id")
-        session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        if "session_db" in kwargs:
+            session_db, persistence = kwargs["session_db"], kwargs.get("persistence")
+        else:
+            session_db, persistence = getattr(self, "_session_db", None), getattr(self, "_persistence", None)
         previous_fallback_streak = self._fallback_compression_streak
         previous_ineffective_count = self._ineffective_compression_count
         previous_overload_aborts = self._consecutive_overload_aborts
@@ -2357,7 +2370,8 @@ class ContextCompressor(
         if boundary_reason == "compression" and old_session_id:
             # Parent row carries the streak/strike state across the rotation.
             def _parent(method: str, label: str, current: int) -> int:
-                found, value = self._durable_read(method, label, int, 0, session_db=session_db, session_id=old_session_id)
+                found, value = self._durable_read(method, label, int, 0, session_db=session_db, session_id=old_session_id,
+                                                  persistence=persistence)
                 return value if found and value is not None else current
 
             previous_fallback_streak = _parent(
@@ -2369,7 +2383,7 @@ class ContextCompressor(
             previous_overload_aborts = _parent(
                 "get_compression_overload_streak", "compression parent overload streak", previous_overload_aborts,
             )
-        self.bind_session_state(session_db, session_id)
+        self.bind_session_state(session_db, session_id, persistence=persistence)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
             self._fallback_compression_streak = previous_fallback_streak
@@ -2383,52 +2397,6 @@ class ContextCompressor(
             if self._consecutive_overload_aborts != previous_overload_aborts:
                 self._consecutive_overload_aborts = previous_overload_aborts
                 self._persist_consecutive_overload_aborts()
-
-    def _durable_read(
-        self, method: str, label: str, coerce, default, *args,
-        session_db: Any = None, session_id: Optional[str] = None,
-    ):
-        """Best-effort read of a durable per-session value; ``default`` when unbound/unsupported/failed.
-        Returns ``(found, value)``: ``found`` is False when no read happened; ``value`` is None when the
-        row held a non-numeric value. Defaults to the bound session row; pass
-        ``session_db``/``session_id`` to read another row (parent lineage)."""
-        session_db = getattr(self, "_session_db", None) if session_db is None else session_db
-        session_id = getattr(self, "_session_id", "") if session_id is None else session_id
-        getter = getattr(session_db, method, None)
-        if not session_id or not callable(getter):
-            return False, default
-        try:
-            stored = getter(session_id, *args)
-            if isinstance(stored, (int, float, str)):
-                return True, max(default, coerce(stored))
-            return True, None
-        except Exception as exc:
-            suffix = "" if isinstance(exc, (TypeError, ValueError, sqlite3.Error)) else " (non-sqlite)"
-            logger.debug("%s lookup failed%s: %s", label, suffix, exc)
-        return False, default
-
-    def _durable_write(self, method: str, label: str, *args) -> bool:
-        """Best-effort write of a durable per-session value; True only when the write succeeded."""
-        setter = getattr(getattr(self, "_session_db", None), method, None)
-        if not getattr(self, "_session_id", "") or not callable(setter):
-            return False
-        session_id = self._session_id
-        try:
-            setter(session_id, *args)
-            return True
-        except Exception as exc:
-            suffix = "" if isinstance(exc, sqlite3.Error) else " (non-sqlite)"
-            logger.debug("%s persist failed%s: %s", label, suffix, exc)
-        return False
-
-    def _load_durable(self, attr: str, method: str, label: str, coerce, default, *args) -> None:
-        """Restore ``self.<attr>`` from the bound row; a non-numeric row resets it to ``default``."""
-        found, value = self._durable_read(method, label, coerce, default, *args)
-        if found:
-            setattr(self, attr, default if value is None else value)
-
-    def _load_fallback_compression_streak(self) -> None:
-        self._load_durable("_fallback_compression_streak", "get_compression_fallback_streak", "compression fallback streak", int, 0)
 
     def _load_proactive_prune_rearm_tokens(self) -> None:
         """Restore the cache-boundary runway for a resumed durable session."""
@@ -2567,15 +2535,22 @@ class ContextCompressor(
             if not refresh:
                 return local_state
         session_db = getattr(self, "_session_db", None)
-        getter = getattr(session_db, "get_compression_failure_cooldown", None) if session_db else None
-        if not getattr(self, "_session_id", "") or getter is None:
+        store = self._store_interface()
+        getter = getattr(session_db, "get_compression_failure_cooldown", None) if session_db and store is None else None
+        if not getattr(self, "_session_id", "") or (getter is None and store is None):
             return local_state
         try:
-            state = getter(self._session_id)
+            if store is not None:
+                now = time.time()
+                cooldown = store.messages.read_compression_cooldown(self._session_id, now)
+                state = None if cooldown is None else {
+                    "cooldown_until": cooldown.until, "remaining_seconds": cooldown.until - now, "error": cooldown.error}
+            else:
+                state = getter(self._session_id)
         except Exception as exc:
             if refresh:
                 self._last_cooldown_refresh_was_authoritative = False
-            if isinstance(exc, sqlite3.Error):
+            if isinstance(exc, (sqlite3.Error, PersistenceError)):
                 logger.debug("compression failure cooldown lookup failed: %s", exc)
             return local_state
         if refresh:
@@ -2897,6 +2872,7 @@ class ContextCompressor(
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
+        self._persistence: Any = None
         self._session_id: str = ""
         # Per-session state (also reset by /new, /reset and session end).
         self._reset_session_compaction_state()
@@ -4971,7 +4947,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
         from agent.message_sanitization import native_anthropic_accounting_projection
 
-        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""))
+        rejected = session_rejected_thinking(self, getattr(self, "_session_db", None), getattr(self, "_session_id", ""),
+                                             persistence=getattr(self, "_persistence", None))
 
         def budget(msg: dict[str, Any]) -> int:
             request_copy = dict(msg)

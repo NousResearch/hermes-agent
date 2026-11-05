@@ -57,6 +57,44 @@ def _provider_model_key(agent: Any) -> tuple[str, str]:
     )
 
 
+def _byte_strip_route_key(agent: Any) -> tuple[str, str, str, str]:
+    """A byte limit belongs to an endpoint and API mode, not just a model name."""
+    return (
+        *_provider_model_key(agent),
+        str(getattr(agent, "base_url", "") or "").rstrip("/"),
+        str(getattr(agent, "api_mode", "") or ""),
+    )
+
+
+def _tool_image_key(message: dict, part: dict) -> tuple[str, bytes]:
+    # IDs survive history replay; the digest lets a replacement image keep its vision input
+    # without retaining another copy of a potentially multi-megabyte data URL.
+    return (
+        str(message.get("tool_call_id") or ""),
+        hashlib.sha256(json.dumps(part, sort_keys=True).encode("utf-8")).digest(),
+    )
+
+
+def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> None:
+    """Replay only actual 413 evictions on wire copies; fresh tool images remain usable."""
+    stripped = (getattr(agent, "_byte_stripped_tool_images", None) or {}).get(_byte_strip_route_key(agent))
+    if not stripped:
+        return
+    for msg in api_messages:
+        content = msg.get("content")
+        if msg.get("role") != "tool" or not isinstance(content, list):
+            continue
+        remaining = [part for part in content if not (
+            _is_image_part(part) and _tool_image_key(msg, part) in stripped
+        )]
+        if len(remaining) == len(content):
+            continue
+        msg["content"] = remaining if any(_is_image_part(part) for part in remaining) else (
+            "\n\n".join(_salvage_text_parts(remaining, any_dict_text=False))
+            or "[image content removed — request payload too large]"
+        )
+
+
 class VisionMessagePrepMixin:
     """Vision probes + image-part fallbacks for outgoing messages (see module docstring)."""
 
@@ -256,13 +294,18 @@ class VisionMessagePrepMixin:
     _try_shrink_image_parts_in_messages = _forward_static("agent.conversation_compression", "try_shrink_image_parts_in_messages")
 
     def _try_strip_image_parts_from_tool_messages(
-        self, api_messages: list, *, remember_model: bool = True
+        self, api_messages: list, *, remember_model: bool = True, remember_bytes: bool = False
     ) -> bool:
         """Downgrade list-type tool messages to text in place; True if any were downgraded.
 
         Recovery for providers that 400 on list-type tool content (e.g. MiMo "text is not set"). By default
         records (provider, model) in ``_no_list_tool_content_models`` so later results downgrade without a
         round-trip; 413 recovery passes ``remember_model=False`` (body too large ≠ provider rejects lists).
+
+        ``remember_bytes`` remembers only the image parts actually removed by 413 recovery,
+        keyed by endpoint, API mode, provider, model and tool-call ID. Later wire copies keep
+        those rejected payloads stripped without disabling fresh vision input (#148146).
+        Canonical history is unchanged and the memory lasts only for this agent instance.
         """
         if not isinstance(api_messages, list):
             return False
@@ -284,10 +327,16 @@ class VisionMessagePrepMixin:
             if not self._content_has_image_parts(content):
                 continue
 
+            if remember_bytes and _provider_model_key(self)[1]:
+                if not hasattr(self, "_byte_stripped_tool_images"):
+                    self._byte_stripped_tool_images = {}
+                stripped = self._byte_stripped_tool_images.setdefault(_byte_strip_route_key(self), set())
+                stripped.update(_tool_image_key(msg, part) for part in content if _is_image_part(part))
+
             # Salvage any text parts so the model still sees some signal.
             msg["content"] = "\n\n".join(_salvage_text_parts(content, any_dict_text=False)) or (
-                "[image content removed — provider does not accept "
-                "list-type tool message content]"
+                "[image content removed — request payload too large]" if remember_bytes else
+                "[image content removed — provider does not accept list-type tool message content]"
             )
             changed = True
 

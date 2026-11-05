@@ -1416,6 +1416,10 @@ def build_api_messages(
     from agent.image_replay import replay_for_agent
     replay_for_agent(agent, api_messages)
 
+    # Recovery evicts only the rejected tool images; later turns may contain fresh images.
+    from agent.vision_message_prep import apply_byte_stripped_tool_images
+    apply_byte_stripped_tool_images(agent, api_messages)
+
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.
     from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression

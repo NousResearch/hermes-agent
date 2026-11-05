@@ -26,6 +26,15 @@ _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known
 _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
 
 
+# The narrowest scopes the Gmail MCP resource needs for search/read/draft: read mail + compose.
+# The resource's protected-resource metadata advertises gmail.modify and the full mail.google.com
+# scope, and the SDK requests the advertised UNION, which would silently grant the label/trash/delete
+# toolset to a client that only reads and drafts. An explicit ``oauth.scope`` still wins.
+_GMAIL_MCP_NETLOC = "gmailmcp.googleapis.com"
+_GMAIL_MCP_SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",
+                     "https://www.googleapis.com/auth/gmail.compose")
+
+
 def _default_auth_request_user_agent() -> str:
     """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
     all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
@@ -105,7 +114,42 @@ class HermesProviderMixin:
                 "background reconnects cannot start a device login")
         self._tolerate_missing_iss_for_known_server()
         self._request_google_offline_access()
+        self._pin_gmail_mcp_scopes()
         return await super()._perform_authorization()
+
+    def _pin_gmail_mcp_scopes(self) -> None:
+        """Keep the Gmail MCP authorize request on the scopes this client actually needs.
+
+        The resource's protected-resource metadata advertises ``gmail.modify`` and the full
+        ``https://mail.google.com/`` scope, and the SDK's scope-selection rule
+        (WWW-Authenticate -> PRM -> AS) requests that union. A client configured for search, read and
+        draft would then hold label/trash/delete powers over the entire mailbox — a silent
+        over-grant, and one no ``tools.include`` filter prevents, since scope is granted at consent
+        time rather than per tool.
+
+        An explicit ``oauth.scope`` from config wins verbatim; otherwise the narrow read+compose pair
+        is used. Host-pinned, so no other server's scopes are touched. ``_hermes_scopes`` is
+        re-asserted in :meth:`_perform_authorization_code_grant`, because the SDK recomputes
+        ``client_metadata.scope`` from the discovered metadata immediately before building the
+        authorize URL.
+        """
+        server_url = str(getattr(self.context, "server_url", "") or "")
+        if urlsplit(server_url).netloc != _GMAIL_MCP_NETLOC:
+            return
+        info = getattr(self.context, "client_info", None)
+        scopes = str(getattr(info, "scope", "") or "").strip() or " ".join(_GMAIL_MCP_SCOPES)
+        metadata = getattr(self.context, "client_metadata", None)
+        if metadata is not None:
+            metadata.scope = scopes
+        self._hermes_scopes = scopes
+        self._hermes_logger.info("MCP OAuth 'gmail': pinning scopes to %s", scopes)
+
+    async def _perform_authorization_code_grant(self):
+        """Re-assert the pinned Gmail MCP scopes at the moment the authorize URL is built."""
+        pinned = getattr(self, "_hermes_scopes", None)
+        if pinned and getattr(self.context, "client_metadata", None) is not None:
+            self.context.client_metadata.scope = pinned
+        return await super()._perform_authorization_code_grant()
 
     def _tolerate_missing_iss_for_known_server(self) -> None:
         """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``

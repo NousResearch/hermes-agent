@@ -307,6 +307,8 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         hinted_sites = _distinct(sorted(s for lo, hi in windows for s in sites(lo, hi)))
         if len(hinted_sites) > 1:
             return None, len(hinted_sites), None
+        if cursor and not hinted_sites and after:
+            return None, len(after), "its @@ hint selects no site while another site follows the previous hunk"
     if windows and ordered:
         after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)]
     if len(after) == 1 or (after and ordered and any(tiers) and (not windows or successive)):

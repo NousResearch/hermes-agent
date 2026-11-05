@@ -30,6 +30,7 @@ def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
 
     class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
         def register_peer_route(self, **kwargs):
             routes.append(kwargs["route"])
@@ -47,10 +48,10 @@ def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
     # member's gateway fingerprinted that body when it accepted the turn.
     from gateway import hosted_room_links
     from gateway.hosted_room_peer import GatewayRoomCatalog
-    hosted_room_links.save_room_link(FakeService.db_path, hosted_room_links.make_stored_link(
+    hosted_room_links.save_room_link(FakeService.store, hosted_room_links.make_stored_link(
         room_id="room-1", member_id="member-peer", target_url="https://peer.example.test",
         target_profile="reviewer", grant="older.room.grant", catalog=GatewayRoomCatalog.from_mapping(catalog),
-        cancellation_scope_id="cancel-room-1", trace_id="trace-" + "ab" * 16))
+        cancellation_scope_id="cancel-room-1", trace_id="trace-" + "ab" * 16), placement=FakeService.placement)
     _result(srv._methods["groups.peer.register"](4, params | {"grant": "renewed.room.grant"}))
     assert (routes[-1].trace_id, routes[-1].cancellation_scope_id) == ("trace-" + "ab" * 16, "cancel-room-1")
 
@@ -126,6 +127,6 @@ def test_serve_disband_and_register_never_leave_a_route_or_a_grant_behind(home, 
         monkeypatch.setattr(hosted_room_peer_transport, "route_identity", identity_then_disband)
     assert "error" in srv._methods["groups.peer.register"](3, params)
     assert probes == ([] if disband_at == "before" else [params["grant"]])
-    assert hosted_room_links.load_room_links(hosted_rooms_default_db_path()) == ()
+    assert hosted_room_links.load_room_links(methods_groups._active_store(), placement="shared") == ()
     assert methods_groups.get_hosted_room_service().peer_routes == {}
     assert _serve_owed() == [("room-1", "member-peer", "https://peer.example.test")]

@@ -4,7 +4,10 @@ import subprocess
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.messages import TranscriptRead, TranscriptView
+from persistence.conversation.sessions import TitleSource
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypatch, tmp_path):
@@ -14,7 +17,7 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
     project = tmp_path / "example-project"
     project.mkdir()
     subprocess.run(["git", "init", "-q", str(project)], check=True)
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_load_cfg", dict)
@@ -28,8 +31,8 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
     history = [{"role": "user", "content": "Synthetic parent input"},
                {"role": "assistant", "content": "Synthetic parent response"}]
     try:
-        db.create_session("parent", source="desktop", cwd=str(project))
-        db.set_auto_title("parent", "Generated parent title", source="llm")
+        seed_session(db, "parent", "desktop", cwd=str(project))
+        db.sessions.set_auto_title("parent", "Generated parent title", source=TitleSource.LLM)
         response = server._methods["session.create"]("create", {
             "source": "desktop", "cwd": str(project),
             "parent_session_id": "parent", "messages": history,
@@ -37,11 +40,11 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
         assert "error" not in response, response
         child = response["result"]["stored_session_id"]
         # A DERIVED title is what memory providers skip when naming sessions (the provenance
-        # contract in hermes_state_common); a generated parent title must not arrive as USER/LLM.
-        assert db.get_session_title_source(child) == SessionDB.TITLE_SOURCE_DERIVED
-        assert db.message_count(child) == len(history)
+        # contract on TitleSource); a generated parent title must not arrive as USER/LLM.
+        assert db.sessions.get_title_source(child) == TitleSource.DERIVED
+        assert len(db.messages.read_transcript(child, TranscriptRead(view=TranscriptView.ALL))) == len(history)
         # A subsequent explicit rename must retain user authority.
-        db.set_session_title(child, "User chosen title")
-        assert db.get_session_title_source(child) == SessionDB.TITLE_SOURCE_USER
+        db.sessions.set_title(child, "User chosen title")
+        assert db.sessions.get_title_source(child) == TitleSource.USER
     finally:
         db.close()

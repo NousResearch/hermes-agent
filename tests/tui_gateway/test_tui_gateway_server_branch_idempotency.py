@@ -1,7 +1,9 @@
 """TUI gateway ``session.branch`` idempotency: a retried branch returns the same child (#65410)."""
 
+import contextlib
 import threading
 import time
+import types
 
 import pytest
 
@@ -57,28 +59,33 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
     shape (title, parent, message_count) without re-copying the transcript."""
 
     class ProfileDB:
+        """The profile store, also its own storage handle: every repository is the store itself."""
+
+        sessions = messages = property(lambda self: self)
+
         def __init__(self, db_path=None):
             pass
 
-        def get_session_title(self, _key):
+        def get_title(self, _key):
             return "parent"
 
-        def get_next_title_in_lineage(self, current):
+        def next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def create_session(self, new_key, **kwargs):
+        def create(self, _spec):
             pass
 
-        def append_messages_batch(self, session_id, messages, **kwargs):
-            return list(range(1, len(messages) + 1))
+        def append_batch(self, session_id, messages, **kwargs):
+            return types.SimpleNamespace(outcomes=())
 
-        def set_session_title(self, key, title):
+        def set_title(self, key, title):
             return True
 
-        def get_session(self, key):
-            return {"id": key, "cwd": str(tmp_path)}
+        def get(self, key):
+            return types.SimpleNamespace(id=key, cwd=str(tmp_path), git_branch=None, git_repo_root=None,
+                                         system_prompt=None)
 
-        def update_session_cwd(self, *a, **k):
+        def update_cwd(self, *a, **k):
             return None
 
         def close(self):
@@ -104,7 +111,10 @@ def test_session_branch_idempotency_key_dedupes_retry(monkeypatch, tmp_path):
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    real_for, real_beside = server._persistence_for, server._persistence_beside
+    monkeypatch.setattr(server, "_persistence_beside", lambda db: db if isinstance(db, ProfileDB) else real_beside(db))
+    monkeypatch.setattr(server, "_persistence_for",
+                        lambda db: contextlib.nullcontext(db) if isinstance(db, ProfileDB) else real_for(db))
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 
 import tui_gateway.server as srv
 from gateway import hosted_rooms
@@ -29,7 +31,7 @@ def test_log_with_a_stamped_member_actor_satisfies_its_contract(home):
     actor = {"kind": "member", "id": "ops", "profile": "ops", "display_name": "Ops",
              "connection_id": "peer-1"}
     hosted_rooms.append_event(
-        hosted_rooms.default_db_path(), room_id="room-1", event_id="reply-1", kind="message.member",
+        storage_handle(get_hermes_home()), placement="shared", room_id="room-1", event_id="reply-1", kind="message.member",
         actor=actor, payload={"text": "Done", "thread_id": "thread-1"},
         authority_gateway_id=room["result"]["room"]["authority_gateway_id"], authority_epoch=1)
 

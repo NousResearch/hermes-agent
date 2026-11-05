@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _profile_layout(tmp_path: Path) -> tuple[Path, Path]:
@@ -56,9 +57,6 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
         def append_messages_batch(self, _key, _messages, *, chunk_rows):
             assert chunk_rows == 500
 
-        def get_session_title(self, _key):
-            return "branch"
-
         def set_session_title(self, _key, _title):
             return None
 
@@ -76,6 +74,21 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_session_source", lambda _session: "desktop")
     monkeypatch.setattr(server, "_persisted_session_cwd", lambda _session: None)
 
+    def create(spec):
+        captured.profile_name = spec.profile_name
+
+    def append_batch(_key, _messages, *, chunk_rows):
+        assert chunk_rows == 500
+        return SimpleNamespace(outcomes=())
+
+    def set_auto_title(_key, _title, *, source):
+        captured.title_source = source.value
+
+    persistence = SimpleNamespace(sessions=SimpleNamespace(
+        create=create, get=lambda _key: None, get_title=lambda _key: "branch",
+        next_title_in_lineage=lambda title: f"{title} (branch)", set_auto_title=set_auto_title),
+        messages=SimpleNamespace(append_batch=append_batch))
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: contextlib.nullcontext(persistence))
     session = {"session_key": "default-row", "profile_home": str(default_home)}
     assert server._ensure_session_db_row(session) is True
     assert captured.profile_name == "default"
@@ -90,9 +103,11 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
 
 
 def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatch):
-    """Custom default roots stamp real SessionDB rows as default without leaking to siblings."""
+    """Custom default roots stamp real stored rows as default without leaking to siblings."""
     from hermes_constants import profile_name_for_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
     from tui_gateway import server
 
     custom_root = tmp_path / "custom-root"
@@ -111,11 +126,11 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
     assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
     assert server._session_info(None, {"profile_home": str(launch_home)})["profile_name"] == "worker"
 
-    # 2. Real SessionDB owner stamping
-    with SessionDB(default_home / "state.db") as db:
-        db.create_session("parent-default", "desktop", profile_name="default")
-    with SessionDB(launch_home / "state.db") as db:
-        pass
+    # 2. Real store owner stamping
+    with open_persistence(profile_scope(home=default_home)) as db:
+        seed_session(db, "parent-default", "desktop", profile_name="default")
+    with open_persistence(profile_scope(home=launch_home)) as db:
+        db.ready()
 
     session = {
         "session_key": "lazy-default",
@@ -140,7 +155,7 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
     assert record["pending_title"] is None
 
     # Normal branch persistence path
-    with SessionDB(default_home / "state.db") as db:
+    with open_persistence(profile_scope(home=default_home)) as db:
         server._persist_branch(
             db,
             "branched-default",
@@ -154,22 +169,22 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
         )
 
     # Verify rows in default_home / state.db
-    with SessionDB(default_home / "state.db") as db:
-        lazy_row = db.get_session("lazy-default")
+    with open_persistence(profile_scope(home=default_home)) as db:
+        lazy_row = session_row(db, "lazy-default")
         assert lazy_row is not None
         assert lazy_row["profile_name"] == "default"
 
-        seeded_row = db.get_session("seeded-default")
+        seeded_row = session_row(db, "seeded-default")
         assert seeded_row is not None
         assert seeded_row["profile_name"] == "default"
 
-        branched_row = db.get_session("branched-default")
+        branched_row = session_row(db, "branched-default")
         assert branched_row is not None
         assert branched_row["profile_name"] == "default"
 
     # 3. Negative assertions: default session/branch rows do not land in sibling store
-    with SessionDB(launch_home / "state.db") as launch_db:
-        assert launch_db.get_session("parent-default") is None
-        assert launch_db.get_session("lazy-default") is None
-        assert launch_db.get_session("seeded-default") is None
-        assert launch_db.get_session("branched-default") is None
+    with open_persistence(profile_scope(home=launch_home)) as launch_db:
+        assert launch_db.sessions.get("parent-default") is None
+        assert launch_db.sessions.get("lazy-default") is None
+        assert launch_db.sessions.get("seeded-default") is None
+        assert launch_db.sessions.get("branched-default") is None

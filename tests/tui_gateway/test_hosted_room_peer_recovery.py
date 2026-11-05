@@ -6,11 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import hosted_room_driver as driver
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_service import HostedRoomService
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.tui_gateway.test_hosted_room_driver_runtime import (
     db as db_fixture,
+    store_fixture,
     FakeSessionRPC,
     _admit,
     _identity,
@@ -22,7 +25,8 @@ from tests.tui_gateway.test_hosted_room_service import _FakePeerClient, _server
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
 
 
-def _peer_service(db: Path, peer: _FakePeerClient, *, grant="signed.room.grant") -> HostedRoomService:
+def _peer_service(db, peer: _FakePeerClient, *, grant="signed.room.grant") -> HostedRoomService:
+    """A home service on store handle *db*'s ``state.db`` with *peer* seated as ``member-peer``."""
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True))
     route = PeerMemberRoute(
@@ -30,7 +34,7 @@ def _peer_service(db: Path, peer: _FakePeerClient, *, grant="signed.room.grant")
         target_install_id="install-peer", target_profile="reviewer", capability_digest=catalog.catalog_digest,
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id="cancel-room-1", trace_id="trace-room-1", grant=grant)
-    service = HostedRoomService(_server(), db_path=db)
+    service = HostedRoomService(_server(), store=db, placement="profile")
     service.register_peer_route(
         room_id="room-1", member_id="member-peer", route=route, client=peer,
         target_url="https://peer.example.test", catalog=catalog)
@@ -75,7 +79,7 @@ class _UnreachablePeerClient(_RecoveringPeerClient):
         return self.session if self.reachable else super().prepare(**kwargs)
 
 
-def _peer_room(db: Path, peer: _FakePeerClient) -> HostedRoomService:
+def _peer_room(db, peer: _FakePeerClient) -> HostedRoomService:
     service = _peer_service(db, peer)
     route = service.peer_routes[("room-1", "member-peer")]
     service.create_room(
@@ -105,30 +109,31 @@ def _crashed_turn(tmp_path: Path, peer: _FakePeerClient, *, text: str = "@review
     """A room turn that a crashed home admitted; ``now[0]`` drives the clock (102 on return). With
     ``recover``, this home has taken the room over and found that turn uncertain."""
     now = [100.0]
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     service = _peer_room(db, peer)
     service.runtime.clock = lambda: now[0]
     for name, value in {"lease_ttl_seconds": 1000, "indeterminate_defer_seconds": 5, **runtime}.items():
         setattr(service.runtime, name, value)
     service.send(room_id="room-1", event_id="user-1", payload={"text": text, "thread_id": "thread-1"})
-    task, = driver.list_tasks(db, room_id="room-1", status="queued")
+    task, = driver.list_tasks(db, placement="profile", room_id="room-1", status="queued")
     binding = service.bindings()[0]
-    crashed = driver.acquire_lease(db, room_id="room-1", gateway_id=binding.gateway_id,
+    crashed = driver.acquire_lease(db, placement="profile", room_id="room-1", gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch, process_generation="crashed-home", ttl_seconds=1,
         clock=lambda: now[0])
-    driver.start_task(db, task["identity"], crashed, expected_cancel_generation=0, clock=lambda: now[0])
+    driver.start_task(db, task["identity"], crashed, placement="profile", expected_cancel_generation=0,
+                      clock=lambda: now[0])
     now[0], lease = 102.0, None
     if recover:
         lease = service.runtime._ensure_lease(binding)
-        driver.recover_room(db, lease, clock=lambda: now[0])
+        driver.recover_room(db, lease, placement="profile", clock=lambda: now[0])
     return SimpleNamespace(service=service, db=db, task=task, identity=task["identity"], binding=binding,
                            lease=lease, now=now)
 
 
 def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
     peer = _RecoveringPeerClient()
-    service = _peer_room(tmp_path / "state.db", peer)
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    service = _peer_room(storage_handle(tmp_path), peer)
+    identity = HostedTaskIdentity("room-1", "task-1", "thread-1", "turn-1")
     task = {
         "identity": identity,
         "execution_generation": 1,
@@ -167,7 +172,7 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
     service, db, binding, now, queued = turn.service, turn.db, turn.binding, turn.now, turn.task
     assert queued["payload"]["target_member_id"] == "member-peer"
     service.runtime._run_room_once(binding)
-    assert driver.get_task(db, queued["identity"])["status"] == "indeterminate"
+    assert driver.get_task(db, queued["identity"], placement="profile")["status"] == "indeterminate"
     # Each cycle replays the uncertain admission once, not once per route lookup.
     replays = len(peer.recoveries)
     service.runtime._reconcile_indeterminate(binding, service.runtime._ensure_lease(binding))
@@ -176,7 +181,7 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
     now[0] = 108.0
     service.runtime._run_room_once(binding)
 
-    deferred = driver.get_task(db, queued["identity"])
+    deferred = driver.get_task(db, queued["identity"], placement="profile")
     assert deferred["status"] == "deferred"
     assert deferred["execution_generation"] == 1
     assert deferred["result"] == {"reason": "member_unavailable", "retryable": True}
@@ -185,7 +190,7 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
     # Retry while the peer is still down keeps the turn deferred at generation 1.
     with pytest.raises(PeerRunsHTTPError):
         service.retry_room_task("room-1", task_id=queued["identity"].task_id)
-    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+    assert driver.get_task(db, queued["identity"], placement="profile")["status"] == "deferred"
 
     # Once the peer is back, Retry recovers generation 1 and never sends generation 2.
     peer.reachable = True
@@ -193,7 +198,7 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
     service.runtime._run_room_once(binding)
 
     assert (retried["status"], retried["execution_generation"]) == ("settled", 1)
-    assert driver.get_task(db, queued["identity"])["status"] == "settled"
+    assert driver.get_task(db, queued["identity"], placement="profile")["status"] == "settled"
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
     assert {d["execution_generation"] for d in peer.dispatches} == {1}
 
@@ -202,7 +207,7 @@ def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp
 def _deferred_peer_turn(tmp_path: Path, peer: _FakePeerClient):
     """A peer turn that a crashed home admitted and recovery then deferred."""
     turn = _crashed_turn(tmp_path, peer)
-    recovered = driver.get_task(turn.db, turn.identity)
+    recovered = driver.get_task(turn.db, turn.identity, placement="profile")
     turn.service.runtime._fenced(driver.defer_indeterminate_task, None, recovered, turn.lease, reason="member_unavailable")
     return turn.service, turn.db, turn.identity
 
@@ -218,11 +223,11 @@ def test_stop_of_a_deferred_peer_turn_whose_gateway_is_down_frees_the_room(tmp_p
     assert service.stop_room("room-1", cancel_id="stop-deferred") == 0
     with pytest.raises(RuntimeError, match="still stopping"):
         service.stop_room("room-1", cancel_id="room-disbanded", require_acknowledged=True)
-    assert driver.get_task(db, identity)["status"] == "deferred"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "deferred"
     assert len(peer.recoveries) == replays and peer.dispatches == []
     service.send(room_id="room-1", event_id="user-2",
                  payload={"text": "@hermes next question", "thread_id": "thread-2"})
-    queued = driver.list_tasks(db, room_id="room-1", status="queued")
+    queued = driver.list_tasks(db, placement="profile", room_id="room-1", status="queued")
     assert [t["payload"]["target_member_id"] for t in queued] == ["default"]
 
 
@@ -238,10 +243,10 @@ def test_stop_of_a_deferred_peer_turn_is_reported_once_its_gateway_confirms(tmp_
 
     service, db, identity = _deferred_peer_turn(tmp_path, Stoppable())
     assert service.stop_room("room-1", cancel_id="stop-1") == 0
-    assert driver.get_task(db, identity)["status"] == "deferred"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "deferred"
     answer["status"] = "cancelled"
     assert service.stop_room("room-1", cancel_id="stop-2") == 1
-    assert driver.get_task(db, identity)["status"] == "cancelled"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "cancelled"
     assert stops == [(identity.task_id, 1)] * 2
 
 
@@ -255,12 +260,12 @@ def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tm
     # Disband waits for the member gateway's Stop, as for this gateway's own work.
     with pytest.raises(RuntimeError, match="still stopping"):
         service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True)
-    assert driver.get_task(db, task["identity"])["status"] == "stopping"
+    assert driver.get_task(db, task["identity"], placement="profile")["status"] == "stopping"
     assert service.runtime._retry_stopping_tasks(binding, lease) is True
 
     now[0] = 110.0
     assert service.runtime._retry_stopping_tasks(binding, lease) is False
-    released = driver.get_task(db, task["identity"])
+    released = driver.get_task(db, task["identity"], placement="profile")
     assert (released["status"], released["execution_generation"]) == ("deferred", 1)
     assert released["result"] == {"reason": "member_unavailable", "retryable": True}
     with pytest.raises(RuntimeError, match="still stopping"):
@@ -286,7 +291,7 @@ def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, mo
     completed[0] = True
     now[0] += elapsed
     service.runtime._reconcile_indeterminate(binding, lease)
-    settled = driver.get_task(db, task["identity"])
+    settled = driver.get_task(db, task["identity"], placement="profile")
     assert (settled["status"], settled["execution_generation"]) == ("settled", 1)
     assert settled["result"]["text"] == "Recovered review"
     assert {entry["dispatch"]["execution_generation"] for entry in peer.recoveries} == {1}
@@ -309,18 +314,19 @@ def test_a_recovered_peer_turn_still_running_is_stopped_at_its_execution_deadlin
     # Past the deferral window but inside the turn's time limit, a running peer keeps the room waiting.
     now[0] = 170.0
     assert service.runtime._reconcile_indeterminate(binding, lease) is True
-    assert driver.get_task(db, identity)["status"] == "indeterminate" and not stops
+    assert driver.get_task(db, identity, placement="profile")["status"] == "indeterminate" and not stops
 
     now[0] = 401.0
     service.runtime._reconcile_indeterminate(binding, lease)
-    stopped = driver.get_task(db, identity)
+    stopped = driver.get_task(db, identity, placement="profile")
     assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]
     assert (stopped["status"], stopped["execution_generation"]) == ("failed", 1)
     assert stopped["result"]["reason_code"] == "turn_deadline_exceeded"
     assert "room-1" not in service.runtime.status()["blocked_rooms"]
 
 
-def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(db):
+def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(db, store):
+    db = store  # the ``db`` fixture seeds the room; the reads go through its store handle
     now = [100.0]
     identity = _identity()
     _admit(db, identity)
@@ -333,12 +339,12 @@ def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(db)
     rpc = UncertainRPC(auto_complete=False)
     runtime = _runtime(db, rpc, clock=lambda: now[0], lease_ttl_seconds=1)
     runtime._run_cycle()
-    first = driver.get_task(db, identity)
+    first = driver.get_task(db, identity, placement="profile")
     assert first["status"] == "running" and first["execution_generation"] == 1
     runtime._run_cycle()
     now[0] += 2
     runtime._run_cycle()
-    recovered = driver.get_task(db, identity)
+    recovered = driver.get_task(db, identity, placement="profile")
     assert recovered["status"] == "indeterminate" and recovered["execution_generation"] == 1
     assert [params["execution_generation"] for method, params in rpc.calls if method == "submit"] == [1]
 
@@ -356,7 +362,7 @@ def test_deferred_turn_on_an_in_process_route_retries_as_before(tmp_path: Path):
     assert service.runtime._reconcile_indeterminate(binding, lease) is True
     now[0] = 108.0
     assert service.runtime._reconcile_indeterminate(binding, lease) is False
-    assert driver.get_task(db, task["identity"])["status"] == "deferred"
+    assert driver.get_task(db, task["identity"], placement="profile")["status"] == "deferred"
 
     retried = service.runtime.retry_indeterminate(task["identity"])
 
@@ -377,7 +383,7 @@ def test_a_failing_route_lookup_still_lets_an_uncertain_turn_reach_its_deadline(
     assert runtime._reconcile_indeterminate(turn.binding, turn.lease) is True
     turn.now[0] = 108.0
     assert runtime._reconcile_indeterminate(turn.binding, turn.lease) is False
-    deferred = driver.get_task(turn.db, turn.identity)
+    deferred = driver.get_task(turn.db, turn.identity, placement="profile")
     assert (deferred["status"], deferred["execution_generation"]) == ("deferred", 1)
     assert "route is gone" in str(runtime.status()["last_error"])
 
@@ -402,7 +408,7 @@ def test_a_retried_deferred_peer_turn_gets_its_own_time_limit(tmp_path, monkeypa
     lease = service.runtime._ensure_lease(binding)
     now[0] += 60
     assert service.runtime._reconcile_indeterminate(binding, lease) is True
-    assert driver.get_task(db, identity)["status"] == "indeterminate" and not stops
+    assert driver.get_task(db, identity, placement="profile")["status"] == "indeterminate" and not stops
     now[0] += 300
     service.runtime._reconcile_indeterminate(binding, lease)
     assert [(s["task_id"], s["execution_generation"]) for s in stops] == [(identity.task_id, 1)]
@@ -422,7 +428,7 @@ def test_a_retried_peer_run_is_watched_when_its_first_status_read_fails(tmp_path
     monkeypatch.setattr(peer, "history", lambda **_: [])
 
     service.retry_room_task("room-1", task_id=identity.task_id)
-    watched = driver.get_task(db, identity)
+    watched = driver.get_task(db, identity, placement="profile")
     assert (watched["status"], watched["execution_generation"]) == ("indeterminate", 1)
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
 

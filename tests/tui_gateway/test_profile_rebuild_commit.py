@@ -48,15 +48,16 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
 @pytest.mark.parametrize("has_agent_db", [True, False])
 def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch, path, has_agent_db):
     from tui_gateway import server
-    from hermes_state import SessionDB
     from hermes_constants import get_hermes_home
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     home = tmp_path / ".hermes"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    db = SessionDB(db_path=profile / "state.db")
+    db = open_persistence(profile_scope(home=profile))
     old = SimpleNamespace(_session_db=db if has_agent_db else None,
                           _owns_session_db=has_agent_db, _session_title_hint="Bot Chat")
     session = {"agent": old, "profile_home": str(profile), "session_key": "profile-key",
@@ -82,7 +83,7 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         assert old._owns_session_db is has_agent_db
         assert not built, "prepare config before allocating a replacement"
         assert get_hermes_home() == home
-        db.create_session("still-owned", "tui")
+        seed_session(db, "still-owned", "tui")
     finally:
         db.close()
         for agent in built:

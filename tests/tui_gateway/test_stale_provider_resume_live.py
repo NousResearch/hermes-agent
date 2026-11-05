@@ -80,15 +80,12 @@ def live_home(monkeypatch):
                 except Exception:
                     pass
 
-    import hermes_state
     from tui_gateway import server
 
     # The launch DB handle and the module-level home snapshot are import-time
     # caches — repoint both at the isolated home for the duration of the test
-    # (see references: tui-gateway live WS harness, same trap). The hermetic
-    # conftest also re-pins hermes_state.DEFAULT_DB_PATH per test; pin it to
-    # THIS home so server._get_db() opens the same real state.db we seed.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
+    # (see references: tui-gateway live WS harness, same trap), so
+    # server._get_db() opens the same real state.db we seed.
     monkeypatch.setattr(server, "_db", None, raising=False)
     monkeypatch.setattr(server, "_db_error", None, raising=False)
     monkeypatch.setattr(server, "_hermes_home", str(home), raising=False)
@@ -115,9 +112,9 @@ def _seed_session_row(
     extra_config: dict | None = None,
 ) -> str:
     """Write a REAL session row + one message into the profile's state.db."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=home / "state.db")
     sid = uuid.uuid4().hex[:12]
     model_config = {
         "model": "test-model-live",
@@ -128,15 +125,16 @@ def _seed_session_row(
         model_config["base_url"] = base_url
     if extra_config:
         model_config.update(extra_config)
-    db.create_session(
-        sid,
-        source="tui",
-        model="test-model-live",
-        model_config=model_config,
-        session_key=f"live-test:{sid}",
-    )
-    db.set_session_title(sid, title)
-    db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(
+            db,
+            sid,
+            "tui",
+            model="test-model-live",
+            model_config=model_config,
+            session_key=f"live-test:{sid}",
+            title=title,
+        )
     return sid
 
 

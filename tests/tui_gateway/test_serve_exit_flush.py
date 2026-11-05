@@ -69,11 +69,13 @@ def test_sigterm_flushes_populated_session_into_state_db(
 ):
     """A populated in-memory session survives a SIGTERM into state.db."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid = "sess-sigterm-flush"
-    db.create_session(sid, source="tui")
+    seed_session(db, sid, "tui")
 
     class _DbAgent(_FlushAgent):
         def _persist_session(self, messages, conversation_history=None):
@@ -81,7 +83,7 @@ def test_sigterm_flushes_populated_session_into_state_db(
             for msg in messages:
                 if msg.get("_db_persisted"):
                     continue
-                db.append_message(sid, msg["role"], msg["content"])
+                seed_messages(db, sid, {"role": msg["role"], "content": msg["content"]})
                 msg["_db_persisted"] = True
 
     agent = _DbAgent(messages=[{"role": "user", "content": "survive the kill"}])
@@ -106,7 +108,7 @@ def test_sigterm_flushes_populated_session_into_state_db(
 
     assert chained["called"], "previous SIGTERM handler must still be chained"
     assert agent.flush_calls, "SIGTERM must flush in-memory sessions"
-    rows = db.get_messages(sid)
+    rows = transcript_rows(db, sid)
     assert any("survive the kill" in str(r.get("content", "")) for r in rows)
     db.close()
 

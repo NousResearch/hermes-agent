@@ -1,7 +1,7 @@
 """A delegate child must never claim its parent's completion as a continuation.
 
 Regression for the completion-routing repro on PR #150198: use the real child
-reservation, first-turn metadata writers and SessionDB, not a stubbed resolver.
+reservation, first-turn metadata writers and the session store, not a stubbed resolver.
 """
 
 import queue
@@ -12,7 +12,11 @@ from unittest.mock import Mock
 import pytest
 
 from agent.prompt_refresh import stamp_prompt_epoch
-from hermes_state import SessionDB
+from persistence import SessionId
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 from tests.tools import test_delegate_transcript_readiness as transcript_readiness
 from tools.delegate_tool import _build_child_agent
 from tools.process_registry_notifications import format_process_notification
@@ -27,16 +31,16 @@ offline_children = transcript_readiness.offline_children
 def test_parent_completion_never_delivered_to_delegate_child(
     tmp_path, monkeypatch, offline_children, event_type, compressed
 ):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     child = None
     try:
-        db.create_session("parent", source="desktop")
-        db.append_message("parent", "user", "Delegate an inspection")
+        db.sessions.create(NewSession(session_id=SessionId("parent"), source="desktop"))
+        db.messages.append(SessionId("parent"), NewMessage(role="user", content="Delegate an inspection"))
         owner_key = "parent"
         if compressed:
-            db.publish_compression_child(
-                parent_session_id="parent", child_session_id="tip", source="desktop",
-                messages=[{"role": "user", "content": "Continue the inspection"}],
+            db.lineage.publish_compression_child(
+                SessionId("parent"), CompressionChild(session_id=SessionId("tip"), source="desktop"),
+                [NewMessage(role="user", content="Continue the inspection")],
                 require_compression_lease=False,
             )
             owner_key = "tip"
@@ -49,7 +53,7 @@ def test_parent_completion_never_delivered_to_delegate_child(
         # writer fix it freezes model_config without _delegate_from.
         stamp_prompt_epoch(child, 17)
         child._ensure_db_session()
-        db.append_message(child.session_id, "assistant", "Inspection complete")
+        db.messages.append(SessionId(child.session_id), NewMessage(role="assistant", content="Inspection complete"))
 
         owner = {"session_key": owner_key, "agent": None, "running": False,
                  "history_lock": threading.RLock()}

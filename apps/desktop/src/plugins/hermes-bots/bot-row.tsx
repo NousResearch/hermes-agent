@@ -8,7 +8,6 @@
 
 import {
   cn,
-  coarseElapsed,
   Codicon,
   ContextMenu,
   ContextMenuCheckboxItem,
@@ -68,6 +67,7 @@ import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { rowAge } from './row-age'
 import {
   A2A_PREFIX_RE,
   botCanonicalSessionId,
@@ -78,7 +78,7 @@ import {
   workerActiveAt
 } from './row-helpers'
 import { openBotScreen } from './screen-open'
-import type { GroupMember, RosterRow, SidebarRowLabels } from './types'
+import type { GroupMember, RosterRow } from './types'
 import {
   $botSections,
   $draggingBot,
@@ -91,17 +91,6 @@ import {
 } from './user-sections'
 
 // ── bot row ──────────────────────────────────────────────────────────────────
-
-/** Row age in the sidebar's compact form ("now", "52m", "3h", "18d").
- *  Deliberately the same `coarseElapsed` + suffix pair the session rows
- *  directly above use, so the two lists in one rail don't disagree about how
- *  an age is spelled. Not `relativeTime` — that's the bidirectional Intl form
- *  ("in 14 hr"), which belongs on a scheduled next-run. */
-function rowAge(ms: number, r: SidebarRowLabels): string {
-  const { unit, value } = coarseElapsed(Date.now() - ms)
-
-  return unit === 'second' ? r.ageNow : `${value}${unit === 'day' ? r.ageDay : unit === 'hour' ? r.ageHour : r.ageMin}`
-}
 
 interface BotRowProps {
   bot: RosterRow
@@ -187,7 +176,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // resolved the pinned canonical chat, preview THAT session — not the
   // profile's most recent (but unrelated) activity. Liveness checks above
   // keep last_session semantics: any recent activity means the bot is alive.
-  const { fromBot } = previewKind(previewSession?.preview)
+  const { fromBot } = previewKind(previewSession?.preview, $lastRoster.get(), bot.connectionId)
 
   // DM previews read like DMs: strip the delivery prefix, keep the message.
   const displayPreview = stripPreviewMarkdown(

@@ -7,17 +7,20 @@ import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaCronControl } from './ja_cron_control'
 import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
+import { jaMemoryLayers } from './ja_memory_layers'
 import { jaModelMenu } from './ja_model_menu'
 import { jaModelSettings } from './ja_model_settings'
 import { jaNotices } from './ja_notices'
 import { jaNotifications } from './ja_notifications'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
+import { jaPluginUpdateAll } from './ja_plugin_update_all'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
@@ -159,7 +162,8 @@ export const jaOverrides = {
       microphoneConstraintsUnsupported: 'このデバイスはマイクの制約をサポートしていません。',
       microphoneFailed: 'マイクが失敗しました',
       microphoneInUse: 'マイクは他のアプリで使用中です。',
-      microphoneNeedsHttps: 'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
+      microphoneNeedsHttps:
+        'マイクには安全な接続が必要です。使うには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。',
       microphonePermissionDenied: 'マイクのアクセス許可が拒否されました。',
       microphoneStartFailed: 'マイクの録音を開始できませんでした。',
       microphoneUnsupported: 'このランタイムはマイク録音をサポートしていません。',
@@ -243,6 +247,7 @@ export const jaOverrides = {
   },
 
   settings: {
+    memoryLayers: jaMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -337,7 +342,7 @@ export const jaOverrides = {
       advancedOutput: '出力の制限',
       advancedDelegation: 'サブエージェント',
       advancedDesktop: 'デスクトップと起動',
-      gatewayConnection: 'このウィンドウ',
+      gatewayConnection: 'プライマリゲートウェイ',
       gatewayDevices: '保存済みの接続',
       gatewayManagedUpdates: 'リモート更新',
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
@@ -1203,7 +1208,7 @@ export const jaOverrides = {
       defaultDirTitle: 'デフォルトのプロジェクトディレクトリ',
       defaultDirDesc:
         '別のフォルダーを選択しない限り、新しいセッションはこのフォルダーで開始します。未設定の場合はホームディレクトリが使用されます。',
-      defaultDirUpdated: 'デフォルトのプロジェクトディレクトリを更新しました',
+      defaultDirUpdated: () => 'デフォルトのプロジェクトディレクトリを更新しました',
       defaultsTo: label => `デフォルト: ${label}。`,
       change: '変更',
       choose: '選択',
@@ -1316,7 +1321,7 @@ export const jaOverrides = {
 
   skillDeepLink: jaSkillDeepLink,
   skills: {
-    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab },
+    plugins: { ...jaPluginPreviewAccess, ...jaPluginsTab, ...jaPluginUpdateAll },
     hub: {
       search: '検索',
       searching: '検索中…',
@@ -1377,6 +1382,10 @@ export const jaOverrides = {
     changesApplyNewSessions: '変更は新しいセッションに適用されます。',
     skillUpdated: 'スキルを更新しました',
     edit: '編集',
+    lock: 'ロック',
+    locked: 'ロック中',
+    lockHint: 'ロック中はエージェントがこのスキルを変更できません。自分では引き続き編集できます。',
+    unlockedHint: 'ロックすると、エージェントはこのスキルを変更できなくなります。自分では引き続き編集できます。',
     archive: 'アーカイブ',
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。',
@@ -1608,6 +1617,32 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'ボットトークン不要',
+      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      link: (platform: string) => `${platform} をリンク`,
+      linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
+      linkedAccounts: 'リンク済みアカウント',
+      unlink: 'リンク解除',
+      unlinkFailed: 'アカウントのリンクを解除できませんでした',
+      stepOpen: (platform: string) => `1. スマートフォンでコードを読み取るか、${platform} でボットを開きます。`,
+      stepSend: '2. リンクしたいアカウントから、ボットに次のメッセージを送ります:',
+      open: (platform: string) => `${platform} を開く`,
+      copy: 'メッセージをコピー',
+      copied: 'コピーしました',
+      copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
+      waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
+      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
+      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
+      managed: 'Team Gateway が管理',
+      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+      managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
+      openPortal: 'Nous Portal でアカウントをリンク',
+      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+    },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
@@ -1779,9 +1814,11 @@ export const jaOverrides = {
     exported: 'プロファイルをエクスポートしました',
     failedImport: 'プロファイルのインポートに失敗しました',
     failedExport: 'プロファイルのエクスポートに失敗しました',
-    exportNeedsHost: name => `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
+    notServedHere: 'ここでは提供されていません',
     switchToProfile: name => `${name} に切り替え`,
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
@@ -1789,10 +1826,7 @@ export const jaOverrides = {
     fleet: {
       localDevice:
         'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
-      switchDeviceTitle: 'このデバイスに切り替えますか？',
-      switchDeviceDesc: 'このコンピュータで新しいセッションを開きます。今の会話は別のゲートウェイに残ります。',
-      switchDeviceConfirm: '切り替える',
-      installDeviceTitle: 'このデバイスに切り替えますか？',
+      installDeviceTitle: 'このデバイスに Hermes をインストールしますか？',
       installDeviceDesc:
         'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
       installDeviceConfirm: 'ローカルにインストール',
@@ -1916,6 +1950,7 @@ export const jaOverrides = {
   },
 
   cron: {
+    control: jaCronControl,
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,
@@ -2661,6 +2696,8 @@ export const jaOverrides = {
     gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'このデバイス',
+    versionDetailsBackend: '接続中のバックエンド',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
@@ -2914,7 +2951,9 @@ export const jaOverrides = {
       ultra: 'ウルトラ',
       sendsOnRoute: (level: string) => `このルートでは ${level} を送信`,
       updateFailed: 'モデルオプションの更新に失敗しました',
-      fastFailed: '高速モードの更新に失敗しました'
+      fastFailed: '高速モードの更新に失敗しました',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
       gateway: 'ゲートウェイ',
@@ -3009,6 +3048,15 @@ export const jaOverrides = {
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        compact: {
+          action: '会話を圧縮',
+          busyHint: '先に実行中の応答を終了するか停止してください',
+          confirm: '圧縮',
+          hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
+          question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
+          working: '圧縮中…'
+        },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,
@@ -3075,6 +3123,14 @@ export const jaOverrides = {
     terminalNew: '新しいターミナル',
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
+    terminalNewOn: '新しいターミナルを開く場所…',
+    terminalGatewayRemoved: '削除されたゲートウェイ',
+    terminalGatewayRemovedBody:
+      'このターミナルが動作していたゲートウェイは削除されたため、再度開けません。このタブを閉じてください。',
+    terminalGatewayNoShellBody:
+      'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
+    terminalDisconnectedBody:
+      'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
     addToChat: 'チャットに追加'
   },
 
@@ -3201,7 +3257,8 @@ export const jaOverrides = {
     saveApply: '保存して適用',
     notExpressible: 'この配置は互いに噛み合っています（風車型）— 入れ子の分割では表現できません',
     zoneCount: count => `${count} ゾーン`,
-    tabCount: count => `${count} 個のタブ`
+    tabCount: count => `${count} 個のタブ`,
+    tabActions: title => `${title} の操作`
   },
 
   contextMenu: {
@@ -3229,6 +3286,12 @@ export const jaOverrides = {
   },
 
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `実行: ${target}`,
+      launchRemote: target => `接続先: ${target}`,
+      launchEnv: keys => `環境変数: ${keys}`,
+      launchCwd: dir => `作業ディレクトリ: ${dir}`
+    },
     catalogInstall: {
       preparing: 'インストールを準備中…',
       install: 'インストール',
@@ -3278,60 +3341,81 @@ export const jaOverrides = {
       errorCodes: {
         ...jaErrorCodes,
         provider_policy_blocked: {
-          title: 'アカウント設定によりこのモデルはブロックされています',
+          title: (provider, model) => `${provider} の設定で ${model || 'このモデル'} がブロックされています`,
           body: provider =>
-            `${provider} はアカウントのデータまたはプライバシー設定により、このリクエストを処理できません。別のモデルまたはプロバイダーを選んでください。`
+            `${provider} のプライバシー設定により、このモデルのエンドポイントがすべて除外されています。${provider} で設定を変更するか、別のモデルを選んでください。`
         },
         content_policy_blocked: {
-          title: 'AI サービスが回答を拒否しました',
-          body: provider => `${provider} はこのメッセージへの回答を拒否しました。編集して再送してください。`
+          title: provider => `${provider} がこのメッセージを拒否しました`,
+          body: provider => `${provider} の安全フィルターにより拒否されました。メッセージを編集して再送してください。`
         },
         format_error: {
-          title: 'AI サービスがリクエストの形式を拒否しました',
+          title: provider => `${provider} がこのリクエストを拒否しました`,
           body: provider =>
-            `${provider} はこのリクエストの形式を受け付けませんでした。プロバイダーを切り替えるか、調査のため診断情報を送信してください。`
+            `${provider} はこの会話の構成を受け付けませんでした。プロバイダーを切り替えるか、繰り返し発生する場合は新しいチャットを開始してください。`
         },
         invalid_response: {
-          title: 'AI サービスが読み取れない応答を返しました',
-          body: provider => `${provider} は Hermes が読み取れない内容を返しました。しばらくしてから再試行してください。`
+          title: '返信を読み取れませんでした',
+          body: provider => `${provider} から空または壊れた返信が返されました。少ししてから再試行してください。`
         },
         empty_response: {
-          title: 'AI サービスが空の応答を返しました',
-          body: provider => `${provider} はこのメッセージに内容を返しませんでした。しばらくしてから再試行してください。`
+          title: '返信を取得できませんでした',
+          body: provider => `${provider} はこのメッセージに何も返しませんでした。少ししてから再試行してください。`
         },
         rate_limit: {
-          title: 'AI サービスが混み合っています',
-          body: provider => `${provider} は現在リクエスト数を制限しています。少し待ってから再試行してください。`
+          title: provider => `${provider} は現在混み合っています`,
+          body: provider => `${provider} のレート制限に達しました。少し待ってから再試行してください。`
         },
         upstream_rate_limit: {
-          title: 'AI サービスが混み合っています',
-          body: provider => `${provider} は現在リクエスト数を制限しています。少し待ってから再試行してください。`
+          title: (_provider, model) => `${model || 'このモデル'} は現在混み合っています`,
+          body: (provider, model) =>
+            `${model || 'このモデル'} は ${provider} の提供元でレート制限されています（お使いのアカウントの制限ではありません）。少ししてから再試行してください。`
         },
         overloaded: {
-          title: 'AI サービスの負荷が高すぎます',
+          title: provider => `${provider} は現在混み合っています`,
           body: provider =>
-            `${provider} で現在問題が発生しています。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
+            `${provider} は過負荷のため、このリクエストを処理できませんでした。少ししてから再試行してください。`
         },
         server_error: {
-          title: 'AI サービスでエラーが発生しました',
-          body: provider =>
-            `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
+          title: provider => `${provider} で問題が発生しています`,
+          body: provider => `${provider} がサーバーエラーを返しました。少ししてから再試行してください。`
         },
         timeout: {
-          title: 'AI サービスに接続できません',
-          body: provider =>
-            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
+          title: provider => `${provider} に接続できません`,
+          body: provider => `Hermes は ${provider} に接続できませんでした。接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
-          title: '安全な接続に失敗しました',
+          title: provider => `${provider} との接続を検証できません`,
           body: provider =>
-            `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
+            `プロキシまたは古い証明書ストアが ${provider} への安全な接続をブロックしました。修正方法はセットアップガイドを参照してください。`
         },
         usage_window: {
           title: '含まれる利用量を使い切りました',
           body: 'プランに含まれる利用量はリセットまで使い切りました。続けるには /topup でクレジットを追加してください。'
         }
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} が API キーを拒否しました`,
+          body: () => '保存されたキーが無効か、取り消されています。キーを更新してから、メッセージを再送してください。'
+        },
+        oauth: {
+          title: provider => `${provider} に再度サインイン`
+        }
+      },
+      errorDetails: 'エラーの詳細を表示',
+      errorHideDetails: 'エラーの詳細を隠す',
+      errorDetailsCopy: '詳細をコピー',
+      errorCopyRaw: 'エラーをコピー',
+      errorContinue: '続行',
+      errorOpenProviderSettings: provider => `${provider} の設定を開く`,
+      errorOpenSetupGuide: 'セットアップガイドを開く',
+      errorSetupGuideLink: 'セットアップガイド',
+      errorOpenModelSettings: 'モデル設定を開く',
+      errorStartNewChatLink: '新しいチャットを開始',
+      errorChooseModelLink: '別のモデルを選ぶ',
+      errorRetryAtResetShort: time => `${time} に再試行`,
+      errorRateLimitResetBody: (provider, time) => `${provider} のレート制限に達しました。${time} にリセットされます。`,
       errorRetry: '再試行',
       errorSwitchToModel: (model, note) => (note ? `${model} に切り替え（${note}）` : `${model} に切り替え`),
       errorSwitchModelFailed: 'モデルを切り替えられませんでした',
@@ -3339,8 +3423,6 @@ export const jaOverrides = {
       errorUseCreditsFailed: 'クレジットで続行を有効にできませんでした',
       errorAddCredits: 'クレジットを追加',
       errorOpenBillingSettings: '請求設定を開く',
-      errorLimitResets: time => `制限は ${time} にリセットされます`,
-      errorRetryAtReset: time => `制限のリセット時に再試行（${time}）`,
       errorRetryScheduled: (time, wait) => `${time} に再試行 — 残り ${wait}`,
       errorRetryScheduledCancel: 'キャンセル',
       errorStartNewSession: '新しいセッションを開始',
@@ -3351,7 +3433,6 @@ export const jaOverrides = {
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
       errorOpenDesktopLogs: 'デスクトップのログを開く',
-      errorCopyDiagnostics: 'エラー詳細をコピー',
       errorSendDiagnostics: '診断情報を送信',
       filesChanged: count => `${count} 件のファイルを変更`,
       reviewChanges: 'レビュー',

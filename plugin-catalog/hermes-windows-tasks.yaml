@@ -1,0 +1,41 @@
+name: hermes-windows-tasks
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 9778252252aeec293e0d234ffe24d20de9eb2fc4
+subdir: windows-tasks
+description: >-
+  Answer "what does this machine run on its own, and did it work" on Windows: win_scheduled_tasks
+  lists the Task Scheduler's tasks with their state (Ready, Running, Disabled), the account each
+  runs as, its first action's command line, its triggers in words (at logon, daily, weekly, at a
+  time, on event), its last and next run with the machine's offset, its missed runs, and what its
+  last result code means - 0x80070002 is a program that is no longer there, 0x800710E0 a task that
+  needed a desktop it did not have, 0x40010004 one that was stopped, 0x80040154 a COM class that is
+  not registered. win_scheduled_task_detail takes one task and gives its triggers with start
+  boundaries and repetition, its actions with arguments and working directory, its principal and
+  the settings that decide whether it runs on battery or when late; a task with no triggers but
+  MaintenanceSettings runs during automatic maintenance and the notes say so rather than leaving an
+  empty list. Use it for why a logon task keeps failing, for finding what an uninstalled program
+  left behind at logon, for telling a disabled task from a broken one, and for reading a task's
+  command line before trusting it. Read-only: nothing is created, started, changed or deleted.
+  Reads through the ScheduledTasks cmdlets rather than the store on disk, because the TaskCache
+  registry tree and C:\Windows\System32\Tasks both answer access denied without elevation, and
+  rather than schtasks /Query /FO CSV, which is localized and interleaves error lines for tasks
+  whose definitions are gone. The plugin declares no Python dependencies; there is no network call
+  and no file write. Windows only. Disclosure - the tools report task paths, command lines, working
+  directories, account names and SIDs to the model, and those reveal what the person has installed,
+  what starts at their logon, and the paths under C:\Users\<name>; treat the output like a Task
+  Scheduler window opened on their machine.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-tasks
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_scheduled_tasks
+  - win_scheduled_task_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

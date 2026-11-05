@@ -30,6 +30,7 @@ import {
   patchOverlayState,
   SENSITIVE_PROMPTS
 } from './overlayStore.js'
+import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -233,6 +234,21 @@ export function pagerOffset(lines: number, offset: number, intent: PagerIntent, 
   }
 
   return clamp(offset + (intent === 'page' ? pageSize : intent), 0, max)
+}
+
+/** Ctrl+<letter> chords that act without disturbing a typed draft. */
+const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) => void> = {
+  // Ctrl+O opens the model picker — the same overlay `/model` opens, but
+  // reachable without clearing what you've typed to run the command. Works
+  // mid-stream: picking a model writes the session model (config.set), which
+  // the next turn reads while the in-flight turn keeps streaming.
+  o: () => patchOverlayState({ modelPicker: true }),
+  // Ctrl+P expands the paste chip at the cursor into editable text, or folds
+  // it back. With no chip in the composer it opens/closes the paste sections
+  // of messages already sent.
+  p: ({ actions, state }) =>
+    void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
+  t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -764,17 +780,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    // Ctrl+O opens the model picker without disturbing a typed draft — the
-    // same overlay `/model` opens, but reachable without clearing what you've
-    // typed to run the command. Works mid-stream: picking a model writes the
-    // session model (config.set), which the next turn reads while the in-flight
-    // turn keeps streaming.
-    if (isCtrl(key, ch, 't')) {
-      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
-    }
+    const chord = key.ctrl ? CTRL_CHORDS[ch.toLowerCase()] : undefined
 
-    if (isCtrl(key, ch, 'o')) {
-      return patchOverlayState({ modelPicker: true })
+    if (chord) {
+      return chord(composer)
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

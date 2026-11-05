@@ -236,9 +236,10 @@ jobs:
               cp -a "_site/docs/$d/." "_asset_retention/$d/"
             fi
           done
-          # 2) Drop pool entries no build has produced for 14 days — far
-          #    beyond any edge-cache or open-tab horizon.
-          find _asset_retention -type f -mtime +14 -delete
+          # 2) Drop pool entries no build has produced for 2 days: past any
+          #    edge-cache or open-tab horizon. A 14-day window grew the pool to
+          #    11 GB and the Pages artifact past what Pages will deploy.
+          find _asset_retention -type f -mtime +2 -delete
           find _asset_retention -type d -empty -delete
           # 3) Union-merge the pool into the artifact; --update=none keeps the
           #    current build authoritative for any path it produced.

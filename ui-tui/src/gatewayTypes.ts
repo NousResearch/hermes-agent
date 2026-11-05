@@ -122,6 +122,8 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  /** auto | kitty | iterm | unicode | off (YAML may hand `off` over as false). */
+  inline_images?: boolean | string
   /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
   language?: string
   mouse_tracking?: boolean | null | number | string

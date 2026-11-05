@@ -11,16 +11,21 @@ import importlib
 import os
 import threading
 
+# Imported, so never rebound: it reads the bound server from this module, not server.py's globals.
+from .methods_groups_forward import forward_bound as _forward_to_owner
+
 _registry = HandlerRegistry()
 method = _registry.method
 
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
-    "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
-    "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
-    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
-LONG_HANDLERS = frozenset(_METHODS)
+    "groups.rename", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
+    "groups.promote", "groups.demote", "groups.stop", "groups.continue", "groups.retry", "groups.approve",
+    "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
+    "groups.attachment.download")
+#: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
+LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard"}
 
 _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
@@ -189,9 +194,12 @@ def _room_method(
     (only ``ReplicaError`` when ``replica_only``) to a client error with ``{"reason"}`` data
     when ``with_reason``; anything else maps to ``code``."""
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
+    owner_call = _forward_to_owner
 
     def dec(fn):
         def handler(rid, params: dict) -> dict:
+            if (forwarded := owner_call(rid, name, params)) is not None:
+                return forwarded
             args = (rid, params)
             if service_code is not None:
                 service = get_hosted_room_service()
@@ -214,8 +222,10 @@ def _room_method(
 
 
 @method("groups.capabilities")
-def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS) -> dict:
+def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_forward_to_owner) -> dict:
     """Describe the hosted-room protocol implemented by this gateway."""
+    if (forwarded := _owner(rid, "groups.capabilities", params)) is not None:
+        return forwarded
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
@@ -351,7 +361,8 @@ def _(rid, params: dict, db_path) -> dict:
         db_path, include_disbanded=params.get("include_disbanded") is True, limit=limit,
         offset=offset)
     next_offset = offset + limit if len(rooms) == limit else None
-    return _ok(rid, {"rooms": rooms, "next_offset": next_offset})
+    from tui_gateway.methods_groups_forward import local_rooms
+    return _ok(rid, {"rooms": local_rooms(rooms), "next_offset": next_offset})
 
 
 @_room_method(
@@ -373,8 +384,11 @@ def _(rid, params: dict, db_path) -> dict:
         include_disbanded=params.get("include_disbanded") is True)
     service = get_hosted_room_service()
     result = {"room": room}
-    if service is not None and room.get("disbanded_at") is None:
-        result["driver_status"] = service.status(str(room["room_id"]))
+    if room.get("disbanded_at") is None:
+        from gateway.hosted_room_context import room_context
+        result["context"] = room_context(db_path, room_id=room["room_id"])
+        if service is not None:
+            result["driver_status"] = service.status(str(room["room_id"]))
     return _ok(rid, result)
 
 
@@ -391,6 +405,27 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {
         "event": event, "client_event_id": client_event_id, "accepted": True,
         "driver_started": True})
+
+
+@_room_method(
+    "groups.attachment.upload", code=5121, room_code=4125, service_code=4123,
+    service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Retain one composer file for a later ``groups.send`` manifest (same store as the gateway route)."""
+    from gateway.session_hosted_attachments import store_upload
+    room_id = params.get("room_id")
+    service._owned_authority(room_id)
+    service._room(room_id)
+    return _ok(rid, store_upload(service, room_id, params))
+
+
+@_room_method("groups.attachment.download", code=5123, room_code=4126, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Read one committed room file for a viewer of this gateway's room."""
+    from gateway.session_hosted_attachments import read_download
+    room_id = params.get("room_id")
+    service._room(room_id)
+    return _ok(rid, read_download(service, room_id, params))
 
 
 @_room_method(
@@ -434,6 +469,14 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {"cancelled": count})
 
 
+@_room_method("groups.continue", code=5126, room_code=4128, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """Grant a discussion paused at its cap one more budget of rounds and messages."""
+    event = service.continue_room(
+        str(params.get("room_id") or ""), discussion_event_id=str(params.get("discussion_event_id") or ""))
+    return _ok(rid, {"continued": True, "event": event})
+
+
 @_room_method("groups.approve", code=5119, service_code=4115)
 def _(rid, params: dict, service) -> dict:
     """Resolve one exact approval requested by a local or peer room member."""
@@ -463,6 +506,13 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {"retried": True, "task": receipt})
 
 
+@_room_method("groups.discard", code=5125)
+def _(rid, params: dict) -> dict:
+    """Discard one indeterminate room task: forwarded to the gateway that owns the room, the only
+    runtime that offers Discard; a room this backend drives itself never shows the action."""
+    return _err(rid, 4127, "Only the Hermes gateway that owns this Group Chat can discard its work.")
+
+
 def _passthrough(
     name: str, module: str, fn_name: str, doc: str, *, code: int, room_code: int,
     params: tuple, replica_only: bool = False, wrap: str | None = None) -> None:
@@ -485,6 +535,10 @@ _passthrough(
     "groups.rename", "gateway.hosted_rooms", "rename_room",
     """Rename one hosted room atomically with its replay event.""",
     code=5117, room_code=4117, params=("room_id", "event_id", "name"), wrap="room")
+_passthrough(
+    "groups.context", "gateway.hosted_room_context", "set_room_context",
+    """Set one hosted room's purpose, shared notes and routing (``everyone`` or ``lead``).""",
+    code=5121, room_code=4125, params=("room_id", "event_id", "purpose", "notes", "routing", "lead_member_id"))
 _passthrough(
     "groups.log", "gateway.hosted_rooms", "read_events",
     """Return a monotonic room-log delta after ``since_seq``.""",

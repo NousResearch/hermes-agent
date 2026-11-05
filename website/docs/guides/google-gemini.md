@@ -113,6 +113,33 @@ take the native Gemini path when the base URL points at
 another host is treated as an OpenAI-compatible endpoint, so configure it with its
 `/openai`-style URL.
 
+### Interactions API
+
+Hermes can also send Gemini requests through Google's
+[Interactions API](https://aistudio.google.com/docs/interactions-overview) instead of
+`generateContent`. The choice is per model:
+
+```yaml
+providers:
+  gemini:
+    gemini_api: interactions        # every Gemini model
+    models:
+      gemini-3.8-flash:
+        gemini_api: generate_content  # except this one
+```
+
+Each setting takes `interactions`, `generate_content` or `auto` (the default). A per-model
+setting wins over the provider-wide one. `auto` uses Interactions only for models Google
+serves there exclusively, and `generateContent` for everything else.
+
+Hermes calls Interactions statelessly (`store: false`): it sends the whole conversation on
+every request, the same as `generateContent`, so Google keeps no copy of the conversation.
+The exception is long decode (Gemini 4 at `xhigh` effort and above): Google continues
+those multi-request answers only from a stored interaction, so those requests set
+`store: true`. Interactions is only available on the AI Studio host
+(`generativelanguage.googleapis.com`). A Vertex AI express or proxy base URL always uses
+`generateContent`.
+
 ### Vertex AI Express Mode Keys
 
 Google now issues `AQ.…`-prefixed keys for **both** Google AI Studio and Vertex AI

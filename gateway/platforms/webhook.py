@@ -837,15 +837,17 @@ class WebhookAdapter(BasePlatformAdapter):
         return "accepted"
 
     async def _finalize_delivery(self, event, authority, receipt):
-        from hermes_state_runtime import get_session_admission
+        from dataclasses import asdict
+        from gateway.platforms.api_server_store import authority_store
         try:
-            row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-            if row['status'] in {'queued', 'started'}:
+            admissions = authority_store(authority).admissions
+            row = admissions.get(admission_id=receipt.admission_id)
+            if row.status in {'queued', 'started'}:
                 waiter = authority.waiters.setdefault(receipt.admission_id,
                     asyncio.get_running_loop().create_future())
                 await asyncio.shield(waiter)
-                row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-            event._webhook_receipt = (authority, authority._receipt(row))
+                row = admissions.get(admission_id=receipt.admission_id)
+            event._webhook_receipt = (authority, authority._receipt(asdict(row)))
             await self._end_webhook_session(event, event.source.chat_id)
         except Exception:
             logger.exception("[webhook] Could not finalize admitted delivery %s", receipt.admission_id)

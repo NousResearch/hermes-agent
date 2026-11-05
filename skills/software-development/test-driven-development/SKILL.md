@@ -143,11 +143,11 @@ We'll fix it in REFACTOR.
 **MANDATORY.**
 
 ```bash
-# Run the specific test
+# Run the specific test — inline output is fine for a single test
 pytest tests/test_feature.py::test_specific_behavior -v
 
-# Then run ALL tests to check for regressions
-pytest tests/ -q
+# Then run ALL tests to check for regressions — log the run, read back only the summary
+pytest tests/ -q > /tmp/pytest-full.log 2>&1; echo "exit=$?"; tail -3 /tmp/pytest-full.log
 ```
 
 Confirm:
@@ -312,8 +312,8 @@ terminal("pytest tests/test_feature.py::test_name -v")
 # GREEN — verify pass
 terminal("pytest tests/test_feature.py::test_name -v")
 
-# Full suite — verify no regressions
-terminal("pytest tests/ -q")
+# Full suite — verify no regressions: log the run, read back only the summary
+terminal('pytest tests/ -q > /tmp/pytest-full.log 2>&1; echo "exit=$?"; tail -3 /tmp/pytest-full.log')
 ```
 
 ### With delegate_task

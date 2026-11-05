@@ -1,5 +1,6 @@
 """RoomLink room-member grants and capability HTTP handlers."""
 
+import asyncio
 import sqlite3
 import time
 import uuid
@@ -76,7 +77,14 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/room-members/invitations", self._handle_room_member_invitation),
         ("GET", "/v1/room-members/capabilities", self._handle_room_member_capabilities),
         ("POST", "/v1/room-members/grants/refresh", self._handle_room_member_grant_refresh),
-        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
+        ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke),
+        ("POST", "/v1/room-members/runs/close", _run_close_route(self))]
+
+
+def _run_close_route(self):
+    async def handler(request):
+        return await _handle_room_member_run_close(self, request)  # looked up per call: test seam
+    return handler
 
 
 def _room_grant_token(request: web.Request) -> str:
@@ -238,3 +246,40 @@ async def _handle_room_member_grant_revoke(
     except (ValueError, KeyError, TypeError):  # this grant cannot pass here: unsigned, expired, not ours
         return _room_grant_error_response(_openai_error=_openai_error)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})
+
+
+async def _handle_room_member_run_close(self, request: web.Request) -> web.Response:
+    """Find the run one room turn's admission key started, or close that key so it never starts.
+
+    Discard of a turn whose home lost its receipt asks this instead of replaying the admission,
+    which would start the turn on a member that never had it. A closed key answers any later
+    POST /v1/runs under it with ``idempotency_key_conflict``. Rides the grant's ``stop``
+    permission and its own run namespace, as POST /v1/runs/{id}/stop does."""
+    from gateway.platforms.api_server import _api_request_profile, _openai_error
+    from gateway.platforms.api_server_runs import _remember_room_retention, _room_retention_until, room_run_scope
+    try:
+        claims = self._room_grant_claims(request, permission="stop")
+        _local_target(claims, _api_request_profile)
+    except Exception as exc:  # health: allow BLE001 -- any grant failure is answered as the grant's error, as the capabilities route does
+        return _room_grant_error_response(exc, _openai_error=_openai_error)
+    body, error = await self._read_json_body(request)
+    if error:
+        return error
+    task_id, generation = body.get("task_id"), body.get("execution_generation")
+    if (set(body) != {"task_id", "execution_generation"} or not isinstance(task_id, str) or not task_id
+            or type(generation) is not int or generation < 1):
+        return _json_error(_openai_error, "Run close takes task_id and execution_generation.",
+                           code="invalid_room_run_close", status=400)
+    _remember_room_retention(request, claims)
+    try:
+        outcome, record = await asyncio.to_thread(
+            self._run_idempotency_store.find_or_close, room_run_scope(claims), f"room:{task_id}:{generation}",
+            retention_until=_room_retention_until(request))
+    except (sqlite3.Error, OSError):
+        return _json_error(
+            _openai_error, "Run store is unavailable.", err_type="server_error",
+            code="run_store_unavailable", status=503)
+    if outcome == "closed":
+        return web.json_response({"object": "hermes.room_member.run_close", "closed": True})
+    return web.json_response({"object": "hermes.room_member.run_close", "closed": False,
+                              "run_id": record["run_id"]})

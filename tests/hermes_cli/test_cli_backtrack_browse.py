@@ -88,10 +88,14 @@ def test_first_esc_primes_with_the_hint_and_the_second_opens_browse_on_the_lates
 def test_a_non_escape_key_cancels_the_prime(cli):
     from prompt_toolkit.key_binding.key_processor import KeyPress
     from prompt_toolkit.keys import Keys
+    esc = [KeyPress(Keys.Escape, "\x1b")]
     _esc(cli)
-    cli._backtrack_after_key_press(SimpleNamespace(key_buffer=[KeyPress(Keys.Escape, "\x1b")]))
+    cli._backtrack_after_key_press(SimpleNamespace(key_buffer=[], _previous_key_sequence=esc))
+    assert cli._backtrack_primed  # the Esc that primed keeps it
+    cli._backtrack_after_key_press(SimpleNamespace(key_buffer=esc, _previous_key_sequence=[]))
     assert cli._backtrack_primed  # an Esc waiting for a possible Alt-sequence keeps it
-    cli._backtrack_after_key_press(SimpleNamespace(key_buffer=[]))  # e.g. a typed letter
+    typed = [KeyPress("x", "x")]
+    cli._backtrack_after_key_press(SimpleNamespace(key_buffer=[], _previous_key_sequence=typed))
     assert cli._backtrack_primed is None and "esc again" not in _hint(cli)
     _esc(cli)
     assert cli._backtrack_state is None  # primes again rather than opening

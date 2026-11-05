@@ -49,11 +49,15 @@ _PLUGIN_MODULE_PREFIX = "hermes_dashboard_plugin_"
 
 def _surface_gates(route) -> list[str]:
     """``route_on(field)`` dependencies: the route 404s on surfaces whose policy leaves *field* off."""
+    from hermes_cli.web_server_surface import route_on
+
+    gate_code = route_on("_").__code__
     gates = []
     for dep in getattr(getattr(route, "dependant", None), "dependencies", ()):
         call = getattr(dep, "call", None)
-        if call is not None and call.__name__ == "surface_serves" and call.__closure__:
-            gates.append(str(call.__closure__[0].cell_contents))
+        if call is not None and getattr(call, "__code__", None) is gate_code:
+            cells = dict(zip(call.__code__.co_freevars, (c.cell_contents for c in call.__closure__)))
+            gates.append(str(cells["field"]))
     return sorted(gates)
 
 

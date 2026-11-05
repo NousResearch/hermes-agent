@@ -28,15 +28,12 @@ def isolated_home(tmp_path, monkeypatch):
     from hermes_cli import gateway_session_store
 
     def create_titled(title):
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
+        with open_persistence(profile_scope()) as store:
             sid = "local-" + "ab" * 32
-            db.create_session(sid, source="local")
-            db.set_session_title(sid, title)
+            seed_session(store, sid, "local", title=title)
             return sid
-        finally:
-            db.close()
     monkeypatch.setattr(gateway_session_store, "create_titled_session", create_titled)
     return home
 
@@ -75,29 +72,23 @@ class TestCreateTitledSession:
         sid = _create_titled_session("Bot Chat")
         assert sid, "should return a session id"
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        try:
-            session = db.get_session(sid)
+        with open_persistence(profile_scope()) as store:
+            session = store.sessions.get(sid)
             assert session is not None
-            assert db.get_session_title(sid) == "Bot Chat"
-        finally:
-            db.close()
+            assert store.sessions.get_title(sid) == "Bot Chat"
 
     def test_created_session_resolvable_by_title(self, isolated_home):
         """After creation, resolve_session_by_title finds it (idempotent sends)."""
         sid = _create_titled_session("Bot Chat")
         assert sid
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        try:
-            resolved = db.resolve_session_by_title("Bot Chat")
+        with open_persistence(profile_scope()) as store:
+            resolved = store.sessions.resolve_by_title("Bot Chat")
             assert resolved == sid
-        finally:
-            db.close()
 
 
 class TestChatCFailLoudlyOnStderr:
@@ -181,10 +172,7 @@ class TestChatCFailLoudlyOnStderr:
         main_mod._resolve_continue_arg(args, use_tui=True)
 
         assert args.resume, "resume should be set to the new session id"
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        try:
-            assert db.get_session_title(args.resume) == "Bot Chat"
-        finally:
-            db.close()
+        with open_persistence(profile_scope()) as store:
+            assert store.sessions.get_title(args.resume) == "Bot Chat"

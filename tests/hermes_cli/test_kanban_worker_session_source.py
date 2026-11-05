@@ -9,15 +9,17 @@ import os
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import SessionQuery
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    database = SessionDB(db_path=tmp_path / "state.db")
-    yield database
-    database.close()
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        yield store
 
 
 def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
@@ -65,14 +67,14 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
 
 def test_kanban_rows_stay_out_of_the_session_list(db):
     """A `kanban` row is filtered by the same exclude the sidebar sends."""
-    db.create_session(session_id="chat", source="desktop")
-    db.append_message(session_id="chat", role="user", content="hey")
-    db.create_session(session_id="worker", source="kanban")
-    db.append_message(session_id="worker", role="user", content="work kanban task t_b21733fb")
+    seed_session(db, "chat", "desktop")
+    seed_messages(db, "chat", {"role": "user", "content": "hey"})
+    seed_session(db, "worker", "kanban")
+    seed_messages(db, "worker", {"role": "user", "content": "work kanban task t_b21733fb"})
 
-    listed = db.list_sessions_rich(exclude_sources=["cron", "kanban", "subagent", "tool"])
+    listed = db.sessions.list_sessions(SessionQuery(exclude_sources=("cron", "kanban", "subagent", "tool")))
 
-    assert [row["id"] for row in listed] == ["chat"]
+    assert [entry.session.session_id for entry in listed] == ["chat"]
 
 
 def test_retag_reclaims_legacy_worker_rows(db, tmp_path):
@@ -82,29 +84,29 @@ def test_retag_reclaims_legacy_worker_rows(db, tmp_path):
     cursor, which would otherwise report the meta write's rowcount instead.
     """
     workspaces = tmp_path / "kanban" / "workspaces"
-    db.create_session(session_id="legacy", source="cli", cwd=str(workspaces / "t_b21733fb"))
-    db.create_session(session_id="legacy2", source="cli", cwd=str(workspaces / "t_c0ffee"))
-    db.create_session(session_id="mine", source="cli", cwd=str(tmp_path / "www" / "repo"))
+    seed_session(db, "legacy", "cli", cwd=str(workspaces / "t_b21733fb"))
+    seed_session(db, "legacy2", "cli", cwd=str(workspaces / "t_c0ffee"))
+    seed_session(db, "mine", "cli", cwd=str(tmp_path / "www" / "repo"))
 
-    assert db.retag_kanban_worker_sessions(str(workspaces)) == 2
+    assert db.sessions.retag_worker_sessions(str(workspaces)) == 2
 
-    sources = {row[0]: row[1] for row in db._conn.execute("SELECT id, source FROM sessions")}
+    with raw_holder(db)._read_ctx() as conn:
+        sources = {row[0]: row[1] for row in conn.execute("SELECT id, source FROM sessions")}
     assert sources == {"legacy": "kanban", "legacy2": "kanban", "mine": "cli"}
 
 
 def test_retag_runs_once_per_workspaces_root(db, tmp_path):
     """The state_meta gate keeps the retag off every subsequent spawn."""
     workspaces = tmp_path / "kanban" / "workspaces"
-    db.create_session(session_id="legacy", source="cli", cwd=str(workspaces / "t_a"))
-    db.retag_kanban_worker_sessions(str(workspaces))
+    seed_session(db, "legacy", "cli", cwd=str(workspaces / "t_a"))
+    db.sessions.retag_worker_sessions(str(workspaces))
 
     # A row that a *new* worker would never write as `cli`; if the gate leaked,
     # a later sweep would grab it too.
-    db.create_session(session_id="later", source="cli", cwd=str(workspaces / "t_b"))
+    seed_session(db, "later", "cli", cwd=str(workspaces / "t_b"))
 
-    assert db.retag_kanban_worker_sessions(str(workspaces)) == 0
-    row = db._conn.execute("SELECT source FROM sessions WHERE id = 'later'").fetchone()
-    assert row[0] == "cli"
+    assert db.sessions.retag_worker_sessions(str(workspaces)) == 0
+    assert db.sessions.get("later").source == "cli"
 
 
 def test_retag_gate_is_per_board(db, tmp_path):
@@ -115,8 +117,8 @@ def test_retag_gate_is_per_board(db, tmp_path):
     """
     board_a = tmp_path / "kanban" / "boards" / "a" / "workspaces"
     board_b = tmp_path / "kanban" / "boards" / "b" / "workspaces"
-    db.create_session(session_id="a1", source="cli", cwd=str(board_a / "t_a"))
-    db.create_session(session_id="b1", source="cli", cwd=str(board_b / "t_b"))
+    seed_session(db, "a1", "cli", cwd=str(board_a / "t_a"))
+    seed_session(db, "b1", "cli", cwd=str(board_b / "t_b"))
 
-    assert db.retag_kanban_worker_sessions(str(board_a)) == 1
-    assert db.retag_kanban_worker_sessions(str(board_b)) == 1
+    assert db.sessions.retag_worker_sessions(str(board_a)) == 1
+    assert db.sessions.retag_worker_sessions(str(board_b)) == 1

@@ -1,0 +1,21 @@
+name: hireko
+title: Hireko
+repo: https://github.com/HireKoAI/HirekoAiPluginPublicRepo
+subdir: .hermes-plugin
+sha: 2f9db4d5cd7f35ee9e76f4f43590de9467cd9f8a
+version: "0.1.0"
+image: https://raw.githubusercontent.com/HireKoAI/HirekoAiPluginPublicRepo/hermes/.hermes-plugin/assets/hireko-image.png
+description: >-
+  Hireko Recruiter MCP gateway: Cognito authentication, candidate screening interview link creation,
+  and candidate search scoring. Hosted connector: tool arguments are sent to Hireko; an authenticated account is required.
+maintainer: HireKoAI
+tier: community
+category: tools
+docs_url: https://github.com/HireKoAI/HirekoAiPluginPublicRepo/tree/hermes/.hermes-plugin#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

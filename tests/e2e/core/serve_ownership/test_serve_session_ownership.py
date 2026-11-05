@@ -182,6 +182,15 @@ def _replied(db: Path, sid: str) -> bool:
     return any(m["role"] == "assistant" and REPLY in (m["content"] or "") for m in persisted_messages(db, sid))
 
 
+def _settled(db: Path, sid: str, on_gateway: bool) -> bool:
+    """A reply persisted, or no live admission is left that could still write one. A turn the gateway ran
+    with no ledger row at all proves nothing yet: wait for its reply (the deadline fails loudly)."""
+    if _replied(db, sid):
+        return True
+    rows = _admissions(db, sid)
+    return not any(s in ("queued", "started") for _, s in rows) and (bool(rows) or not on_gateway)
+
+
 @pytest.fixture(scope="module")
 def scenario(tmp_path_factory: pytest.TempPathFactory):
     root, tag, model = tmp_path_factory.mktemp("serve-own"), new_tag(), _Model()
@@ -242,9 +251,8 @@ def scenario(tmp_path_factory: pytest.TempPathFactory):
         serve.send_signal(signal.SIGTERM)
         facts["serve"]["rc"] = serve.wait(timeout=60)
         model.release.set()
-        # Settled: a reply persisted, or no live admission is left that could still write one.
-        _poll(lambda: _replied(db, stored) or not any(s in ("queued", "started") for _, s in _admissions(db, stored)),
-              TURN_S, "serve turn settled after SIGTERM", log)
+        on_gateway = facts["serve"]["caller"] == "gateway"
+        _poll(lambda: _settled(db, stored, on_gateway), TURN_S, "serve turn settled after SIGTERM", log)
         facts["serve"]["replied"] = _replied(db, stored)
         yield facts
     finally:

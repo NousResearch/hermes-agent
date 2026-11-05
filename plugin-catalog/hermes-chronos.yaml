@@ -1,13 +1,13 @@
 name: hermes-chronos
 title: Hermes Chronos
 repo: "https://github.com/DevTarlow/hermes-chronos"
-sha: "99554acbc92a776070a9bf10ac401dc97d43fd93"
-description: "Time-travel filesystem checkpoints, autonomous rollback, and a scrubbable Desktop timeline for Hermes Agent."
+sha: "284f53c20c338bdefbe6dac0416df63da98c9483"
+description: "Time-travel filesystem checkpoints, approval-gated rollback, and a scrubbable Desktop timeline for Hermes Agent."
 maintainer: DevTarlow
 tier: community
 category: tools
 requires_hermes: ">=0.19.0"
-version: "1.0.0"
+version: "1.0.1"
 readme: true
 capabilities:
   provides_tools:

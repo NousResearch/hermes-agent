@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
+from persistence_assembly import close_stores_under
 
 
 class _Socket:
@@ -135,7 +136,7 @@ async def rig(tmp_path, monkeypatch):
             if task.done() and not task.cancelled():
                 task.exception()
         for authority in list(getattr(runner, 'session_authorities', None) or ()):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for home in all_homes:
             process_ownership.release(Path(home))
 

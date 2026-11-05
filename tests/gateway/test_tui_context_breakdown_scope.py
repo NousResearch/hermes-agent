@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway import test_tui_session_reads as reads
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 owner = reads.owner
 
@@ -21,19 +23,19 @@ async def test_context_breakdown_without_a_resident_agent_estimates_the_stored_f
     from gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='idle', source='tui', cwd=str(owner.workdir)))['session_id']
-    db = owner.authority.db
+    db = owner.authority.persistence
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
     prompt = 'You are Hermes. ' * 50 + '\n<available_skills>\n  - plan: write plans\n</available_skills>'
     tools = [{'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}},
              {'type': 'function', 'function': {'name': 'mcp_docs_search', 'description': 'search ' * 20}}]
-    db.update_system_prompt(stored, prompt)
-    db.update_session_tool_names(stored, {'version': 'v', 'tools': tools})
-    db.append_message(stored, 'user', 'hello ' * 100)
-    db.append_message(stored, 'assistant', 'hi')
+    db.sessions.update_system_prompt(stored, prompt)
+    db.sessions.update_tool_pin(stored, {'version': 'v', 'tools': tools})
+    seed_messages(db, stored, {'role': 'user', 'content': 'hello ' * 100}, {'role': 'assistant', 'content': 'hi'})
     assert owner.authority.agent(SimpleNamespace(session_id=sid)) is None
 
     monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': prompt})
-    expected = compute_session_context_breakdown(SimpleNamespace(tools=tools), db.get_resume_conversations(stored)[0])
+    history = [m.as_openai_message() for m in db.messages.read_resume_conversations(stored).model]
+    expected = compute_session_context_breakdown(SimpleNamespace(tools=tools), history)
     actual = await owner.call('session.context_breakdown', session_id=sid)
     assert actual['categories'] == expected['categories'], actual
     assert {c['id'] for c in actual['categories']} == {'system_prompt', 'tool_definitions', 'skills', 'mcp',
@@ -48,14 +50,14 @@ async def test_agentless_breakdown_refreshes_when_the_stored_prompt_or_tools_cha
     from gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='refreeze', source='tui', cwd=str(owner.workdir)))['session_id']
-    db = owner.authority.db
+    db = owner.authority.persistence
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
-    db.append_message(stored, 'user', 'hello')
+    seed_messages(db, stored, {'role': 'user', 'content': 'hello'})
     before = await owner.call('session.context_breakdown', session_id=sid)
-    db.update_system_prompt(stored, 'You are Hermes. ' * 50)
+    db.sessions.update_system_prompt(stored, 'You are Hermes. ' * 50)
     prompted = await owner.call('session.context_breakdown', session_id=sid)
     assert prompted['estimated_total'] > before['estimated_total'], prompted
-    db.update_session_tool_names(stored, {'version': 'v', 'tools': [
+    db.sessions.update_tool_pin(stored, {'version': 'v', 'tools': [
         {'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}}]})
     tooled = await owner.call('session.context_breakdown', session_id=sid)
     assert 'tool_definitions' in {c['id'] for c in tooled['categories']}, tooled
@@ -66,9 +68,9 @@ async def _agentless_session(owner, request_id, pin):
 
     sid = (await owner.call('session.create', request_id=request_id, source='tui', cwd=str(owner.workdir)))['session_id']
     stored = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
-    owner.authority.db.update_system_prompt(stored, 'You are Hermes. ' * 50)
-    owner.authority.db.update_session_tool_names(stored, pin)
-    owner.authority.db.append_message(stored, 'user', 'hello')
+    owner.authority.persistence.sessions.update_system_prompt(stored, 'You are Hermes. ' * 50)
+    owner.authority.persistence.sessions.update_tool_pin(stored, pin)
+    seed_messages(owner.authority.persistence, stored, {'role': 'user', 'content': 'hello'})
     return sid, stored
 
 
@@ -97,7 +99,7 @@ async def test_agentless_breakdown_survives_a_swept_tools_pin(owner):
     """A pin hash whose ``system_prompts`` row was swept resolves to the bare hash: no tools, no error."""
     sid, stored = await _agentless_session(owner, 'swept', {'version': 'v', 'tools': [
         {'type': 'function', 'function': {'name': 'terminal', 'parameters': {'type': 'object'}}}]})
-    owner.authority.db._execute_write(lambda conn: conn.execute(
+    raw_holder(owner.authority.persistence)._execute_write(lambda conn: conn.execute(
         'DELETE FROM system_prompts WHERE hash = (SELECT tool_names FROM sessions WHERE id = ?)', (stored,)))
     actual = await owner.call('session.context_breakdown', session_id=sid)
     assert {c['id'] for c in actual['categories']} == {'system_prompt', 'conversation'}, actual
@@ -112,20 +114,19 @@ async def test_context_breakdown_measures_only_the_compression_tips_model_histor
     from gateway.session_tui_reads import _stored_id
 
     sid = (await owner.call('session.create', request_id='lineage', source='tui', cwd=str(owner.workdir)))['session_id']
-    db = owner.authority.db
+    db = owner.authority.persistence
     root = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
     for i in range(4):
-        db.append_message(root, 'user' if i % 2 == 0 else 'assistant', f'old segment {i} ' * 1000)
-    db.end_session(root, 'compression')
-    db.create_session('tip', source='tui', parent_session_id=root)
-    db.append_message('tip', 'session_meta', 'not model input ' * 1000)
-    db.append_message('tip', 'user', 'summary of prior turns')
-    db.append_message('tip', 'assistant', 'current answer')
+        seed_messages(db, root, {'role': 'user' if i % 2 == 0 else 'assistant', 'content': f'old segment {i} ' * 1000})
+    db.sessions.end(root, 'compression')
+    seed_session(db, 'tip', 'tui', parent_session_id=root)
+    seed_messages(db, 'tip', {'role': 'session_meta', 'content': 'not model input ' * 1000},
+                  {'role': 'user', 'content': 'summary of prior turns'}, {'role': 'assistant', 'content': 'current answer'})
     agent = SimpleNamespace(model='fake-model', provider='custom', tools=[])
     owner.authority.runner._cached_agent_for = lambda route: agent
     monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': 'frozen identity'})
 
-    model_history = db.get_resume_conversations('tip')[0]
+    model_history = [m.as_openai_message() for m in db.messages.read_resume_conversations('tip').model]
     assert [m['content'] for m in model_history] == ['summary of prior turns', 'current answer']
     expected = compute_session_context_breakdown(agent, model_history)
     actual = await owner.call('session.context_breakdown', session_id=sid)

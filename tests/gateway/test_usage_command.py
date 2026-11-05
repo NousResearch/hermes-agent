@@ -1,8 +1,8 @@
-from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,6 +52,7 @@ def _make_runner(session_key, agent=None, cached_agent=None):
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner.session_store = MagicMock()
+    runner.session_store.persistence = None
 
     if agent is not None:
         runner._running_agents[session_key] = agent
@@ -66,6 +67,14 @@ def _make_runner(session_key, agent=None, cached_agent=None):
 
 
 SK = "agent:main:telegram:private:12345"
+
+
+def _handle(session=None, route=None):
+    """A storage interface handle whose session record and most recent route are fixed."""
+    handle = MagicMock()
+    handle.aio.sessions.get = AsyncMock(return_value=session)
+    handle.aio.usage.recent_route = AsyncMock(return_value=route)
+    return handle
 
 
 class TestUsageCachedAgent:
@@ -111,11 +120,10 @@ class TestUsageAccountSection:
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {
-            "billing_provider": "openai-codex",
-            "billing_base_url": "https://chatgpt.com/backend-api/codex",
-        }
+        runner.session_store.persistence = _handle(session=SimpleNamespace(
+            billing_provider="openai-codex",
+            billing_base_url="https://chatgpt.com/backend-api/codex",
+        ))
         session_entry = MagicMock()
         session_entry.session_id = "sess-1"
         runner.session_store.get_or_create_session.return_value = session_entry
@@ -161,9 +169,7 @@ class TestUsageAccountSection:
         """#15167: no agent, no persisted route, empty transcript -> still fetch account limits
         for the configured provider instead of the bare "no data" stub."""
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {}
-        runner._session_db._db.get_recent_session_model_route.return_value = None
+        runner.session_store.persistence = _handle()
         session_entry = MagicMock()
         session_entry.session_id = "sess-fresh"
         runner.session_store.get_or_create_session.return_value = session_entry
@@ -196,16 +202,18 @@ class TestUsageAccountSection:
     @pytest.mark.asyncio
     async def test_usage_command_prefers_recent_persisted_route(self, monkeypatch):
         runner = _make_runner(SK)
-        runner._session_db = AsyncSessionDB(MagicMock())
-        runner._session_db._db.get_session.return_value = {
-            "billing_provider": "nous",
-            "billing_base_url": "https://inference-api.nousresearch.com/v1/",
-        }
-        runner._session_db._db.get_recent_session_model_route.return_value = {
-            "model": "z-ai/glm-5.2",
-            "billing_provider": "nvidia",
-            "billing_base_url": "https://integrate.api.nvidia.com/v1/",
-        }
+        runner.session_store.persistence = _handle(
+            session=SimpleNamespace(
+                billing_provider="nous",
+                billing_base_url="https://inference-api.nousresearch.com/v1/",
+            ),
+            route=SimpleNamespace(route=SimpleNamespace(
+                model="z-ai/glm-5.2",
+                billing_provider="nvidia",
+                billing_base_url="https://integrate.api.nvidia.com/v1/",
+                billing_mode=None,
+            ), api_call_count=0),
+        )
         session_entry = MagicMock(session_id="sess-1")
         runner.session_store.get_or_create_session.return_value = session_entry
 

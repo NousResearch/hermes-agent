@@ -9,10 +9,14 @@ them and silently route incoming messages into a closed session (#52804).
 
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 # ---------------------------------------------------------------------------
@@ -44,20 +48,31 @@ def _make_entry_with_origin(key: str, session_id: str) -> SessionEntry:
 
 
 def _make_store_with_db(tmp_path, db_mock) -> SessionStore:
-    """Build a SessionStore with a mock SessionDB, bypassing disk load."""
+    """Build a SessionStore pinned to a mock store, bypassing disk load."""
     config = GatewayConfig()
     with patch("gateway.session.SessionStore._ensure_loaded"):
         store = SessionStore(sessions_dir=tmp_path, config=config)
     store._db = db_mock
+    if isinstance(db_mock, MagicMock):
+        store._persistence_beside = lambda db: db  # the mock is the storage interface handle too
     store._loaded = True
     return store
 
 
 def _db_returning(rows: dict) -> MagicMock:
-    """SessionDB mock where get_session maps session_id -> row dict."""
+    """Storage handle mock where sessions.get maps session_id -> a record of the row's columns (no stored
+    origin or chat, as on these rows)."""
     db = MagicMock()
-    db.get_session.side_effect = lambda sid: rows.get(sid)
+    db.sessions.get.side_effect = (
+        lambda sid: SimpleNamespace(origin=None, chat_id=None, **rows[sid]) if sid in rows else None)
+    db.routing.route_retired.return_value = False
     return db
+
+
+def _peer(row: dict):
+    """The ``routing.latest_session_for_peer`` answer for a recovered row."""
+    session = SimpleNamespace(session_id=row.pop("id"), session_key=None, message_count=0, origin=None, **row)
+    return SimpleNamespace(session=session, has_messages=True)
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +80,6 @@ def _db_returning(rows: dict) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 class TestPruneStaleSessionsLocked:
-
-
     def test_prunes_multiple_stale_entries(self, tmp_path):
         db = _db_returning({
             "sid_a": {"end_reason": "agent_close", "id": "sid_a"},
@@ -84,7 +97,6 @@ class TestPruneStaleSessionsLocked:
         assert "key_b" not in store._entries
         assert "key_c" in store._entries
 
-
     def test_keeps_stale_entry_when_recovery_lookup_raises(self, tmp_path):
         """Indeterminate recovery must not delete the only routing handle.
 
@@ -95,7 +107,7 @@ class TestPruneStaleSessionsLocked:
         """
         key = "agent:main:telegram:dm:5140768830"
         db = _db_returning({"sid_parent": {"end_reason": "compression", "id": "sid_parent"}})
-        db.find_latest_gateway_session_for_peer.side_effect = RuntimeError("db busy")
+        db.routing.latest_session_for_peer.side_effect = RuntimeError("db busy")
         store = _make_store_with_db(tmp_path, db)
         store._entries[key] = _make_entry_with_origin(key, "sid_parent")
 
@@ -120,13 +132,11 @@ class TestPruneStaleSessionsLocked:
             {"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}}
         )
         # Recovery returns the row for sid_parent itself — same id as the entry.
-        db.find_latest_gateway_session_for_peer.return_value = {
+        db.routing.latest_session_for_peer.return_value = _peer({
             "id": "sid_parent",
             "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
-            "last_activity_at": (
-                datetime.now() - timedelta(hours=4)
-            ).timestamp(),
-        }
+            "last_activity_at": (datetime.now() - timedelta(hours=4)).timestamp(),
+        })
         store = _make_store_with_db(tmp_path, db)  # default mode="none"
         original_entry = _make_entry_with_origin(key, "sid_parent")
         original_entry.model_override = {"model": "custom/model", "provider": "openrouter"}
@@ -147,7 +157,7 @@ class TestPruneStaleSessionsLocked:
         }
         assert store._entries[key].resume_pending is True
         # The row is reopened in state.db by recovery.
-        db.reopen_session.assert_called_once_with("sid_parent")
+        db.sessions.reopen.assert_called_once_with("sid_parent")
         # Nothing in sessions.json changed, so no rewrite is needed.
         mock_save.assert_not_called()
 
@@ -163,9 +173,7 @@ class TestPruneStaleSessionsLocked:
 
         assert "key" in store._entries
 
-
-
-    def test_reset_boundary_does_not_recover_older_session_for_peer(self, tmp_path):
+    def test_reset_boundary_does_not_recover_older_session_for_peer(self, tmp_path, monkeypatch):
         """Startup pruning must not search past an intentional reset boundary.
 
         The durable recovery query deliberately excludes ``session_reset``
@@ -173,26 +181,27 @@ class TestPruneStaleSessionsLocked:
         row for the same peer. If startup pruning invokes recovery for a
         routing entry that points at such a row, the query must not return
         an older live session for the same peer and silently restore the
-        context that the user reset. Exercise the real SessionDB query here
+        context that the user reset. Exercise the real store query here
         rather than mocking its result.
         """
-        from hermes_state import SessionDB
-
         key = "agent:main:telegram:dm:5140768830"
-        db = SessionDB(tmp_path / "state.db")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        db = storage_handle(tmp_path)
         peer = {
             "user_id": "5140768830",
             "session_key": key,
             "chat_id": "5140768830",
             "chat_type": "dm",
         }
-        db.create_session("sid_before_reset", "telegram", **peer)
-        db.append_message("sid_before_reset", "user", "private old context")
-        db.create_session("sid_reset", "telegram", **peer)
-        db.append_message("sid_reset", "user", "/new")
-        db.end_session("sid_reset", "session_reset")
+        seed_session(db, "sid_before_reset", "telegram", **peer)
+        seed_messages(db, "sid_before_reset", {"role": "user", "content": "private old context"})
+        seed_session(db, "sid_reset", "telegram", **peer)
+        seed_messages(db, "sid_reset", {"role": "user", "content": "/new"})
+        db.sessions.end("sid_reset", "session_reset")
 
-        store = _make_store_with_db(tmp_path / "sessions", db)
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        store._loaded = True
         stale_entry = _make_entry_with_origin(key, "sid_reset")
         store._entries[key] = stale_entry
 
@@ -203,7 +212,7 @@ class TestPruneStaleSessionsLocked:
 
         assert current.session_id not in {"sid_before_reset", "sid_reset"}
         assert store._entries[key].session_id == current.session_id
-        reset_row = db.get_session("sid_reset")
+        reset_row = session_row(db, "sid_reset")
         assert reset_row is not None
         assert reset_row["end_reason"] == "session_reset"
 
@@ -215,7 +224,6 @@ class TestPruneStaleSessionsLocked:
 class TestStartupRecovery:
     """Recovery keeps the durable session and activity timestamp."""
 
-
     def test_startup_repoint_unchanged(self, tmp_path):
         """Startup repoints to the recovered row."""
         key = "agent:main:telegram:dm:5140768830"
@@ -223,11 +231,11 @@ class TestStartupRecovery:
             {"sid_parent": {"end_reason": "compression", "id": "sid_parent"}}
         )
         last_activity = (datetime.now() - timedelta(hours=4)).timestamp()
-        db.find_latest_gateway_session_for_peer.return_value = {
+        db.routing.latest_session_for_peer.return_value = _peer({
             "id": "sid_child",
             "started_at": (datetime.now() - timedelta(hours=5)).timestamp(),
             "last_activity_at": last_activity,
-        }
+        })
         store = _make_store_with_db(tmp_path, db)  # default mode="none"
         store._entries[key] = _make_entry_with_origin(key, "sid_parent")
 
@@ -238,8 +246,8 @@ class TestStartupRecovery:
         assert store._entries[key].updated_at == datetime.fromtimestamp(
             last_activity
         )
-        db.reopen_session.assert_called_once_with("sid_child")
-        db.promote_to_session_reset.assert_not_called()
+        db.sessions.reopen.assert_called_once_with("sid_child")
+        db.sessions.promote_to_reset.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +263,7 @@ class TestEnsureLoadedCallsPrune:
         db = _db_returning({"sid_stale": {"end_reason": "agent_close", "id": "sid_stale"}})
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = db
-
+        store._db, store._persistence_beside = db, lambda pinned: pinned
         store._ensure_loaded()
 
         assert "dm_key" not in store._entries

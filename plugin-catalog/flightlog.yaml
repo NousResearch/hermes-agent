@@ -1,6 +1,6 @@
 name: flightlog
 repo: https://github.com/piyushpradhan/flightlog
-sha: ac1be4ac5ab221c62c2d4f0f05b31dba233c241d
+sha: c201d602219f6890c380954c1229692e6bfc3f44
 title: Flightlog
 description: >-
   Flight recorder for Hermes. Records every tool call, model call, subagent and approval
@@ -17,7 +17,7 @@ description: >-
 maintainer: Piyush Pradhan
 tier: community
 category: tools
-docs_url: https://github.com/piyushpradhan/flightlog/tree/ac1be4ac5ab221c62c2d4f0f05b31dba233c241d#readme
+docs_url: https://github.com/piyushpradhan/flightlog/tree/c201d602219f6890c380954c1229692e6bfc3f44#readme
 version: "0.1.0"
 requires_hermes: ">=0.21"
 platforms: []
@@ -26,3 +26,7 @@ capabilities:
   provides_hooks: [on_session_start, post_tool_call, post_api_request, api_request_error, subagent_start, subagent_stop, pre_approval_request, post_approval_response, transform_llm_output, on_session_end]
   provides_middleware: []
   requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/flagged-run.png
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/failed-helpers.png
+  - https://raw.githubusercontent.com/piyushpradhan/flightlog/c201d602219f6890c380954c1229692e6bfc3f44/docs/screenshots/healthy-run.png

@@ -35,6 +35,13 @@ import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /**
+   * Group-room scripts kept out of the visible message: when a member's turn prompt
+   * contains a key, its value (E2E_SAY / E2E_TOOL / E2E_FAIL tokens) is scripted as
+   * if the user had typed it, so a screenshot shows a natural sentence.
+   */
+  groupScripts?: Record<string, string>
+
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
@@ -523,6 +530,39 @@ export function groupScriptedLine(userText: string, history: string[] = []): str
 }
 
 /**
+ * Per-speaker tool call or failure for group rooms, addressed like `E2E_SAY`.
+ * `E2E_TOOL(<handle>)[<tool>:<command>]` makes that member's first completion
+ * of the turn call `<tool>` with `{ command }`; once the tool result follows
+ * the turn prompt it falls through to `groupScriptedLine`.
+ * `E2E_FAIL(<handle>)` makes that member's completions answer HTTP 401.
+ */
+export function groupScriptedAction(userText: string, messages: any[]): 'fail' | ScriptedTurn | null {
+  const viewer = /You are @([a-z0-9][a-z0-9._-]*)/i.exec(userText)?.[1]?.toLowerCase()
+
+  if (!viewer) {
+    return null
+  }
+
+  if ([...userText.matchAll(/E2E_FAIL\(([a-z0-9][a-z0-9._-]*)\)/gi)].some(match => match[1].toLowerCase() === viewer)) {
+    return 'fail'
+  }
+
+  const lastUser = messages.map(message => message?.role).lastIndexOf('user')
+
+  if (messages.slice(lastUser + 1).some(message => message?.role === 'tool')) {
+    return null
+  }
+
+  for (const match of userText.matchAll(/E2E_TOOL\(([a-z0-9][a-z0-9._-]*)\)\[([a-z_][a-z0-9_]*):([^\]]*)\]/gi)) {
+    if (match[1].toLowerCase() === viewer) {
+      return { text: '', toolCalls: [{ name: match[2], args: { command: match[3] } }] }
+    }
+  }
+
+  return null
+}
+
+/**
  * One scripted tool call driven by the user's own text, for specs that need the
  * agent to exercise a REAL tool once (e.g. Bot Mode's `message_agent`):
  * `E2E_CALL(message_agent)[{"target":"scribe","message":"ping"}]`. The first
@@ -626,6 +666,42 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     const heldStreamReleased = new Promise<void>(resolveRelease => {
       releaseHeldStream = resolveRelease
     })
+
+    // Group-room scripts (E2E_SAY / E2E_TOOL / E2E_FAIL); true when this completion was one.
+    const answerGroupScript = (res: ServerResponse, model: string, stream: boolean, userText: string, messages: any[], hold: boolean): boolean => {
+      const groupAction = groupScriptedAction(userText, messages)
+
+      if (groupAction === 'fail') {
+        // 401, not 5xx: the agent retries a 5xx with backoff for minutes, a 401 ends the turn.
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'E2E_FAIL: the mock refused this member on purpose', type: 'invalid_request_error' } }))
+
+        return true
+      }
+
+      const groupLine = groupScriptedLine(
+        userText,
+        messages.flatMap(m => (m?.role === 'user' && typeof m?.content === 'string' ? [m.content] : [])),
+      )
+
+      const groupTurn = groupAction ?? (groupLine === null ? null : { text: groupLine })
+
+      if (groupTurn === null) {
+        return false
+      }
+
+      const respond = () => (stream ? streamScriptedTurn(res, model, groupTurn) : nonStreamingScriptedTurn(res, model, groupTurn))
+
+      if (hold) {
+        heldCompletionCount++
+        resolveHeldStreamStarted?.()
+        void heldStreamReleased.then(respond)
+      } else {
+        respond()
+      }
+
+      return true
+    }
 
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
@@ -949,18 +1025,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const groupLine = groupScriptedLine(
-            userText,
-            messages.flatMap(m => (m?.role === 'user' && typeof m?.content === 'string' ? [m.content] : [])),
-          )
+          const scriptedText = [userText, ...Object.entries(options.groupScripts ?? {}).filter(([key]) => userText.includes(key)).map(([, script]) => script)].join(' ')
 
-          if (groupLine !== null) {
-            if (stream) {
-              streamTextResponse(res, model, groupLine)
-            } else {
-              nonStreamingTextResponse(res, model, groupLine)
-            }
-
+          if (answerGroupScript(res, model, stream, scriptedText, messages, holdThisCompletion)) {
             return
           }
 

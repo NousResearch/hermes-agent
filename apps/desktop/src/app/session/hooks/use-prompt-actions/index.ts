@@ -781,6 +781,9 @@ export function usePromptActions({
     // fast edit/resend still interrupt-first instead of racing 4009 (#83855).
     markSessionRecentlyInterrupted(sessionId)
 
+    // Preserve delivered bytes before the interrupted gate rejects later deltas.
+    flushStreamDeltas(sessionId)
+
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
       const messages = finalizeStoppedMessages(state.messages, streamId)

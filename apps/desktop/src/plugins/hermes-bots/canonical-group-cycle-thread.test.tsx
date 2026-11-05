@@ -5,7 +5,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
 
-  return { ...await pluginSdkMock(createGroupGateway().host), Button: (p: ComponentProps<'button'>) => <button {...p} /> }
+  return {
+    ...(await pluginSdkMock(createGroupGateway().host)),
+    Button: (p: ComponentProps<'button'>) => <button {...p} />
+  }
 })
 
 import { CanonicalGroupCycle } from './canonical-group-activity'
@@ -14,12 +17,19 @@ import { memberOutcomes, memberStatus, roomCycle, type RoomLogEvent } from './gr
 
 afterEach(cleanup)
 
-const members = [{ member_id: 'a', profile: 'a', handle: 'ada' }, { member_id: 'c', profile: 'c', handle: 'cy' }]
+const members = [
+  { member_id: 'a', profile: 'a', handle: 'ada' },
+  { member_id: 'c', profile: 'c', handle: 'cy' }
+]
 
 it('names only the running members of the thread whose round the strip shows', () => {
   const events: RoomLogEvent[] = [
     { seq: 1, event_id: 'a1', kind: 'message.user', payload: { text: 'go', thread_id: 'A' } },
-    { seq: 2, kind: 'turn.settled', payload: { member_id: 'a', discussion_event_id: 'a1', thread_id: 'A', round_index: 0 } },
+    {
+      seq: 2,
+      kind: 'turn.settled',
+      payload: { member_id: 'a', discussion_event_id: 'a1', thread_id: 'A', round_index: 0 }
+    },
     { seq: 3, event_id: 'b1', kind: 'message.user', payload: { text: 'go', thread_id: 'B' } }
   ]
 
@@ -31,15 +41,26 @@ it('names only the running members of the thread whose round the strip shows', (
 
   expect(strip(events, activity)).toBe('Round 2 of 3 · Working: cy')
   // Both threads run: the focused thread's round, and only its own member beside it.
-  expect(strip(events, [{ ...activity[0], status: 'running', started_at: 1 }, activity[1]])).toBe('Round 1 of 3 · Working: ada')
+  expect(strip(events, [{ ...activity[0], status: 'running', started_at: 1 }, activity[1]])).toBe(
+    'Round 1 of 3 · Working: ada'
+  )
 })
 
-function strip(events: RoomLogEvent[], activity: { member_id: string; status: string; thread_id: string; round_index: number }[]) {
+function strip(
+  events: RoomLogEvent[],
+  activity: { member_id: string; status: string; thread_id: string; round_index: number }[]
+) {
   const outcomes = memberOutcomes(events)
   const statuses = new Map(members.map(m => [m.member_id, memberStatus(m.member_id, activity, outcomes, 2)]))
 
-  const view = render(<CanonicalGroupCycle cycle={roomCycle(events, activity, 3, 'B')} labels={{ ...CANONICAL_GROUP_LOCALES.en } as never}
-    members={members} statuses={statuses} />)
+  const view = render(
+    <CanonicalGroupCycle
+      cycle={roomCycle(events, activity, 3, 'B')}
+      labels={{ ...CANONICAL_GROUP_LOCALES.en } as never}
+      members={members}
+      statuses={statuses}
+    />
+  )
 
   const text = view.getByRole('status').textContent
   view.unmount()

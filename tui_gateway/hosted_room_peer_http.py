@@ -341,21 +341,25 @@ class PeerRunsHTTPClient:
         exc: urllib.error.HTTPError, *, method: str, path: str, deadline: float) -> NoReturn:
         """Raise the classified PeerRunsHTTPError for an HTTP error response."""
         # A 4xx refuses this admission request before any run starts (the target answers 429
-        # only for keys it holds no run for), except 409: a run already exists under this key.
+        # only for keys it holds no run for), except a 409 idempotency_key_conflict: a run
+        # already exists under this key. Any other 409 (permission_denied, admission_conflict)
+        # is a proven refusal. A 409 whose code cannot be read stays uncertain.
         admission = method == "POST" and path == "/v1/runs"
-        conflict = admission and exc.code == 409
-        flags = {
-            "ambiguous": method == "POST" and (exc.code >= 500 or conflict), "status_code": exc.code,
-            "not_admitted": admission and 400 <= exc.code < 500 and not conflict}
+
+        def flags(conflict: bool) -> dict[str, Any]:
+            return {"ambiguous": method == "POST" and (exc.code >= 500 or conflict), "status_code": exc.code,
+                    "not_admitted": admission and 400 <= exc.code < 500 and not conflict}
         try:
+            # Until its code is read, a 409 on admission is uncertain.
             detail = _read_body(
                 exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES, deadline=deadline, kind=" error",
-                **flags)[:500]
+                **flags(admission and exc.code == 409))[:500]
         except PeerRunsHTTPError:
             raise
         except Exception:
             detail = ""
         error_code = _response_error_code(detail)
+        conflict = admission and exc.code == 409 and error_code in {None, "idempotency_key_conflict"}
         logger.debug(
             "Peer RoomLink request returned HTTP %s (%s)", exc.code, error_code or "no-code")
         renewal = exc.code in {401, 403} and error_code in _GRANT_RENEWAL_CODES
@@ -365,7 +369,7 @@ class PeerRunsHTTPClient:
             _REAUTHORIZATION_MESSAGES[error_code] if renewal or drift
             else f"peer rejected {method} {path} with HTTP {exc.code}",
             retryable=exc.code in {408, 425, 429} or exc.code >= 500,
-            error_code=error_code, **flags,
+            error_code=error_code, **flags(conflict),
         ) from exc
 
     def prepare(

@@ -1,0 +1,35 @@
+name: trust-ladder
+repo: https://github.com/merdoks/trust-ladder
+sha: 7f3c5bd4014b996fc1d483d266b5fe82108921f0
+description: >-
+  Correct your agent once and it stays corrected. trust-ladder compiles each user
+  correction to the highest rung it can prove: a pre_tool_call guard that blocks the
+  repeat, a check on what a write puts into matching files, a rule injected every turn,
+  or human review through Hermes's own approval prompt. A model-proposed guard is
+  installed only if it matches the mistaken call and spares the corrected one, regexes
+  are profiled against ReDoS before install, verifier commands gate "done", and a ledger
+  counts every catch (/teach, /trust, /verify). Disclosure — local only: stores rules,
+  tasks and a catch ledger (matched snippets, redacted, no full arguments) under
+  <HERMES_HOME>/plugin-data/trust-ladder/; no network, no telemetry, no credentials or env
+  vars read; verifier commands run only through Hermes's terminal tool (normal approvals
+  apply); the model can add rules but only the user can disable or remove them; guards are
+  best-effort pattern matches, not a sandbox.
+maintainer: merdoks
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/merdoks/trust-ladder#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - trust_ladder_learn
+    - trust_ladder_task
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+    - pre_llm_call
+    - pre_verify
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

@@ -24,6 +24,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'messageUid',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -164,10 +165,13 @@ const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
 const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
   FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))
 
+function chatMessageIdentitiesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
+  return a.id === b.id && a.rowId === b.rowId && a.messageUid === b.messageUid
+}
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
-    a.id !== b.id ||
-    a.rowId !== b.rowId ||
+    !chatMessageIdentitiesEquivalent(a, b) ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||

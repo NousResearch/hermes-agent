@@ -2,7 +2,8 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  normalizeWs as normalizedText
+  normalizeWs as normalizedText,
+  sameUserContent
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
@@ -199,6 +200,13 @@ function writeRaw(store: Storage, key: string, value: string): boolean {
   }
 }
 
+function validSnapshotMessageIdentity(message: Pick<ChatMessage, 'rowId' | 'messageUid'>): boolean {
+  return (
+    (message.messageUid === undefined || (typeof message.messageUid === 'string' && message.messageUid.length > 0)) &&
+    (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
+  )
+}
+
 function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
   if (!value || typeof value !== 'object') {
     return false
@@ -240,7 +248,7 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
         (message.durableComplete === undefined || typeof message.durableComplete === 'boolean') &&
         (message.attachmentRefs === undefined ||
           (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
-        (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
+        validSnapshotMessageIdentity(message)
     ) &&
     (snapshot.streamId === null || typeof snapshot.streamId === 'string') &&
     (snapshot.turnStartedAt === null || typeof snapshot.turnStartedAt === 'number') &&
@@ -459,7 +467,8 @@ function boundedMessages(messages: ChatMessage[]): ChatMessage[] | null {
                   .slice(0, MAX_USER_ATTACHMENT_REFS)
                   .map(ref => boundedString(ref, MAX_METADATA_CHARS))
         }),
-    ...(message.rowId === undefined ? {} : { rowId: message.rowId })
+    ...(message.rowId === undefined ? {} : { rowId: message.rowId }),
+    ...(message.messageUid === undefined ? {} : { messageUid: message.messageUid })
   }))
 }
 
@@ -603,18 +612,16 @@ function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
   }
 }
 
-function attachmentSignature(message: ChatMessage): string {
-  return (message.attachmentRefs ?? []).join('\n')
+function conflictingJournalIdentity(left: ChatMessage, right: ChatMessage): boolean {
+  if (left.messageUid !== undefined && right.messageUid !== undefined) {
+    return left.messageUid !== right.messageUid
+  }
+
+  return left.rowId !== undefined && right.rowId !== undefined && left.rowId !== right.rowId
 }
 
 function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
-  return (
-    left.role === 'user' &&
-    right.role === 'user' &&
-    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
-    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
-    attachmentSignature(left) === attachmentSignature(right)
-  )
+  return !conflictingJournalIdentity(left, right) && sameUserContent(left, right)
 }
 
 function partHasRecoverableContent(part: ChatMessagePart): boolean {
@@ -692,16 +699,38 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
   return visible.slice(start)
 }
 
-function normalizeRecoveredTail(tail: ChatMessage[], keepPending: boolean): ChatMessage[] {
-  return cloneMessages(tail).map(message =>
-    message.role === 'assistant'
+function normalizeRecoveredTail(tail: ChatMessage[], keepPending: boolean, base: ChatMessage[]): ChatMessage[] {
+  const baseById = new Map(base.map(message => [message.id, message]))
+  const usedIds = new Set([...base, ...tail].map(message => message.id))
+
+  return cloneMessages(tail).map(message => {
+    const collision = baseById.get(message.id)
+
+    if (collision && conflictingJournalIdentity(message, collision)) {
+      let id = `${message.id}-recovered-${message.messageUid ?? message.rowId}`
+
+      while (usedIds.has(id)) {
+        const existing = baseById.get(id)
+
+        if (existing && !conflictingJournalIdentity(message, existing)) {
+          break
+        }
+
+        id += '-recovered'
+      }
+
+      usedIds.add(id)
+      message.id = id
+    }
+
+    return message.role === 'assistant'
       ? {
           ...message,
           pending: keepPending ? (message.pending ?? true) : false,
           ...(keepPending ? {} : { recovered: true })
         }
       : { ...message, pending: false }
-  )
+  })
 }
 
 function assistantTextLength(message: ChatMessage): number {
@@ -795,7 +824,10 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
   const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user')
 
   const identityCovers = (base: ChatMessage, index: number, journaled: ChatMessage) =>
-    base.id === journaled.id || (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId)
+    !conflictingJournalIdentity(base, journaled) &&
+    ((journaled.messageUid !== undefined && base.messageUid === journaled.messageUid) ||
+      base.id === journaled.id ||
+      (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId))
 
   return recoverable.every(message =>
     baseMessages.some(
@@ -839,7 +871,7 @@ export function mergeInFlightMessages(
     turnStartedAt: null
   }
 
-  const tail = normalizeRecoveredTail(tailMessages, Boolean(options.keepPending))
+  const tail = normalizeRecoveredTail(tailMessages, Boolean(options.keepPending), baseMessages)
 
   if (!tail.some(assistantHasRecoverableContent)) {
     return noop

@@ -1,4 +1,3 @@
-
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -7,7 +6,10 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  normalizeWs,
   preserveLocalAssistantErrors,
+  sameUserContent,
+  sameUserText,
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
@@ -79,6 +81,9 @@ import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-e
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
+  normalizedMessageText,
+  queuedPromptProjection,
+  transcriptAnchorMatches,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
@@ -123,22 +128,24 @@ function isLiveTailRow(message: ChatMessage): boolean {
 }
 
 /**
- * Carry the durable row id and reactions from a same-turn `previous` row onto
+ * Carry durable message identity and reactions from a same-turn `previous` row onto
  * `next` when it lacks them — reactions are keyed by row id, so they travel
  * together. Returns `next` itself when there is nothing to carry, else a NEW
  * object (the runtime repository caches normalized messages by identity).
  */
 function carryRowIdentity(next: ChatMessage, previous: ChatMessage): ChatMessage {
   const rowId = next.rowId === undefined ? previous.rowId : undefined
+  const messageUid = next.messageUid === undefined ? previous.messageUid : undefined
   const reactions = next.reactions === undefined && previous.reactions?.length ? previous.reactions : undefined
 
-  if (rowId === undefined && !reactions) {
+  if (rowId === undefined && messageUid === undefined && !reactions) {
     return next
   }
 
   return {
     ...next,
     ...(rowId !== undefined ? { rowId } : {}),
+    ...(messageUid !== undefined ? { messageUid } : {}),
     ...(reactions ? { reactions: [...reactions] } : {})
   }
 }
@@ -1036,10 +1043,16 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     break
   }
 
-  const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(
-      message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+  const persistedInLatestRun = (text: string): boolean => {
+    const [prompt] = toChatMessages([{ role: 'user', content: text }])
+
+    return Boolean(
+      prompt &&
+      latestUserRun.some(message =>
+        prompt.attachmentRefs?.length ? sameUserContent(message, prompt) : sameUserText(message, prompt)
+      )
     )
+  }
 
   const inflightUserAlreadyPersisted =
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
@@ -1236,11 +1249,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   if (queuedUser) {
-    projected.push({
-      id: `user-queued-${sessionId}`,
-      role: 'user',
-      parts: [textPart(queuedUser)]
-    })
+    projected.push(queuedPromptProjection(sessionId, queuedUser, projection.queued?.message_uid))
   }
 
   if (foldTarget) {
@@ -1250,25 +1259,6 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   return projected.length ? [...messages, ...projected] : messages
-}
-
-function normalizedMessageText(message: ChatMessage): string {
-  return chatMessageText(message).replace(/\s+/g, ' ').trim()
-}
-
-function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
-  if (a.role !== b.role) {
-    return false
-  }
-
-  const aText = normalizedMessageText(a)
-  const bText = normalizedMessageText(b)
-
-  if (a.timestamp !== undefined && b.timestamp !== undefined) {
-    return a.timestamp === b.timestamp && aText === bText
-  }
-
-  return Boolean(aText) && aText === bText
 }
 
 /**
@@ -1293,7 +1283,7 @@ export function dedupeInflightUserAgainstTranscript(
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult
 ): ReconciledSessionResumeResult {
-  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightUser = normalizeWs(projection.inflight?.user ?? '')
 
   if (!inflightUser) {
     return projection
@@ -1342,7 +1332,8 @@ export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
   projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
 ): ChatMessage[] {
-  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightUser = normalizeWs(projection.inflight?.user ?? '')
+
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
   const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''
 

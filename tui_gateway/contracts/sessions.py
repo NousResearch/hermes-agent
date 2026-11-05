@@ -45,6 +45,7 @@ class InflightTurn(Result):
 
 class QueuedPrompt(Result):
     user: str
+    message_uid: str | None = None
 
 
 class TodoState(Result):

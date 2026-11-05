@@ -402,6 +402,27 @@ export function collectUnspokenTurnSpeech(
 
 export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
+export function sameUserText(left: ChatMessage, right: ChatMessage): boolean {
+  return (
+    left.role === 'user' &&
+    right.role === 'user' &&
+    left.parts.every(part => part.type === 'text') &&
+    right.parts.every(part => part.type === 'text') &&
+    chatMessageText(left).trim() === chatMessageText(right).trim()
+  )
+}
+
+export function sameUserContent(left: ChatMessage, right: ChatMessage): boolean {
+  const leftRefs = left.attachmentRefs ?? []
+  const rightRefs = right.attachmentRefs ?? []
+
+  return (
+    sameUserText(left, right) &&
+    leftRefs.length === rightRefs.length &&
+    leftRefs.every((ref, index) => ref === rightRefs[index])
+  )
+}
+
 type TextPart = Extract<ChatMessagePart, { type: 'text' }>
 const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
 

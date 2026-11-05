@@ -789,6 +789,7 @@ export interface SessionMessage {
    */
   row_id?: number
   id?: number
+  message_uid?: null | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string
@@ -852,6 +853,7 @@ export interface SessionResumeResult {
     user?: string
   }
   queued?: null | {
+    message_uid?: null | string
     user?: string
   }
   // The oldest gateway approval still waiting for a response. This is returned

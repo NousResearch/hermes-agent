@@ -1,5 +1,34 @@
 import type { ChatMessage } from '@/lib/chat-messages'
+import { chatMessageText, normalizeWs, textPart } from '@/lib/chat-messages/parts'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+
+export function queuedPromptProjection(sessionId: string, user: string, messageUid?: null | string): ChatMessage {
+  return {
+    id: `user-queued-${sessionId}`,
+    role: 'user',
+    parts: [textPart(user)],
+    ...(messageUid ? { messageUid } : {})
+  }
+}
+
+export function normalizedMessageText(message: ChatMessage): string {
+  return normalizeWs(chatMessageText(message))
+}
+
+export function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) {
+    return false
+  }
+
+  const aText = normalizedMessageText(a)
+  const bText = normalizedMessageText(b)
+
+  if (a.timestamp !== undefined && b.timestamp !== undefined) {
+    return a.timestamp === b.timestamp && aText === bText
+  }
+
+  return Boolean(aText) && aText === bText
+}
 
 /** A hydrated bubble can contain several source rows, including the final reply. */
 export function transcriptRowIds(message: ChatMessage): number[] {

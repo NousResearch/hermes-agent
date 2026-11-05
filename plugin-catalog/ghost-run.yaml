@@ -1,7 +1,7 @@
 name: ghost-run
 title: Ghost Run
 repo: https://github.com/tnvolman/ghost-run
-sha: 4caa80c1a355bd376c19b344a6f01ca11f7ade9a
+sha: d00081ba41bcf758efb3bed5f4822bff9b7a0a98
 version: "0.1.0"
 description: >-
   Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and
@@ -13,7 +13,9 @@ description: >-
   Disclosure — copies the working folder into a temp sandbox and runs the agent's
   terminal commands inside it; writes session state to ~/.hermes/ghost-run/; "apply"
   writes the chosen changes back to the real folder; hermes ghost ui serves a local-only
-  page on 127.0.0.1:8765. No third-party network calls, no credentials, no telemetry.
+  page on 127.0.0.1 with a per-session token. Opt-in outbound only: with GHOST_RUN_AI=1
+  (and an API key), pending diffs are posted to OpenRouter for advisory notes; off by
+  default. No credentials stored by the plugin; no telemetry.
 maintainer: tnvolman
 tier: community
 category: tools

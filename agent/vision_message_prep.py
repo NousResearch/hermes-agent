@@ -75,11 +75,12 @@ def _tool_image_key(message: dict, part: dict) -> tuple[str, bytes]:
     )
 
 
-def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> None:
+def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> bool:
     """Replay only actual 413 evictions on wire copies; fresh tool images remain usable."""
     stripped = (getattr(agent, "_byte_stripped_tool_images", None) or {}).get(_byte_strip_route_key(agent))
     if not stripped:
-        return
+        return False
+    changed = False
     for msg in api_messages:
         content = msg.get("content")
         if msg.get("role") != "tool" or not isinstance(content, list):
@@ -89,10 +90,12 @@ def apply_byte_stripped_tool_images(agent: Any, api_messages: list) -> None:
         )]
         if len(remaining) == len(content):
             continue
+        changed = True
         msg["content"] = remaining if any(_is_image_part(part) for part in remaining) else (
             "\n\n".join(_salvage_text_parts(remaining, any_dict_text=False))
             or "[image content removed — request payload too large]"
         )
+    return changed
 
 
 class VisionMessagePrepMixin:

@@ -444,7 +444,10 @@ _IMAGE_CORRUPT_PHRASES = (
 )
 
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
-    """Send-path image strip for a model that rejected image content (see turn_recovery).
+    """Send-path replay of 413 image evictions plus model-wide image rejection.
+
+    The byte eviction record applies only to the actual rejected tool payloads and route;
+    it never marks the model as unable to accept fresh images.
 
     Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
     provider-specific conversion: the part types this stripper knows are that format's, and a
@@ -452,9 +455,13 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
     that accepts images gets them again.
     """
+    # Iteration-limit summaries build their own wire copy instead of using turn_context;
+    # replay actual 413 evictions here too, without treating a byte limit as image incapability.
+    from agent.vision_message_prep import apply_byte_stripped_tool_images
+    changed = isinstance(api_messages, list) and apply_byte_stripped_tool_images(agent, api_messages)
     if _provider_model_key(agent) not in agent._image_rejecting_models:
-        return False
-    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
+        return changed
+    return (isinstance(api_messages, list) and _strip_images_from_messages(api_messages)) or changed
 
 
 def _messages_carry_images(messages: Any) -> bool:

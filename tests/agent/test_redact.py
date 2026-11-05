@@ -1448,6 +1448,109 @@ class TestSecretFileAssignmentRedaction:
         assert time.perf_counter() - started < 1.0
 
 
+class TestUrlGateIsPerLine:
+    """A single ``://`` used to disable the lowercase/YAML passes for the WHOLE text, so a
+    relay URL anywhere in a dump let ``network_secret = "…"`` print verbatim."""
+
+    def test_lowercase_config_key_masked_next_to_a_url(self):
+        from agent.redact import redact_terminal_output
+        text = (
+            'network_secret = "0123456789abcdef0123456789abcdef"\n'
+            'peers = "wss://relay.example:11011/x"\n'
+        )
+        red = redact_terminal_output(text, "cat svc.toml")
+        assert "0123456789abcdef0123456789abcdef" not in red
+        assert "wss://relay.example:11011/x" in red  # the URL line itself is untouched
+
+    def test_url_before_the_secret_still_masks(self):
+        from agent.redact import redact_terminal_output
+        text = (
+            "ET_PEERS=wss://relay.example:11011/x\n"
+            'network_secret = "0123456789abcdef0123456789abcdef"\n'
+        )
+        red = redact_terminal_output(text, "cat svc.toml")
+        assert "0123456789abcdef0123456789abcdef" not in red
+
+    def test_yaml_key_masked_next_to_a_url(self):
+        from agent.redact import redact_terminal_output
+        text = "password: Zx9Qm2Lp7Rt4Wv8N\nurl: https://example.com/x\n"
+        red = redact_terminal_output(text, "cat svc.env")
+        assert "Zx9Qm2Lp7Rt4Wv8N" not in red
+        assert "https://example.com/x" in red
+
+    def test_url_query_params_still_preserved(self):
+        """The gate exists so web-URL query params survive — that must not regress."""
+        from agent.redact import redact_terminal_output
+        for line in (
+            "GET https://api.example.com/v1?token=abc123&key=xyz",
+            "url: https://x.com/path?password=hunter2",
+            "https://example.com/?api_key=FAKEKEY",
+        ):
+            assert redact_terminal_output(line, "cat readme.md") == line
+
+
+class TestRecursiveSearchCountsAsSecretFile:
+    """``grep -r pw .`` takes a DIRECTORY, so the positional secret-file test never fired
+    and ``a.env:DB_PASSWORD=…`` printed verbatim."""
+
+    def test_recursive_grep_flags_detected(self):
+        from agent.redact import _command_reads_secret_file
+        for cmd in (
+            "grep -r password .",
+            "grep -rn DB_PASSWORD .",
+            "grep -R token /etc",
+            "grep -rl secret .",
+            "grep --recursive pw .",
+        ):
+            assert _command_reads_secret_file(cmd), cmd
+
+    def test_searchers_that_recurse_by_default(self):
+        from agent.redact import _command_reads_secret_file
+        for cmd in ("rg password .", "rg -n token src/", "ag secret .", "ack secret ."):
+            assert _command_reads_secret_file(cmd), cmd
+
+    def test_non_recursive_grep_stays_lenient(self):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file("grep -i password readme.md")
+        assert not _command_reads_secret_file("grep -- -r file")
+
+    def test_recursive_grep_output_is_masked(self):
+        from agent.redact import redact_terminal_output
+        out = "a.env:DB_PASSWORD=Zx9Qm2Lp7Rt4Wv8N\n"
+        red = redact_terminal_output(out, "grep -r password .")
+        assert "Zx9Qm2Lp7Rt4Wv8N" not in red
+
+
+class TestArgvDumpStrictPass:
+    """``ps``/``top``/``env`` print argv or environment verbatim: the relay-URL path token
+    needs the strict pass even though no file is read."""
+
+    def test_ps_url_path_token_masked(self):
+        from agent.redact import redact_terminal_output
+        token = "a" * 32
+        out = f"root 1 0.1 0.2 easytier --peers wss://relay.example:11011/et-{token}\n"
+        assert token not in redact_terminal_output(out, "ps aux | grep easytier")
+
+    def test_env_url_path_token_masked(self):
+        from agent.redact import redact_terminal_output
+        token = "0123456789abcdef0123456789abcdef"
+        out = f"ET_PEERS=wss://relay.example:11011/et-{token}\n"
+        assert token not in redact_terminal_output(out, "env")
+
+    def test_top_url_path_token_masked(self):
+        from agent.redact import redact_terminal_output
+        token = "b" * 32
+        out = f"123 root 20 0 easytier --peers wss://relay.example:11011/et-{token}\n"
+        assert token not in redact_terminal_output(out, "top -b -n1")
+
+    def test_plain_ps_and_env_output_untouched(self):
+        from agent.redact import redact_terminal_output
+        ps = "USER PID %CPU %MEM COMMAND\nroot 1 0.0 0.1 /sbin/init\n"
+        assert redact_terminal_output(ps, "ps aux") == ps
+        env = "PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/home/ubuntu\n"
+        assert redact_terminal_output(env, "env") == env
+
+
 class TestHermesHomePathClassification:
     """``_is_secret_file_arg`` must see the RESOLVED Hermes home: a managed Windows home
     (``%LOCALAPPDATA%\\hermes``) has no ``.hermes`` segment and a resolved path never spells

@@ -240,6 +240,39 @@ _PIPE_ONLY_OPERATOR_RE = re.compile(r"(?<!\|)\|(?!\|)&?\s*|>\(\s*")
 _PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)", re.IGNORECASE)
 
 
+_WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
+_WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORECASE | re.DOTALL)
+
+
+class _WmicShadowDeleteMatcher:
+    """`wmic ... shadowcopy ... delete` run as a command: the program word (bare, a full path, behind
+    sudo/env/nohup..., or the script of cmd /c / pwsh / powershell) is wmic, and its own command carries
+    shadowcopy and then delete. Linear in the command: one walk of the command-position words."""
+
+    _CARRIERS = frozenset({"cmd", "pwsh", "powershell"})
+
+    def search(self, text: str):
+        if "wmic" not in text.lower():
+            return None
+        for start, end, word in _iter_shell_command_word_spans(text):
+            name = os.path.basename(_deobfuscate_shell_word_for_detection(word).replace("\\", "/")).lower()
+            name = name.removesuffix(".exe")
+            if name == "wmic":
+                segment = _shell_command_segment(text, end)
+            elif name in self._CARRIERS:
+                segment = _shell_command_segment(text, end)
+                inner = re.match(r"(?:\s*(?:/[ck]|-\S+))*\s*[\"']?\s*(?:[^\s;&|\"']*[\\/])?wmic(?:\.exe)?(?=\s)",
+                                 segment, re.IGNORECASE)
+                if not inner:
+                    continue
+                segment = segment[inner.end():]
+            else:
+                continue
+            if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + segment):
+                return match
+        return None
+
+
 class _PipeRemoteToShellMatcher:
     """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
     each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
@@ -351,7 +384,7 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
     r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
-    r"|(?:^|[;&|({`\n])\s*+ssh(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?)*\s+[^\s;&|-]\S*\s+[\"']?)"
+    r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
@@ -419,11 +452,10 @@ DANGEROUS_PATTERNS = [
     (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep.
     (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
-    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Anchored to
-    # command position with possessive spans: an unanchored `wmic … shadowcopy … delete` with two
-    # `[^\n]*` gaps rescanned every `wmic shadowcopy` repeat in quoted prose (cubic, seconds at 400).
-    (r'(?:^|[;&|({`\n]|\bcmd(?:\.exe)?\s+/[ck]\s)\s*+["\']?(?:[^\s;&|"\']*+[\\/])?wmic(?:\.exe)?(?:\s++[^\s;&|]++)*?\s++shadowcopy\b[^\n;&|]*?\sdelete\b',
-     "delete volume shadow copies (wmic)"),
+    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Not compiled:
+    # DANGEROUS_PATTERNS_COMPILED swaps in _WmicShadowDeleteMatcher, which checks each command-position
+    # word (wrappers, full paths, cmd /c, pwsh) instead of an unanchored regex over the whole line.
+    (r'wmic shadowcopy delete', _WMIC_SHADOW_DELETE_DESCRIPTION),
     (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
     (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
@@ -639,8 +671,12 @@ DANGEROUS_PATTERNS = [
 
 
 _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
+_CUSTOM_MATCHERS = {
+    _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
+    _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+}
 DANGEROUS_PATTERNS_COMPILED = [
-    (_PipeRemoteToShellMatcher() if d == _PIPE_REMOTE_TO_SHELL_DESCRIPTION else re.compile(p, _RE_FLAGS), d)
+    (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
     for p, d in DANGEROUS_PATTERNS
 ]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
@@ -1786,7 +1822,9 @@ def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeR
     delete as code: the delete must sit in that launcher's own command, or be piped into a PowerShell
     reading stdin (`echo "..." | pwsh -`). A launcher word elsewhere (`echo ssh "..."`, `pwsh -v &&
     echo "..."`) leaves the quoted text prose."""
+    prev_start = None
     for start, _, word in _iter_shell_command_word_spans(variant):
+        stage_start, prev_start = prev_start, start
         name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower().removesuffix(".exe")
         if name not in _PS_QUOTED_SCRIPT_LAUNCHERS:
             continue
@@ -1795,9 +1833,10 @@ def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeR
             continue
         if pattern_re.search(segment):
             return True
-        before = variant[:start].rstrip()
-        if name in ("pwsh", "powershell") and before.endswith("|") and not before.endswith("||") \
-                and pattern_re.search(_lower_preserving_flags(before)):
+        # `echo "gci | ri -r" | pwsh -`: the stage piped in is the previous command word's own text.
+        before = variant[stage_start or 0:start].rstrip()
+        if name in ("pwsh", "powershell") and stage_start is not None and before.endswith("|") \
+                and not before.endswith("||") and pattern_re.search(_lower_preserving_flags(before)):
             return True
     return False
 

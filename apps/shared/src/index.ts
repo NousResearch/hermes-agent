@@ -66,6 +66,7 @@ export { fileUrlToNativePath } from './file-url'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'
+export { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from './hermes-cloud'
 export {
   applyDocumentLocale,
   type EndonymLocale,

@@ -865,6 +865,25 @@ def complete_task_cancel(
         stale="task changed during stop acknowledgement")
 
 
+def mark_attempt_indeterminate(
+    db_path: DbPath, attempt: TaskAttempt, lease: DriverLease, *, clock: Clock
+) -> None:
+    """Retire exactly the unwatched attempt, even if another control renewed its lease."""
+    _check_same_room(lease, attempt.identity)
+    now = _timestamp(clock)
+    with _transaction(db_path) as conn:
+        _require_active_lease(conn, lease, now=now)
+        row = _load_task(conn, attempt.identity)
+        if not _generations_match(row, "running", attempt.execution_generation, attempt.cancel_generation):
+            return
+        conn.execute(
+            _generation_update("status='indeterminate', indeterminate_at=?, updated_at=?", "running"),
+            (now, now, attempt.identity.room_id, attempt.identity.task_id,
+             attempt.execution_generation, attempt.cancel_generation))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
+
+
 def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[str, list[TaskIdentity]]:
     """Fence abandoned running attempts without requeueing uncertain work."""
     now = _timestamp(clock)

@@ -1827,7 +1827,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+    import tools.terminal_tool
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
@@ -2025,7 +2025,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
@@ -2078,7 +2078,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)

@@ -4,11 +4,16 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
+import { $backgroundStatusBySession } from '@/store/composer-status'
 import { useTheme } from '@/themes/context'
 
-import { registerAgentTerminalWriter } from './agent-terminal-stream'
+import {
+  registerAgentTerminalWriter,
+  seedAgentTerminalCommand,
+  syncAgentTerminalSnapshot
+} from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
@@ -50,6 +55,15 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
     let disposed = false
     let observer: ResizeObserver | null = null
+    let mounted = false
+    let mountWatchFrame = 0
+
+    const cancelMountWatch = () => {
+      if (mountWatchFrame) {
+        window.cancelAnimationFrame(mountWatchFrame)
+        mountWatchFrame = 0
+      }
+    }
 
     let unregister = () => {}
 
@@ -92,7 +106,10 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       getSelection: () => term.getSelection(),
       paste: null,
       reload: () => {},
-      selectAll: () => term.selectAll()
+      selectAll: () => term.selectAll(),
+      // No PTY input, and the mirror's tab stays deliberately closeable, so
+      // the close-tab chord keeps its close meaning here.
+      wordErase: null
     })
 
     term.attachCustomKeyEventHandler(event => {
@@ -133,6 +150,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       term.open(host)
       termRef.current = term
       mountedRef.current = true
+      mounted = true
 
       try {
         const webgl = new WebglAddon()
@@ -161,6 +179,17 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
       // Stream live output straight into the terminal (replays backlog on attach).
       unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+      // Closing can evict the backlog while the registry stays unchanged. Pin
+      // the writer before recovering its snapshot so retention cannot evict it.
+      for (const list of Object.values($backgroundStatusBySession.get())) {
+        const item = list.find(item => item.id === procId)
+
+        if (item) {
+          seedAgentTerminalCommand(procId, item.title)
+          syncAgentTerminalSnapshot(procId, item.output ?? '')
+          break
+        }
+      }
       unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
     }
 
@@ -174,6 +203,34 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       () => !disposed && host.isConnected
     ).then(fontFamily => {
       if (!fontFamily) {
+        // Same host-connection race as the user terminal (#118004): the font
+        // wait resolves null when host.isConnected went false at an await
+        // boundary, and returning here used to strand the pane blank. Poll
+        // frames until the host connects, then retry the wait+mount.
+        const watchForHost = () => {
+          if (disposed || mounted) {
+            return
+          }
+
+          if (host.isConnected) {
+            void prepareTerminalFontFamily(
+              () => latestFontFamilyRef.current,
+              () => !disposed && host.isConnected
+            ).then(next => {
+              if (next && !disposed && !mounted && host.isConnected) {
+                term.options.fontFamily = next
+                mount()
+              }
+            })
+
+            return
+          }
+
+          mountWatchFrame = window.requestAnimationFrame(watchForHost)
+        }
+
+        mountWatchFrame = window.requestAnimationFrame(watchForHost)
+
         return
       }
 
@@ -184,6 +241,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     return () => {
       disposed = true
       mountedRef.current = false
+      cancelMountWatch()
       unregister()
       unregisterReader()
       unregisterWebglRefresh()

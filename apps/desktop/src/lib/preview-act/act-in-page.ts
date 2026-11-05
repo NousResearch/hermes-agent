@@ -570,9 +570,7 @@ export function actInPageCore(
         // environments where execCommand fails (about:blank, some sandboxed
         // pages).
         el.textContent = text
-        el.dispatchEvent(
-          new InputEvent('input', { data: text, inputType: 'insertText', bubbles: true })
-        )
+        el.dispatchEvent(new InputEvent('input', { data: text, inputType: 'insertText', bubbles: true }))
       }
     } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       // Assign through the prototype's setter: React (and anything else that
@@ -602,7 +600,14 @@ export function actInPageCore(
       // Many React input components (DeepSeek, ChatZhipu, Kimi) still
       // check keyCode === 13 for Enter; 0 means the event never reaches
       // the submit handler (#98048).
-      const enter = { bubbles: true, cancelable: true, code: 'Enter', key: 'Enter', keyCode: 13, which: 13 } as KeyboardEventInit
+      const enter = {
+        bubbles: true,
+        cancelable: true,
+        code: 'Enter',
+        key: 'Enter',
+        keyCode: 13,
+        which: 13
+      } as KeyboardEventInit
 
       el.dispatchEvent(new KeyboardEvent('keydown', enter))
       el.dispatchEvent(new KeyboardEvent('keyup', enter))

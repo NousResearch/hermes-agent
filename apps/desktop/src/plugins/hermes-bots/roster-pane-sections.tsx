@@ -6,7 +6,7 @@ import type { useBots } from './i18n'
 import type { RosterGroupRow } from './roster-pane-derivation'
 import { GatewayKindGlyph, GatewaySectionHeading, RosterSectionHeader } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
-import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
+import type { BotMeta, GroupChat, RosterRow } from './types'
 import type { $botSections, SectionDialogState } from './user-sections'
 import {
   deleteBotSection,
@@ -31,7 +31,7 @@ interface RosterSectionRenderersProps {
   toggleRosterSection: (id: string) => void
   setSectionDialog: (value: SectionDialogState) => void
   renderBotRow: (bot: RosterRow, keyPrefix?: string) => ReactNode
-  renderGroupRow: (row: { members: GroupMember[]; name: string }) => ReactNode
+  renderGroupRow: (row: RosterGroupRow) => ReactNode
   sortedGroupRows: RosterGroupRow[]
 }
 

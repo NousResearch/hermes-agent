@@ -72,7 +72,7 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def message_text(m: Dict[str, Any]) -> str:
+def message_text(m: dict[str, Any]) -> str:
     c = m.get("content")
     if isinstance(c, str):
         return c
@@ -127,14 +127,14 @@ class JevUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
-    models: List[str] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
 
 
 def is_pinned(index: int, total: int, preserve: int) -> bool:
     return index == 0 or index >= total - preserve
 
 
-def _parse_arguments(fn: Dict[str, Any]) -> Any:
+def _parse_arguments(fn: dict[str, Any]) -> Any:
     args = fn.get("arguments")
     if isinstance(args, str):
         try:
@@ -144,12 +144,12 @@ def _parse_arguments(fn: Dict[str, Any]) -> Any:
     return args if args is not None else {}
 
 
-def collect_tool_calls(messages: List[Dict[str, Any]], preserve: int) -> List[ToolCall]:
-    results: Dict[str, int] = {}
+def collect_tool_calls(messages: list[dict[str, Any]], preserve: int) -> list[ToolCall]:
+    results: dict[str, int] = {}
     for idx, m in enumerate(messages):
         if m.get("role") == "tool" and m.get("tool_call_id"):
             results[m["tool_call_id"]] = idx
-    calls: List[ToolCall] = []
+    calls: list[ToolCall] = []
     total = len(messages)
     for idx, m in enumerate(messages):
         for tc in m.get("tool_calls") or []:
@@ -167,7 +167,7 @@ def collect_tool_calls(messages: List[Dict[str, Any]], preserve: int) -> List[To
                 call_index=idx,
                 result_index=ridx,
                 result_chars=len(rtext),
-                is_error=bool(re.match(r"\s*(\{\"error\"|Error\b|error:)", rtext[:40], re.I)),
+                is_error=bool(re.match(r"\s*(\{\"error\"|Error\b|error:)", rtext[:40], re.IGNORECASE)),
                 pinned=is_pinned(idx, total, preserve) or is_pinned(ridx, total, preserve),
             ))
     return calls
@@ -194,8 +194,8 @@ def _compact_call(call: ToolCall) -> str:
     return f"{call.id} {call.tool} {truncate(inp, INPUT_CHARS[2])} → {'error' if call.is_error else 'ok'} {call.result_chars}ch"
 
 
-def _history_entries(messages, calls: List[ToolCall], input_chars: int) -> List[Dict[str, Any]]:
-    by_msg: Dict[int, List[ToolCall]] = {}
+def _history_entries(messages, calls: list[ToolCall], input_chars: int) -> list[dict[str, Any]]:
+    by_msg: dict[int, list[ToolCall]] = {}
     for c in calls:
         by_msg.setdefault(c.call_index, []).append(c)
     entries = []
@@ -207,7 +207,7 @@ def _history_entries(messages, calls: List[ToolCall], input_chars: int) -> List[
             text = ""  # results are represented by the call's note, never verbatim
         if not text.strip() and not tcs:
             continue
-        entry: Dict[str, Any] = {"i": i, "role": m.get("role"), "text": text}
+        entry: dict[str, Any] = {"i": i, "role": m.get("role"), "text": text}
         if tcs:
             entry["tool_calls"] = tcs
         entries.append(entry)
@@ -219,7 +219,7 @@ def goal_from_messages(messages) -> str:
     return "\n".join(truncate(p, 500) for p in prompts[-3:])
 
 
-def fit_state(messages, calls: List[ToolCall], opt: JevOptions) -> Dict[str, Any]:
+def fit_state(messages, calls: list[ToolCall], opt: JevOptions) -> dict[str, Any]:
     """Port of fitState: shrink the whole-history state in stages until it fits."""
     goal = opt.goal or goal_from_messages(messages)
     total = len(messages)
@@ -231,8 +231,8 @@ def fit_state(messages, calls: List[ToolCall], opt: JevOptions) -> Dict[str, Any
         return estimate_tokens(_json(e)) + 1
 
     base = estimate_tokens(_json(state_of([])))
-    history: List[Dict[str, Any]] = []
-    per: List[int] = []
+    history: list[dict[str, Any]] = []
+    per: list[int] = []
     tokens = 0
 
     def rebuild(limit):
@@ -284,7 +284,7 @@ def fit_state(messages, calls: List[ToolCall], opt: JevOptions) -> Dict[str, Any
         if fits():
             return fitted(history, "old messages collapsed")
 
-    by_msg: Dict[int, List[ToolCall]] = {}
+    by_msg: dict[int, list[ToolCall]] = {}
     for c in calls:
         by_msg.setdefault(c.call_index, []).append(c)
     for i in order:
@@ -307,7 +307,7 @@ def fit_state(messages, calls: List[ToolCall], opt: JevOptions) -> Dict[str, Any
             return fitted([h for j, h in enumerate(history) if j not in left], "old messages left out")
 
     remaining = [h for j, h in enumerate(history) if j not in left]
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
 
     def foldable(e):
         return not pinned(e) and not e["text"] and isinstance((e.get("tool_calls") or [None])[0], str)
@@ -326,7 +326,7 @@ def fit_state(messages, calls: List[ToolCall], opt: JevOptions) -> Dict[str, Any
     raise ValueError(f"history too large for Jev (~{tokens} tokens after truncation, limit {opt.max_state_tokens})")
 
 
-def questions_for(call: ToolCall) -> Dict[str, Any]:
+def questions_for(call: ToolCall) -> dict[str, Any]:
     return {
         f"call_{call.id}": {
             "type": "noul",
@@ -344,10 +344,10 @@ def questions_for(call: ToolCall) -> Dict[str, Any]:
     }
 
 
-def batch_calls(calls: List[ToolCall], state_tokens: int, opt: JevOptions) -> List[List[ToolCall]]:
+def batch_calls(calls: list[ToolCall], state_tokens: int, opt: JevOptions) -> list[list[ToolCall]]:
     budget = opt.max_request_tokens - state_tokens - REQUEST_OVERHEAD_TOKENS
-    batches: List[List[ToolCall]] = []
-    cur: List[ToolCall] = []
+    batches: list[list[ToolCall]] = []
+    cur: list[ToolCall] = []
     cur_tokens = 0
     for c in calls:
         t = estimate_tokens(_json(questions_for(c)))
@@ -382,11 +382,11 @@ def _truncated_result(text: str, is_error: bool, head: int) -> str:
             f"{' (error)' if is_error else ''}; re-run the tool if needed]")
 
 
-def apply_decisions(messages, decisions: List[Decision], calls: List[ToolCall], head: int):
+def apply_decisions(messages, decisions: list[Decision], calls: list[ToolCall], head: int):
     """Rebuild the Hermes transcript: dropped calls vanish with their result row,
     dropped results keep a bounded head + note, untouched rows are the same objects."""
     by_id = {c.id: c for c in calls}
-    actions: Dict[str, str] = {}
+    actions: dict[str, str] = {}
     for d in decisions:
         c = by_id.get(d.id)
         if c and d.action != "keep":
@@ -454,12 +454,12 @@ class JevCompactor:
         self.opt = options or JevOptions()
         self.concurrency = concurrency
         self.usage = JevUsage()
-        self.stats: Dict[str, Any] = {}
-        self.decisions: List[Decision] = []
+        self.stats: dict[str, Any] = {}
+        self.decisions: list[Decision] = []
         self._last_summary_error: Optional[str] = None
 
-    def _ask_batch(self, state, batch: List[ToolCall]) -> Dict[str, Dict[str, float]]:
-        questions: Dict[str, Any] = {}
+    def _ask_batch(self, state, batch: list[ToolCall]) -> dict[str, dict[str, float]]:
+        questions: dict[str, Any] = {}
         for c in batch:
             questions.update(questions_for(c))
         resp = self.asker(state, questions)
@@ -482,7 +482,7 @@ class JevCompactor:
 
         return {c.id: {"keep_call": noul(f"call_{c.id}"), "keep_result": noul(f"result_{c.id}")} for c in batch}
 
-    def _budget_decisions(self, messages, calls, candidates, answers) -> List[Decision]:
+    def _budget_decisions(self, messages, calls, candidates, answers) -> list[Decision]:
         """Keep ranked call+result pairs until the tool-content budget is spent; drop the rest."""
         opt = self.opt
 
@@ -512,14 +512,14 @@ class JevCompactor:
                 out.append(Decision(**base, action="drop_call", reason="call_dropped"))
         return out
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = 0, force: bool = True):
+    def compress(self, messages: list[dict[str, Any]], current_tokens: int = 0, force: bool = True):
         t0 = time.time()
         opt = self.opt
         calls = collect_tool_calls(messages, opt.preserve_recent_messages)
         candidates = [c for c in calls if not c.pinned]
-        answers: Dict[str, Dict[str, float]] = {}
+        answers: dict[str, dict[str, float]] = {}
         fitted = {"tokens": 0, "stage": ""}
-        batches: List[List[ToolCall]] = []
+        batches: list[list[ToolCall]] = []
         if candidates and opt.select != "recency":
             fitted = fit_state(messages, calls, opt)
             batches = batch_calls(candidates, fitted["tokens"], opt)

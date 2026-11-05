@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -55,6 +59,125 @@ class TestApiServerProfileResolution:
             adapter._resolve_request_profile(cast(Any, _FakeReq("restricted")))
             is _PROFILE_REJECTED
         )
+
+    def test_hermes_handle_aliases_to_default_profile(self, monkeypatch):
+        """A peer advertises its default profile's @handle as 'hermes' (botHandle()), but the
+        mirror is keyed by profile name — '/p/hermes/' must reach the same profile '/p/default/'
+        does (#118076), not 404."""
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert (
+            adapter._resolve_request_profile(cast(Any, _FakeReq("hermes")))
+            == "default"
+        )
+
+    def test_real_hermes_profile_is_not_shadowed_by_the_alias(self, monkeypatch):
+        """A gateway that genuinely serves a profile literally named 'hermes' must keep
+        resolving to itself, never silently redirect to 'default'."""
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", "/profiles/default"),
+                ("hermes", "/profiles/hermes"),
+            ],
+        )
+
+        assert (
+            adapter._resolve_request_profile(cast(Any, _FakeReq("hermes")))
+            == "hermes"
+        )
+
+
+_UNKNOWN = {"error": "Unknown or unconfigured profile"}
+_NOT_SERVED = "profile_not_served"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiplex,gateway_home,legacy_hermes,answers", [
+    # Single-profile gateways: the handle is the default profile's, and nobody else's.
+    (False, "", None, {"hermes": None, "default": None, "worker": _UNKNOWN}),
+    (False, "profiles/worker", None, {"hermes": _UNKNOWN, "default": _UNKNOWN, "worker": None}),
+    (False, "profiles/hermes", "live", {"hermes": None, "default": _UNKNOWN}),
+    # A real legacy 'hermes' profile the gateway does not serve is never answered by default.
+    (False, "", "live", {"hermes": _NOT_SERVED, "default": None}),
+    (True, "", None, {"hermes": "default", "worker": "worker"}),
+    (True, "", "live", {"hermes": "hermes", "default": "default"}),
+    (True, "", "parked", {"hermes": _NOT_SERVED, "default": "default"}),
+])
+async def test_hermes_handle_reaches_the_default_profile_only_when_no_hermes_profile_exists(
+        tmp_path, monkeypatch, multiplex, gateway_home, legacy_hermes, answers):
+    """'/p/hermes/' is Bot Mode's handle for the default profile (#118076): a gateway serving the
+    default profile answers it, one running another profile refuses it with the unknown-profile
+    404 (peer clients report it as ambiguous, never reroute), and a host with a real pre-reservation
+    'hermes' profile keeps the name for it (refusing distinctly when this gateway does not serve it)."""
+    root = tmp_path / "root"
+    homes = [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else [])
+    for home in homes:
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    if legacy_hermes == "parked":
+        (root / "profiles" / "hermes" / "gateway.parked").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root / gateway_home))
+    adapter = _make_adapter(multiplex=multiplex)
+
+    async def handler(request):
+        return web.json_response({"profile": _api_request_profile.get()})
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_get("/p/{profile}/v1/test", handler)
+    async with TestClient(TestServer(app)) as cli:
+        for prefix, expected in answers.items():
+            resp = await cli.get(f"/p/{prefix}/v1/test")
+            body = await resp.json()
+            if expected == _NOT_SERVED:
+                assert (prefix, resp.status, body["error"]["code"]) == (prefix, 404, _NOT_SERVED)
+            elif expected == _UNKNOWN:
+                assert (prefix, resp.status, body) == (prefix, 404, _UNKNOWN)
+            else:
+                assert (prefix, resp.status, body) == (prefix, 200, {"profile": expected})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiplex,legacy_hermes,answers", [
+    (True, True, {"Hermes": "hermes", "HERMES": "hermes", "Worker": "worker", "Default": "default"}),
+    (True, False, {"Hermes": "default", "Worker": "worker"}),
+    (False, True, {"Hermes": _NOT_SERVED}),
+    (False, False, {"Hermes": None}),
+])
+async def test_profile_prefix_names_the_same_profile_in_any_case(tmp_path, monkeypatch, multiplex, legacy_hermes, answers):
+    """Profile ids are lowercase (``normalize_profile_name``), so ``/p/Hermes/`` is ``/p/hermes/``:
+    a real 'hermes' profile keeps it, and only without one does it alias the default. An
+    exact-case comparison answered it with the unknown-profile 404, so box/Hermes reached no
+    agent (and older peer clients, which rerouted on that 404, sent it to the default profile)."""
+    root = tmp_path / "root"
+    for home in [root, root / "profiles" / "worker"] + ([root / "profiles" / "hermes"] if legacy_hermes else []):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    adapter = _make_adapter(multiplex=multiplex)
+
+    async def handler(request):
+        return web.json_response({"profile": _api_request_profile.get()})
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_get("/p/{profile}/v1/test", handler)
+    async with TestClient(TestServer(app)) as cli:
+        for prefix, expected in answers.items():
+            resp = await cli.get(f"/p/{prefix}/v1/test")
+            body = await resp.json()
+            if expected == _NOT_SERVED:
+                assert (prefix, resp.status, body["error"]["code"]) == (prefix, 404, _NOT_SERVED)
+            else:
+                assert (prefix, resp.status, body) == (prefix, 200, {"profile": expected})
+
 
 
 

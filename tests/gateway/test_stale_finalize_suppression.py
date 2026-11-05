@@ -519,7 +519,7 @@ async def _drain_split_turn(consumer, lines):
 @pytest.mark.asyncio
 async def test_complete_overflow_split_still_suppresses_duplicate():
     """A fully delivered multi-message reply must NOT be re-sent (#45517)."""
-    adapter, consumer = _split_consumer()
+    _adapter, consumer = _split_consumer()
     lines = [f"line {i} " + "x" * 60 for i in range(12)]
     await _drain_split_turn(consumer, lines)
 
@@ -534,7 +534,7 @@ async def test_complete_overflow_split_still_suppresses_duplicate():
 async def test_split_delivery_missing_tail_does_not_suppress():
     """#78541 — when the completed response exceeds what the split delivered,
     the matcher must report a mismatch so the gateway still sends it."""
-    adapter, consumer = _split_consumer()
+    _adapter, consumer = _split_consumer()
     lines = [f"line {i} " + "x" * 60 for i in range(12)]
     await _drain_split_turn(consumer, lines)
 

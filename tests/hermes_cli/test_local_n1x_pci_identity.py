@@ -41,15 +41,17 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
         monkeypatch, pci_id, name, matches):
     calls = []
     monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: "nvidia-smi")
+    # Shared cached query: reset so each parametrized case makes its own spawn.
+    monkeypatch.setattr(hardware, "_gpu_query_cache", None)
     monkeypatch.setattr(hardware, "_ram_bytes", lambda: (64 << 30, 22 << 30))
     monkeypatch.setattr(hardware, "_device_pool_view", lambda: (48 << 30, True))
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id"
+        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
         # A second adapter must not supply identity for the first adapter's budget.
-        output = (f'32704, 31423, "{name}", {pci_id}\n'
-                  '32704, 31423, NVIDIA RTX Spark N1X, 0x2E0310DE\n')
+        output = (f'32704, 31423, "{name}", {pci_id}, 2048, 7\n'
+                  '32704, 31423, NVIDIA RTX Spark N1X, 0x2E0310DE, 2048, 7\n')
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(hardware.subprocess, "run", run)
@@ -80,14 +82,15 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
 def test_unavailable_pci_id_preserves_memory_and_name_fallback(monkeypatch, integrated):
     calls = []
     monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: "nvidia-smi")
+    monkeypatch.setattr(hardware, "_gpu_query_cache", None)
     monkeypatch.setattr(hardware, "_ram_bytes", lambda: (64 << 30, 22 << 30))
     monkeypatch.setattr(hardware, "_device_pool_view", lambda: (48 << 30, integrated))
     name = "NVIDIA RTX Spark N1X"
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id"
-        return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}, N/A\n")
+        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+        return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}, N/A, 2048, 7\n")
 
     monkeypatch.setattr(hardware.subprocess, "run", run)
     budget = hardware.probe_budget(planning=True)

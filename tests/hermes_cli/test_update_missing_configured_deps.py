@@ -17,8 +17,8 @@ import pytest
 import pm
 from pm.environments import activation_environment, runtime_facts_path, selected_venv, site_packages
 from pm.environments import venv_python
-from tests.pm._fixtures import isolated_python  # noqa: F401
-from tests.pm.test_source_update_launch import source_launch  # noqa: F401
+from tests.pm._fixtures import isolated_python
+from tests.pm.test_source_update_launch import source_launch
 
 
 @pytest.fixture
@@ -130,7 +130,8 @@ def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_pa
     monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
     repair._install_configured_features_missing_deps(tmp_path)
     assert calls == [(["discord", "google-chat", "mcp"],
-                      {"explicit": True, "project_root": tmp_path, "evict_incompatible_plugins": True})]
+                      {"explicit": True, "project_root": tmp_path, "evict_incompatible_plugins": True,
+                       "automatic": ["discord", "google-chat", "mcp"]})]
     out = capsys.readouterr().out
     assert "IRC: irc hint" in out
     assert "Discord" not in out and "MCP servers" not in out

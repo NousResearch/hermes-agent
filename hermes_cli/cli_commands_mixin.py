@@ -34,7 +34,8 @@ from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
-    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
+    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _rollback_undoes_chat, _save, _say_block, _shlex_args, _t,
+    _tn)
 from hermes_cli.cli_session_switch import (
     _end_current_session, _sync_agent_to_session)
 from hermes_cli.browser_connect import (
@@ -474,6 +475,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"\n{diff}")
 
     def _rollback_restore(self, mgr, cwd, target_hash: str, file_path, restore_all: bool) -> None:
+        taken = _probe("tools.checkpoint_undo_hint", "checkpoint_epoch", None, cwd, target_hash)
         result = mgr.restore(cwd, target_hash, file_path=file_path,
                              safe=not restore_all and not file_path)
         if not result["success"]:
@@ -483,8 +485,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('rollback.restored_all', **restored)}")
         _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
-        # Also undo the last conversation turn so the agent's context matches the restored files.
-        if self.conversation_history:
+        # Also undo the last chat turn so the agent's context matches the files (not one /undo kept).
+        if _rollback_undoes_chat(self.conversation_history, taken):
             self.undo_last(prefill=False)
             print(f"  {_t('rollback.chat_turn_undone')}")
 

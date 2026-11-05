@@ -285,11 +285,14 @@ async def rollback(connection, ref, params, *, kind):
         if refusal:
             return {'success': False, 'error': refusal}
         # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
+        from tools.checkpoint_undo_hint import checkpoint_epoch
+        taken.append(checkpoint_epoch(cwd, target))
         return mgr.restore(cwd, target, file_path=file_path or None,
                            safe=not file_path and not params.get('all'))
+    taken = []
     result = await asyncio.to_thread(run)
     if kind == 'restore' and result.get('success') and not file_path:
-        result['history_removed'] = await _rewind_last_turn(connection, ref)
+        result['history_removed'] = await _rewind_last_turn(connection, ref, taken[0] if taken else None)
     return result
 
 
@@ -328,17 +331,20 @@ def _fit_frame(text, budget):
     return ''.join(kept).removesuffix('\n')
 
 
-async def _rewind_last_turn(connection, ref):
+async def _rewind_last_turn(connection, ref, taken):
     """Drop the newest user turn and everything after it (main's full ``/rollback`` restore) via the
-    owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn."""
+    owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn, or when that turn
+    ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""
     authority = connection.authority
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
-    rows = await asyncio.to_thread(local_history, authority, ref)
-    target = next((row['row_id'] for row in reversed(rows) if isinstance(row.get('row_id'), int)
-                   and not row.get('archived') and user_originated_turn_view(row) is not None), None)
-    if target is None:
+    from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+    rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]
+    users = [i for i, row in enumerate(rows) if isinstance(row.get('row_id'), int)
+             and user_originated_turn_view(row) is not None]
+    if not users or not rollback_rewinds_newest_turn(rows, users, taken):
         return 0
+    target = rows[users[-1]]['row_id']
     from gateway.session_mutations import mutate_session
     from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     handle = authority._handle(ref)

@@ -2,11 +2,26 @@ import { expect, it } from 'vitest'
 
 import { focusThread, memberOutcomes, memberStatus, roomCycle, type RoomLogEvent } from './group-room-status'
 
-const user = (seq: number, id: string, thread: string): RoomLogEvent =>
-  ({ seq, event_id: id, kind: 'message.user', payload: { text: 'go', thread_id: thread } })
+const user = (seq: number, id: string, thread: string): RoomLogEvent => ({
+  seq,
+  event_id: id,
+  kind: 'message.user',
+  payload: { text: 'go', thread_id: thread }
+})
 
-const turn = (seq: number, kind: string, member: string, discussion: string, thread: string, round: number, extra: Record<string, unknown> = {}): RoomLogEvent =>
-  ({ seq, kind, payload: { member_id: member, discussion_event_id: discussion, thread_id: thread, round_index: round, ...extra } })
+const turn = (
+  seq: number,
+  kind: string,
+  member: string,
+  discussion: string,
+  thread: string,
+  round: number,
+  extra: Record<string, unknown> = {}
+): RoomLogEvent => ({
+  seq,
+  kind,
+  payload: { member_id: member, discussion_event_id: discussion, thread_id: thread, round_index: round, ...extra }
+})
 
 // Thread A: a replied, b failed, c still works in round 2; then the user posts in thread B.
 const events = [
@@ -27,12 +42,19 @@ it('keeps a member’s outcome from a thread that still works after the user pos
   expect(memberStatus('a', activity, outcomes, 0).kind).toBe('replied')
   expect(memberStatus('c', activity, outcomes, 0).kind).toBe('working')
   // Once thread A is done, its failure still stands while thread B runs; a newer message in A supersedes it.
-  expect(memberStatus('b', [{ member_id: 'a', status: 'running', thread_id: 'B' }], memberOutcomes(events), 0).kind).toBe('failed')
+  expect(
+    memberStatus('b', [{ member_id: 'a', status: 'running', thread_id: 'B' }], memberOutcomes(events), 0).kind
+  ).toBe('failed')
   expect(memberOutcomes([...events, user(6, 'a2', 'A')]).get('b')).toBeUndefined()
 })
 
 it('takes the round from the live task’s own thread, never the newest thread’s', () => {
-  expect(roomCycle(events, activity, 3, focusThread(events))).toEqual({ kind: 'working', round: 2, maxRounds: 3, members: ['c'] })
+  expect(roomCycle(events, activity, 3, focusThread(events))).toEqual({
+    kind: 'working',
+    round: 2,
+    maxRounds: 3,
+    members: ['c']
+  })
   // The thread being replied in wins when it has live work of its own.
   const both = [...activity, { member_id: 'a', status: 'running', thread_id: 'B', round_index: 0 }]
   expect(roomCycle(events, both, 3, 'B')).toEqual({ kind: 'working', round: 1, maxRounds: 3, members: ['a'] })

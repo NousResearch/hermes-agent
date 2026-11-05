@@ -685,7 +685,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
 
       return (
         <>
-          <div ref={element => element?.focus()} role="tab" tabIndex={0}>Session tab</div>
+          <div ref={element => element?.focus()} role="tab" tabIndex={0}>
+            Session tab
+          </div>
           <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} role="textbox" tabIndex={0} />
         </>
       )

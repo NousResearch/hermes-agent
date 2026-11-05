@@ -15,13 +15,15 @@ interface ContribBoundaryProps {
 }
 
 interface ContribRenderProps {
-  render: () => ReactNode
+  render: (props: { onClose?: () => void }) => ReactNode
+  /** Route hosts supply their own return/close action; other surfaces omit it. */
+  onClose?: () => void
 }
 
 /** Mount a contribution callback as a component so its hooks and errors belong
  * to the contribution, not to whichever host surface happened to call it. */
-export function ContribRender({ render }: ContribRenderProps) {
-  return createElement(render)
+export function ContribRender({ render, onClose }: ContribRenderProps) {
+  return createElement(render, { onClose })
 }
 
 /**

@@ -2093,7 +2093,6 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             _step("SessionDB handle sweep error", _sweep)
         # Same sweep for the runner's own per-profile session_search handles.
         _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
-        _step("Runner persistence handle sweep error", lambda: GatewayRunner.close_all_persistence_handles(self))
 
         def _close_shared() -> None:
             # Shared stores still held in the process-wide registry (tools, cron, mirror, the storage interface).

@@ -29,6 +29,34 @@ _PROBE_INITIALIZE_BODY = (  # JSON-RPC ``initialize`` body for the content-type 
     '"capabilities":{},"clientInfo":{"name":"hermes-probe","version":"0.1"}}}')
 
 
+def _hide_stdio_console_window() -> None:
+    """Default ``CREATE_NO_WINDOW`` on Windows stdio MCP spawns.
+
+    The gateway often runs without a console (launched by ``wscript`` / ``.vbs``),
+    so each spawn of a console-subsystem binary (``npx.cmd``, ``node.exe``) by the
+    MCP SDK's ``stdio_client()`` allocates a visible console window that flashes
+    on the desktop. ``stdio_client()`` calls ``anyio.open_process()`` without a
+    ``creationflags`` kwarg and the SDK exposes no way to pass one, so request
+    ``CREATE_NO_WINDOW`` by defaulting it on ``anyio.open_process``. That function
+    is only called from the MCP stdio transport in this tree, so the patch is
+    scoped correctly. Idempotent and a no-op on non-Windows. See #149528.
+    """
+    if os.name != "nt":
+        return
+    import anyio
+    import subprocess
+    orig = anyio.open_process
+    if getattr(orig, "_hermes_no_window", False):
+        return
+
+    async def patched(*args, **kwargs):
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+        return await orig(*args, **kwargs)
+
+    patched._hermes_no_window = True  # type: ignore[attr-defined]
+    anyio.open_process = patched
+
+
 def _content_type_base(resp) -> str:
     """``content-type`` header of *resp* without parameters, lowercased."""
     return resp.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -395,6 +423,10 @@ class MCPServerTransportMixin:
             attach_self_to_kill_on_close_job()
         except Exception:
             logger.debug("job-object self-attach failed before stdio spawn", exc_info=True)
+        # Windows: a console-less gateway makes each stdio spawn flash a visible
+        # console window. Default CREATE_NO_WINDOW on anyio.open_process before
+        # the stdio_client() spawn below; idempotent, no-op off-Windows (#149528).
+        _hide_stdio_console_window()
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)

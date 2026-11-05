@@ -1,6 +1,6 @@
 name: hermes-security
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: f211940dd81f32b85ec26e2e07de8aa5e24df9e0
+sha: 65f5ad93c7dc14dc661ff2ff3ead0fda71e7bd9d
 subdir: hermes-security
 title: Security
 description: 'Security review for a local repository. The agent builds a threat model, splits the code
@@ -24,7 +24,7 @@ maintainer: NousResearch
 tier: official
 category: tools
 requires_hermes: ">=0.21.5"
-version: "0.1.0"
+version: "0.1.1"
 image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/f211940dd81f32b85ec26e2e07de8aa5e24df9e0/assets/hermes-security.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/hermes-security
 platforms: []

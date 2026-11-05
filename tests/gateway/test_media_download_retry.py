@@ -338,6 +338,9 @@ def _make_slack_adapter():
 # SlackAdapter._download_slack_file
 # ---------------------------------------------------------------------------
 
+# files.slack.com resolves from a fixture: the SSRF check before each download used to look it up
+# on the live resolver.
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFile:
     """Tests for SlackAdapter._download_slack_file"""
 
@@ -400,6 +403,7 @@ class TestSlackDownloadSlackFile:
 # SlackAdapter._download_slack_file_bytes
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("public_dns")
 class TestSlackDownloadSlackFileBytes:
     """Tests for SlackAdapter._download_slack_file_bytes"""
 

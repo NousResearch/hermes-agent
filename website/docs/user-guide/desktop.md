@@ -74,8 +74,10 @@ serves share its Webapp; a standalone profile's own gateway serves its own when 
 **From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
-you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
-requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with
+you run on the same machine, keep the loopback host and set `webapp.public_url` to the address it
+serves instead; that requires the same sign-in. A proxy in another container or on another machine
+cannot reach that loopback address: see [Docker → Behind a tunnel or reverse proxy](./docker.md#webapp-behind-a-proxy).
+`hermes webapp` then opens the Webapp's address, where you sign in with
 your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
 registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
 loopback address (a password provider, or sign-in you set up by hand for that address). One-use
@@ -116,7 +118,10 @@ always-on-top overlays, OS-window inspection, external-terminal launch and the u
 
 Chats written before the gateway owned sessions show their history but cannot be continued from the
 browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
-sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI. That
+includes chats a phone app started through the dashboard login under its own label (`mobile`, `ios`):
+they continue like Desktop chats. Rows a separate WebUI process wrote with its own agent, and old cron
+or subagent runs, stay read-only.
 
 ### Open it from your phone or another computer
 
@@ -136,9 +141,10 @@ and only that app can change it: a browser signed in over the network cannot.
 **Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
 can take a few minutes the first time), registers its sign-in address with your Nous account when that
 address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
-starts. While a chat is running the gateway refuses to restart: the pane shows **Restart needed**, the
-settings apply on the next restart, and **Restart gateway** restarts it once the chat ends. **Stop**
-turns the Webapp off the same way. A Webapp you turned on for this computer only
+starts. Until it is done the pane names the step it is on and how long Start has run, also in a
+pane opened during it. While a chat is running the gateway refuses to restart: the pane shows
+**Restart needed**, the settings apply on the next restart, and **Restart gateway** restarts it once
+the chat ends. **Stop** turns the Webapp off the same way. A Webapp you turned on for this computer only
 (`webapp.enabled: true` without Web Access) shows as served on this computer.
 
 Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
@@ -308,6 +314,17 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Ctrl+`** shows the terminal (opening one if none exist); **Ctrl+Shift+`** spawns an additional one. Multiple terminals stack in a tab rail — **Ctrl+Shift+↓/↑** walk between them, **Ctrl+Shift+W** closes the active one.
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
+
+**Per-gateway terminals.** Each terminal tab runs on the gateway it was opened on, and keeps running there
+when you pick another gateway in Sessions. **New terminal** (**+** on the terminal rail) opens on the
+gateway picked in Sessions. When an SSH gateway is registered, the chevron under **+** (or a
+right-click on **+**) opens one on **This device** or any SSH gateway, so several hosts can be open
+side by side. A tab shows its gateway as a small glyph on its rail square and in its tooltip
+(`zsh · NAS`); This device tabs are labeled only once tabs run on more than one host. URL/token and
+cloud gateways have no shell access, so a terminal opened while one is picked runs on This device
+and says so. After a relaunch, each tab reopens on its own gateway. Editing an SSH gateway
+disconnects its tabs (press Enter to reconnect). If a tab's gateway was removed, the tab says so and
+does not start a shell anywhere else.
 
 ### Live subagents
 

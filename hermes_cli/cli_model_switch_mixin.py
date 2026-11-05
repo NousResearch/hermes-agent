@@ -169,9 +169,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        from agent.context_pin import context_pin_suffix
-        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}"
-                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
+        from agent.context_pin import context_window_suffix
+        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}" + context_window_suffix(
+            ctx, getattr(agent, '_config_context_length', None) if agent else None, model=result.new_model,
+            provider=result.target_provider, base_url=result.base_url or cli.base_url or ""))
     if mi:
         if mi.max_output:
             _cprint(f"    {t('gateway.model.max_output_label', tokens=f'{mi.max_output:,}')}")

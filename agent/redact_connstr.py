@@ -17,7 +17,14 @@ import re
 # ``(?:^|[;\s])\s*`` rescans runs of whitespace from every start position: quadratic, and
 # a 16K-space line took ~30s. Value extents are found by _kv_value_end, not by regex, so
 # each grammar (ODBC braces, ADO.NET doubled quotes, libpq backslash escapes) is exact.
+# ``=`` is a companion-key boundary because an assigned connection string
+# (``Environment=CONN=Server=db;…``, ``printenv`` output, a ``docker run -e CONN=…`` argv dump)
+# puts the first key right after it. It is deliberately NOT added to _KV_KEY_BOUNDARY: a
+# ``password=``/``pwd=`` key behind ``=`` is ``note=password=…`` prose far more often than a
+# field. The assigned form also has to prove it is one run — a ``;`` between the companion and
+# the password key — so ``env X=host=db PWD=/home/app/project`` stays verbatim.
 _KV_KEY_BOUNDARY = r"(?<![^\s;\"'])"
+_KV_ASSIGNED_KEY_BOUNDARY = r"(?<![^\s;\"'=])"
 _KV_CONNSTR_PW_RE = re.compile(
     _KV_KEY_BOUNDARY + r"(?:password|pwd)[ \t]*=[ \t]*", re.IGNORECASE)
 _KV_CONNSTR_GATE_RE = re.compile(r"(?:password|pwd)\s*=", re.IGNORECASE)
@@ -29,6 +36,14 @@ _KV_CONNSTR_KEYS = (
     r"user(?:name)?|database|dbname|hostaddr|initial\s+catalog|port")
 _KV_CONNSTR_COMPANION_RE = re.compile(
     _KV_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
+_KV_CONNSTR_ASSIGNED_COMPANION_RE = re.compile(
+    _KV_ASSIGNED_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
+# One ``;``-delimited field of an assigned connection string: ``Server=db;``, ``User Id=app;``.
+# The value may not contain ``=``: in the ``;`` grammar an unescaped ``=`` inside a value is what
+# a neighbouring assignment looks like (``host=db OPTIONS=';sslmode=require'``), and treating it
+# as part of the run is how the ``PWD=`` next door got masked.
+_KV_RUN_FIELD_RE = re.compile(
+    r"[ \t]*(?:" + _KV_CONNSTR_KEYS + r"|password|pwd)[ \t]*=[^;=\r\n]*;", re.IGNORECASE)
 # ``;``-delimited grammar (ADO.NET/ODBC/JDBC) when a ``;`` is followed by a known field.
 # libpq values may contain a bare ``;`` (``password=a;b dbname=x``), so a ``;`` alone
 # does not decide the grammar.
@@ -102,30 +117,55 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     return min(j, n)
 
 
+def _assigned_run_end(line: str, start: int) -> int:
+    """End of the ``;``-delimited run that starts at ``start``; ``start`` when it is not one."""
+    pos = start
+    while True:
+        m = _KV_RUN_FIELD_RE.match(line, pos)
+        if m is None or m.end() == pos:
+            return pos
+        pos = m.end()
+
+
 def _redact_kv_connection_line(line: str, code_file: bool) -> str:
-    if not _KV_CONNSTR_GATE_RE.search(line) or not _KV_CONNSTR_COMPANION_RE.search(line):
+    if not _KV_CONNSTR_GATE_RE.search(line):
         return line
     semicolon = _KV_SEMICOLON_FIELD_RE.search(line) is not None
+    plain_companion = _KV_CONNSTR_COMPANION_RE.search(line) is not None
+    # A ``=``-prefixed companion key is evidence only for the run it starts: the password key has
+    # to open a field of that same ``;``-delimited run. Another variable's ``OPTIONS=';sslmode=…'``
+    # or a bare ``env X=host=db PWD=…`` therefore never activates the path.
+    assigned_runs = ([(m.start(), _assigned_run_end(line, m.start()))
+                      for m in _KV_CONNSTR_ASSIGNED_COMPANION_RE.finditer(line)]
+                     if not plain_companion else [])
+    if not plain_companion and not assigned_runs:
+        return line
     out, pos = [], 0
     for m in _KV_CONNSTR_PW_RE.finditer(line):
         if m.start() < pos:  # inside a value already masked
             continue
+        in_run = any(start <= m.start() <= end for start, end in assigned_runs)
+        if not plain_companion and not in_run:
+            continue
+        # A field of an assigned ``;`` run is read with the ``;`` grammar, not the libpq one.
+        field_semicolon = semicolon or in_run
         vstart = m.end()
-        vend = _kv_value_end(line, vstart, semicolon)
+        vend = _kv_value_end(line, vstart, field_semicolon)
         value = line[vstart:vend]
         # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value followed
         # by the next word. Padding on both sides (``password = x``) is still a conninfo field.
         eq = line.rindex("=", m.start(), m.end())
-        if not value or (not semicolon and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"):
+        if not value or (not field_semicolon and line[m.end() - 1] in " \t"
+                         and line[eq - 1] not in " \t"):
             continue
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``. ODBC braces a
         # literal value (``PWD={Zq7x;LmP2}``), so on a ``;`` line only a format slot or an identifier
         # counts as a template; ``cat appsettings.json`` output is read as code_file.
         if code_file and bare.startswith(("{", "${")) and bare.endswith("}") and (
-                not semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
+                not field_semicolon or bare.startswith("${") or _FORMAT_SLOT_RE.fullmatch(bare)):
             continue
-        if value[0] == "{" and semicolon:
+        if value[0] == "{" and field_semicolon:
             masked = "{***}"
         elif value[0] in "\"'" and len(value) > 1 and value[-1] == value[0]:
             masked = f"{value[0]}***{value[0]}"

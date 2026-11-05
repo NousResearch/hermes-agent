@@ -1,6 +1,12 @@
+# The catalog entry that goes into NousResearch/hermes-agent as
+# plugin-catalog/peripheral.yaml. `sha` is the most recent release commit: at HEAD it is
+# the commit tagged v<version>, and inside a release commit it names the release before
+# it, because nothing inside a commit can pin that same commit. The copy submitted in
+# the catalog PR carries the current pin. scripts/check_release.py proves the tag and
+# the pin agree wherever it is run.
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 63e4c7200b10036750ae63e2b393f713e243dfc4
+sha: 6b8b9e2d243380e77820e6150cda9fb6f518ba20
 description: >-
   A memory of what the user has seen on screen. Peripheral captures the display
   itself on request, optionally on change in the background, and indexes the
@@ -17,12 +23,15 @@ description: >-
   and a bundled skill that teaches when screen memory beats asking the user to
   re-send a screenshot. Works without Tesseract: frames are still captured and can
   be looked at, and the plugin says text search is unavailable rather than pretending.
-  Incremental and bounded: only changed files are re-read, each scan OCRs a capped
-  batch, background capture stores changed frames only under an hourly ceiling, and
+  Incremental and rate-limited: only changed files are re-read, each scan OCRs a
+  capped batch, background capture stores changed frames only under an hourly ceiling
+  (that bounds the rate, not the total size: retention_days is off by default), and
   every failure (no capture binary, no Tesseract, unreadable image, locked database)
   is logged and skipped rather than raised. Disclosure — reads image files under the
-  configured watch_dirs and captures the display only when the user invokes
-  screen_capture or enables capture_enabled; writes one SQLite database, WebP
+  configured watch_dirs and captures the display when the agent calls its
+  screen_capture tool — the model may choose to do so, and every call is visible in
+  the session and recorded in the event log — or when the user enables
+  capture_enabled; writes one SQLite database, WebP
   thumbnails and captured frames under the profile's plugin-data/peripheral/; runs
   the local tesseract binary and a local capture binary (ffmpeg x11grab, grim,
   screencapture, PowerShell, import, scrot or maim) as subprocesses with timeouts;
@@ -35,7 +44,7 @@ maintainer: okyssta
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-version: "2.0.0"
+version: "2.0.2"
 docs_url: https://github.com/okyssta/hermes-peripheral#readme
 platforms: []
 capabilities:

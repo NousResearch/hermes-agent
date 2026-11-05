@@ -600,12 +600,59 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
     from hermes_cli.skills_hub import do_install
 
     console, sink = _stale_env(monkeypatch)
+    import tools.skills_hub_search as hub_search
+    monkeypatch.setattr(hub_search, "unified_search", lambda query, sources, **kw: [])
     do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
 
     out = sink.getvalue()
     assert "Stale index entry" in out
     assert "skills-sh" in out
     assert "Could not fetch" not in out
+
+
+def test_do_install_stale_index_lists_live_alternatives(monkeypatch):
+    """A stale-entry verdict lists the live same-named entries, minus the dead one (#140557)."""
+    from types import SimpleNamespace
+    from hermes_cli.skills_hub import do_install
+    import tools.skills_hub_search as hub_search
+
+    console, sink = _stale_env(monkeypatch)
+    searched = {}
+
+    def fake_search(query, sources, **kw):
+        searched["query"] = query
+        return [
+            SimpleNamespace(name="gone-skill", identifier="skills-sh/org/gone-skill"),
+            SimpleNamespace(name="executing-plans",
+                            identifier="skills-sh/obra/superpowers-skills/executing-plans"),
+            SimpleNamespace(name="executing-plans",
+                            identifier="skills-sh/obra/superpowers-skills/executing-plans"),
+        ]
+
+    monkeypatch.setattr(hub_search, "unified_search", fake_search)
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert searched["query"] == "gone-skill"  # the slug, not the dead repo path
+    assert "Closest live entries" in out
+    assert "skills-sh/obra/superpowers-skills/executing-plans" in out
+    assert out.count("skills-sh/obra/superpowers-skills/executing-plans") == 1  # deduped
+    # "Fetching:" and the error line name the dead identifier; the suggestions never repeat it.
+    assert out.count("skills-sh/org/gone-skill") == 2
+
+
+def test_do_install_stale_index_without_alternatives_stays_quiet(monkeypatch):
+    """Nothing live shares the name: the stale verdict stands without a suggestion block (#140557)."""
+    from hermes_cli.skills_hub import do_install
+    import tools.skills_hub_search as hub_search
+
+    console, sink = _stale_env(monkeypatch)
+    monkeypatch.setattr(hub_search, "unified_search", lambda query, sources, **kw: [])
+    do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
+
+    out = sink.getvalue()
+    assert "Stale index entry" in out
+    assert "Closest live entries" not in out
 
 
 def test_fetch_failure_names_rejected_github_credential():

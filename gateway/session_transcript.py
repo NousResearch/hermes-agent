@@ -651,6 +651,28 @@ class SessionTranscriptMixin:
                 "empty: %s", session_id, e, exc_info=True)
             raise TranscriptReadError(session_id) from e
 
+    def retain_refused_turn_for_display(self, session_id: str, *, notice: str) -> Optional[dict[str, Any]]:
+        """Take the newest (safety-refused) user turn out of the MODEL context — exactly as
+        :meth:`rewind_session` does — while KEEPING the user's message visible in the chat as a
+        greyed refused notice (``SessionDB.retain_refused_turn_for_display``). The owner (gateway /
+        Bot Chat) calls this after the turn lease releases. Returns ``{\"retained\": True}`` on
+        success, or ``None`` (no DB / no rewindable turn / persistence failure); best-effort, so a
+        refusal never crashes turn teardown.
+        """
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        with self._get_transcript_drain_lock():
+            try:
+                retained = db.retain_refused_turn_for_display(session_id, notice=notice)
+            except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash teardown
+                logger.debug("retain_refused_turn_for_display: failed: %s", e)
+                return None
+            if not retained:
+                return None
+            self._clear_dirty_transcript(session_id)
+            return {"retained": True}
+
     def rewind_session(
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
     ) -> Optional[dict[str, Any]]:

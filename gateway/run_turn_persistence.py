@@ -536,7 +536,7 @@ class GatewayTurnPersistenceMixin:
             # drop; a non-persisting runtime wrote nothing, so rewinding would hit a prior accepted turn.
             # Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
             if agent_persisted:
-                await self._hmwa_drop_content_policy_refused_turn(sid, session_key)
+                await self._hmwa_retain_content_policy_refused_turn(sid, session_key)
         else:
             if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
@@ -606,29 +606,32 @@ class GatewayTurnPersistenceMixin:
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
 
-    async def _hmwa_drop_content_policy_refused_turn(self, sid, session_key):
-        """Drop a safety-refused turn and force the next turn to rebuild from the clean transcript.
+    async def _hmwa_retain_content_policy_refused_turn(self, sid, session_key):
+        """Retain a safety-refused turn for display while forcing the next turn to rebuild from the
+        clean (model) transcript.
 
         The agent flushed the user row at turn start (a managed worker never mutates its own
-        transcript); now that the turn lease is released, soft-delete that turn owner-side — the same
-        rewind ``/undo`` uses — and evict the cached agent so the next turn rebuilds from the
-        active-only transcript. Otherwise the cached agent keeps the refused turn in its in-memory
-        history and the deterministic filter re-refuses every later message (the "stuck session"
-        report). The refusal was already delivered to the user.
+        transcript); now that the turn lease is released, take that whole turn out of the MODEL
+        context owner-side — the same soft-delete ``/undo`` uses — but KEEP the user's message
+        visible in the chat as a greyed refused notice, and evict the cached agent so the next turn
+        rebuilds from the active-only transcript. Otherwise the cached agent keeps the refused turn
+        in its in-memory history and the deterministic filter re-refuses every later message (the
+        "stuck session" report). The refusal was already delivered to the user.
 
-        ``rewind_session`` reports failure by returning ``None`` (it swallows its own errors), so only
-        evict on a confirmed drop and warn otherwise — a silently-failed un-stick leaves the chat
-        locked, and that is the one outcome worth a visible signal. Dropping un-sticks the chat; the
-        ``/undo`` guidance in the refusal is the user-facing fallback when it could not.
+        ``retain_refused_turn_for_display`` reports failure by returning ``None`` (it swallows its own
+        errors), so only evict on a confirmed retention and warn otherwise — a silently-failed
+        un-stick leaves the chat locked, and that is the one outcome worth a visible signal.
         """
+        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
         try:
-            outcome = await self.async_session_store.rewind_session(sid, 1)
+            outcome = await self.async_session_store.retain_refused_turn_for_display(
+                sid, notice=CONTENT_REFUSED_NOTICE)
         except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash turn teardown
-            logger.warning("content-policy refusal: dropping the refused turn for %s raised: %s", sid, e)
+            logger.warning("content-policy refusal: retaining the refused turn for %s raised: %s", sid, e)
             return
         if outcome is None:
             logger.warning(
-                "content-policy refusal: could not drop the refused turn for %s (rewind found none); "
+                "content-policy refusal: could not retain the refused turn for %s (rewind found none); "
                 "the chat may stay locked until the user runs /undo", sid)
             return
         with suppress(Exception):

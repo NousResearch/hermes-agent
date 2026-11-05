@@ -951,20 +951,23 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if "messages" in result and isinstance(result["messages"], list):
                 state.history = result["messages"]
                 self.session_manager.save_session(session_id)
-                # Safety refusal: erase the whole refused turn (user row + any tool rounds + the
-                # refusal) from the durable transcript so a fresh session load isn't re-sent the
-                # blocked content and locked. state.history is already the clean pre-refusal history.
-                # Rewind ONLY when the OWNING agent flushed incrementally AND save_session skipped
+                # Safety refusal: take the whole refused turn (user row + any tool rounds + the
+                # refusal) out of the MODEL context so a fresh session load isn't re-sent the
+                # blocked content and locked, while KEEPING the user's message visible in the chat
+                # as a greyed refused notice. state.history is already the clean pre-refusal history.
+                # Retain ONLY when the OWNING agent flushed incrementally AND save_session skipped
                 # replace_messages — i.e. session.py's exact condition `_session_db is db and
                 # _session_db_created`. A non-owning agent's replace_messages(clean history) already
-                # erased the refused turn; a second rewind would drop a prior accepted turn.
+                # dropped the refused turn; a second rewind would drop a prior accepted turn.
                 _adb = getattr(state.agent, "_session_db", None)
                 if (result.get("failure_reason") == "content_policy_blocked"
                         and _adb is not None and _adb is self.session_manager._get_db()
                         and getattr(state.agent, "_session_db_created", False)):
-                    from hermes_state_rewind import erase_refused_turn_from_transcript
-                    erase_refused_turn_from_transcript(
-                        _adb, getattr(state.agent, "session_id", session_id))
+                    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                    from hermes_state_rewind import retain_refused_turn_for_display
+                    retain_refused_turn_for_display(
+                        _adb, getattr(state.agent, "session_id", session_id),
+                        notice=CONTENT_REFUSED_NOTICE)
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)

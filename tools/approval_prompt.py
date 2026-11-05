@@ -213,7 +213,7 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
     except Exception:
         # Plugin/discovery exception text may contain plugin-owned secrets.
         logger.warning("Could not resolve selected approval transport %r", name)
-        registered = None
+        return _attempt(name, "deny", "error", fallback)
     if registered is None:
         logger.warning("Selected approval transport %r is unavailable", name)
         return _attempt(name, "deny", "unavailable", fallback)

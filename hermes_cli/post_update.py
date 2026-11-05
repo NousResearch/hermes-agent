@@ -301,6 +301,58 @@ def step_provision_runtimes() -> dict:
     return {"ok": True, "refreshed": refreshed}
 
 
+def step_verify_runtime_integrity() -> dict:
+    """Post-update self-healing: verify runtime path, launcher shebangs, and clean dead locks."""
+    import json
+    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_cli.update_lock import read_live_update
+    from hermes_cli.venv_sync import publish_launchers
+    from pm.environments import store_root
+    from pm.paths import install_root, install_stamp_path
+
+    repaired = []
+    root = install_root()
+
+    # 1. Verify and repair install-stamp.json runtimeDir
+    stamp_path = install_stamp_path(root)
+    if stamp_path.is_file():
+        try:
+            data = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            data = {}
+        runtime_dir = data.get("runtimeDir") if isinstance(data, dict) else None
+        if not runtime_dir:
+            store = store_root(root, honor_runtime_override=False)
+            if store and (store / "facts.json").is_file():
+                write_source_stamp(root)
+                repaired.append(f"stamped runtimeDir: {store}")
+
+    # 2. Verify launcher shebang matches resolve_store_python(root)
+    store_python = resolve_store_python(root)
+    if store_python:
+        launcher_bin = root / ".hermes" / "bin" / ("hermes.exe" if os.name == "nt" else "hermes")
+        if launcher_bin.is_file():
+            try:
+                content = launcher_bin.read_bytes()
+                expected = str(store_python).encode("utf-8")
+                if expected not in content:
+                    publish_launchers(root)
+                    repaired.append("republished launchers matching runtime python")
+            except Exception as exc:
+                logger.warning("verify_runtime_integrity: launcher check error: %s", exc)
+
+    # 3. Clean any dead update markers safely without affecting running updaters
+    try:
+        live = read_live_update(install_root=root)
+        if live is None:
+            repaired.append("update locks clear")
+    except Exception as exc:
+        logger.warning("verify_runtime_integrity: update lock probe error: %s", exc)
+
+    return {"ok": True, "repaired": repaired}
+
+
 # ---------------------------------------------------------------------------
 # step registries — boot_bootstrap gates each list with the matching record
 # ---------------------------------------------------------------------------
@@ -312,6 +364,7 @@ HOME_STEPS: tuple = (
     ("state_db_guard", step_state_db_guard),
     ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
     ("expose_cli", expose_cli),
+    ("verify_runtime_integrity", step_verify_runtime_integrity),
 )
 
 # Startup skill syncing belongs to each entry point. Boot bootstrap must

@@ -88,7 +88,7 @@ _REV1 = [{"id": "t1", "content": "Step one", "status": "in_progress"}]
 _SNAPSHOT_REV3 = {"role": "user", "content": "keep going\n\n" + TODO_INJECTION_HEADER + "\n- [>] t3. Step three (in_progress)"}
 
 
-async def _manual_compress(history: list, tail=None, db=None, built=None) -> list:
+async def _manual_compress(history: list, tail=None, db=None, built=None, text="/compress") -> list:
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
@@ -111,7 +111,7 @@ async def _manual_compress(history: list, tail=None, db=None, built=None) -> lis
         patch("run_agent.AIAgent", side_effect=_real_agent_factory(built, tail)),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=lambda m, **_k: 10 * len(m)),
     ):
-        await runner._handle_compress_command(MessageEvent(text="/compress", source=_source(), message_id="m1"))
+        await runner._handle_compress_command(MessageEvent(text=text, source=_source(), message_id="m1"))
 
     assert built, "the gateway builder did not construct the compaction agent"
     runner._persist_manual_compression.assert_awaited_once()
@@ -281,6 +281,20 @@ async def test_compress_here_keeps_tail_verbatim_with_archived_todos(
         assert snapshot_row == {"role": "user", "content": expected.format_for_injection(),
                                 "_todo_snapshot_synthetic": True}
     assert todo_db.get_messages_as_conversation("sess-todo") == before
+
+
+@pytest.mark.asyncio
+async def test_slash_compress_here_keeps_tail_verbatim_with_archived_todos(todo_db):
+    # The restored snapshot ends the head on a user row; the first kept message must not be folded into it.
+    from hermes_cli.partial_compress import split_history_for_partial_compress
+
+    _, retained = split_history_for_partial_compress(_history(), 2)
+    head = [{"role": "user", "content": "[CONTEXT COMPACTION] earlier work summarised"},
+            {"role": "assistant", "content": "acknowledged"}]
+    compressed = await _manual_compress(_history(), tail=head, db=todo_db, text="/compress here 2")
+    kept = compressed[-len(retained):]
+    assert [(m["role"], m["content"]) for m in kept] == [(m["role"], m["content"]) for m in retained]
+    _assert_todo_carried(compressed[:-len(retained)])
 
 
 @pytest.mark.asyncio

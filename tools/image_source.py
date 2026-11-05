@@ -24,6 +24,8 @@ _MAX_INGEST_BYTES = 50 * 1024 * 1024
 # Host-file reads (250 MiB): bounded during the read, big enough for full-res camera/scan
 # images, which call sites downscale before the 20MB provider payload cap.
 _MAX_HOST_READ_BYTES = 250 * 1024 * 1024
+# Chunk size for host reads whose st_size under-reports (see _read_host_bytes_bounded).
+_HOST_READ_CHUNK = 1024 * 1024
 
 
 class ImageResolutionError(Exception):
@@ -92,15 +94,23 @@ async def resolve_image_source(
 
 
 def _read_host_bytes_bounded(path: Path, src: str, cap: int) -> bytes:
-    """Read a host file with ``cap`` enforced DURING the read. ``read_bytes()`` buffered the
-    whole file before ``_finalize`` checked its size; ``read(cap+1)`` bounds the allocation even when
-    ``st_size`` under-reports (procfs-style files), and the honest-size check reads nothing at all."""
-    if path.stat().st_size > cap:
+    """Read a host file with ``cap`` enforced DURING the read. ``read_bytes()`` buffered the whole
+    file before ``_finalize`` checked its size. ``read(n)`` preallocates n bytes, so the first read
+    asks for the stat'd size (not the cap); when ``st_size`` under-reports (procfs-style files) the
+    rest streams in chunks and stops past ``cap``. The honest-size check reads nothing at all."""
+    size = path.stat().st_size
+    if size > cap:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
     with path.open("rb") as fh:
-        data = fh.read(cap + 1)
-    if len(data) > cap:
-        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+        data = fh.read(size + 1)
+        if len(data) > size:
+            parts, total = [data], len(data)
+            while total <= cap and (chunk := fh.read(_HOST_READ_CHUNK)):
+                parts.append(chunk)
+                total += len(chunk)
+            if total > cap:
+                raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+            data = b"".join(parts)
     return data
 
 

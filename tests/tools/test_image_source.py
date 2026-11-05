@@ -157,6 +157,36 @@ class TestBoundedHostRead:
         assert reads and all(0 <= n <= isrc._MAX_HOST_READ_BYTES + 1 for n in reads)
 
     @pytest.mark.asyncio
+    async def test_small_file_read_never_reserves_the_cap(self, tmp_path, monkeypatch):
+        # BufferedReader.read(n) allocates n bytes up front, so read(cap+1) reserved 250 MiB of
+        # address space per screenshot and raised MemoryError under RLIMIT_AS / strict overcommit.
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        img = tmp_path / "pic.png"
+        img.write_bytes(PNG)
+        real_open, reads = Path.open, []
+
+        class _Recording:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def read(self, n=-1):
+                reads.append(n)
+                return self._fh.read(n)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+
+        monkeypatch.setattr(Path, "open", lambda self, *a, **kw: (
+            _Recording(real_open(self, *a, **kw)) if self.name == "pic.png" else real_open(self, *a, **kw)))
+        res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
+        assert res.data == PNG
+        assert reads and all(0 <= n <= len(PNG) + 1 for n in reads)
+
+    @pytest.mark.asyncio
     async def test_video_host_read_keeps_the_50_mib_budget(self, tmp_path, monkeypatch):
         # Videos are never downscaled and video_analyze refuses >50 MB of base64, so the 250 MiB
         # image budget must not let a cached video be read and copied before that refusal.

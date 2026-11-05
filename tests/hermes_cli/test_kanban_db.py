@@ -477,12 +477,21 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
         ("docs authored by the previous cycle", None),
         ("relying on an authoritative source", None),
+        # Engineering/business sign-off nouns are not provider credential
+        # failures: must NOT park the card under blocker_auth.
+        ("No product acceptance or E04/E05/E06 authorization.", None),
+        ("Engineering authorisation is still pending", None),
         # Genuine auth failures must still trip the guard, one row per
         # curated stem family (bare, -ate, -ize, -ise).
         ("401 auth failed", "blocker_auth"),
         ("authentication error from provider", "blocker_auth"),
         ("still authorizing the request", "blocker_auth"),
         ("still authorising the request", "blocker_auth"),
+        ("HTTP 401 unauthorized", "blocker_auth"),
+        ("provider returned 401", "blocker_auth"),
+        ("invalid credentials for provider", "blocker_auth"),
+        ("token expired", "blocker_auth"),
+        ("request unauthenticated", "blocker_auth"),
     ],
 )
 def test_respawn_guard_blocker_auth_curated_not_open_stem(

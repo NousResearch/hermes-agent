@@ -128,3 +128,12 @@ def test_valid_session_header_leaves_a_cookie_session_to_its_provider(gated, tok
     r = client.get("/api/auth/me", headers={_HEADER: token})
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json().get("provider") == "other-login"
+
+
+def test_a_header_session_write_skips_the_cookie_write_checks(gated, token):
+    """The header carries its credential itself, so like a bearer it is not held to the
+    cookie-write checks, even when the browser says another page sent it."""
+    r = gated().post("/api/auth/ws-ticket", headers={_HEADER: token, "Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.json()["ticket"]
+    assert "set-cookie" not in r.headers

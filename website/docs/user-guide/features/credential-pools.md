@@ -211,6 +211,9 @@ The pool handles different errors differently:
 
 Provider-supplied `reset_at` timestamps override these default cooldowns.
 
+Default runtime pool resolution uses the configured model; callers supplying an explicit
+target model use that target. Model-aware rotation ignores cooldowns for other models.
+
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
 **Quota benches are temporary for the live session too.** When a 429/402 rotates a session off a

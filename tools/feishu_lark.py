@@ -19,8 +19,20 @@ def set_client(client):
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the thread-local client, or the profile-qualified binding.
+
+    The comment handler injects a thread-local client on the same thread that
+    runs the agent, so it always wins when present. Outside comment context
+    (DM/gateway turns, where the agent runs on a worker thread), resolve the
+    client published by the Feishu adapter for the active profile — never a
+    sibling profile's client (see ``tools/feishu_client_binding.py``).
+    """
+    client = getattr(_local, "client", None)
+    if client is not None:
+        return client
+    from tools.feishu_client_binding import resolve
+
+    return resolve()
 
 
 def _check_feishu():

@@ -29,8 +29,10 @@ import fire
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
-from model_tools import TOOL_TO_TOOLSET_MAP
+from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
 from run_agent import AIAgent
+from tools.registry import registry
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 from toolset_distributions import (
     list_distributions,
     sample_toolsets_from_distribution,
@@ -39,10 +41,23 @@ from toolset_distributions import (
 
 logger = logging.getLogger(__name__)
 
-# Auto-derived from model_tools so it stays in sync as tools are added. Gives every
-# trajectory a consistent tool_stats schema (Arrow/Parquet for HF datasets) and filters
-# corrupted entries (hallucinated tool names) when combining trajectories.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+
+def _current_possible_tools() -> set[str]:
+    """Return every tool name valid for trajectories at merge time.
+
+    Registry snapshots can become stale after CLI startup when plugins or MCP
+    servers register tools dynamically. Inline executors and Tool Search bridge
+    tools bypass the registry, so include those names explicitly as well.
+    """
+    return (
+        set(registry.get_tool_to_toolset_map())
+        | set(INLINE_TOOL_EXECUTORS)
+        | set(BRIDGE_TOOL_NAMES)
+    )
+
+
+# Backward-compatible snapshot for callers that inspect the initial tool catalog.
+ALL_POSSIBLE_TOOLS = _current_possible_tools()
 
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 _REASONING_KEYS = ("total_assistant_turns", "turns_with_reasoning", "turns_without_reasoning")
@@ -720,6 +735,7 @@ class BatchRunner:
         tombstone_entries = 0
         batch_files_found = 0
         all_batch_files = sorted(self.output_dir.glob("batch_*.jsonl"))
+        valid_tool_names = _current_possible_tools()
 
         with open(combined_file, 'w', encoding='utf-8') as outfile:
             for batch_file in all_batch_files:
@@ -739,7 +755,7 @@ class BatchRunner:
                                 tombstone_entries += 1
                                 continue
                             tool_stats = data.get('tool_stats', {})
-                            invalid_tools = [k for k in tool_stats if k not in ALL_POSSIBLE_TOOLS]
+                            invalid_tools = [k for k in tool_stats if k not in valid_tool_names]
 
                             if invalid_tools:
                                 filtered_entries += 1

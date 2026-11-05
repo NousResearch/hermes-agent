@@ -1109,15 +1109,43 @@ def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: dict
     )
 
 
-def _raise_if_registered_provider_unresolved(requested_provider: str, provider: str) -> None:
+def _raise_if_pool_cooling_down(provider: str, pool, entries: list) -> None:
+    """A signed-in pool whose every row is benched is waiting, not signed out: name the cooldown, its
+    cause and reset time. All-429 rows carry the rate-limited code, so cron and the fallback walker
+    treat them as quota (retry later), not a missing credential."""
+    import time
+
+    from agent.auxiliary_unavailable import pool_billing_message, pool_cooldown_message
+    from agent.credential_pool import STATUS_DEAD, _exhausted_until
+    billing = pool_billing_message(provider, pool=pool)
+    message = billing or pool_cooldown_message(provider)
+    if message is None:
+        return
+    live = [e for e in entries if e.last_status != STATUS_DEAD]
+    if billing or not all(e.last_error_code == 429 for e in live):
+        raise AuthError(message, provider=provider, code="missing_credentials")
+    # A carried wait lets cron's quota hold park the job until the first row's reset (cron/quota_hold.py).
+    resets = [u for e in live if (u := _exhausted_until(e, sole_credential=len(live) == 1)) is not None]
+    raise AuthError(message, provider=provider, code=auth_mod.CODEX_RATE_LIMITED_CODE,
+                    retry_after=max(min(resets) - time.time(), 0.0) if resets else None)
+
+
+def _raise_if_registered_provider_unresolved(requested_provider: str, provider: str, explicit_api_key,
+                                             explicit_base_url) -> None:
     """An explicitly selected registered provider is authoritative, whatever its auth type. Every
     rung that could build its runtime (credential pool, OAuth store, external process, env key)
     has already declined, so the OpenRouter fallback would send the request — with an unrelated
     ``OPENROUTER_API_KEY`` — to a provider the operator never chose (a signed-out plugin OAuth
     provider's model billed to OpenRouter). Raise the typed error instead so the configured
-    ``fallback_providers`` chain decides. ``auto`` keeps the OpenRouter default."""
+    ``fallback_providers`` chain decides. ``auto`` keeps the OpenRouter default, and an explicit
+    ``--base-url`` other than the provider's own, or any with its own ``--api-key`` (fallback entry, cron
+    job, ``/model`` providers block), names the endpoint itself, which the fallback rung serves as given."""
     if requested_provider == "auto" or provider in ("openrouter", "custom") or provider not in PROVIDER_REGISTRY:
         return
+    from hermes_cli.route_identity import normalize_route_base_url as _url
+    explicit_url = _url(str(explicit_base_url or "").strip())
+    if explicit_url and (str(explicit_api_key or "").strip() or explicit_url != _url(PROVIDER_REGISTRY[provider].inference_base_url)):
+        return  # the provider's own URL alone (stored by /model, sent every turn) still means "this provider"
     from agent.credential_pool import STATUS_DEAD
     from hermes_cli.runtime_readiness import missing_credentials_suffix
     from hermes_constants import profile_cli_selector
@@ -1129,6 +1157,9 @@ def _raise_if_registered_provider_unresolved(requested_provider: str, provider: 
         logger.debug("could not read %s credential pool for the sign-in error", provider, exc_info=True)
         entries = []
     dead = [e for e in entries if e.last_status == STATUS_DEAD]
+    if len(dead) < len(entries):
+        # Live rows decide first: a revoked old row next to a valid one cooling down is a wait, not a lost sign-in.
+        _raise_if_pool_cooling_down(provider, pool, entries)
     if dead:
         reason = dead[0].last_error_message or dead[0].last_error_reason or "refresh rejected"
         state = f"its sign-in was lost ({reason})"
@@ -1184,7 +1215,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
-    _raise_if_registered_provider_unresolved(requested_provider, provider)
+    _raise_if_registered_provider_unresolved(requested_provider, provider, explicit_api_key, explicit_base_url)
     fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
     if swallowed_auth_error is not None and not fallback.get("api_key"):
         fallback["auth_error"] = swallowed_auth_error

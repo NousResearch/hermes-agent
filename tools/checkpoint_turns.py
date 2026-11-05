@@ -25,6 +25,7 @@ are left to ``/rollback``, which restores whole checkpoints.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -231,11 +232,12 @@ def _revert_project(mgr, store: Path, dir_hash: str, workdir: Optional[str], sco
     # the snapshot now at the tip provably holds its current bytes (a failed snapshot holds none).
     mgr._take(workdir, "pre-undo snapshot", prune=False)
     tip = _ref_tip(store, workdir, _ref_name(dir_hash))
+    unsaved = [plan.rel for plan in plans.values() if not _preserved(store, workdir, tip, plan.rel)]
+    if unsaved:  # the snapshot failed (or missed a file): change nothing in this project
+        out["errors"].append(f"{', '.join(unsaved[:5])}: no pre-undo snapshot holds the current content; "
+                             "no file was changed")
+        return
     for group in _groups(plans):
-        if not all(_preserved(store, workdir, tip, plans[p].rel) for p in group):
-            out["errors"].append(f"{', '.join(plans[p].rel for p in group)}: no pre-undo snapshot holds the "
-                                 "current content; left unchanged")
-            continue
         # Re-checked right before writing: an edit that landed during the snapshot is kept.
         if not all(_same(_state(Path(p)), plans[p].post) for p in group):
             out["skipped_user_edits"].extend(group)
@@ -349,14 +351,14 @@ def _row_scope(db, row_id: int, lineage: set[str]) -> Optional[Scope]:
     if row is None or row["session_id"] not in lineage:
         return None
     marks = ",".join("?" * len(lineage))
-    rows = db._read_all(f"SELECT id, timestamp, session_id, message_uid, active FROM messages WHERE role = 'user' "
-                        f"AND session_id IN ({marks})", tuple(sorted(lineage)))
+    rows = db._read_all(f"SELECT id, timestamp, session_id, message_uid, absorbed_message_uids, active FROM messages "
+                        f"WHERE role = 'user' AND session_id IN ({marks})", tuple(sorted(lineage)))
     uid = row["message_uid"]
     start = min((r["id"] for r in rows if uid and r["message_uid"] == uid), default=row["id"])
     kept = [r for r in rows if r["id"] < start]
     # Later rows the rewind soft-deleted; an active one is a turn another client started after it.
     undone = [r for r in rows if r["id"] >= start and (not r["active"] or r["id"] == row["id"] or r["message_uid"] == uid)]
-    uids = {r["message_uid"] for r in undone if r["message_uid"]} - {r["message_uid"] for r in kept}
+    uids = _row_uids(undone) - _row_uids(kept)
     pairs = {(r["timestamp"], r["session_id"]) for r in undone}
     kept_pairs = {(r["timestamp"], r["session_id"]) for r in kept}
 
@@ -366,6 +368,19 @@ def _row_scope(db, row_id: int, lineage: set[str]) -> Optional[Scope]:
         pair = (w.get("turn_ts"), w.get("session"))
         return None if pair in pairs and pair in kept_pairs else pair in pairs
     return scope
+
+
+def _row_uids(rows) -> set[str]:
+    """Each row's uid plus those of the user messages a merge folded into it (their turns' writes)."""
+    from agent.message_metadata import uid_list
+    out: set[str] = set()
+    for r in rows:
+        out.update(u for u in (r["message_uid"],) if u)
+        try:
+            out.update(uid_list(json.loads(r["absorbed_message_uids"] or "[]")))
+        except ValueError:
+            pass
+    return out
 
 
 def summarize(result: dict, cwd: Optional[str] = None, limit: int = 5) -> list[str]:

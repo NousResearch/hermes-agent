@@ -1,6 +1,6 @@
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 6de2ea81bbbb5944a73d31b45e5b57381a114a3b
+sha: 922f640ace8e12ed4a129e7010ba3f1befc7f56e
 description: >-
   A memory of what the user has seen on screen. Peripheral captures the display
   itself on request, optionally on change in the background, and indexes the

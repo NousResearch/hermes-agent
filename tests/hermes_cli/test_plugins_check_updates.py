@@ -445,6 +445,34 @@ def test_pip_entry_point_without_distribution_is_unknown_not_guessed():
     assert "distribution" in rs[0].reason
 
 
+def test_pip_catalog_plugin_newer_pypi_is_informational_not_update():
+    """#132494: a catalog install's deps are pinned by uv.lock and its update
+    channel is the catalog pin — a newer PyPI version must not print as
+    ``update available`` when ``plugins update`` would answer 'already at
+    catalog pin'."""
+    rs = check_pip_plugins(
+        installed_version=lambda d: "0.7.3",
+        pypi_latest=lambda d: "0.7.4",
+        entry_points=[_EP("mnemosyne", "m:register", "mnemosyne-hermes")],
+        catalog_plugin_names=frozenset({"mnemosyne"}),
+    )
+    assert rs[0].update_available is False
+    assert "catalog pin" in rs[0].reason
+
+
+def test_pip_non_catalog_plugin_newer_pypi_still_update_available():
+    """The suppression is scoped to catalog installs — a plain pip plugin
+    keeps its actionable PyPI signal."""
+    rs = check_pip_plugins(
+        installed_version=lambda d: "0.7.3",
+        pypi_latest=lambda d: "0.7.4",
+        entry_points=[_EP("standalone", "s:register", "standalone")],
+        catalog_plugin_names=frozenset({"mnemosyne"}),
+    )
+    assert rs[0].update_available is True
+    assert rs[0].reason == ""
+
+
 # ── run_checks composition ───────────────────────────────────────────
 
 
@@ -467,6 +495,115 @@ def test_run_checks_never_mutates(tmp_path):
     )
     assert results[0].update_available is True
     assert (plugins / ".install-metadata.json").read_text(encoding="utf-8") == before
+
+
+def test_run_checks_suppresses_pip_row_for_catalog_installed_plugin(
+    tmp_path, monkeypatch
+):
+    """End-to-end: the sidecar that makes a row render as klass='catalog'
+    must also mark its pip row informational — the two rows in one table
+    cannot disagree about whether an update is available (#132494)."""
+    plugins = tmp_path / "plugins"
+    (plugins / "mnemosyne").mkdir(parents=True)
+    (plugins / ".install-metadata.json").write_text(
+        json.dumps({"mnemosyne": {"catalog": {"name": "mnemosyne", "repo": "https://r",
+                                              "sha": "d" * 40}}}),
+        encoding="utf-8",
+    )
+    # catalog-row network lookups stay out of this test
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.get_live_catalog_entry", lambda name: None)
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.find_removed", lambda name, catalog_dir=None: None)
+
+    results = run_checks(
+        plugins,
+        fetch=_no,
+        ls_remote=_no,
+        include_pip=True,
+        pip_installed_version=lambda d: "0.7.3",
+        pip_pypi_latest=lambda d: "0.7.4",
+        pip_entry_points=[_EP("mnemosyne", "m:register", "mnemosyne-hermes")],
+    )
+    pip_row = next(r for r in results if r.klass == "pip")
+    assert pip_row.update_available is False
+    assert "catalog pin" in pip_row.reason
+    catalog_row = next(r for r in results if r.klass == "catalog")
+    assert catalog_row.name == "mnemosyne"
+
+
+def test_run_checks_suppresses_pip_row_when_dir_and_entry_point_names_differ(
+    tmp_path, monkeypatch
+):
+    """The catalog join key lives in two namespaces: the install directory
+    name and the declared catalog identity the entry point is named after.
+    When a plugin's directory was renamed relative to its catalog name the
+    pip row must stay suppressed — otherwise the exact two-row contradiction
+    this fix removes survives behind a rename (#132494)."""
+    plugins = tmp_path / "plugins"
+    (plugins / "mnemosyne-plugin").mkdir(parents=True)
+    (plugins / ".install-metadata.json").write_text(
+        json.dumps({"mnemosyne-plugin": {"catalog": {"name": "mnemosyne",
+                                                     "repo": "https://r",
+                                                     "sha": "d" * 40}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.get_live_catalog_entry", lambda name: None)
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.find_removed", lambda name, catalog_dir=None: None)
+
+    results = run_checks(
+        plugins,
+        fetch=_no,
+        ls_remote=_no,
+        include_pip=True,
+        pip_installed_version=lambda d: "0.7.3",
+        pip_pypi_latest=lambda d: "0.7.4",
+        pip_entry_points=[_EP("mnemosyne", "m:register", "mnemosyne-hermes")],
+    )
+    pip_row = next(r for r in results if r.klass == "pip")
+    assert pip_row.name == "mnemosyne"
+    assert pip_row.update_available is False, (
+        "dir 'mnemosyne-plugin' != entry point 'mnemosyne': the join set "
+        "must carry the declared catalog name or the contradiction survives"
+    )
+    assert "catalog pin" in pip_row.reason
+
+
+def test_cmd_check_updates_renders_reason_annotation_for_up_to_date_rows(
+    tmp_path, monkeypatch, capsys
+):
+    """The renderer pins why an up-to-date row is not actionable: a dim
+    second line appears only under rows that carry a reason — the catalog
+    informational pip row and a provenance-pinned git row both annotate,
+    a plain up-to-date row does not grow a line."""
+    from hermes_cli.plugins_cmd_update import cmd_check_updates
+
+    rows = [
+        CheckResult(
+            name="mnemosyne", klass="pip", current="0.7.3", latest="0.7.4",
+            update_available=False,
+            reason="informational only: managed by the catalog pin",
+        ),
+        CheckResult(
+            name="legacy-plugin", klass="git", current="a1b2c3d4e5f6",
+            latest=None, update_available=False, reason="pinned @ a1b2c3d4e5f6",
+        ),
+        CheckResult(
+            name="plain", klass="pip", current="1.0", latest="1.0",
+            update_available=False,
+        ),
+    ]
+    monkeypatch.setattr("hermes_cli.plugins_cmd._plugins_dir", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.plugins_updates.run_checks", lambda *a, **k: rows)
+
+    cmd_check_updates(None)
+
+    out = capsys.readouterr().out
+    assert out.count("up to date") == 3
+    assert "informational only" in out
+    assert "pinned @ a1b2c3d4e5f6" in out
 
 
 @pytest.mark.parametrize("url", ["http://feed.example/f.yml", "file:///etc/passwd", "ftp://x/f.yml", ""])

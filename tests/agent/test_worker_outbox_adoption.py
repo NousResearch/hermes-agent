@@ -17,6 +17,7 @@ def _lose_ack(db, store):
         mutate_worker_execution(db, **params)  # commits for real; only the reply is lost
         raise TimeoutError('lost_ack')
     store.rpc = lost
+    store.owner_patience_s = 0  # every reply is lost: no resend window
 
 
 def _receipts(db):

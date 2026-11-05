@@ -11,6 +11,7 @@ def test_reopen_reconciles_pending_receipt_before_new_write(tmp_path):
         raise TimeoutError('lost reply')
     scope = {'session_id': 's', 'execution_id': 'w', 'epoch': 1}
     store = RuntimeSessionStore(lost_reply, scope, tmp_path)
+    store.owner_patience_s = 0  # every reply is lost: no resend window
     with pytest.raises(TimeoutError):
         store.queue_token_counts('s', input_tokens=10)
     store._outbox_owner.close()  # process exit left its durable pending journal

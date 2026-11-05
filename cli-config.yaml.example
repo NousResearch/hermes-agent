@@ -1934,20 +1934,6 @@ delegation:
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
 
 # =============================================================================
-# Honcho Integration (Cross-Session User Modeling)
-# =============================================================================
-# AI-native persistent memory via Honcho (https://honcho.dev/).
-# Builds a deeper understanding of the user across sessions and tools.
-# Runs alongside USER.md — additive, not a replacement.
-#
-# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
-# Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
-# API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
-#
-# Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
-# honcho: {}
-
-# =============================================================================
 # Display
 # =============================================================================
 display:

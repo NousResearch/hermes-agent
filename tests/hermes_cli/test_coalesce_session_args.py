@@ -3,6 +3,16 @@
 from hermes_cli.main import _coalesce_session_name_args
 
 
+def test_the_active_memory_providers_command_ends_a_session_name(monkeypatch):
+    """``hermes <provider>`` is registered by the active memory provider, not hardcoded in core."""
+    import plugins.memory as memory_pkg
+
+    monkeypatch.setattr(memory_pkg, "_get_active_memory_provider", lambda: "somemem")
+    assert _coalesce_session_name_args(["chat", "somemem"]) == ["chat", "somemem"]  # no -c: untouched
+    assert _coalesce_session_name_args(["-c", "my", "session", "somemem", "sync"]) == [
+        "-c", "my session", "somemem", "sync"]
+
+
 class TestCoalesceSessionNameArgs:
     """Ensure unquoted multi-word session names are merged into one token."""
 

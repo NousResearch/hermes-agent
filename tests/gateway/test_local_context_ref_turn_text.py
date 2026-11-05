@@ -149,8 +149,8 @@ def _managed(tmp_path, monkeypatch, text):
         async def next_frame(self, *_args, **_kwargs):
             if not sent:
                 return {'pid': 1}
-            from hermes_state_runtime import RuntimeStoreError
-            raise RuntimeStoreError('managed_worker_failed')  # end the turn once the bootstrap went out
+            from persistence.core.errors import AuthorityRefusal
+            raise AuthorityRefusal('managed_worker_failed')  # end the turn once the bootstrap went out
 
         def send(self, frame):
             sent.append(frame)

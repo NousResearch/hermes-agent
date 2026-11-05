@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import sqlite3
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from gateway import hosted_rooms as rooms
 from gateway import hosted_room_driver as driver
+from persistence.gateway.hosted_rooms import (
+    DriverStateError, DriverValidationError, HostedTaskIdentity, InvalidTaskTransitionError, LeaseHeldError,
+    RoomUnavailableError, StaleLeaseError, StaleTaskError, TaskConflictError)
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
 
 
 class FakeClock:
@@ -23,7 +28,7 @@ class FakeClock:
 
 
 def _identity(task_id: str = "task-1", *, turn_id: str = "turn-1"):
-    return driver.TaskIdentity(
+    return HostedTaskIdentity(
         room_id="room-1",
         task_id=task_id,
         thread_id="thread-1",
@@ -50,16 +55,28 @@ def _payload(
 
 @pytest.fixture
 def db(tmp_path):
-    path = tmp_path / "state.db"
-    rooms.create_room(
-        path,
+    store = open_persistence(profile_scope(home=tmp_path))
+    store.hosted_rooms.create_room(
+        placement="profile",
         room_id="room-1",
         name="Release room",
         members=[{"profile": "ops", "handle": "ops"}],
         authority_gateway_id="gateway-a",
         now=90,
     )
-    return path
+    yield store
+    store.close()
+
+
+def _raw_write(store, *statements):
+    """Run raw ``(sql, params)`` statements in one write on the store's ``state.db``."""
+    raw_holder(store)._execute_write(lambda conn: [conn.execute(sql, *params) for sql, *params in statements])
+
+
+def _raw_read(store, sql, *params):
+    """The rows of one raw read on the store's ``state.db``."""
+    with raw_holder(store)._read_ctx() as conn:
+        return conn.execute(sql, *params).fetchall()
 
 
 def _lease(
@@ -79,6 +96,7 @@ def _lease(
         process_generation=process,
         ttl_seconds=ttl,
         clock=clock,
+        placement="profile",
     )
 
 
@@ -88,11 +106,13 @@ def _admit(db, identity, clock, *, payload=None):
         identity,
         payload=_payload() if payload is None else payload,
         clock=clock,
+        placement="profile",
     )
 
 
-def _open_driver_schema(path: str) -> int:
-    return len(driver.list_tasks(path, room_id="room-1"))
+def _open_driver_schema(home: str) -> int:
+    with open_persistence(profile_scope(home=Path(home))) as store:
+        return len(driver.list_tasks(store, room_id="room-1", placement="profile"))
 
 
 def test_two_contenders_have_one_winner(db):
@@ -101,7 +121,7 @@ def test_two_contenders_have_one_winner(db):
     def contend(process):
         try:
             return _lease(db, clock, process=process)
-        except driver.LeaseHeldError:
+        except LeaseHeldError:
             return None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -121,17 +141,17 @@ def test_expiry_allows_reclaim_and_fences_stale_renew_and_release(db):
 
     assert second.reclaimed is True
     assert second.lease_generation == first.lease_generation + 1
-    with pytest.raises(driver.StaleLeaseError):
-        driver.renew_lease(db, first, ttl_seconds=30, clock=clock)
-    with pytest.raises(driver.StaleLeaseError):
-        driver.release_lease(db, first, clock=clock)
+    with pytest.raises(StaleLeaseError):
+        driver.renew_lease(db, first, ttl_seconds=30, clock=clock, placement="profile")
+    with pytest.raises(StaleLeaseError):
+        driver.release_lease(db, first, clock=clock, placement="profile")
 
 
 def test_nonexistent_and_disbanded_rooms_cannot_lease_or_admit(db):
     clock = FakeClock()
-    missing = driver.TaskIdentity("missing-room", "task", "thread", "turn")
+    missing = HostedTaskIdentity("missing-room", "task", "thread", "turn")
 
-    with pytest.raises(driver.RoomUnavailableError, match="does not exist"):
+    with pytest.raises(RoomUnavailableError, match="does not exist"):
         driver.acquire_lease(
             db,
             room_id="missing-room",
@@ -140,20 +160,21 @@ def test_nonexistent_and_disbanded_rooms_cannot_lease_or_admit(db):
             process_generation="process-a",
             ttl_seconds=30,
             clock=clock,
+            placement="profile",
         )
-    with pytest.raises(driver.RoomUnavailableError, match="does not exist"):
+    with pytest.raises(RoomUnavailableError, match="does not exist"):
         _admit(db, missing, clock)
 
-    rooms.disband_room(
-        db,
+    db.hosted_rooms.disband_room(
+        placement="profile",
         room_id="room-1",
         expected_gateway_id="gateway-a",
         expected_epoch=1,
         now=clock(),
     )
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
         _lease(db, clock)
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
         _admit(db, _identity(), clock)
 
 
@@ -162,7 +183,7 @@ def test_nonexistent_and_disbanded_rooms_cannot_lease_or_admit(db):
     [("gateway-b", 1), ("gateway-a", 2)],
 )
 def test_acquire_requires_current_room_authority(db, gateway, authority_epoch):
-    with pytest.raises(driver.StaleLeaseError, match="authority changed"):
+    with pytest.raises(StaleLeaseError, match="authority changed"):
         _lease(
             db,
             FakeClock(),
@@ -177,8 +198,8 @@ def test_same_process_acquire_and_release_are_idempotent(db):
     repeated = _lease(db, clock)
 
     assert repeated.lease_generation == first.lease_generation
-    released = driver.release_lease(db, repeated, clock=clock)
-    released_again = driver.release_lease(db, repeated, clock=clock)
+    released = driver.release_lease(db, repeated, clock=clock, placement="profile")
+    released_again = driver.release_lease(db, repeated, clock=clock, placement="profile")
 
     assert released["idempotent"] is False
     assert released_again["idempotent"] is True
@@ -189,7 +210,7 @@ def test_renew_extends_only_the_current_lease_generation(db):
     lease = _lease(db, clock, ttl=5)
 
     clock.advance(2)
-    renewed = driver.renew_lease(db, lease, ttl_seconds=20, clock=clock)
+    renewed = driver.renew_lease(db, lease, ttl_seconds=20, clock=clock, placement="profile")
 
     assert renewed.lease_generation == lease.lease_generation
     assert renewed.expires_at == 122
@@ -208,31 +229,32 @@ def test_authority_transfer_fences_lease_and_late_settlement(db):
         old_lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
-    rooms.claim_authority(
-        db,
+    db.hosted_room_replicas.demote_room(
+        placement="profile",
         room_id="room-1",
-        expected_gateway_id="gateway-a",
-        expected_epoch=1,
-        new_gateway_id="gateway-b",
-        event_id="claim-gateway-b",
+        observed_gateway_id="gateway-b",
+        observed_epoch=2,
+        local_gateway_id="gateway-a",
         now=clock(),
     )
 
-    with pytest.raises(driver.StaleLeaseError, match="authority changed"):
-        driver.renew_lease(db, old_lease, ttl_seconds=30, clock=clock)
-    with pytest.raises(driver.StaleLeaseError, match="authority changed"):
+    with pytest.raises(StaleLeaseError, match="authority changed"):
+        driver.renew_lease(db, old_lease, ttl_seconds=30, clock=clock, placement="profile")
+    with pytest.raises(StaleLeaseError, match="authority changed"):
         driver.start_task(
             db,
             queued,
             old_lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
-    with pytest.raises(driver.StaleLeaseError, match="authority changed"):
-        driver.recover_room(db, old_lease, clock=clock)
-    with pytest.raises(driver.StaleLeaseError, match="authority changed"):
+    with pytest.raises(StaleLeaseError, match="authority changed"):
+        driver.recover_room(db, old_lease, clock=clock, placement="profile")
+    with pytest.raises(StaleLeaseError, match="authority changed"):
         driver.settle_task(
             db,
             old_attempt,
@@ -240,6 +262,7 @@ def test_authority_transfer_fences_lease_and_late_settlement(db):
             status="settled",
             result={"text": "late"},
             clock=clock,
+            placement="profile",
         )
 
     new_lease = _lease(
@@ -249,7 +272,7 @@ def test_authority_transfer_fences_lease_and_late_settlement(db):
         authority_epoch=2,
         process="process-b",
     )
-    recovery = driver.recover_room(db, new_lease, clock=clock)
+    recovery = driver.recover_room(db, new_lease, clock=clock, placement="profile")
     assert new_lease.lease_generation == old_lease.lease_generation + 1
     assert recovery["indeterminate"] == [identity]
     assert recovery["queued"] == [queued]
@@ -260,28 +283,29 @@ def test_room_disband_fences_active_lease_operations(db):
     identity = _identity()
     lease = _lease(db, clock)
     _admit(db, identity, clock)
-    rooms.disband_room(
-        db,
+    db.hosted_rooms.disband_room(
+        placement="profile",
         room_id="room-1",
         expected_gateway_id="gateway-a",
         expected_epoch=1,
         now=clock(),
     )
 
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
-        driver.renew_lease(db, lease, ttl_seconds=30, clock=clock)
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
+        driver.renew_lease(db, lease, ttl_seconds=30, clock=clock, placement="profile")
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
         driver.start_task(
             db,
             identity,
             lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
-        driver.recover_room(db, lease, clock=clock)
-    with pytest.raises(driver.RoomUnavailableError, match="disbanded"):
-        driver.release_lease(db, lease, clock=clock)
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
+        driver.recover_room(db, lease, clock=clock, placement="profile")
+    with pytest.raises(RoomUnavailableError, match="disbanded"):
+        driver.release_lease(db, lease, clock=clock, placement="profile")
 
 
 def test_task_admission_is_idempotent_and_identity_conflicts_fail(db):
@@ -294,10 +318,10 @@ def test_task_admission_is_idempotent_and_identity_conflicts_fail(db):
     assert first["status"] == "queued"
     assert repeated["idempotent"] is True
 
-    with pytest.raises(driver.TaskConflictError):
+    with pytest.raises(TaskConflictError):
         driver.admit_task(
             db,
-            driver.TaskIdentity(
+            HostedTaskIdentity(
                 room_id="room-1",
                 task_id="task-1",
                 thread_id="thread-other",
@@ -305,19 +329,20 @@ def test_task_admission_is_idempotent_and_identity_conflicts_fail(db):
             ),
             payload=_payload(),
             clock=clock,
+            placement="profile",
         )
 
-    with pytest.raises(driver.TaskConflictError, match="different payload"):
+    with pytest.raises(TaskConflictError, match="different payload"):
         _admit(
             db,
             identity,
             clock,
             payload=_payload(prompt="A different immutable prompt."),
         )
-    with pytest.raises(driver.TaskConflictError):
+    with pytest.raises(TaskConflictError):
         driver.admit_task(
             db,
-            driver.TaskIdentity(
+            HostedTaskIdentity(
                 room_id="room-1",
                 task_id="task-other",
                 thread_id="thread-1",
@@ -325,6 +350,7 @@ def test_task_admission_is_idempotent_and_identity_conflicts_fail(db):
             ),
             payload=_payload(),
             clock=clock,
+            placement="profile",
         )
 
 
@@ -342,8 +368,9 @@ def test_concurrent_task_start_has_one_winner(db):
                 lease,
                 expected_cancel_generation=0,
                 clock=clock,
+                placement="profile",
             )
-        except driver.InvalidTaskTransitionError:
+        except InvalidTaskTransitionError:
             return None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -365,13 +392,14 @@ def test_stale_lease_cannot_start_or_commit_task(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     clock.advance(5)
     second = _lease(db, clock, process="process-b")
-    driver.recover_room(db, second, clock=clock)
+    driver.recover_room(db, second, clock=clock, placement="profile")
 
-    with pytest.raises(driver.StaleLeaseError):
+    with pytest.raises(StaleLeaseError):
         driver.settle_task(
             db,
             attempt,
@@ -379,8 +407,9 @@ def test_stale_lease_cannot_start_or_commit_task(db):
             status="settled",
             result={"text": "late"},
             clock=clock,
+            placement="profile",
         )
-    assert driver.get_task(db, identity)["status"] == "indeterminate"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "indeterminate"
 
 
 @pytest.mark.parametrize("status", ["settled", "failed"])
@@ -395,6 +424,7 @@ def test_terminal_settlement_is_idempotent(db, status):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     first = driver.settle_task(
@@ -404,6 +434,7 @@ def test_terminal_settlement_is_idempotent(db, status):
         status=status,
         result={"text": "done"},
         clock=clock,
+        placement="profile",
     )
     repeated = driver.settle_task(
         db,
@@ -412,11 +443,12 @@ def test_terminal_settlement_is_idempotent(db, status):
         status=status,
         result={"text": "done"},
         clock=clock,
+        placement="profile",
     )
 
     assert first["status"] == status
     assert repeated["idempotent"] is True
-    with pytest.raises(driver.TaskConflictError):
+    with pytest.raises(TaskConflictError):
         driver.settle_task(
             db,
             attempt,
@@ -424,6 +456,7 @@ def test_terminal_settlement_is_idempotent(db, status):
             status=status,
             result={"text": "changed"},
             clock=clock,
+            placement="profile",
         )
 
 
@@ -438,6 +471,7 @@ def test_cancellation_fences_late_success(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     stopping = driver.begin_task_cancel(
@@ -446,6 +480,7 @@ def test_cancellation_fences_late_success(db):
         cancel_id="cancel-1",
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     cancelled = driver.complete_task_cancel(
         db,
@@ -453,6 +488,7 @@ def test_cancellation_fences_late_success(db):
         cancel_id="cancel-1",
         expected_cancel_generation=1,
         clock=clock,
+        placement="profile",
     )
     repeated = driver.complete_task_cancel(
         db,
@@ -460,13 +496,14 @@ def test_cancellation_fences_late_success(db):
         cancel_id="cancel-1",
         expected_cancel_generation=1,
         clock=clock,
+        placement="profile",
     )
 
     assert stopping["status"] == "stopping"
     assert cancelled["status"] == "cancelled"
     assert cancelled["cancel_generation"] == 1
     assert repeated["idempotent"] is True
-    with pytest.raises(driver.StaleTaskError):
+    with pytest.raises(StaleTaskError):
         driver.settle_task(
             db,
             attempt,
@@ -474,6 +511,7 @@ def test_cancellation_fences_late_success(db):
             status="settled",
             result={"text": "too late"},
             clock=clock,
+            placement="profile",
         )
 
 
@@ -488,14 +526,15 @@ def test_release_fails_closed_while_its_task_is_running(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     with pytest.raises(
-        driver.InvalidTaskTransitionError,
+        InvalidTaskTransitionError,
         match="tasks are running",
     ):
-        driver.release_lease(db, lease, clock=clock)
-    assert driver.get_task(db, identity)["status"] == "running"
+        driver.release_lease(db, lease, clock=clock, placement="profile")
+    assert driver.get_task(db, identity, placement="profile")["status"] == "running"
 
     driver.begin_task_cancel(
         db,
@@ -503,6 +542,7 @@ def test_release_fails_closed_while_its_task_is_running(db):
         cancel_id="cancel-before-release",
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     driver.complete_task_cancel(
         db,
@@ -510,8 +550,9 @@ def test_release_fails_closed_while_its_task_is_running(db):
         cancel_id="cancel-before-release",
         expected_cancel_generation=1,
         clock=clock,
+        placement="profile",
     )
-    assert driver.release_lease(db, lease, clock=clock)["idempotent"] is False
+    assert driver.release_lease(db, lease, clock=clock, placement="profile")["idempotent"] is False
 
 
 def test_restart_recovery_never_requeues_indeterminate_work(db):
@@ -527,9 +568,10 @@ def test_restart_recovery_never_requeues_indeterminate_work(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
-    with pytest.raises(driver.LeaseHeldError):
+    with pytest.raises(LeaseHeldError):
         _lease(db, clock, gateway="gateway-a", process="new-process")
 
     clock.advance(5)
@@ -539,20 +581,21 @@ def test_restart_recovery_never_requeues_indeterminate_work(db):
         gateway="gateway-a",
         process="new-process",
     )
-    recovery = driver.recover_room(db, recovered_lease, clock=clock)
-    repeated = driver.recover_room(db, recovered_lease, clock=clock)
+    recovery = driver.recover_room(db, recovered_lease, clock=clock, placement="profile")
+    repeated = driver.recover_room(db, recovered_lease, clock=clock, placement="profile")
 
     assert recovery == {"queued": [queued], "indeterminate": [running]}
     assert repeated == recovery
-    with pytest.raises(driver.InvalidTaskTransitionError):
+    with pytest.raises(InvalidTaskTransitionError):
         driver.start_task(
             db,
             running,
             recovered_lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
-    assert [task["status"] for task in driver.list_tasks(db, room_id="room-1")] == [
+    assert [task["status"] for task in driver.list_tasks(db, room_id="room-1", placement="profile")] == [
         "indeterminate",
         "queued",
     ]
@@ -571,12 +614,13 @@ def test_recovery_is_required_before_starting_later_work(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     clock.advance(5)
     recovered = _lease(db, clock, process="new-process")
 
     with pytest.raises(
-        driver.InvalidTaskTransitionError,
+        InvalidTaskTransitionError,
         match="recovery must resolve",
     ):
         driver.start_task(
@@ -585,6 +629,7 @@ def test_recovery_is_required_before_starting_later_work(db):
             recovered,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
 
 
@@ -601,10 +646,11 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     clock.advance(5)
     recovered = _lease(db, clock, process="new-process")
-    driver.recover_room(db, recovered, clock=clock)
+    driver.recover_room(db, recovered, clock=clock, placement="profile")
 
     settled = driver.resolve_indeterminate_task(
         db,
@@ -616,6 +662,7 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
         status="settled",
         result={"text": "recovered"},
         clock=clock,
+        placement="profile",
     )
     next_attempt = driver.start_task(
         db,
@@ -623,6 +670,7 @@ def test_current_lease_can_commit_verified_indeterminate_receipt(db):
         recovered,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     assert settled["status"] == "settled"
@@ -640,10 +688,11 @@ def test_current_lease_can_commit_verified_indeterminate_cancellation(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     clock.advance(5)
     recovered = _lease(db, clock, process="new-process")
-    driver.recover_room(db, recovered, clock=clock)
+    driver.recover_room(db, recovered, clock=clock, placement="profile")
 
     cancelled = driver.resolve_indeterminate_cancellation(
         db,
@@ -653,6 +702,7 @@ def test_current_lease_can_commit_verified_indeterminate_cancellation(db):
         expected_cancel_generation=attempt.cancel_generation,
         cancel_id="remote-cancel:1",
         clock=clock,
+        placement="profile",
     )
     repeated = driver.resolve_indeterminate_cancellation(
         db,
@@ -662,6 +712,7 @@ def test_current_lease_can_commit_verified_indeterminate_cancellation(db):
         expected_cancel_generation=attempt.cancel_generation,
         cancel_id="remote-cancel:1",
         clock=clock,
+        placement="profile",
     )
 
     assert cancelled["status"] == "cancelled"
@@ -680,10 +731,11 @@ def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     clock.advance(5)
     recovered = _lease(db, clock, process="new-process")
-    driver.recover_room(db, recovered, clock=clock)
+    driver.recover_room(db, recovered, clock=clock, placement="profile")
 
     requeued = driver.requeue_indeterminate_task(
         db,
@@ -692,6 +744,7 @@ def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
         expected_execution_generation=original.execution_generation,
         expected_cancel_generation=original.cancel_generation,
         clock=clock,
+        placement="profile",
     )
     retried = driver.start_task(
         db,
@@ -699,6 +752,7 @@ def test_indeterminate_retry_is_explicit_and_advances_execution_generation(db):
         recovered,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     assert requeued["status"] == "queued"
@@ -716,10 +770,11 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         first,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     clock.advance(5)
     recovered = _lease(db, clock, process="new-process", ttl=5)
-    driver.recover_room(db, recovered, clock=clock)
+    driver.recover_room(db, recovered, clock=clock, placement="profile")
 
     deferred = driver.defer_indeterminate_task(
         db,
@@ -729,6 +784,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         expected_cancel_generation=original.cancel_generation,
         reason="member_unavailable",
         clock=clock,
+        placement="profile",
     )
     repeated = driver.defer_indeterminate_task(
         db,
@@ -738,6 +794,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         expected_cancel_generation=original.cancel_generation,
         reason="member_unavailable",
         clock=clock,
+        placement="profile",
     )
     requeued = driver.requeue_deferred_task(
         db,
@@ -746,6 +803,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         expected_execution_generation=original.execution_generation,
         expected_cancel_generation=original.cancel_generation,
         clock=clock,
+        placement="profile",
     )
     retried = driver.start_task(
         db,
@@ -753,6 +811,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         recovered,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
 
     assert deferred["status"] == "deferred"
@@ -766,7 +825,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
 
     clock.advance(5)
     next_lease = _lease(db, clock, process="third-process")
-    driver.recover_room(db, next_lease, clock=clock)
+    driver.recover_room(db, next_lease, clock=clock, placement="profile")
     driver.defer_indeterminate_task(
         db,
         identity,
@@ -775,6 +834,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         expected_cancel_generation=retried.cancel_generation,
         reason="member_unavailable",
         clock=clock,
+        placement="profile",
     )
     cancelled = driver.cancel_task(
         db,
@@ -782,6 +842,7 @@ def test_indeterminate_task_can_be_deferred_retried_and_cancelled(db):
         cancel_id="cancel-deferred",
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     assert cancelled["status"] == "cancelled"
 
@@ -797,10 +858,11 @@ def test_proven_not_admitted_attempt_returns_to_queue_under_exact_fence(db):
         lease,
         expected_cancel_generation=admitted["cancel_generation"],
         clock=clock,
+        placement="profile",
     )
 
-    queued = driver.requeue_not_admitted_task(db, attempt, clock=clock)
-    repeated = driver.requeue_not_admitted_task(db, attempt, clock=clock)
+    queued = driver.requeue_not_admitted_task(db, attempt, clock=clock, placement="profile")
+    repeated = driver.requeue_not_admitted_task(db, attempt, clock=clock, placement="profile")
 
     assert queued["status"] == "queued"
     assert queued["execution_generation"] == attempt.execution_generation
@@ -822,6 +884,7 @@ def test_not_admitted_requeue_rejects_stale_lease_and_task_generation(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     stale_attempt = driver.TaskAttempt(
         identity=identity,
@@ -830,14 +893,14 @@ def test_not_admitted_requeue_rejects_stale_lease_and_task_generation(db):
         cancel_generation=attempt.cancel_generation,
     )
 
-    with pytest.raises(driver.StaleTaskError, match="lost its fence"):
-        driver.requeue_not_admitted_task(db, stale_attempt, clock=clock)
+    with pytest.raises(StaleTaskError, match="lost its fence"):
+        driver.requeue_not_admitted_task(db, stale_attempt, clock=clock, placement="profile")
 
     clock.advance(5)
-    with pytest.raises(driver.StaleLeaseError):
-        driver.requeue_not_admitted_task(db, attempt, clock=clock)
+    with pytest.raises(StaleLeaseError):
+        driver.requeue_not_admitted_task(db, attempt, clock=clock, placement="profile")
 
-    assert driver.get_task(db, identity)["status"] == "running"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "running"
 
 
 def test_state_survives_sqlite_reopen_and_concurrent_duplicate_admission(db):
@@ -851,13 +914,10 @@ def test_state_survives_sqlite_reopen_and_concurrent_duplicate_admission(db):
         results = list(pool.map(admit, range(8)))
 
     assert sum(not result["idempotent"] for result in results) == 1
-    with sqlite3.connect(db) as conn:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM hosted_room_driver_tasks"
-        ).fetchone()[0]
+    count = _raw_read(db, "SELECT COUNT(*) FROM hosted_room_driver_tasks")[0][0]
     assert count == 1
-    reopened = driver.get_task(db, identity)
-    listed = driver.list_tasks(db, room_id="room-1")
+    reopened = driver.get_task(db, identity, placement="profile")
+    listed = driver.list_tasks(db, room_id="room-1", placement="profile")
     assert reopened["identity"] == identity
     assert reopened["payload"] == _payload()
     assert listed[0]["payload"] == _payload()
@@ -876,6 +936,7 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
             lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
         driver.settle_task(
             db,
@@ -884,10 +945,12 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
             status="settled",
             result={"text": "done"},
             clock=clock,
+            placement="profile",
         )
 
-    with sqlite3.connect(db) as conn:
-        conn.execute(
+    _raw_write(
+        db,
+        (
             """CREATE TABLE hosted_room_policy_publications (
                 room_id TEXT NOT NULL,
                 task_id TEXT NOT NULL,
@@ -895,12 +958,13 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
                 execution_generation INTEGER NOT NULL DEFAULT 0,
                 seq INTEGER NOT NULL,
                 PRIMARY KEY(room_id, task_id, kind, execution_generation)
-            )"""
-        )
-        conn.execute(
+            )""",
+        ),
+        (
             """INSERT INTO hosted_room_policy_publications
-               VALUES ('room-1', 'task-published', 'turn.settled', 0, 3)"""
-        )
+               VALUES ('room-1', 'task-published', 'turn.settled', 0, 3)""",
+        ),
+    )
 
     clock.advance(driver.TERMINAL_TASK_RETENTION_SECONDS + 1)
     assert (
@@ -908,21 +972,21 @@ def test_prune_removes_only_old_published_terminal_tasks(db):
             db,
             room_id="room-1",
             clock=clock,
+            placement="profile",
         )
         == 1
     )
     assert [
-        task["identity"].task_id for task in driver.list_tasks(db, room_id="room-1")
+        task["identity"].task_id for task in driver.list_tasks(db, room_id="room-1", placement="profile")
     ] == ["task-unpublished"]
 
 
 def test_unpublished_legacy_driver_schema_fails_closed(db):
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute("DROP TABLE IF EXISTS hosted_room_driver_tasks")
-        conn.execute("DROP TABLE IF EXISTS hosted_room_driver_leases")
-        conn.execute(
-            """CREATE TABLE hosted_room_driver_leases (
+    _raw_write(
+        db,
+        ("DROP TABLE IF EXISTS hosted_room_driver_tasks",),
+        ("DROP TABLE IF EXISTS hosted_room_driver_leases",),
+        ("""CREATE TABLE hosted_room_driver_leases (
                 room_id TEXT PRIMARY KEY,
                 gateway_id TEXT NOT NULL,
                 process_generation TEXT NOT NULL,
@@ -931,10 +995,8 @@ def test_unpublished_legacy_driver_schema_fails_closed(db):
                 acquired_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 released_at REAL
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE hosted_room_driver_tasks (
+            )""",),
+        ("""CREATE TABLE hosted_room_driver_tasks (
                 room_id TEXT NOT NULL,
                 task_id TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
@@ -956,28 +1018,21 @@ def test_unpublished_legacy_driver_schema_fails_closed(db):
                 indeterminate_at REAL,
                 PRIMARY KEY (room_id, task_id),
                 UNIQUE (room_id, thread_id, turn_id)
-            )"""
-        )
-        conn.execute(
-            """INSERT INTO hosted_room_driver_leases
+            )""",),
+        ("""INSERT INTO hosted_room_driver_leases
                VALUES ('room-1', 'gateway-a', 'old-process', 1,
-                       200, 100, 100, NULL)"""
-        )
-        conn.execute(
-            """INSERT INTO hosted_room_driver_tasks
+                       200, 100, 100, NULL)""",),
+        ("""INSERT INTO hosted_room_driver_tasks
                (room_id, task_id, thread_id, turn_id, status,
                 execution_generation, cancel_generation,
                 run_gateway_id, run_process_generation, run_lease_generation,
                 created_at, updated_at, started_at)
                VALUES ('room-1', 'task-1', 'thread-1', 'turn-1', 'running',
-                       1, 0, 'gateway-a', 'old-process', 1, 100, 100, 100)"""
-        )
-        conn.commit()
-    finally:
-        conn.close()
+                       1, 0, 'gateway-a', 'old-process', 1, 100, 100, 100)""",),
+    )
 
-    with pytest.raises(driver.DriverStateError, match="unsupported unpublished"):
-        driver.get_task(db, _identity())
+    with pytest.raises(DriverStateError, match="unsupported unpublished"):
+        driver.get_task(db, _identity(), placement="profile")
 
 
 def test_pre_stopping_schema_is_migrated_without_losing_tasks(db):
@@ -985,30 +1040,32 @@ def test_pre_stopping_schema_is_migrated_without_losing_tasks(db):
     identity = _identity()
     _admit(db, identity, clock)
 
-    with sqlite3.connect(db) as conn:
-        current_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
-        ).fetchone()[0]
-        old_sql = current_sql.replace(", 'stopping'", "")
-        conn.execute("DROP INDEX idx_hosted_room_driver_tasks_status")
-        conn.execute(
-            "ALTER TABLE hosted_room_driver_tasks RENAME TO hosted_room_driver_tasks_current"
-        )
-        conn.execute(old_sql)
-        columns = ", ".join(driver._TASK_COLUMN_ORDER)
-        conn.execute(
+    current_sql = _raw_read(
+        db, "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+    )[0][0]
+    old_sql = current_sql.replace(", 'stopping'", "")
+    columns = ", ".join(row[1] for row in _raw_read(db, "PRAGMA table_info(hosted_room_driver_tasks)"))
+    _raw_write(
+        db,
+        ("DROP INDEX idx_hosted_room_driver_tasks_status",),
+        (
+            "ALTER TABLE hosted_room_driver_tasks RENAME TO hosted_room_driver_tasks_current",
+        ),
+        (old_sql,),
+        (
             f"""INSERT INTO hosted_room_driver_tasks ({columns})
-                 SELECT {columns} FROM hosted_room_driver_tasks_current"""
-        )
-        conn.execute("DROP TABLE hosted_room_driver_tasks_current")
-        conn.execute(
+                 SELECT {columns} FROM hosted_room_driver_tasks_current""",
+        ),
+        ("DROP TABLE hosted_room_driver_tasks_current",),
+        (
             """CREATE INDEX idx_hosted_room_driver_tasks_status
                ON hosted_room_driver_tasks(
                    room_id, status, source_event_seq, created_at, task_id
-               )"""
-        )
+               )""",
+        ),
+    )
 
-    assert driver.get_task(db, identity)["status"] == "queued"
+    assert driver.get_task(db, identity, placement="profile")["status"] == "queued"
     lease = _lease(db, clock)
     attempt = driver.start_task(
         db,
@@ -1016,6 +1073,7 @@ def test_pre_stopping_schema_is_migrated_without_losing_tasks(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
     stopping = driver.begin_task_cancel(
         db,
@@ -1023,13 +1081,13 @@ def test_pre_stopping_schema_is_migrated_without_losing_tasks(db):
         cancel_id="cancel-after-upgrade",
         expected_cancel_generation=attempt.cancel_generation,
         clock=clock,
+        placement="profile",
     )
 
     assert stopping["status"] == "stopping"
-    with sqlite3.connect(db) as conn:
-        table_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
-        ).fetchone()[0]
+    table_sql = _raw_read(
+        db, "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+    )[0][0]
     assert "'stopping'" in table_sql
 
 
@@ -1038,45 +1096,48 @@ def test_pre_deferred_schema_is_migrated_without_losing_tasks(db):
     identity = _identity()
     _admit(db, identity, clock)
 
-    with sqlite3.connect(db) as conn:
-        current_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
-        ).fetchone()[0]
-        old_sql = current_sql.replace(", 'deferred'", "")
-        conn.execute("DROP INDEX idx_hosted_room_driver_tasks_status")
-        conn.execute(
-            "ALTER TABLE hosted_room_driver_tasks RENAME TO hosted_room_driver_tasks_current"
-        )
-        conn.execute(old_sql)
-        columns = ", ".join(driver._TASK_COLUMN_ORDER)
-        conn.execute(
+    current_sql = _raw_read(
+        db, "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+    )[0][0]
+    old_sql = current_sql.replace(", 'deferred'", "")
+    columns = ", ".join(row[1] for row in _raw_read(db, "PRAGMA table_info(hosted_room_driver_tasks)"))
+    _raw_write(
+        db,
+        ("DROP INDEX idx_hosted_room_driver_tasks_status",),
+        (
+            "ALTER TABLE hosted_room_driver_tasks RENAME TO hosted_room_driver_tasks_current",
+        ),
+        (old_sql,),
+        (
             f"""INSERT INTO hosted_room_driver_tasks ({columns})
-                 SELECT {columns} FROM hosted_room_driver_tasks_current"""
-        )
-        conn.execute("DROP TABLE hosted_room_driver_tasks_current")
-        conn.execute(
+                 SELECT {columns} FROM hosted_room_driver_tasks_current""",
+        ),
+        ("DROP TABLE hosted_room_driver_tasks_current",),
+        (
             """CREATE INDEX idx_hosted_room_driver_tasks_status
                ON hosted_room_driver_tasks(
                    room_id, status, source_event_seq, created_at, task_id
-               )"""
-        )
+               )""",
+        ),
+    )
 
-    assert driver.get_task(db, identity)["status"] == "queued"
-    with sqlite3.connect(db) as conn:
-        table_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
-        ).fetchone()[0]
+    assert driver.get_task(db, identity, placement="profile")["status"] == "queued"
+    table_sql = _raw_read(
+        db, "SELECT sql FROM sqlite_master WHERE name='hosted_room_driver_tasks'"
+    )[0][0]
     assert "'deferred'" in table_sql
 
 
-def test_first_schema_creation_is_safe_across_processes(db):
-    with sqlite3.connect(db) as conn:
-        conn.execute("DROP TABLE IF EXISTS hosted_room_driver_tasks")
-        conn.execute("DROP TABLE IF EXISTS hosted_room_driver_leases")
-        conn.commit()
+def test_first_schema_creation_is_safe_across_processes(db, tmp_path):
+    _raw_write(
+        db,
+        ("DROP TABLE IF EXISTS hosted_room_driver_tasks",),
+        ("DROP TABLE IF EXISTS hosted_room_driver_leases",),
+    )
 
-    with ProcessPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(_open_driver_schema, [str(db)] * 4))
+    # Spawned workers open their own stores; a forked one would inherit this process's open store.
+    with ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn")) as pool:
+        results = list(pool.map(_open_driver_schema, [str(tmp_path)] * 4))
 
     assert results == [0, 0, 0, 0]
 
@@ -1089,17 +1150,18 @@ def test_tasks_follow_source_event_order_not_admission_time(db):
     _admit(db, earlier, clock, payload=_payload(source_event_seq=1))
     lease = _lease(db, clock)
 
-    assert [task["identity"] for task in driver.list_tasks(db, room_id="room-1")] == [
+    assert [task["identity"] for task in driver.list_tasks(db, room_id="room-1", placement="profile")] == [
         earlier,
         later,
     ]
-    with pytest.raises(driver.InvalidTaskTransitionError, match="event order"):
+    with pytest.raises(InvalidTaskTransitionError, match="event order"):
         driver.start_task(
             db,
             later,
             lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         )
     assert (
         driver.start_task(
@@ -1108,6 +1170,7 @@ def test_tasks_follow_source_event_order_not_admission_time(db):
             lease,
             expected_cancel_generation=0,
             clock=clock,
+            placement="profile",
         ).identity
         == earlier
     )
@@ -1116,17 +1179,18 @@ def test_tasks_follow_source_event_order_not_admission_time(db):
 def test_payload_digest_is_verified_on_read(db):
     identity = _identity()
     _admit(db, identity, FakeClock())
-    with sqlite3.connect(db) as conn:
-        conn.execute(
+    _raw_write(
+        db,
+        (
             """UPDATE hosted_room_driver_tasks
                SET payload_json=REPLACE(payload_json, 'Inspect', 'Replace')
                WHERE room_id=? AND task_id=?""",
             (identity.room_id, identity.task_id),
-        )
-        conn.commit()
+        ),
+    )
 
-    with pytest.raises(driver.TaskConflictError, match="integrity"):
-        driver.get_task(db, identity)
+    with pytest.raises(TaskConflictError, match="integrity"):
+        driver.get_task(db, identity, placement="profile")
 
 
 def test_optional_target_member_id_is_durable_and_digest_bound(db):
@@ -1138,7 +1202,7 @@ def test_optional_target_member_id_is_durable_and_digest_bound(db):
         payload=_payload(target_member_id="member-remote"),
     )
 
-    assert driver.get_task(db, identity)["payload"]["target_member_id"] == (
+    assert driver.get_task(db, identity, placement="profile")["payload"]["target_member_id"] == (
         "member-remote"
     )
 
@@ -1159,7 +1223,7 @@ def test_optional_target_member_id_is_durable_and_digest_bound(db):
     ],
 )
 def test_invalid_task_payload_is_rejected(db, payload, match):
-    with pytest.raises(driver.DriverValidationError, match=match):
+    with pytest.raises(DriverValidationError, match=match):
         _admit(db, _identity(), FakeClock(), payload=payload)
 
 
@@ -1167,28 +1231,28 @@ def test_invalid_task_payload_is_rejected(db, payload, match):
     ("factory", "match"),
     [
         (
-            lambda: driver.TaskIdentity("bad room", "task", "thread", "turn"),
+            lambda: HostedTaskIdentity("bad room", "task", "thread", "turn"),
             "invalid room_id",
         ),
         (
-            lambda: driver.TaskIdentity("room", "", "thread", "turn"),
+            lambda: HostedTaskIdentity("room", "", "thread", "turn"),
             "invalid task_id",
         ),
     ],
 )
 def test_invalid_task_identity_is_rejected(factory, match):
-    with pytest.raises(driver.DriverValidationError, match=match):
+    with pytest.raises(DriverValidationError, match=match):
         factory()
 
 
 def test_invalid_lease_clock_ttl_and_settlement_schema_are_rejected(db):
     clock = FakeClock()
 
-    with pytest.raises(driver.DriverValidationError, match="ttl_seconds"):
+    with pytest.raises(DriverValidationError, match="ttl_seconds"):
         _lease(db, clock, ttl=0)
-    with pytest.raises(driver.DriverValidationError, match="clock"):
+    with pytest.raises(DriverValidationError, match="clock"):
         _lease(db, lambda: float("nan"))
-    with pytest.raises(driver.DriverValidationError, match="expiry"):
+    with pytest.raises(DriverValidationError, match="expiry"):
         _lease(db, FakeClock(1e308), ttl=1e308)
 
     identity = _identity()
@@ -1200,8 +1264,9 @@ def test_invalid_lease_clock_ttl_and_settlement_schema_are_rejected(db):
         lease,
         expected_cancel_generation=0,
         clock=clock,
+        placement="profile",
     )
-    with pytest.raises(driver.DriverValidationError, match="JSON-serializable"):
+    with pytest.raises(DriverValidationError, match="JSON-serializable"):
         driver.settle_task(
             db,
             attempt,
@@ -1209,6 +1274,7 @@ def test_invalid_lease_clock_ttl_and_settlement_schema_are_rejected(db):
             status="settled",
             result={"bad": object()},
             clock=clock,
+            placement="profile",
         )
 
 
@@ -1217,6 +1283,6 @@ def test_renewal_never_shortens_an_active_lease(db):
     lease = _lease(db, clock, ttl=30)
     clock.advance(1)
 
-    renewed = driver.renew_lease(db, lease, ttl_seconds=2, clock=clock)
+    renewed = driver.renew_lease(db, lease, ttl_seconds=2, clock=clock, placement="profile")
 
     assert renewed.expires_at == lease.expires_at

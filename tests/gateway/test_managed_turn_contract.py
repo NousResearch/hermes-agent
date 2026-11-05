@@ -148,9 +148,9 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
         def interrupt(self):
             self.stop.set()
         async def next_frame(self, *args, **kwargs):
-            from hermes_state_runtime import RuntimeStoreError
+            from persistence.core.errors import AuthorityRefusal
             assert self.stop.is_set(), 'pending Stop was not adopted'
-            raise RuntimeStoreError('managed_worker_stopped')
+            raise AuthorityRefusal('managed_worker_stopped')
         def close(self): pass
     monkeypatch.setattr(managed, '_worker_env', env)
     monkeypatch.setattr(managed.subprocess, 'Popen', lambda *a, **k: object())

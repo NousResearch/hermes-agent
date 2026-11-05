@@ -488,6 +488,8 @@ class HostedRoomRuntime:
             # absence is a safe Stop acknowledgement (errors raise); a peer stays uncertain.
             return transport is not None and transport is self.rpc
         info = transport.info(**_session_kw(profile, session_id))
+        if info.get("status") == "unknown":
+            return self._discard_unknown_stop(transport, profile, session_id, task, info)
         if not _info_active(info):
             # History was checked just before this probe: an inactive exact session cannot
             # keep executing, and after a restart its process-local task marker is absent.
@@ -499,6 +501,22 @@ class HostedRoomRuntime:
         return result is not None and (
             result.get("interrupted") is True
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
+
+    @staticmethod
+    def _discard_unknown_stop(transport, profile, session_id, task, info) -> bool:
+        """A persisted Stop resolves only its exact lost canonical attempt, not another head."""
+        generation = int(task["execution_generation"])
+        discard = getattr(transport, "discard", None)
+        if (_info_active(info) or not callable(discard) or info.get("task_id") != task["identity"].task_id
+                or type(info.get("execution_generation")) is not int
+                or info["execution_generation"] != generation):
+            return False
+        result = discard(**_session_kw(profile, session_id),
+                         expected_task_id=task["identity"].task_id, execution_generation=generation)
+        return bool(result and result.get("discarded") is True and result.get("status") == "cancelled"
+                    and result.get("task_id") == task["identity"].task_id
+                    and type(result.get("execution_generation")) is int
+                    and result["execution_generation"] == generation)
 
     def _settle_stopping_completion(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], lease: state.DriverLease
@@ -630,6 +648,14 @@ class HostedRoomRuntime:
                 self.wakeup()
 
     def _process_room(self, binding: HostedRoomBinding) -> None:
+        # A persisted Stop must recover before historical publication/checkpoint
+        # work. Otherwise a slow preparation can indefinitely delay cancellation.
+        if self._tasks(binding, "stopping"):
+            lease = self._ensure_lease(binding)
+            if self._retry_stopping_tasks(binding, lease):
+                self._set_blocked(binding.room_id, True)
+                return
+            self._set_blocked(binding.room_id, False)
         if self.prepare_room is not None:
             self.prepare_room(binding)
         self._inspect_abandoned_attempts(binding)

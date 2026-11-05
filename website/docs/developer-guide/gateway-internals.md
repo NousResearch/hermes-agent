@@ -259,6 +259,14 @@ Stopping the listener cancels queued work and retires both pools. Already-runnin
 handlers retain their existing RPC deadlines; a restarted listener gets fresh
 pools. The Windows named-pipe listener retains its native worker lifecycle.
 
+Hosted-room recovery handles persisted stops before policy checkpoint work. An
+uncertain canonical attempt is resolved only for a saved Stop naming the exact
+task and execution generation, and only when the member reports it inactive.
+The member's canonical queue must acknowledge cancellation before the room task
+is marked cancelled; an inactive `unknown` attempt is not itself an acknowledgement.
+This preserves history and lets the next group input proceed without replaying
+the lost turn.
+
 ## Private native HTTP authentication
 
 The authoritative daemon accepts a **fresh, one-use HTTP grant per request** from

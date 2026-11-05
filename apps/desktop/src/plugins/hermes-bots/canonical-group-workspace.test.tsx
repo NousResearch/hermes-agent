@@ -38,12 +38,14 @@ afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.h
 // What gateway/session_group_controls.py answers for groups.send.
 const receipt = (params: { event_id?: string }) => ({ event: {}, client_event_id: params.event_id, accepted: true, driver_started: true })
 
-it('preserves the unsent draft when only the room display name changes', async () => {
+it('preserves the draft and full hover name when only the room display name changes', async () => {
+  const name = 'A very long group chat name '.repeat(40).trim()
   request.mockImplementation(async (_route, method) => method === 'groups.state'
-    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+    ? { room: { name }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
   const binding = { connectionId: 'local', profile: 'team', roomId: 'rename', roomName: 'Room' }
   const view = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.getByTitle(name).textContent).toBe(name)
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this draft' } })
   view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomName: 'Renamed room' }} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
@@ -582,7 +584,8 @@ it('says what the room waits on beside the live work, never instead of it', asyn
   request.mockImplementation(async (_route, method) => method === 'groups.state'
     ? { room: { name: 'Room', members }, driver_status: driver } : method === 'groups.log' ? { events: [] } : {})
   const view = render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'waiting' }} />)
-  await screen.findByText('Blocked · 1 waiting for approval · Needs attention: 1')
+  const approvalLink = await screen.findByRole('button', { name: '1 waiting for approval' })
+  expect(approvalLink.parentElement?.textContent).toBe('Blocked · 1 waiting for approval · Needs attention: 1')
   expect(screen.getByRole('status').textContent).toBe('Working: Ops')
 
   view.unmount()
@@ -1190,4 +1193,46 @@ it('names the Bot behind each pending action and shows what an approval would al
       room_id: 'approvals', member_id: member, task_id: task, execution_generation: generation, request_id: requestId, choice: 'once', profile: 'team'
     })
   }
+})
+
+it('jumps from the approval count to the waiting card without answering it', async () => {
+  const approval = { kind: 'approval', member_id: 'ops', task_id: 'approval-jump', execution_generation: 1,
+    approval: { command: 'make release', choices: ['once', 'deny'] } }
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Team' }, driver_status: { pending_actions: [approval] } }
+    : method === 'groups.log' ? { events: [] } : {})
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'approval-jump' }} />)
+  const jump = await screen.findByRole('button', { name: '1 waiting for approval' })
+  const card = screen.getByText('make release').closest<HTMLElement>('[data-pending-action]')!
+  card.scrollIntoView = vi.fn()
+  fireEvent.click(jump)
+  expect(card.scrollIntoView).toHaveBeenCalledWith({ block: 'center' })
+  expect(window.document.activeElement).toBe(card)
+  expect(request.mock.calls.some(call => call[1] === 'groups.approve')).toBe(false)
+})
+
+it('clears the stop notice only once the gateway reports no work still stopping', async () => {
+  let working = true
+  let stopping = 1
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Team' }, driver_status: { working, counts: { stopping } } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.stop') {working = false;
+
+ return { cancelled: 1 }}
+
+    return {}
+  })
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'settled-stop' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop the group' }))
+  await screen.findByText('Stop requested')
+  stopping = 0
+  // Resuming the retained pane triggers the next authoritative read immediately.
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible={false} />)
+  view.rerender(<CanonicalGroupWorkspace binding={binding} visible />)
+  await waitFor(() => expect(screen.queryByText('Stop requested')).toBeNull())
 })

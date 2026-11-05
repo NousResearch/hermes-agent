@@ -1,4 +1,6 @@
-export interface CanonicalGroupMessages {
+import { GROUP_REASON_LOCALES, type GroupReasonMessages } from './group-reason-locales'
+
+export interface CanonicalGroupMessages extends GroupReasonMessages {
   members: string
   roomStopped: string
   roomDisbanded: string
@@ -155,6 +157,7 @@ export interface CanonicalGroupMessages {
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
+    ...GROUP_REASON_LOCALES["en"],
     roomStopped: 'Stop requested',
     roomDisbanded: 'Group disbanded',
     authorityLost: 'Group ownership changed',
@@ -187,7 +190,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Remove attachment',
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
-    memberQueued: 'Queued',
+    memberQueued: 'queued',
     groupWorking: 'The group is working…',
     statusWorking: 'working',
     statusStalled: 'no progress for {time}',
@@ -309,6 +312,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'A new group chat starts with the other bots. The original ends only after they all join and every original member confirms Stop and access revocation. If either step fails, both group chats stay. Earlier messages aren’t copied. Using this action again after creation makes another group chat.'
   },
   ja: {
+    ...GROUP_REASON_LOCALES["ja"],
     roomStopped: '停止を要求しました',
     roomDisbanded: 'グループが解散しました',
     authorityLost: 'グループの管理元が変更されました',
@@ -463,6 +467,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'ほかのボットで新しいグループチャットを作成します。全員が参加し、元の全メンバーの停止とアクセス取り消しが確認されてから、元のチャットを終了します。どちらかが失敗した場合は両方を保持します。以前のメッセージはコピーされません。 作成後にこの操作をもう一度行うと、別のグループチャットが作成されます。'
   },
   zh: {
+    ...GROUP_REASON_LOCALES["zh"],
     roomStopped: '已请求停止',
     roomDisbanded: '群组已解散',
     authorityLost: '群组管理端已更改',
@@ -617,6 +622,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: '将用其他机器人创建新群聊。只有它们全部加入，且原群聊所有成员确认停止并撤销访问权限后，原群聊才会结束。任一步骤失败都会保留两个群聊。之前的消息不会复制。 创建后再次使用此操作会创建另一个群聊。'
   },
   'zh-hant': {
+    ...GROUP_REASON_LOCALES["zh-hant"],
     roomStopped: '已要求停止',
     roomDisbanded: '群組已解散',
     authorityLost: '群組管理端已變更',
@@ -771,6 +777,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: '將用其他機器人建立新的群組聊天。只有它們全部加入，且原有群組聊天的所有成員確認停止並撤銷存取權後，原有聊天才會結束。任一步驟失敗都會保留兩個群組聊天。先前的訊息不會複製。 建立後再次使用此操作會建立另一個群組聊天。'
   },
   ar: {
+    ...GROUP_REASON_LOCALES["ar"],
     roomStopped: 'طُلب الإيقاف',
     roomDisbanded: 'حُلّت المجموعة',
     authorityLost: 'تغيّر مالك المجموعة',
@@ -925,6 +932,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'تبدأ دردشة جماعية جديدة بالبوتات الأخرى. لا تنتهي الأصلية إلا بعد انضمامها جميعًا وتأكيد إيقاف كل عضو أصلي وإلغاء وصوله. إذا فشلت أي خطوة، تبقى الدردشتان. لن تُنسخ الرسائل السابقة. استخدام هذا الإجراء مجددًا بعد الإنشاء ينشئ دردشة جماعية أخرى.'
   },
   ru: {
+    ...GROUP_REASON_LOCALES["ru"],
     roomStopped: 'Остановка запрошена',
     roomDisbanded: 'Группа распущена',
     authorityLost: 'Владелец группы изменился',
@@ -960,7 +968,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Удалить вложение',
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
-    memberQueued: 'В очереди',
+    memberQueued: 'в очереди',
     groupWorking: 'Группа работает…',
     statusWorking: 'работает',
     statusStalled: 'нет прогресса {time}',
@@ -1082,6 +1090,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'Создаётся новый групповой чат с остальными ботами. Исходный завершится только после их присоединения и подтверждения остановки и отзыва доступа каждого исходного участника. При сбое любого шага оба чата сохраняются. Прежние сообщения не копируются. Повторное действие после создания создаст ещё один групповой чат.'
   },
   fr: {
+    ...GROUP_REASON_LOCALES["fr"],
     roomStopped: 'Arrêt demandé',
     roomDisbanded: 'Groupe dissous',
     authorityLost: 'Gestionnaire du groupe modifié',
@@ -1116,7 +1125,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Retirer la pièce jointe',
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
-    memberQueued: 'En attente',
+    memberQueued: 'en attente',
     groupWorking: 'Le groupe travaille…',
     statusWorking: 'au travail',
     statusStalled: 'aucun progrès depuis {time}',
@@ -1238,6 +1247,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'Une nouvelle discussion de groupe est créée avec les autres bots. L’originale ne se termine qu’après leur arrivée et la confirmation de l’arrêt et de la révocation des accès de chaque membre d’origine. Si une étape échoue, les deux discussions sont conservées. Les messages précédents ne sont pas copiés. Réutiliser cette action après la création crée une autre discussion de groupe.'
   },
   de: {
+    ...GROUP_REASON_LOCALES["de"],
     roomStopped: 'Stopp angefordert',
     roomDisbanded: 'Gruppe aufgelöst',
     authorityLost: 'Gruppenverwaltung gewechselt',
@@ -1273,7 +1283,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Anhang entfernen',
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
-    memberQueued: 'In der Warteschlange',
+    memberQueued: 'in der Warteschlange',
     groupWorking: 'Die Gruppe arbeitet…',
     statusWorking: 'arbeitet',
     statusStalled: 'kein Fortschritt seit {time}',
@@ -1395,6 +1405,7 @@ export const CANONICAL_GROUP_LOCALES = {
     peerStartWithoutConfirm: 'Ein neuer Gruppenchat wird mit den anderen Bots erstellt. Der ursprüngliche endet erst, wenn alle beigetreten sind und Stopp und Zugriffsentzug aller ursprünglichen Mitglieder bestätigt wurden. Schlägt ein Schritt fehl, bleiben beide Gruppenchats erhalten. Frühere Nachrichten werden nicht kopiert. Nach der Erstellung legt diese Aktion beim nächsten Mal einen weiteren Gruppenchat an.'
   },
   es: {
+    ...GROUP_REASON_LOCALES["es"],
     roomStopped: 'Parada solicitada',
     roomDisbanded: 'Grupo disuelto',
     authorityLost: 'Propietario del grupo cambiado',
@@ -1429,7 +1440,7 @@ export const CANONICAL_GROUP_LOCALES = {
     removeAttachment: 'Quitar adjunto',
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
-    memberQueued: 'En cola',
+    memberQueued: 'en cola',
     groupWorking: 'El grupo está trabajando…',
     statusWorking: 'trabajando',
     statusStalled: 'sin avances desde hace {time}',

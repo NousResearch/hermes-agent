@@ -1,0 +1,114 @@
+import { cleanup, render } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { afterEach, expect, it, vi } from 'vitest'
+
+const selection = vi.hoisted(() => ({ locale: 'en' }))
+vi.mock('@hermes/plugin-sdk', async () => ({
+  ...await (await import('./group-test-utils')).pluginSdkMock({}),
+  Tip: ({ children, label }: { children: ReactNode; label: string }) => <div title={label}>{children}</div>
+}))
+vi.mock('./canonical-group-labels', async () => {
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+
+  return { useCanonicalGroupLabels: () => CANONICAL_GROUP_LOCALES[selection.locale as keyof typeof CANONICAL_GROUP_LOCALES] }
+})
+
+import { CanonicalGroupHistory } from './canonical-group-history'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { groupActivityLabel } from './group-activity'
+import { memberOutcomes, memberStatus } from './group-room-status'
+import { fill, MemberStatusChip, memberStatusText } from './group-room-ui'
+import { translateBotsIn } from './i18n-test-helper'
+import { setPluginCtx } from './shared'
+
+afterEach(() => { cleanup(); setPluginCtx(null) })
+const binding = { connectionId: 'local', profile: 'team', roomId: 'copy' }
+
+const knownReasons = [
+  'runtime_offline', 'queued_expired', 'delivery_timeout', 'agent_blocked', 'cancelled',
+  'provider_auth_or_access', 'provider_quota_limit', 'provider_rate_limit', 'provider_server_error',
+  'context_overflow', 'missing_config', 'model_unavailable', 'target_scope_unresolved',
+  'prepare_failed', 'slot_wait_timeout', 'target_busy', 'rate_limited', 'member gateway restarted'
+]
+
+it.each([
+  ["en", "The bot is unavailable", "A newer message replaced this turn", "The turn exceeded its time limit"],
+  ["ja", "ボットを利用できません", "新しいメッセージがこのターンに代わりました", "ターンの制限時間を超えました"],
+  ["zh", "机器人不可用", "新消息取代了此回合", "回合超出了时间限制"],
+  ["zh-hant", "機器人無法使用", "新訊息取代了此回合", "回合超出了時間限制"],
+  ["ar", "الروبوت غير متاح", "حلّت رسالة أحدث محل هذا الدور", "تجاوز الدور المهلة المحددة"],
+  ["ru", "Бот недоступен", "Более новое сообщение заменило этот ход", "Ход превысил лимит времени"],
+  ["fr", "Le bot est indisponible", "Un message plus récent a remplacé ce tour", "Le tour a dépassé le délai autorisé"],
+  ["de", "Der Bot ist nicht verfügbar", "Eine neuere Nachricht hat diesen Durchgang ersetzt", "Der Durchgang hat das Zeitlimit überschritten"],
+  ["es", "El bot no está disponible", "Un mensaje más reciente sustituyó este turno", "El turno superó el límite de tiempo"],
+])('renders known reasons and hides unknown codes in %s', (locale, unavailable, superseded, deadline) => {
+  selection.locale = locale
+  setPluginCtx({ i18n: { t: translateBotsIn(locale) } } as never)
+  const labels = CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES]
+
+  const cases = [
+    ['member_unavailable', unavailable], ['superseded_by_newer_user_event', superseded], ['turn_deadline_exceeded', deadline],
+    ['unknown', ''], ['future_reason', ''], ['future.reason:v2', ''], ['Provider timed out', 'Provider timed out']
+  ]
+
+  for (const [reason, text] of cases) {
+    const events = [
+      { seq: 1, kind: 'turn.deferred', payload: { reason } },
+      { seq: 2, kind: 'turn.failed', payload: { error: reason } },
+      { seq: 3, kind: 'turn.failed', payload: { reason_code: reason } },
+      { seq: 4, kind: 'turn.cancelled', payload: { reason } }
+    ]
+
+    const view = render(<CanonicalGroupHistory binding={binding} events={events} />)
+    expect([...view.container.querySelectorAll('[data-room-notice] p')].map(node => node.textContent)).toEqual(
+      [labels.turnDeferred, labels.turnFailed, labels.turnFailed, labels.turnCancelled].map(word => word + (text ? ': ' + text : '')))
+    view.unmount()
+
+    const activity = groupActivityLabel({ at: 1, epoch: 0, kind: 'failed', member: 'Helper', reason })
+    expect(activity).toBe('Helper ' + translateBotsIn(locale)('group.activityFailed') + (text ? ' — ' + text : ''))
+  }
+
+  // Exercise the durable outcome -> status -> chip path, including unknown classification with useful error text.
+  for (const [reason, error, expected] of [
+    ['member_unavailable', '', unavailable], ['unknown', '', ''], ['unknown', 'Provider timed out', 'Provider timed out'],
+    ['future_reason', 'unknown', '']
+  ]) {
+    const events = [
+      { seq: 1, event_id: 'discussion', kind: 'message.user', payload: {} },
+      { seq: 2, kind: 'turn.failed', payload: { member_id: 'helper', discussion_event_id: 'discussion', reason_code: reason, error } }
+    ]
+
+    const status = memberStatus('helper', [], memberOutcomes(events), 1)
+    const text = labels.statusFailed + (expected ? ' · ' + expected : '')
+    expect(memberStatusText(status, labels)).toBe(text)
+    const view = render(<MemberStatusChip avatar={null} labels={labels} name="Helper" status={status} />)
+    expect(view.container.textContent).toBe('Helper·' + text)
+    expect(view.container.querySelector('[title]')?.getAttribute('title')).not.toMatch(/unknown|future_reason|member_unavailable/)
+    view.unmount()
+  }
+
+  for (const reason of knownReasons) {
+    const text = memberStatusText({ kind: 'failed', reason }, labels)
+    expect(text).toContain(labels.statusFailed + ' · ')
+    expect(text).not.toBe(labels.statusFailed + ' · ' + reason)
+
+    if (locale !== 'en') {
+      expect(text.slice(labels.statusFailed.length)).not.toBe(
+        memberStatusText({ kind: 'failed', reason }, CANONICAL_GROUP_LOCALES.en).slice(CANONICAL_GROUP_LOCALES.en.statusFailed.length))
+    }
+  }
+})
+
+it.each([
+  ["en", "{name}’s turn didn’t finish here. Retry it?"],
+  ["ja", "{name} のターンはここでは完了しませんでした。再試行しますか？"],
+  ["zh", "{name} 的回合未在此处完成。要重试吗？"],
+  ["zh-hant", "{name} 的回合未在此處完成。要重試嗎？"],
+  ["ar", "لم يكتمل دور {name} هنا. هل تعيد المحاولة؟"],
+  ["ru", "Ход {name} здесь не завершился. Повторить?"],
+  ["fr", "Le tour de {name} ne s’est pas terminé ici. Réessayer ?"],
+  ["de", "Der Zug von {name} wurde hier nicht abgeschlossen. Erneut versuchen?"],
+  ["es", "El turno de {name} no terminó aquí. ¿Reintentar?"],
+])('limits the retry claim to this computer in %s', (locale, template) => {
+  expect(fill(CANONICAL_GROUP_LOCALES[locale as keyof typeof CANONICAL_GROUP_LOCALES].pendingRetry, { name: 'Helper' })).toBe(template.replace('{name}', 'Helper'))
+})

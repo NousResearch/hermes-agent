@@ -1,5 +1,5 @@
 import { Button } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { Fragment, type MouseEvent, useEffect, useState } from 'react'
 
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
@@ -90,10 +90,12 @@ export function CanonicalGroupTyping({ members = [], labels, statuses }: {
 /** The room's footer: its round cycle once the log names a discussion; before that (or on a
  *  gateway without member activity) the plain working line. */
 export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statuses }: {
-  cycle: null | RoomCycle; driver?: CanonicalDriverActivity; members?: CanonicalRoomMember[]; labels: CanonicalActivityLabels
+  cycle: null | RoomCycle; driver?: CanonicalDriverStatus; members?: CanonicalRoomMember[]; labels: CanonicalActivityLabels
   statuses: Map<string, MemberStatus>
 }) {
   const busy = members.filter(member => isBusyStatus(statusOf(statuses, member)))
+
+  if (cycle?.kind === 'settled' && (driver?.pending_actions?.length || driver?.counts?.deferred)) {return null}
 
   if (cycle) {
     // Names only (the chips and typing rows carry each member's tool and time), and only the members of
@@ -161,8 +163,23 @@ export function canonicalRoomAttention(driver: CanonicalDriverStatus | undefined
  *  does not hide the others' live work. */
 export function CanonicalGroupAttention({ driver, labels }: { driver?: CanonicalDriverStatus; labels: AttentionLabels }) {
   const parts = canonicalRoomAttention(driver, labels)
+  const approvals = driver?.pending_actions?.filter(action => action.kind === 'approval').length ?? 0
+  const approvalText = labels.statusApprovals.replace('{count}', String(approvals))
 
-  return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">{parts.join(' · ')}</p> : null
+  const jumpToApproval = (event: MouseEvent<HTMLButtonElement>) => {
+    const card = event.currentTarget.closest('section')?.querySelector<HTMLElement>('[data-pending-action="approval"]')
+    card?.scrollIntoView({ block: 'center' })
+    card?.focus({ preventScroll: true })
+  }
+
+  return parts.length ? <p aria-live="polite" className="text-xs text-(--ui-text-secondary)">
+    {parts.map((part, index) => <Fragment key={part}>
+      {index > 0 && ' · '}
+      {approvals && part === approvalText
+        ? <Button onClick={jumpToApproval} size="inline" variant="text">{part}</Button>
+        : part}
+    </Fragment>)}
+  </p> : null
 }
 
 /** The room's read, action, journal and driver notices, above its log. */
@@ -176,15 +193,15 @@ export function CanonicalGroupNotices({ readError, error, journalError, notice, 
   onRefresh: () => void
   onJournalReload: () => void
 }) {
-  return <>
-    {readError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
-    {error && <div className="px-4 py-1.5"><div className="mx-auto w-full max-w-3xl text-xs text-destructive" role="alert">{error}</div></div>}
-    {journalError && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">
+  return <div className="px-4"><div className="mx-auto w-full max-w-3xl">
+    {readError && <div className="py-1.5 text-xs text-destructive" role="alert">{readError}<Button onClick={onRefresh}>{labels.refresh}</Button></div>}
+    {error && <div className="py-1.5 text-xs text-destructive" role="alert">{error}</div>}
+    {journalError && <div className="py-1.5 text-xs text-destructive" role="alert">
       <p>{labels.journalLoadFailed}</p>
       <Button onClick={onJournalReload}>{labels.journalReload}</Button>
       <details><summary>{labels.details}</summary>{journalError}</details>
     </div>}
-    {notice && <p aria-live="polite" className="px-3 py-1.5 text-xs text-(--ui-text-secondary)">{notice}</p>}
-    {unavailable && <p className="px-3 py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
-  </>
+    {notice && <p aria-live="polite" className="py-1.5 text-xs text-(--ui-text-secondary)">{notice}</p>}
+    {unavailable && <p className="py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
+  </div></div>
 }

@@ -106,16 +106,21 @@ def bind_state(
     from tui_gateway.launch_profile_policy import owner_secret_scope
 
     if secrets is None:
-        if hydrate_secrets:
-            from hermes_cli.env_loader import hydrate_profile_secret_sources
-            hydrate_profile_secret_sources(Path(home))
-        secrets = owner_secret_scope(Path(home))
+        # Built under the target's home, as main's per-turn loader did: hydration reads the
+        # profile's ``secrets:`` config through ``get_hermes_home()``, which would otherwise still
+        # name whichever profile is bound now. Only the home moves, for these reads alone.
+        with push_state(home=home):
+            if hydrate_secrets:
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                hydrate_profile_secret_sources(Path(home))
+            secrets = owner_secret_scope(Path(home))
     kept = current_state()
     if terminal_policy is not None:
         policy = terminal_policy
     elif terminal and defer_terminal:
         from tools.terminal_scope import DeferredTerminalPolicy
-        policy = DeferredTerminalPolicy(lambda: prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay))
+        overlay = dict(env_overlay) if env_overlay is not None else None  # the bind's value, not the caller's dict
+        policy = DeferredTerminalPolicy(lambda: prepare_profile_terminal_scope(Path(home), env_overlay=overlay))
     elif terminal:
         policy = prepare_profile_terminal_scope(Path(home), env_overlay=env_overlay)
     else:

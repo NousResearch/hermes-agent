@@ -425,3 +425,41 @@ def test_legacy_switch_builds_the_target_policy_on_first_read_only(two_profiles,
         finally:
             reset_hermes_home_override(token)
         assert _state() == _expect(a, "a", "local")
+
+
+def test_a_bind_hydrates_the_target_profile_under_its_own_home(two_profiles, monkeypatch):
+    """Secret sources are hydrated from the TARGET profile's ``secrets:`` config: hydration reads it
+    through ``get_hermes_home()``, so the bind moves the home first, as main's per-turn loader did.
+    Entering profile B from inside A must never hydrate B from A's configuration."""
+    from hermes_cli import env_loader
+
+    a, b = two_profiles
+    (a / "config.yaml").write_text("secrets:\n  command:\n    enabled: false\nterminal:\n  backend: local\n")
+    (b / "config.yaml").write_text("secrets:\n  command:\n    enabled: true\n    command: b-vault\n"
+                                   "terminal:\n  backend: docker\n")
+    seen = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources",
+                        lambda home: seen.append((Path(home), hermes_home_key(get_hermes_home()),
+                                                  env_loader._load_secrets_config(Path(home))["command"]["enabled"])))
+    with bind_profile_scope(a, hydrate_secrets=False):
+        with bind_profile_scope(b):
+            pass
+        assert hermes_home_key(get_hermes_home()) == hermes_home_key(a)
+    assert seen == [(b, hermes_home_key(b), True)]
+
+
+def test_a_deferred_policy_keeps_the_overlay_it_was_bound_with(two_profiles):
+    """The terminal policy a legacy switch defers is built from the overlay passed at the switch; a
+    caller changing its own mapping afterwards changes nothing."""
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+
+    a, b = two_profiles
+    (b / "config.yaml").write_text("terminal: {}\n")
+    overlay = {"TERMINAL_ENV": "docker"}
+    with bind_profile_scope(a, hydrate_secrets=False):
+        token = install_profile_terminal_scope(b, env_overlay=overlay)
+        try:
+            overlay["TERMINAL_ENV"] = "local"
+            assert get_terminal_scope()["TERMINAL_ENV"] == "docker"
+        finally:
+            reset_terminal_scope(token)

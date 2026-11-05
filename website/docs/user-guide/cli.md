@@ -544,6 +544,26 @@ display:
 
 This is useful on narrow terminals or when tool arguments contain very long file paths.
 
+### Inline Images
+
+Images show up right in the transcript: the ones you attach (`/paste`, `/image`, drag-and-drop) under your message, and the local image a successful tool call produced or looked at (`vision_analyze`, `image_generate`, a browser or computer-use screenshot) under that tool's line. `read_file` cannot read images, so it shows none. The same setting drives the [TUI](./tui.md).
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  inline_images: auto   # auto | kitty | iterm | unicode | off
+```
+
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). In the VS Code terminal the classic CLI asks the terminal at startup whether images are on (`terminal.integrated.enableImages`; the reply takes about 10 ms) and draws full-resolution images when they are, with an occasional tip to turn them on when they are not. Everything else, including tmux, GNU screen, SSH sessions into VS Code, and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
+- **`kitty`** forces the kitty protocol, for example in the classic CLI inside a tmux with `set -g allow-passthrough on`.
+- **`iterm`** forces the iTerm2 protocol in the classic CLI (the TUI falls back to `auto` here).
+- **`unicode`** always uses half-blocks.
+- **`off`** shows file paths only, as before.
+
+Only local files are drawn; remote image URLs are not fetched. Sixel terminals get half-blocks.
+
+After a terminal resize the CLI redraws its transcript. kitty and half-block images come back in the redraw; iTerm2-protocol images (iTerm2, WezTerm, Konsole) leave blank rows in the redrawn screen and stay visible only in the scrollback above it.
+
 ## Session Management
 
 ### Resuming Sessions

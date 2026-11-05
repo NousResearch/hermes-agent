@@ -2233,10 +2233,6 @@ export const csOverrides = {
           label: 'Komprese',
           hint: 'Zhuštění kontextu'
         },
-        skills_hub: {
-          label: 'Centrum dovedností',
-          hint: 'Hledání dovedností'
-        },
         approval: {
           label: 'Schválení',
           hint: 'Chytré automatické schvalování'
@@ -5553,6 +5549,15 @@ export const csOverrides = {
           subagent_definitions: 'Definice subagentů',
           system_prompt: 'Systémové zadání',
           tool_definitions: 'Definice nástrojů'
+        },
+        compact: {
+          action: 'Komprimovat konverzaci',
+          busyHint: 'Nejprve dokončete nebo zastavte aktuální odpověď',
+          confirm: 'Komprimovat',
+          hint: 'Shrne starší kontext, aby se uvolnilo místo. Pokračujte ve stejné konverzaci.',
+          question: 'Zkomprimovat tento chat do souhrnu?',
+          questionNamed: title => `Zkomprimovat „${title}“ do souhrnu?`,
+          working: 'Komprimuji…'
         },
         empty: 'Zatím žádná kontextová data',
         loading: 'Načítám rozpis…',

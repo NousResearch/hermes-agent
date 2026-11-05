@@ -781,6 +781,7 @@ class CLIStreamMixin:
                     del self._pending_tool_info[function_name]
                 # "new" mode: skip consecutive repeats of the same tool
                 if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
+                    self._print_tool_image(function_name, stored_args, kwargs.get("result"), kwargs.get("is_error"))
                     self._invalidate()
                     return
                 self._last_scrollback_tool = function_name
@@ -790,6 +791,7 @@ class CLIStreamMixin:
                                                 kwargs.get("is_error", False)))
                 except Exception:
                     pass
+                self._print_tool_image(function_name, stored_args, kwargs.get("result"), kwargs.get("is_error"))
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched
                 # on self and persisted to config.yaml.
                 try:
@@ -852,6 +854,13 @@ class CLIStreamMixin:
                 self._pending_edit_snapshots[tool_call_id] = snapshot
         except Exception:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
+
+    def _print_tool_image(self, function_name, args, result, is_error) -> None:
+        """Show the local image a finished tool produced or looked at (``display.inline_images``)."""
+        from agent.terminal_image import tool_image_path
+        from hermes_cli.cli_inline_images import print_inline_images
+        if path := tool_image_path(function_name, args, result, is_error=bool(is_error)):
+            print_inline_images(self, [path])
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
         """Render file edits with inline diff after write-capable tools complete."""

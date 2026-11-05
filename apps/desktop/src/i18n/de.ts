@@ -4642,6 +4642,15 @@ export const deOverrides = {
           system_prompt: 'System-Prompt',
           tool_definitions: 'Tool-Definitionen'
         },
+        compact: {
+          action: 'Unterhaltung verdichten',
+          busyHint: 'Beende oder stoppe zuerst die laufende Antwort',
+          confirm: 'Verdichten',
+          hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
+          question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
+          questionNamed: title => `„${title}“ zu einer Zusammenfassung verdichten?`,
+          working: 'Verdichte …'
+        },
         empty: 'Noch keine Kontext-Daten',
         loading: 'Aufschlüsselung wird geladen…',
         percentFull: percent => `${percent}% voll`,

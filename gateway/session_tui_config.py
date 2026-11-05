@@ -230,6 +230,33 @@ def current_tier(connection, ref, policy):
     return runner._resolve_session_service_tier(source=live.source, session_key=live.route)
 
 
+def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
+    """The session route's speed choices, resolved under its credential scope."""
+    from agent.codex_service_tiers import ultrafast_offered
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.models import resolve_fast_mode_overrides
+    with _profile_runtime_scope(Path(connection.authority.profile_id)):
+        agent = connection.authority.agent(ref)
+        config, model = policy.effective(connection.authority, secrets=False) if policy else ({}, None)
+        route = config.get('model') or {}
+        provider, base_url = route.get('provider'), route.get('base_url')
+        if policy is not None and policy.follows_profile:
+            from gateway.session_policy import route_launch_key
+            access_token = route_launch_key(connection.authority, policy, config) or route.get('api_key')
+        else:
+            model = getattr(agent, 'model', None) or model
+            provider = getattr(agent, 'provider', None) or provider
+            base_url = getattr(agent, 'base_url', None) or base_url
+            access_token = getattr(agent, 'api_key', None)
+        if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url) is None:
+            return []
+        options = ['normal', 'fast', 'auto', 'cold']
+        if include_ultrafast and ultrafast_offered(model, provider=provider, base_url=base_url,
+                                                   access_token=access_token):
+            options.append('ultrafast')
+        return options
+
+
 async def _set_fast(connection, ref, policy, value):
     """Session-scoped /fast like main's: validated against the session's route, never config.yaml.
     The words parse through the shared tier table (``parse_exact_service_tier``, as the classic CLI's
@@ -248,23 +275,12 @@ async def _set_fast(connection, ref, policy, value):
     except ValueError:
         raise RuntimeStoreError('invalid_params') from None
     if tier in STATIC_TIERS:
-        agent = connection.authority.agent(ref)
-        model = getattr(agent, 'model', None) or (policy.current_model(connection.authority) if policy else None)
-        provider = getattr(agent, 'provider', None) or (policy.provider if policy else None)
-        base_url = getattr(agent, 'base_url', None) or (policy.base_url if policy else None)
-
-        def offered():
-            from agent.codex_service_tiers import ultrafast_offered
-            from hermes_cli.models import resolve_fast_mode_overrides
-            if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url,
-                                                        tier=tier if tier == 'ultrafast' else None) is None:
-                return False
-            return tier != 'ultrafast' or ultrafast_offered(model, provider=provider, base_url=base_url,
-                                                            access_token=getattr(agent, 'api_key', None))
-        if not await asyncio.to_thread(offered):
+        options = await asyncio.to_thread(service_tier_options, connection, ref, policy,
+                                          include_ultrafast=tier == 'ultrafast')
+        if service_tier_word(tier) not in options:
             raise RuntimeStoreError('fast_unavailable')
-    connection.authority.runner._set_session_service_tier_override(
-        connection.authority.sessions[ref.session_id].route, tier)
+    from gateway.session_busy_controls import service_tier_config
+    service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
     return {'key': 'fast', 'value': service_tier_word(tier)}
 
 

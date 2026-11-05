@@ -28,6 +28,8 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_transcript import TranscriptReadError
+from persistence.core.errors import CorruptStoreError
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 @pytest.fixture
 def store(tmp_path):
@@ -40,17 +42,17 @@ def store(tmp_path):
 
 class TestLoadTranscriptReadFailure:
     def test_read_failure_raises_instead_of_returning_empty(self, store, monkeypatch):
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("s1", "telegram", session_key="telegram:1")
-        db.append_message("s1", "user", "the conversation we must not forget")
+        seed_session(db, "s1", "telegram", session_key="telegram:1")
+        seed_messages(db, "s1", {"role": "user", "content": "the conversation we must not forget"})
 
-        boom = sqlite3.DatabaseError("database disk image is malformed")
+        boom = CorruptStoreError("database disk image is malformed")
 
         def _raise(*_args, **_kwargs):
             raise boom
 
-        monkeypatch.setattr(db, "get_messages_as_conversation", _raise)
+        monkeypatch.setattr(store.persistence.messages, "read_conversation", _raise)
 
         with pytest.raises(TranscriptReadError) as excinfo:
             store.load_transcript("s1")
@@ -59,9 +61,9 @@ class TestLoadTranscriptReadFailure:
         assert excinfo.value.__cause__ is boom
 
     def test_genuinely_empty_session_still_returns_empty_list(self, store):
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("s2", "telegram", session_key="telegram:2")
+        seed_session(db, "s2", "telegram", session_key="telegram:2")
 
         assert store.load_transcript("s2") == []
 

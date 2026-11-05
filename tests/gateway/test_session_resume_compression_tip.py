@@ -45,11 +45,11 @@ async def test_session_resume_still_remaps_legacy_cli_source(monkeypatch):
         profile_id='fixture',
         instance_id='one',
         events={},
-        db=SimpleNamespace(
-            get_session=lambda sid: {
-                'id': tip_id, 'source': 'cli', 'chat_id': owner_id,
-            } if sid == tip_id else None,
-            get_compression_tip=lambda sid: tip_id,
+        persistence=SimpleNamespace(
+            sessions=SimpleNamespace(get=lambda sid: SimpleNamespace(
+                id=tip_id, source='cli', chat_id=owner_id,
+            ) if sid == tip_id else None),
+            lineage=SimpleNamespace(tip=lambda sid: tip_id),
         ),
         sessions={owner_id: SimpleNamespace(source=SimpleNamespace(platform=None), route=f'agent:main:cli:dm:{owner_id}',
                                             event_stream=SessionEvents())},

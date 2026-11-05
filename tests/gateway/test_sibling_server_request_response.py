@@ -7,6 +7,7 @@ import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 
 class _Transport:
@@ -94,6 +95,6 @@ async def test_host_socket_answers_a_sibling_profiles_sudo_request(tmp_path, mon
             with owner_scope(connection.authority):
                 await connection.close()
         for authority in getattr(runner, 'session_authorities', None) or []:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(Path(home))

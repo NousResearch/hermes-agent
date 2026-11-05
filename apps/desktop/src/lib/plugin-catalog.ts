@@ -30,7 +30,7 @@ import { $gatewayState } from '@/store/session'
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
 export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
 export const PLUGIN_CATALOG_DOCS_URL = `${CATALOG_ORIGIN}/docs/user-guide/features/plugin-catalog`
-export const SKILLS_DOCS_URL = `${CATALOG_ORIGIN}/docs/skills/`
+export const SKILLS_DOCS_URL = `${CATALOG_ORIGIN}/docs/user-guide/features/skills`
 export const SUBMIT_MOD_URL = 'https://github.com/NousResearch/hermes-agent/compare'
 
 /** Catalog names are directory names under `plugin-catalog/`; anything else is not a lookup key. */

@@ -30,16 +30,14 @@ _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 def _bot_chat_tip(home: Path) -> str | None:
     """Current Bot Chat tip id, or None when the profile has no store or no Bot Chat yet."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence_reader, profile_scope, store_location
 
-    if not (home / 'state.db').is_file():
+    location = store_location(profile_scope(home=home))
+    if location is None or not location.is_file():
         return None
-    db = SessionDB(db_path=home / 'state.db', read_only=True)
-    try:
-        row = db.get_session_by_title('Bot Chat')
-        return db.get_compression_tip(row['id']) if row else None
-    finally:
-        db.close()
+    with open_persistence_reader(home) as store:
+        row = store.sessions.get_by_title('Bot Chat')
+        return store.lineage.tip(row.session_id) if row else None
 
 
 def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
@@ -49,12 +47,14 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     authority's deliver door creates it on first delivery (main's ``--create-if-missing``),
     so a missing chat is not a refusal. None only when the profile has no store at all."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from persistence_assembly import profile_scope, store_location
 
     home = Path(profile_home).resolve()
     discovery = discover_gateway_endpoint(home, timeout=5)
     if discovery.state != 'ready' or discovery.endpoint is None:
         raise ValueError('profile authority is not ready')
-    if not (home / 'state.db').is_file():
+    location = store_location(profile_scope(home=home))
+    if location is None or not location.is_file():
         return None
     tip = _bot_chat_tip(home)
     return dict(profile_home=str(home), session_id=tip or '', canonical=True,

@@ -88,6 +88,16 @@ def _make_native_streaming_adapter(
     return adapter
 
 
+async def _wait_until(predicate, timeout: float = 2.0) -> bool:
+    """Poll ``predicate()`` until it is true or ``timeout`` expires; returns its last value."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return predicate()
+
+
 # === RESOLVER ===
 
 
@@ -204,8 +214,16 @@ class TestNativeStreamingThrottling:
     """Fire-and-forget: every delta is pushed immediately (no throttle)."""
 
     @pytest.mark.asyncio
-    async def test_tiny_increments_are_sent_immediately(self):
+    async def test_tiny_increments_are_sent_immediately(self, monkeypatch):
         """No throttling — each distinct cumulative text produces a frame."""
+        import gateway.stream_consumer as stream_consumer
+        import gateway.stream_consumer_transport as stream_consumer_transport
+
+        # With the clock frozen, a time-gated push never becomes due, so a
+        # throttle leaves a delta without a frame instead of only delaying it.
+        frozen_clock = SimpleNamespace(monotonic=lambda: 1000.0)
+        monkeypatch.setattr(stream_consumer, "time", frozen_clock)
+        monkeypatch.setattr(stream_consumer_transport, "time", frozen_clock)
         adapter = _make_native_streaming_adapter()
         cfg = StreamConsumerConfig(
             chat_type="dm", cursor="",
@@ -214,26 +232,22 @@ class TestNativeStreamingThrottling:
         consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
 
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.02)  # let seed frame fire
         # Many 1-char deltas — fire-and-forget sends every change.
+        cumulative = [""]
         for ch in "abcdefghij":  # 10 chars total
             consumer.on_delta(ch)
-            await asyncio.sleep(0.015)
+            cumulative.append(cumulative[-1] + ch)
+            assert await _wait_until(
+                lambda: any(f["text"] == cumulative[-1] for f in adapter.frames)
+            ), f"no frame for {cumulative[-1]!r}: {adapter.frames}"
         consumer.finish()
         await task
 
-        # Every distinct cumulative text should produce a frame (no throttle).
+        # Every distinct cumulative text produced a frame (no throttle).
         non_finalize_content_frames = [
-            f for f in adapter.frames if not f["finalize"] and f["text"]
+            f["text"] for f in adapter.frames if not f["finalize"] and f["text"]
         ]
-        # With fire-and-forget, every drain-loop iteration that sees new
-        # accumulated text pushes immediately. Due to asyncio batching,
-        # multiple on_delta() calls between awaits collapse into one drain,
-        # so we won't get exactly 10 frames — but we should get significantly
-        # more than the old throttled behavior (which allowed at most 1).
-        assert len(non_finalize_content_frames) >= 3, (
-            f"fire-and-forget should send most deltas: got {len(non_finalize_content_frames)} mid frames"
-        )
+        assert non_finalize_content_frames == cumulative[1:]
         # The user still sees the full content in the finalize frame.
         finalize_frames = [f for f in adapter.frames if f["finalize"]]
         assert len(finalize_frames) == 1
@@ -513,18 +527,6 @@ class TestClarifyEagerReseed:
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.01)
 
-    async def _wait_until(self, predicate, timeout=2.0):
-        """Poll ``predicate()`` until true or timeout — robust against CPU
-        contention (a fixed _drain sleep flakes under the 24-worker suite).
-        Returns the predicate's final value so callers can assert on it.
-        """
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            if predicate():
-                return True
-            await asyncio.sleep(0.01)
-        return predicate()
-
     async def _to_reopen_pending(self, consumer, adapter):
         """Run to the point right after a clarify boundary: native still on,
         no stream open, awaiting a re-seed.  Returns nothing; leaves the run
@@ -596,7 +598,7 @@ class TestClarifyEagerReseed:
 
         # User answered → request an eager re-seed.  NO on_delta yet.
         consumer.request_reopen_seed()
-        await self._drain(consumer, 0.05)  # let run() process _REOPEN_SEED
+        assert await _wait_until(lambda: consumer._native_stream_opened)
 
         seeds_after = len(
             [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
@@ -605,7 +607,6 @@ class TestClarifyEagerReseed:
             "eager re-seed must emit exactly one new empty seed frame before "
             f"any delta (before={seeds_before}, after={seeds_after})"
         )
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
         assert consumer._awaiting_reopen_after_boundary is False
         assert consumer._reopen_seeded_eagerly is True
 
@@ -632,7 +633,7 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert await self._wait_until(
+        assert await _wait_until(
             lambda: consumer._native_stream_opened
         ), "eager seed must open the stream"
 
@@ -753,7 +754,7 @@ class TestClarifyEagerReseed:
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # process _REOPEN_SEED → seed fails
 
-        assert await self._wait_until(
+        assert await _wait_until(
             lambda: consumer._use_native_streaming is False
         ), "failed eager seed must disable native streaming"
         assert consumer.cfg.buffer_only is True
@@ -782,7 +783,7 @@ class TestClarifyEagerReseed:
 
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # eager seed opens the stream
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
+        assert await _wait_until(lambda: consumer._native_stream_opened)
 
         # Now the LLM produces post-answer content.
         consumer.on_delta("根据你的选择，这是后续的完整回答内容，足够长以触发一次刷新。")
@@ -824,7 +825,7 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
+        assert await _wait_until(lambda: consumer._native_stream_opened)
 
         frames_before = len(adapter.frames)
 
@@ -910,7 +911,7 @@ class TestClarifyEagerReseed:
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)  # _REOPEN_SEED → 第二次 seed 失败 → 降级
 
-        assert await self._wait_until(
+        assert await _wait_until(
             lambda: consumer._use_native_streaming is False
         ), "eager seed 失败必须关闭 native streaming"
         assert consumer.cfg.buffer_only is True
@@ -951,7 +952,7 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert await self._wait_until(
+        assert await _wait_until(
             lambda: consumer._native_stream_opened
         ), "eager seed 应已开流"
 
@@ -1001,7 +1002,7 @@ class TestClarifyEagerReseed:
         task = await self._to_reopen_pending(consumer, adapter)
         consumer.request_reopen_seed()
         await self._drain(consumer, 0.05)
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
+        assert await _wait_until(lambda: consumer._native_stream_opened)
         assert consumer._reopen_seeded_eagerly is True
 
         consumer.on_delta("根据你的选择，这是后续的完整回答内容，足够长以触发一次流式刷新的补充。")
@@ -1030,7 +1031,7 @@ class TestClarifyEagerReseed:
 
         # 第二轮 eager seed：即便标志有残留，仍能正确再次开流。
         consumer.request_reopen_seed()
-        await self._drain(consumer, 0.05)
+        assert await _wait_until(lambda: consumer._native_stream_opened)
 
         seeds_after = len(
             [f for f in adapter.frames if f["text"] == "" and not f["finalize"]]
@@ -1039,7 +1040,6 @@ class TestClarifyEagerReseed:
             "第二轮 eager seed 必须再发一个新的空 seed 帧 "
             f"(before={seeds_before_second_boundary}, after={seeds_after})"
         )
-        assert await self._wait_until(lambda: consumer._native_stream_opened)
         assert consumer._reopen_seeded_eagerly is True
         assert consumer._awaiting_reopen_after_boundary is False
 
@@ -1064,14 +1064,6 @@ class TestNativeCommentaryPreservesAccumulated:
     satisfied and the new ``elif self._use_native_streaming`` branch runs.
     """
 
-    async def _wait_until(self, predicate, timeout: float = 1.0) -> bool:
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            if predicate():
-                return True
-            await asyncio.sleep(0.01)
-        return predicate()
-
     @pytest.mark.asyncio
     async def test_commentary_does_not_reset_accumulated_in_native(self):
         adapter = _make_native_streaming_adapter()
@@ -1083,10 +1075,10 @@ class TestNativeCommentaryPreservesAccumulated:
 
         task = asyncio.create_task(consumer.run())
         consumer.on_delta("Claude Code ")
-        await self._wait_until(lambda: consumer._native_stream_opened)
+        assert await _wait_until(lambda: consumer._native_stream_opened), "native stream did not open"
         # Mid-turn commentary (Hindsight recall) — MUST NOT reset _accumulated.
         consumer.on_commentary("🔮 recalled 10 memories")
-        await self._wait_until(lambda: adapter.send.await_count >= 1)
+        assert await _wait_until(lambda: adapter.send.await_count >= 1), "commentary was not sent"
         consumer.on_delta("finished (exit 0).")
         consumer.finish()
         await task

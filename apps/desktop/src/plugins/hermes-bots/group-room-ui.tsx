@@ -54,22 +54,20 @@ export interface RoomStatusLabels {
 type ShownStatus = Exclude<MemberStatus, BusyMember> | BusyStatus
 type ShownKind = ShownStatus['kind']
 
-/** Seconds since the epoch, ticking once a second while `live`. Only the parts that print a time call it,
- *  so a working member re-renders its own chip each second, not the room around it. */
+/** Seconds since the epoch, re-rendering once a second while `live`. Only the parts that print a time call it,
+ *  so a working member re-renders its own chip each second, not the room around it. The clock is read on each
+ *  render (the interval only triggers the redraw), so a chip that just turned busy never shows a stale time. */
 export function useNowSeconds(live: boolean): number {
-  const [now, setNow] = useState(() => Date.now() / 1000)
+  const [, tick] = useState(0)
 
   useEffect(() => {
-    setNow(Date.now() / 1000)
-
     if (!live) {return}
-    const timer = setInterval(() => setNow(Date.now() / 1000), 1000)
+    const timer = setInterval(() => tick(count => count + 1), 1000)
 
     return () => clearInterval(timer)
   }, [live])
 
-  // A chip that just turned busy has not ticked yet: read the clock now rather than paint its idle-time value.
-  return live ? now : Date.now() / 1000
+  return Date.now() / 1000
 }
 
 /** `status` as its chip shows it now; ticks only while the member is busy. */

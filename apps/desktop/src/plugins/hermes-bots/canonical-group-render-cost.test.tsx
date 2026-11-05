@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, useLayoutEffect, useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type * as History from './canonical-group-history'
@@ -154,4 +154,29 @@ it('does not rescan the log for handoffs when a poll brings the same room back',
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.state').length - reads).toBeGreaterThanOrEqual(3)
   expect(handoffScans.count - scans).toBe(0)
+})
+
+
+it('shows a chip that turns busy with its real elapsed time on its first busy render', async () => {
+  // The chip alone, so its very first busy render is the one asserted (no poll or effect in between).
+  const { MemberStatusChip } = await import('./group-room-ui')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  vi.setSystemTime(new Date(3_000_000_000))
+  const labels = CANONICAL_GROUP_LOCALES.en as never
+
+  const painted: string[] = []
+
+  // A layout effect sees each committed frame before passive effects (the clock's setState) can fix it up.
+  const Probe = ({ status }: { status: Parameters<typeof MemberStatusChip>[0]['status'] }) => {
+    const box = useRef<HTMLDivElement>(null)
+    useLayoutEffect(() => { painted.push(box.current?.textContent ?? '') })
+
+    return <div ref={box}><MemberStatusChip avatar={null} labels={labels} name="Ops" status={status} /></div>
+  }
+
+  const view = render(<Probe status={{ kind: 'idle' }} />)
+  vi.setSystemTime(new Date(3_000_090_000))  // 90 s later, with no tick on the idle chip
+  view.rerender(<Probe status={{ kind: 'working', startedAt: 3_000_060 }} />)
+  expect(painted.at(-1)).toContain('30s')  // the first busy frame, not a frozen idle-time clock
 })

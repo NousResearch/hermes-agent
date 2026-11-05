@@ -38,16 +38,6 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
  *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const NO_MEMBERS: CanonicalRoomMember[] = []
 
-/** `value`, or the previous one while it is structurally equal: each read builds new objects, and the room's
- *  memoised derivations (statuses, handoffs) key on identity, so an unchanged roster must keep its identity. */
-function useStableValue<T>(value: T): T {
-  const kept = useRef(value)
-
-  if (kept.current !== value && JSON.stringify(kept.current) !== JSON.stringify(value)) {kept.current = value}
-
-  return kept.current
-}
-
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
   current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
 
@@ -127,7 +117,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
 
     if (alive.current && version === revision.current) {
-      setState(snapshot)
+      // An unchanged roster keeps its identity too, so the room's memoised statuses and handoffs hit.
+      setState(current => current && JSON.stringify(current.room.members) === JSON.stringify(snapshot.room.members)
+        ? { ...snapshot, room: { ...snapshot.room, members: current.room.members } } : snapshot)
       setEvents(current => sameLog(current, log) ? current : log)
       setReadError('')
     }
@@ -220,7 +212,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
-  const members = useStableValue(state?.room.members ?? NO_MEMBERS)
+  const members = state?.room.members ?? NO_MEMBERS
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))

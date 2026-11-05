@@ -303,9 +303,13 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
             return None, len(after) + 1, ("its @@ hint targets a site before "
                                           "the previous hunk while another site follows it")
         return hinted, 1, None
+    if windows and not successive:
+        hinted_sites = _distinct(sorted(s for lo, hi in windows for s in sites(lo, hi)))
+        if len(hinted_sites) > 1:
+            return None, len(hinted_sites), None
     if windows and ordered:
         after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)]
-    if len(after) == 1 or (after and ordered and (not windows or successive)):
+    if len(after) == 1 or (after and ordered and any(tiers) and (not windows or successive)):
         return after[0], len(after), None
     pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
     return (pool[0], 1, None) if len(pool) == 1 else (None, len(pool), None)
@@ -445,7 +449,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
     removed: list[str] = []  # source text earlier hunks replaced
     landed: list[tuple[str, str]] = []
     changes = cursor = 0
-    changed_patterns = ['\n'.join(s) for s, r in map(_split_hunk, hunks) if s and s != r]
+    changed_patterns = ['\n'.join(s) if s and s != r else None for s, r in map(_split_hunk, hunks)]
     for index, hunk in enumerate(hunks, start=1):
         search_lines, replace_lines = _split_hunk(hunk)
         free = lambda span: _unwritten(content, span, hunk, written)
@@ -478,6 +482,9 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             content = new_content
             continue
         pattern = '\n'.join(search_lines)
+        if not pattern:
+            errors.append(f"{label} has empty search text — include surrounding context lines")
+            continue
         try:
             pattern, replacement, correction = maybe_correct_escape_drift(pattern, replacement, content)
         except AmbiguousEscapeDriftError as exc:
@@ -485,7 +492,9 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             continue
         # Order the patch itself states: the first hunk of several starts at the top of the file,
         # and a run of identical hunks edits successive sites.
-        successive = changed_patterns.count('\n'.join(search_lines)) > 1
+        current = '\n'.join(search_lines)
+        successive = ((index > 1 and changed_patterns[index - 2] == current) or
+                      (index < len(hunks) and changed_patterns[index] == current))
         ordered = (index == 1 and len(hunks) > 1) or successive
         span, candidates, conflict = _select_span(content, pattern, hunk, cursor, ordered=ordered,
                                                   written=tuple(written), successive=successive)
@@ -500,7 +509,9 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
         else:
             new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free, removed)
             # Already-applied hunks are a no-op; only reached when no site of the search text remains.
-            consumed_differently = any(wrote != replacement and _consumed(pattern, [old]) for old, wrote in landed)
+            consumed_differently = any(
+                wrote != replacement and any(_consumed(line, [old]) for line in pattern.split('\n') if line.strip())
+                for old, wrote in landed)
             error = (None if not error or (not consumed_differently and is_already_applied(content, pattern, replacement)) else
                      f"{label} not found — {error}" + _no_match_hint(error, pattern, content))
         if error:

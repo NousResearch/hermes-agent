@@ -602,18 +602,21 @@ def _ensure_session_db_row(session: dict) -> bool:
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")
-    with _workdir_owner_db(session, "failed to open profile db for session row") as db:
+    from persistence.conversation.sessions import NewSession
+    from session_retention import emit_session_deleted
+    with _workdir_owner_db(session, "failed to open profile db for session row") as db, \
+            _persistence_for(db) as persistence:
         if db is _WORKDIR_DB_OPEN_FAILED:
             return False
-        if db is None:
-            # Fail loud ONLY when the store failed to open (_db_error records the SessionDB open exception); None with
+        if persistence is None:
+            # Fail loud ONLY when the store failed to open (_db_error records the store's open exception); None with
             # no recorded error means "no store in this context" -> True.
             # A None db with no recorded error means "no store in this context" (degraded harness, store
             # deliberately absent) — that keeps the pinned best-effort contract and stays True. See #98924.
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
         try:
-            db.create_session(
+            persistence.sessions.create(NewSession(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
@@ -627,22 +630,25 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
-                profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+                profile_name=profile_name_for_home(profile_home) or _current_profile_name()))
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
-                    if db.set_session_hidden(key, True):
+                    if persistence.sessions.set_hidden(key, True):
                         session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
             # Same deferral for session.archive before the row existed (mirrors pending_hidden).
             if session.get("pending_archived"):
                 try:
-                    if db.set_session_archived(key, True):
+                    change = persistence.sessions.set_archived(key, True)
+                    emit_session_deleted(persistence.scope.profile_dir, change.archived_ids, reason="archive",
+                                         primary=key)
+                    if change.changed:
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
-            _schedule_row_git_meta(session, key, db)
+            _schedule_row_git_meta(session, key, db, persistence)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
@@ -650,7 +656,7 @@ def _ensure_session_db_row(session: dict) -> bool:
     return True
 
 
-def _schedule_row_git_meta(session: dict, key: str, db) -> None:
+def _schedule_row_git_meta(session: dict, key: str, db, persistence) -> None:
     """Git-enrich a lazily created row once per live session. The row lands here with its cwd on the first submit, so
     ``_hydrate_session_cwd`` (which ran when no row existed) never claimed a probe, and a desktop row kept NULL
     git_branch/git_repo_root for life: its lane fell back to a fake ``main`` label (#108784). Probes the row's own
@@ -658,15 +664,21 @@ def _schedule_row_git_meta(session: dict, key: str, db) -> None:
     if session.get("row_git_meta_checked"):
         return
     session["row_git_meta_checked"] = True
-    row = (db.get_session(key) if hasattr(db, "get_session") else None) or {}
-    cwd = str(row.get("cwd") or "").strip()
-    if cwd and not (row.get("git_branch") and row.get("git_repo_root")):
+    row = persistence.sessions.get(key)
+    cwd = str((row.cwd if row is not None else None) or "").strip()
+    if cwd and not (row.git_branch and row.git_repo_root):
         _persist_session_cwd_and_schedule_git_meta(session, cwd, db=db)
+
+
+def _store_error_text(exc: BaseException) -> str:
+    """The text a user sees for a failed store call: the store's own message an interface error carries."""
+    from persistence.core.errors import PersistenceError
+    return str(exc.__cause__ if isinstance(exc, PersistenceError) and exc.__cause__ is not None else exc)
 
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     """Re-raise a disk-full write error (the caller must surface it); debug-log the rest."""
-    from hermes_state_errors import is_disk_full_error
+    from storage_errors import is_disk_full_error
     if is_disk_full_error(exc):
         raise exc
     logger.debug(log_msg, exc_info=True)
@@ -677,6 +689,26 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
 _WORKDIR_SEED_FIELDS = (
     "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "display_kind", "display_metadata", "timestamp")
+
+
+# Message-dict keys a transcript write reads under the record field of the same name.
+_WORKDIR_MESSAGE_FIELDS = (
+    "content", "timestamp", "tool_name", "tool_call_id", "display_kind", "api_content", "effect_disposition",
+    "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "codex_message_items", "token_count", "message_uid", "display_metadata")
+
+
+def _new_message(msg: dict):
+    """The transcript row a write takes for one live message dict: every key the store reads off the dict."""
+    from persistence.conversation.messages import NewMessage
+    return NewMessage(
+        role=msg.get("role", "unknown"), **{field: msg.get(field) for field in _WORKDIR_MESSAGE_FIELDS},
+        tool_calls=tuple(msg.get("tool_calls") or ()),
+        platform_message_id=msg.get("platform_message_id") or msg.get("message_id"),
+        compressed_summary=bool(msg.get("_compressed_summary")), observed=bool(msg.get("observed")),
+        absorbed_message_uids=tuple(msg.get("_absorbed_message_uids") or ()),
+        tool_call_uids=msg.get("_tool_call_uids"), tool_call_uid=msg.get("_tool_call_uid"),
+        data_use=tuple(msg.get("data_use") or ()))
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -696,15 +728,17 @@ def _persist_branch_seed(session: dict) -> None:
                  **message_identity(msg)} for msg in live]
     if not seed:
         return
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return
         try:
             # Chunked so each BEGIN IMMEDIATE stays short (a seed can be hundreds of rows); a mid-copy failure leaves a
             # partial seed with _branch_seed_persisted unset.
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(key, seed, chunk_rows=500)
+            batch = persistence.messages.append_batch(key, [_new_message(row) for row in seed], chunk_rows=500)
+            for row, outcome in zip(seed, batch.outcomes):  # the row state the write gave each seed row
+                row.update({k: v for k, v in outcome.as_row_annotation().items() if v is not None})
             with session["history_lock"]:
                 sync_flushed_message_markers(live, seed)
             session["_branch_seed_persisted"] = True
@@ -766,20 +800,21 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
+    from persistence.conversation.messages import NewMessage
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
     if accept_metadata:
         staged["display_metadata"] = {**accept_metadata}
-    with _session_db(session) as db:
-        if db is None:
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return None
         target = _submit_row_target_key(session)
         try:
-            staged["_row_id"] = db.append_message(
-                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+            staged["_row_id"] = persistence.messages.append(target, NewMessage(
+                role="user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
-                display_metadata=staged.get("display_metadata"))
+                display_metadata=staged.get("display_metadata")))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
@@ -816,14 +851,14 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
         return
     if staged["content"] != persist_user_message:
         from session_rules.turns import _durable_content
-        with _session_db(session) as db:
-            if db is None:
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 return
             try:
                 # Address the row where it was actually WRITTEN (``_write_submit_user_row`` recorded it);
                 # a rotated-away ``session_key`` would miss that row's session_id and silently skip the
                 # rewrite, leaving the transcript replaying the raw keystrokes.
-                db.set_user_message_content(
+                persistence.messages.set_user_message_content(
                     _submit_row_owner_key(staged, session), staged["_row_id"],
                     _durable_content(persist_user_message))
             except Exception:
@@ -845,8 +880,8 @@ def _workdir_owner_db(session: dict, fail_log: str):
     db, close_db = None, False
     if profile_home := session.get("profile_home"):
         try:
-            from hermes_state_registry import acquire
-            db, close_db = acquire(Path(profile_home) / "state.db"), True
+            from persistence_assembly import open_persistence, profile_scope
+            db, close_db = open_persistence(profile_scope(home=Path(profile_home)), eager=True), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
             db = _WORKDIR_DB_OPEN_FAILED
@@ -857,13 +892,12 @@ def _workdir_owner_db(session: dict, fail_log: str):
     finally:
         if close_db and db is not None:
             with contextlib.suppress(Exception):
-                from hermes_state_registry import release_or_close
-                release_or_close(db)
+                db.close()
 
 
 @contextlib.contextmanager
 def _session_db(session: dict):
-    """Yield the SessionDB that owns this session's row (profile-aware): a remote/profile session persists into its own
+    """Yield the store that owns this session's row (profile-aware): a remote/profile session persists into its own
     profile's ``state.db`` (fresh handle, closed on exit); else the shared ``_get_db()`` handle (left open). None if unavailable."""
     with _workdir_owner_db(session, "failed to open profile db for session") as db:
         yield None if db is _WORKDIR_DB_OPEN_FAILED else db
@@ -872,7 +906,7 @@ def _session_db(session: dict):
 def _rewind_active_session_history(
     session: dict, user_ordinal: int, *, require_retryable: bool = False) -> tuple[list[dict], dict, int]:
     """Rewind one canonical user turn while retaining carrier scaffolding. Caller holds ``history_lock``. Persistent
-    sessions go through ``SessionDB.rewind_user_turn`` (the durable transcript is the authority; memory is installed
+    sessions go through the store's ``rewind_user_turn`` (the durable transcript is the authority; memory is installed
     only after the commit); a session without a key rewinds the warm history alone."""
     from session_rules.turns import (
         history_before_user_originated_turn, retryable_user_text, user_originated_turn_view,
@@ -884,12 +918,17 @@ def _rewind_active_session_history(
         raise ValueError("target user message is no longer in session history")
     session_key = str(session.get("session_key") or "").strip()
     if session_key:
-        with _session_db(session) as db:
-            if db is None:
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            if persistence is None:
                 raise RuntimeError("session database is unavailable")
-            outcome = db.rewind_user_turn(
-                session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
-                adopt_row_ids=True)
+            from persistence.core.errors import PersistenceError
+            try:
+                outcome = persistence.messages.rewind_user_turn(
+                    session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
+                    adopt_row_ids=True)
+            except PersistenceError as exc:
+                exc.args = (_store_error_text(exc),)  # the undo/retry reply shows the store's refusal text
+                raise
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
     else:
         target_index = user_indices[user_ordinal]
@@ -937,9 +976,9 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
             branch, root = git_probe.branch(cwd), git_probe.common_repo_root(cwd)
             if not (branch or root):
                 return
-            with _session_db(db_session) as db:
-                if db is not None:
-                    db.publish_session_git_metadata(session_key, cwd, generation, branch, root)
+            with _session_db(db_session) as db, _persistence_for(db) as persistence:
+                if persistence is not None:
+                    persistence.sessions.publish_git_metadata(session_key, cwd, generation, branch, root)
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
@@ -949,10 +988,11 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
 def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=None) -> int | None:
     """Claim a DB-backed probe generation, then start Git enrichment."""
     try:
-        with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as owner_db:
-            if owner_db is None:
+        owner = contextlib.nullcontext(db) if db is not None else _session_db(session)
+        with owner as owner_db, _persistence_for(owner_db) as persistence:
+            if persistence is None:
                 return None
-            generation = owner_db.update_session_cwd(session.get("session_key", ""), cwd)
+            generation = persistence.sessions.update_cwd(session.get("session_key", ""), cwd)
     except Exception:
         logger.debug("failed to persist session cwd", exc_info=True)
         return None

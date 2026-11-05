@@ -7,6 +7,7 @@ import json
 import logging
 
 from .method_ctx import bind_module
+from .store_handles import _persistence_for
 
 # Bound copies resolve these on server.py; the module's own (imported directly) needs them too.
 logger = logging.getLogger(__name__)
@@ -164,19 +165,19 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
 def _todo_state_from_db(db, session_id: str) -> dict | None:
     """Cold-resume Todo snapshot without the REST page or model-history limits."""
     from tools.todo_tool import MAX_TODO_RESULT_CHARS
-    getter = getattr(db, "get_latest_todo_result", None)
-    if not callable(getter):
-        return None
-    try:
-        content = getter(session_id)
-        if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+    with _persistence_for(db) as persistence:
+        if persistence is None:
             return None
-        return _normalize_todo_state(json.loads(content))
-    except (TypeError, ValueError):
-        return None
-    except Exception:
-        logger.debug("failed to read persisted todo state", exc_info=True)
-        return None
+        try:
+            content = persistence.messages.latest_todo_result(session_id, max_chars=MAX_TODO_RESULT_CHARS)
+            if not isinstance(content, str) or len(content) > MAX_TODO_RESULT_CHARS:
+                return None
+            return _normalize_todo_state(json.loads(content))
+        except (TypeError, ValueError):
+            return None
+        except Exception:
+            logger.debug("failed to read persisted todo state", exc_info=True)
+            return None
 
 
 def _todo_state_from_history(history) -> dict | None:

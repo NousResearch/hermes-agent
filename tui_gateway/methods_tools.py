@@ -1115,12 +1115,14 @@ def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
     # ``profile`` selects that profile's store; the launch handle is never the fallback for a
     # scoped call (a foreign first touch used to pin the process-wide handle, #102526).
-    with _profile_db(params) as db:
-        if db is None:
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
+    with _profile_db(params) as db, _persistence_for(db) as persistence:
+        if persistence is None:
             return _db_unavailable_error(rid, code=5017)
         cutoff = time.time() - days * 86400
-        rows = [s for s in db.list_sessions_rich(limit=500, compact_rows=True) if (s.get("started_at") or 0) >= cutoff]
-    return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})
+        entries = persistence.sessions.list_sessions(SessionQuery(), SessionWindow(limit=500), compact_rows=True)
+        rows = [e.session for e in entries if (e.session.started_at or 0) >= cutoff]
+    return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.message_count for s in rows)})
 
 
 @_rpc("rollback.list", live_session=True, fail_code=5020)

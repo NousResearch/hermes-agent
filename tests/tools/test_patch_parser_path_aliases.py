@@ -1,6 +1,7 @@
 """Two V4A operations spelling one file differently validate as one file (no partial write)."""
 
 import contextlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -107,3 +108,35 @@ def test_a_trailing_slash_needs_a_directory_so_never_aliases_the_file(tmp_path, 
     assert "no files were modified" in result.error
     assert (tmp_path / "a.txt").read_text() == "before\n"
 
+
+@pytest.mark.platforms("posix")
+def test_host_path_under_a_workspace_mount_aliases_the_container_path(tmp_path):
+    """Docker's workspace mount: ``_expand_path`` rewrites ``<host_cwd>/a.txt`` to ``<mount>/a.txt``."""
+    ws, host = tmp_path / "ws", tmp_path / "hostproj"
+    ws.mkdir()
+    host.mkdir()
+    (ws / "a.txt").write_text("before\n")
+    with _non_host_file_ops(ws, host_cwd=str(host), host_cwd_mount=str(ws)) as fo:
+        result = fo.patch_v4a("*** Begin Patch\n" + _update(f"{host}/a.txt", "before", "first")
+                              + _update("a.txt", "before", "second") + "*** End Patch\n")
+    assert result.success is False
+    assert "no files were modified" in result.error
+    assert (ws / "a.txt").read_text() == "before\n"
+
+
+@pytest.mark.platforms("posix")
+def test_tilde_is_the_backend_home_not_a_dir_under_cwd(tmp_path, monkeypatch):
+    """``~/x.txt`` is $HOME/x.txt; ``./~/x.txt`` is a directory named ``~`` under cwd: two files."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    work = tmp_path / "work"
+    (work / "~").mkdir(parents=True)
+    (work / "~" / "x.txt").write_text("foo\n")
+    with _non_host_file_ops(work) as fo:
+        home = Path(fo.env.execute("echo $HOME")["output"].strip())
+        assert tmp_path in home.parents or home == tmp_path / "home", home
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "x.txt").write_text("foo\n")
+        result = fo.patch_v4a("*** Begin Patch\n" + _update("~/x.txt", "foo", "X")
+                              + _update("./~/x.txt", "foo", "Y") + "*** End Patch\n")
+    assert result.success is True, result.error
+    assert ((home / "x.txt").read_text(), (work / "~/x.txt").read_text()) == ("X\n", "Y\n")

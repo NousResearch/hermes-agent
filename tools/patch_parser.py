@@ -157,13 +157,17 @@ def _overlay_key(path: str, file_ops: Any) -> str:
     on POSIX ``..`` is kept, because the kernel resolves it AFTER following symlinks
     (``sub/link/../f`` is ``real/f`` when ``link`` points into ``real/``); Windows collapses
     ``..`` lexically and is case-insensitive, so only a Windows backend gets ntpath folding.
-    A trailing ``/`` or ``/.`` needs a directory, so it keeps a marker and never shares the
-    file's key.
+    Keys the path the backend opens: the backend's own ``_expand_path`` (``~`` -> its HOME, a
+    host path under a docker workspace mount -> the container path) runs first. A trailing
+    ``/`` or ``/.`` needs a directory, so it keeps a marker and never shares the file's key.
     """
     env = getattr(file_ops, "env", None)
     cwd = getattr(env, "cwd", None) or getattr(file_ops, "cwd", None)
     cwd = cwd if isinstance(cwd, str) else ""
     path = path.strip()
+    expand = getattr(file_ops, "_expand_path", None)
+    expanded = expand(path) if callable(expand) else None
+    path = expanded if isinstance(expanded, str) and expanded else path
     if _backend_is_windows(env, cwd):
         tail = "\\" if re.search(r"[\\/]\.?[\\/]*$", path) else ""
         return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, path))) + tail

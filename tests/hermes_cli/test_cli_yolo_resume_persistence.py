@@ -9,8 +9,8 @@ YOLO on for that session.
 The fix persists a ``yolo_mode`` flag inside the session row's
 ``model_config`` JSON:
 
-- ``SessionDB.set_session_yolo`` merges the flag (preserving lineage markers
-  like ``_branched_from``), written by the CLI ``/yolo`` toggle.
+- ``sessions.set_yolo`` merges the flag (preserving lineage markers
+  like ``_branched_from``).
 - ``AIAgent._ensure_db_session`` carries a live session bypass (or a frozen
   ``--yolo`` launch, via agent_init) into the creation-time model_config.
 - ``HermesCLI._restore_session_yolo`` reads the flag on every resume path
@@ -26,7 +26,10 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context
 from cli import HermesCLI
-from hermes_state import SessionDB
+from hermes_cli.gateway_session_store import GatewaySessionStore
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 SESSION_ID = "yolo_persist_session"
@@ -42,65 +45,72 @@ def _hermetic_yolo(monkeypatch):
 
 
 @pytest.fixture
-def db(tmp_path):
-    d = SessionDB(db_path=tmp_path / "state.db")
-    yield d
-    try:
-        d.close()
-    except Exception:
-        pass
+def store(tmp_path):
+    return storage_handle(tmp_path)
+
+
+def _yolo_enabled(meta):
+    """The classic CLI store's read of a session row's persisted /yolo."""
+    return GatewaySessionStore(SimpleNamespace(final=False)).session_yolo_enabled(meta)
 
 
 class TestSessionDbYoloFlag:
-    def test_set_and_read_round_trip(self, db):
-        db.create_session(session_id=SESSION_ID, source="cli", model="m")
-        db.set_session_yolo(SESSION_ID, True)
-        meta = db.get_session(SESSION_ID)
-        assert SessionDB.session_yolo_enabled(meta) is True
+    def test_set_and_read_round_trip(self, store):
+        seed_session(store, SESSION_ID, "cli", model="m")
+        store.sessions.set_yolo(SESSION_ID, True)
+        meta = session_row(store, SESSION_ID)
+        assert _yolo_enabled(meta) is True
 
-        db.set_session_yolo(SESSION_ID, False)
-        meta = db.get_session(SESSION_ID)
-        assert SessionDB.session_yolo_enabled(meta) is False
+        store.sessions.set_yolo(SESSION_ID, False)
+        meta = session_row(store, SESSION_ID)
+        assert _yolo_enabled(meta) is False
 
-    def test_merge_preserves_existing_model_config_keys(self, db):
-        db.create_session(
-            session_id=SESSION_ID,
-            source="cli",
+    def test_merge_preserves_existing_model_config_keys(self, store):
+        seed_session(
+            store,
+            SESSION_ID,
+            "cli",
             model="m",
             model_config={"max_iterations": 42, "_branched_from": "parent_x"},
         )
-        db.set_session_yolo(SESSION_ID, True)
-        meta = db.get_session(SESSION_ID)
+        store.sessions.set_yolo(SESSION_ID, True)
+        meta = session_row(store, SESSION_ID)
         config = json.loads(meta["model_config"])
         assert config["yolo_mode"] is True
         assert config["max_iterations"] == 42
         assert config["_branched_from"] == "parent_x"
 
-    def test_missing_row_is_noop(self, db):
+    def test_missing_row_is_noop(self, store):
         # Row doesn't exist yet (lazy creation) — must not raise or create.
-        db.set_session_yolo("does_not_exist", True)
-        assert db.get_session("does_not_exist") is None
+        store.sessions.set_yolo("does_not_exist", True)
+        assert session_row(store, "does_not_exist") is None
 
-    def test_creation_time_model_config_flag_reads_back(self, db):
-        db.create_session(
-            session_id=SESSION_ID,
-            source="cli",
+    def test_creation_time_model_config_flag_reads_back(self, store):
+        seed_session(
+            store,
+            SESSION_ID,
+            "cli",
             model="m",
             model_config={"yolo_mode": True},
         )
-        meta = db.get_session(SESSION_ID)
-        assert SessionDB.session_yolo_enabled(meta) is True
+        meta = session_row(store, SESSION_ID)
+        assert _yolo_enabled(meta) is True
 
     def test_reader_is_false_on_garbage(self):
-        assert SessionDB.session_yolo_enabled(None) is False
-        assert SessionDB.session_yolo_enabled({}) is False
-        assert SessionDB.session_yolo_enabled({"model_config": None}) is False
-        assert SessionDB.session_yolo_enabled({"model_config": "not json {"}) is False
-        assert SessionDB.session_yolo_enabled({"model_config": "[1,2]"}) is False
+        assert _yolo_enabled(None) is False
+        assert _yolo_enabled({}) is False
+        assert _yolo_enabled({"model_config": None}) is False
+        assert _yolo_enabled({"model_config": "not json {"}) is False
+        assert _yolo_enabled({"model_config": "[1,2]"}) is False
         assert (
-            SessionDB.session_yolo_enabled({"model_config": '{"yolo_mode": false}'})
+            _yolo_enabled({"model_config": '{"yolo_mode": false}'})
             is False
         )
+
+
+def _persisting(store):
+    """A CLI session store whose /yolo persist hook writes the row's flag through the interface."""
+    return SimpleNamespace(set_session_yolo=store.sessions.set_yolo)
 
 
 def _stand_in(session_id=SESSION_ID, session_db=None):
@@ -163,13 +173,13 @@ class TestToggleYoloPersists:
 
 
 class TestEndToEndPersistAndRestore:
-    def test_full_round_trip_through_real_db(self, db):
+    def test_full_round_trip_through_real_db(self, store):
         """Toggle ON in 'process 1', restore in 'process 2' (fresh in-memory
         approval state), and verify a dangerous command auto-approves."""
-        db.create_session(session_id=SESSION_ID, source="cli", model="m")
+        seed_session(store, SESSION_ID, "cli", model="m")
 
         # Process 1: user toggles /yolo ON — persisted to the row.
-        cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
+        cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=_persisting(store))
         with patch("cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
@@ -179,8 +189,8 @@ class TestEndToEndPersistAndRestore:
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is False
 
         # Process 2: --resume reads the row and restores the bypass.
-        meta = db.get_session(SESSION_ID)
-        cli_two = _stand_in(session_db=db)
+        meta = session_row(store, SESSION_ID)
+        cli_two = _stand_in(session_db=_persisting(store))
         HermesCLI._restore_session_yolo(cli_two, meta)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
@@ -193,22 +203,23 @@ class TestEndToEndPersistAndRestore:
         finally:
             approval_context.reset_current_session_key(token)
 
-    def test_toggle_off_round_trip(self, db):
+    def test_toggle_off_round_trip(self, store):
         """OFF must persist too — a resumed session must not resurrect a
         bypass the user explicitly turned off."""
-        db.create_session(
-            session_id=SESSION_ID,
-            source="cli",
+        seed_session(
+            store,
+            SESSION_ID,
+            "cli",
             model="m",
             model_config={"yolo_mode": True},
         )
-        cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
+        cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=_persisting(store))
         approval_module.enable_session_yolo(SESSION_ID)
         with patch("cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)  # OFF
         approval_module.clear_session(SESSION_ID)
 
-        meta = db.get_session(SESSION_ID)
-        cli_two = _stand_in(session_db=db)
+        meta = session_row(store, SESSION_ID)
+        cli_two = _stand_in(session_db=_persisting(store))
         HermesCLI._restore_session_yolo(cli_two, meta)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is False

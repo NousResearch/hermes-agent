@@ -876,3 +876,37 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
+
+def test_path_scoped_channels_on_one_host_keep_separate_credentials():
+    """Distinct URL paths under one host must not share a .env slot.
+
+    A gateway can serve several channels from a single hostname, and each
+    channel binds a DIFFERENT key (the API rejects a key issued for another
+    channel). Keying the env slot on host:port alone collapsed them onto one
+    name, so configuring the second channel silently overwrote the first's
+    key and the first stopped authenticating.
+    """
+
+    from hermes_cli.config import custom_endpoint_key_env
+
+    host = "api.example-aggregator.com"
+    slots = {
+        custom_endpoint_key_env(host, f"/{channel}/v1")
+        for channel in ("ai-model-request", "gpt-bomb-ultra", "jek")
+    }
+    assert len(slots) == 3, f"channel paths collided onto one .env slot: {slots}"
+
+
+def test_trailing_v1_keeps_the_historical_host_only_env_name():
+    """A bare ``host/v1`` endpoint keeps the env name it already had.
+
+    The common one-endpoint-per-host setup already has a populated
+    ``HERMES_CUSTOM_<HOST>_API_KEY`` from a previous release; folding ``/v1``
+    into the name would orphan it and force re-entry.
+    """
+
+    from hermes_cli.config import custom_endpoint_key_env
+
+    assert custom_endpoint_key_env("localhost_11434", "/v1") == "HERMES_CUSTOM_LOCALHOST_11434_API_KEY"
+    assert custom_endpoint_key_env("api.example.com", "/v1") == "HERMES_CUSTOM_API_EXAMPLE_COM_API_KEY"
+

@@ -98,3 +98,49 @@ class TestNormalizeCustomProviderEntry:
         assert entry == {"base_url": "http://x"}
 
 
+    def test_shared_key_env_slot_across_base_urls_is_reported(self, caplog):
+        """One ``key_env`` pointed at several base URLs is reported by name.
+
+        The slot holds a single credential, so every channel but one
+        authenticates with a key the upstream never issued to it — a
+        ``403 permission_error`` that reads like a bad key rather than a
+        config mistake. The shared var is the only place the collision is
+        visible, so the load path names it.
+        """
+        from hermes_cli.config import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": [
+                {"name": "Channel A", "base_url": "https://api.example.com/a/v1",
+                 "key_env": "HERMES_CUSTOM_API_EXAMPLE_COM_API_KEY"},
+                {"name": "Channel B", "base_url": "https://api.example.com/b/v1",
+                 "key_env": "HERMES_CUSTOM_API_EXAMPLE_COM_API_KEY"},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            get_compatible_custom_providers(config)
+
+        shared = [r for r in caplog.records if "HERMES_CUSTOM_API_EXAMPLE_COM_API_KEY" in r.message]
+        assert len(shared) == 1
+        assert "api.example.com/a/v1" in shared[0].message
+        assert "api.example.com/b/v1" in shared[0].message
+
+    def test_distinct_key_env_per_base_url_is_not_reported(self, caplog):
+        """The same host with one slot per channel is the fixed shape, not a
+        collision — reporting it would train users to ignore the warning."""
+        from hermes_cli.config import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": [
+                {"name": "Channel A", "base_url": "https://api.example.com/a/v1",
+                 "key_env": "HERMES_CUSTOM_API_EXAMPLE_COM_A_API_KEY"},
+                {"name": "Channel B", "base_url": "https://api.example.com/b/v1",
+                 "key_env": "HERMES_CUSTOM_API_EXAMPLE_COM_B_API_KEY"},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            get_compatible_custom_providers(config)
+
+        assert not [r for r in caplog.records if "slot across" in r.message]
+
+

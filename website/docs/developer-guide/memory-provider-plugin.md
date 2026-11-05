@@ -290,6 +290,11 @@ they persist nothing, so the gate does not apply to them. Two consequences:
   network-backed store.
 - **Fork transcripts reach the archive** through `on_pre_compress()`.
 
+The fork's prompt stays as it was with `skip_memory=True`: the built-in
+MEMORY.md/USER.md store is not loaded for `agent_context="subagent"`, unless
+the fork requests the `memory` toolset (then it gets the store, gate or no
+gate).
+
 The host keeps everything else off for `agent_context="subagent"`, whether or
 not your provider reads the label: no `prefetch()`/`queue_prefetch()`, no
 `sync_turn()`, `on_turn_start()`, `on_session_end()` or `on_delegation()`.

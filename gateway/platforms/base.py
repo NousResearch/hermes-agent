@@ -3291,10 +3291,11 @@ class BasePlatformAdapter(ABC):
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         # Safety ceiling for the typing indicator refresh loop. Under normal operation the
         # loop is cancelled as soon as the turn finishes. If a turn stalls indefinitely without
-        # settling, stop refreshing after HERMES_MAX_TYPING_SECONDS (default 300s = 5 min; 0
+        # settling, stop refreshing after config.max_typing_seconds (default 300s = 5 min; 0
         # disables the cap) so the platform's typing bubble expires naturally ~5s later.
         try:
-            _max_typing_seconds = float(os.getenv("HERMES_MAX_TYPING_SECONDS", "300"))
+            _raw_max_typing = getattr(getattr(self, "config", None), "max_typing_seconds", 300.0)
+            _max_typing_seconds = 300.0 if _raw_max_typing is None else float(_raw_max_typing)
         except (TypeError, ValueError):
             _max_typing_seconds = 300.0
         _typing_started_at = asyncio.get_running_loop().time()

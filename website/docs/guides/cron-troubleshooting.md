@@ -154,10 +154,10 @@ If a job ran and failed, you may see error context in:
 ### Check 2: Common error patterns
 
 **"No such file or directory" for scripts**
-The `script` path must be an absolute path (or relative to the Hermes config directory). Verify:
+The `script` path is relative to the active profile's `scripts/` directory. Create the file there before adding or updating the job.
+CLI commands use the path under `scripts/`. The `cronjob_manage` tool also accepts a leading `scripts/` prefix and removes it before storage.
 ```bash
-ls ~/.hermes/scripts/your-script.py   # Must exist
-hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
+hermes cron edit <job_id> --script your-script.py
 ```
 
 **"Skill not found" at job execution**

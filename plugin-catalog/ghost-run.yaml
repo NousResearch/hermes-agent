@@ -1,7 +1,7 @@
 name: ghost-run
 title: Ghost Run
 repo: https://github.com/tnvolman/ghost-run
-sha: 7c8f64f00cd65f684b0e98f0c91846e4aedfdea5
+sha: 03e1d54cc55b8c158e51907defe847eaf3e46c49
 version: "0.1.0"
 description: >-
   Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and

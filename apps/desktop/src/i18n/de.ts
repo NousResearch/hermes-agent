@@ -29,6 +29,11 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  gatewayGroupOpen: {
+    opening: "Gruppenchat wird geöffnet…",
+    lookupFailed: "Diese Gruppe konnte auf dem Gateway nicht gefunden werden. Versuche es erneut.",
+    missing: "Dieser Gruppenchat existiert nicht mehr."
+  },
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
   intro: introDe,

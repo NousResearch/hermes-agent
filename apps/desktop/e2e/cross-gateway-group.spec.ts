@@ -217,7 +217,7 @@ test.describe('cross-gateway group chat', () => {
     expect(handles.every(Boolean)).toBe(true)
     await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
     await shot(page, '2-mixed-selection')
-    await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+    await dialog.getByRole('button', { name: 'Create group (2)' }).click()
     await expect(dialog).toBeHidden({ timeout: 20_000 })
 
     const composer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
@@ -234,6 +234,7 @@ test.describe('cross-gateway group chat', () => {
     }, ROOM)
 
     const replies = async () => (await roomLog()).filter((entry: any) => entry.from !== 'You').map((entry: any) => [entry.from, entry.text])
+
     // Each member's own scripted line, authored by that member, once.
     const dump = async () => {
       console.log('PROBE_RESULT room log', JSON.stringify(await roomLog()))
@@ -249,6 +250,7 @@ test.describe('cross-gateway group chat', () => {
     await expect(page.getByText('REMOTE_OK answered from Homelab', { exact: true }).filter({ visible: true })).toHaveCount(1)
     const log = await roomLog()
     console.log('PROBE_RESULT room log', JSON.stringify(log))
+
     // Each reply was produced on its own machine: read both gateways' state.db.
     const owner = (home: string, marker: string) => spawnSync('python3', ['-c', [
       'import glob, sqlite3, sys',
@@ -258,10 +260,12 @@ test.describe('cross-gateway group chat', () => {
       '    n += c.execute("select count(*) from messages where role = \'assistant\' and content like ?", ("%" + sys.argv[2] + "%",)).fetchone()[0]',
       'print(n)'
     ].join(String.fromCharCode(10)), home, marker], { encoding: 'utf8' }).stdout.trim()
+
     const ownership = {
       thisDevice: { LOCAL_OK: owner(sandbox.hermesHome, 'LOCAL_OK answered'), REMOTE_OK: owner(sandbox.hermesHome, 'REMOTE_OK answered') },
       homelab: { LOCAL_OK: owner(remote.home, 'LOCAL_OK answered'), REMOTE_OK: owner(remote.home, 'REMOTE_OK answered') }
     }
+
     console.log('PROBE_RESULT assistant rows per gateway state.db', JSON.stringify(ownership))
     expect([Number(ownership.thisDevice.LOCAL_OK) > 0, ownership.thisDevice.REMOTE_OK, Number(ownership.homelab.REMOTE_OK) > 0, ownership.homelab.LOCAL_OK]).toEqual([true, '0', true, '0'])
     const prompts = mock.receivedPrompts.filter(prompt => prompt.includes('E2E_SAY('))
@@ -294,7 +298,7 @@ test.describe('cross-gateway group chat', () => {
 
     await expect(dialog.locator('[data-group-engine]')).toHaveCount(0)
     await dialog.getByRole('textbox', { name: 'Group name' }).fill('This device only')
-    await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+    await dialog.getByRole('button', { name: 'Create group (2)' }).click()
     await expect(dialog).toBeHidden({ timeout: 20_000 })
     // The gateway-owned workspace's composer, not the Desktop-driven one.
     await expect(page.getByRole('textbox', { name: 'Group message' }).filter({ visible: true })).toBeVisible({ timeout: 30_000 })

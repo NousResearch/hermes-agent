@@ -1178,7 +1178,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
       return false
     }
 
-    host.notify({ kind: 'info', message: enabled ? `${botName} added to “${group}”` : `${botName} removed from “${group}”` })
+    host.notify({ kind: 'info', message: enabled ? b.group.memberAdded(botName, group) : b.group.memberRemoved(botName, group) })
 
     return true
   }
@@ -1239,11 +1239,11 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             autoFocus
             disabled={locked}
             onChange={event => setName(event.target.value)}
-            placeholder={groups.length ? 'New group…' : 'Group name (e.g. Research)'}
+            placeholder={groups.length ? b.group.newGroup : b.group.namePlaceholder}
             value={name}
           />
           <Button disabled={locked || !name.trim()} size="sm" type="submit">
-            Create & join
+            {b.group.createAndJoin}
           </Button>
         </form>
         {current.length ? (
@@ -1483,7 +1483,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     const groupName = persistDesktopDrivenGroup(base, selected, allMeta, image, sourceCurrent, b.canonical.driverUnavailable, route.connectionId)
     host.notify({
       kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
+      message: b.group.created(groupName, selected.length)
     })
     onClose()
     onCreated?.(groupName, 'name')
@@ -1504,7 +1504,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
+          <DialogDescription>{b.group.createDesc(GROUP_CHAT_MAX_MEMBERS)}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
         <GroupEngineNote connectionId={connectionId} engine={engine} selected={selected} />
@@ -1574,7 +1574,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                       <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
                       <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
                         {currentGroups.length
-                          ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
+                          ? `@${botHandle(bot.name, bot)} · ${b.group.memberGroups(currentGroups.map(group => `“${group}”`).join(', '))}`
                           : `@${botHandle(bot.name, bot)}`}
                       </div>
                     </div>
@@ -1598,7 +1598,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
               })
             ) : (
               <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
-                {query.trim() ? `No bots match “${query.trim()}”` : 'No bots yet — create one first.'}
+                {query.trim() ? b.group.noBotsMatch(query.trim()) : b.group.createBotFirst}
               </div>
             )}
           </div>
@@ -1632,7 +1632,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button
             disabled={!canCreate}
             onClick={create}
-          >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
+          >{`${b.group.createAction}${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

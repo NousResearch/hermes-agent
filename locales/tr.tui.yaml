@@ -218,6 +218,7 @@ common.no: "hayır"
 common.unknown: "bilinmiyor"
 common.yes: "evet"
 
+composer.copySentToTerminal: "Kopyalama isteği terminale gönderildi · doğrulamak için yapıştırın"
 composer.interruptHint: "Durdurmak için Ctrl+C…"
 composer.pasteCollapseHint: "yapıştırılan metin düzenleniyor · Ctrl+P daralt"
 composer.pasteExpandHint: "Ctrl+P yapıştırmayı okumak / düzenlemek için genişlet"

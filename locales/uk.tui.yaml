@@ -218,6 +218,7 @@ common.no: "ні"
 common.unknown: "невідомо"
 common.yes: "так"
 
+composer.copySentToTerminal: "Запит копіювання надіслано терміналу · вставте для перевірки"
 composer.interruptHint: "Ctrl+C — перервати…"
 composer.pasteCollapseHint: "редагування вставленого тексту · Ctrl+P згорнути"
 composer.pasteExpandHint: "Ctrl+P розгорнути вставку для читання / редагування"

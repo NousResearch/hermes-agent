@@ -212,6 +212,7 @@
   "common.no",
   "common.unknown",
   "common.yes",
+  "composer.copySentToTerminal",
   "composer.interruptHint",
   "composer.pasteCollapseHint",
   "composer.pasteExpandHint",

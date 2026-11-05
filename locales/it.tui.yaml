@@ -218,6 +218,7 @@ common.no: "no"
 common.unknown: "sconosciuto"
 common.yes: "sì"
 
+composer.copySentToTerminal: "Copia inviata al terminale · incolla per verificare"
 composer.interruptHint: "Ctrl+C per interrompere…"
 composer.pasteCollapseHint: "modifica del testo incollato · Ctrl+P comprime"
 composer.pasteExpandHint: "Ctrl+P espande l'incolla per leggere / modificare"

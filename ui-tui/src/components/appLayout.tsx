@@ -34,6 +34,7 @@ import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } 
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { HalfBlockImage, KittyImage } from './cellImage.js'
+import { CopyFeedback } from './copyFeedback.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { GoalBar } from './goalBar.js'
 import { HelpHint } from './helpHint.js'
@@ -429,15 +430,18 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
-        <Text color={ui.theme.color.muted} wrap="truncate-end">
-          <Text color={ui.theme.color.label}>↳ </Text>
+      <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag}>
+        <Box flexGrow={1} flexShrink={1} minWidth={0}>
+          {status.showStickyPrompt && (
+            <Text color={ui.theme.color.muted} wrap="truncate-end">
+              <Text color={ui.theme.color.label}>↳ </Text>
 
-          {status.stickyPrompt}
-        </Text>
-      ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
-      )}
+              {status.stickyPrompt}
+            </Text>
+          )}
+        </Box>
+        <CopyFeedback />
+      </Box>
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
       <LoopBar cols={Math.max(1, composer.cols - 2)} />

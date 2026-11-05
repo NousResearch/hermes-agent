@@ -218,6 +218,7 @@ common.no: "لا"
 common.unknown: "غير معروف"
 common.yes: "نعم"
 
+composer.copySentToTerminal: "أُرسل النسخ إلى الطرفية · الصق للتحقق"
 composer.interruptHint: "Ctrl+C للمقاطعة…"
 composer.pasteCollapseHint: "تعديل النص الملصق · Ctrl+P للطي"
 composer.pasteExpandHint: "Ctrl+P لتوسيع النص الملصق للقراءة / التعديل"

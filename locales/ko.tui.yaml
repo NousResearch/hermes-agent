@@ -218,6 +218,7 @@ common.no: "아니요"
 common.unknown: "알 수 없음"
 common.yes: "예"
 
+composer.copySentToTerminal: "터미널에 복사 요청을 보냈습니다 · 붙여넣어 확인하세요"
 composer.interruptHint: "중단하려면 Ctrl+C…"
 composer.pasteCollapseHint: "붙여넣은 텍스트 편집 중 · Ctrl+P 접기"
 composer.pasteExpandHint: "Ctrl+P 붙여넣기를 펼쳐 읽기 / 편집"

@@ -6,7 +6,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
-import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
@@ -348,6 +348,8 @@ export const applyDisplay = (
     battery: !!d.battery,
     ...(applyBusy ? { busyInputMode: normalizeBusyInputMode(d.busy_input_mode) } : {}),
     compact: !!d.tui_compact,
+    // `auto` preserves macOS copy-on-select; an explicit boolean also works over SSH to Linux.
+    ...(cfg ? { copyOnSelect: typeof d.copy_on_select === 'boolean' ? d.copy_on_select : isMac } : {}),
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.

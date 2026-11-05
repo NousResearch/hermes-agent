@@ -2,9 +2,12 @@ import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
+import { runCopyWithFeedback } from '../app/copyFeedbackStore.js'
 import { setInputSelection, takeInputCursor } from '../app/inputSelectionStore.js'
+import { getUiState } from '../app/uiStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { copySelectedText } from '../lib/copySelectedText.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
@@ -1375,8 +1378,10 @@ export function TextInput({
 
     const normalized = selRange()
 
-    if (isMac && normalized) {
-      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
+    if (!mask && getUiState().copyOnSelect && normalized) {
+      const text = vRef.current.slice(normalized.start, normalized.end)
+
+      void runCopyWithFeedback(() => copySelectedText(text))
     }
   }
 

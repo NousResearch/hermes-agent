@@ -218,6 +218,7 @@ common.no: "否"
 common.unknown: "未知"
 common.yes: "是"
 
+composer.copySentToTerminal: "已向終端傳送複製請求 · 貼上以確認"
 composer.interruptHint: "Ctrl+C 中斷…"
 composer.pasteCollapseHint: "正在編輯貼上的文字 · Ctrl+P 收合"
 composer.pasteExpandHint: "Ctrl+P 展開貼上內容以閱讀 / 編輯"

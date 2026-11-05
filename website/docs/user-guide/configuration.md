@@ -2318,6 +2318,7 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
+  copy_on_select: auto    # Ink TUI: copy completed transcript/composer mouse selections; auto = macOS only, true/false override on any OS (including SSH)
   # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on

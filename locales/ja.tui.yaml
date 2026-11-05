@@ -218,6 +218,7 @@ common.no: "いいえ"
 common.unknown: "不明"
 common.yes: "はい"
 
+composer.copySentToTerminal: "コピー要求をターミナルに送信しました · 貼り付けて確認"
 composer.interruptHint: "Ctrl+C で中断…"
 composer.pasteCollapseHint: "貼り付けテキストを編集中 · Ctrl+P で折りたたむ"
 composer.pasteExpandHint: "Ctrl+P で貼り付けを展開して閲覧 / 編集"

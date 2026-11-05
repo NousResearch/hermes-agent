@@ -166,6 +166,7 @@ def test_wan_27_payload_matches_live_schema():
     assert t2v == {"prompt": "x", "seed": 7, "aspect_ratio": "16:9", "resolution": "720p", "duration": 15, "negative_prompt": "blurry"}
     i2v = _build_payload(FAL_FAMILIES["wan-2.7"], image_url="https://i.png", **kw)
     assert i2v["image_url"] == "https://i.png" and "aspect_ratio" not in i2v and i2v["duration"] == 15
+    assert _build_payload(FAL_FAMILIES["wan-2.7"], image_url=None, **{**kw, "duration": 1})["duration"] == 2
 
 
 def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):

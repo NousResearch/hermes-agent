@@ -8,7 +8,7 @@ user-message override (#48677) writes cleaned content to the DB row. The fix
 persists the EXACT sent content in a nullable ``messages.api_content`` column
 and replays it verbatim (no sanitize, no strip).
 
-Covers: SessionDB round-trip and auto-migration, the shared composition
+Covers: the store's round-trip and auto-migration, the shared composition
 helper, prologue stamping order, the flush-override sidecar, and the
 end-to-end wire invariant (turn N+1 replays turn N's bytes) against an
 in-process mock provider.
@@ -35,7 +35,10 @@ from agent.turn_context import (
     compose_multimodal_context_part,
     compose_user_api_content,
 )
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 # ---------------------------------------------------------------------------
@@ -72,13 +75,13 @@ class TestMemoryQueryText:
 
 
 # ---------------------------------------------------------------------------
-# SessionDB: schema, round-trip, verbatim replay
+# The store: schema, round-trip, verbatim replay
 # ---------------------------------------------------------------------------
 
 class TestSessionDbSidecar:
     def _open(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "s1", "cli")
         return db
 
     def test_round_trip_is_verbatim_not_sanitized(self, tmp_path):
@@ -88,8 +91,8 @@ class TestSessionDbSidecar:
         db = self._open(tmp_path)
         sent = "  hello\n\n<memory-context>\nrecalled\n</memory-context>\n"
         try:
-            db.append_message("s1", "user", content="hello", api_content=sent)
-            msgs = db.get_messages_as_conversation("s1")
+            seed_messages(db, "s1", {"role": "user", "content": "hello", "api_content": sent})
+            msgs = conversation(db, "s1")
             assert msgs[0]["content"] == "hello"
             assert msgs[0]["api_content"] == sent  # byte-for-byte
         finally:
@@ -100,7 +103,7 @@ class TestAutoMigration:
     def test_reconciliation_adds_api_content_column(self, tmp_path):
         """Opening a pre-sidecar DB adds the column declaratively (the
         SCHEMA_SQL diff in _reconcile_columns), no version-gated migration."""
-        db_path = tmp_path / "legacy.db"
+        db_path = tmp_path / "state.db"
         conn = sqlite3.connect(str(db_path))
         conn.executescript("""
             CREATE TABLE schema_version (version INTEGER NOT NULL);
@@ -134,16 +137,17 @@ class TestAutoMigration:
         conn.commit()
         conn.close()
 
-        db = SessionDB(db_path=db_path)
+        db = open_persistence(profile_scope(home=tmp_path))
         try:
-            cols = {
-                row[1]
-                for row in db._conn.execute('PRAGMA table_info("messages")').fetchall()
-            }
+            with raw_holder(db)._read_ctx() as conn:
+                cols = {
+                    row[1]
+                    for row in conn.execute('PRAGMA table_info("messages")').fetchall()
+                }
             assert "api_content" in cols
             # Old rows read back NULL (no key); new writes round-trip.
-            db.append_message("s1", "user", content="new", api_content="new+ctx")
-            msgs = db.get_messages_as_conversation("s1")
+            seed_messages(db, "s1", {"role": "user", "content": "new", "api_content": "new+ctx"})
+            msgs = conversation(db, "s1")
             assert "api_content" not in msgs[0]
             assert msgs[1]["api_content"] == "new+ctx"
         finally:
@@ -331,16 +335,16 @@ class TestFlushOverrideSidecar:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id=sid,
         )
         agent._session_db_created = True
         return agent
 
     def test_override_moves_sent_bytes_to_sidecar(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-ov"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             live = "[gateway note] observed context\n\nactual question"
@@ -350,7 +354,7 @@ class TestFlushOverrideSidecar:
             agent._persist_user_message_timestamp = None
             agent._flush_messages_to_session_db(messages, None)
 
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = conversation(db, sid)
             assert msgs[0]["content"] == "actual question"
             assert msgs[0]["api_content"] == live
             # The live dict is never mutated by the flush.
@@ -361,9 +365,9 @@ class TestFlushOverrideSidecar:
     def test_stamped_sidecar_wins_over_override_derivation(self, tmp_path):
         """When the prologue already stamped api_content (injections), the
         flush must keep those bytes — they are what actually went out."""
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-ov2"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             messages = [
@@ -378,7 +382,7 @@ class TestFlushOverrideSidecar:
             agent._persist_user_message_timestamp = None
             agent._flush_messages_to_session_db(messages, None)
 
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = conversation(db, sid)
             assert msgs[0]["content"] == "clean text"
             assert msgs[0]["api_content"] == "live text\n\nPLUGIN-CTX"
         finally:
@@ -456,7 +460,7 @@ def _text_resp(text: str) -> dict:
 
 @pytest.fixture()
 def wire_env():
-    """Mock provider + isolated HERMES_HOME + a shared SessionDB.
+    """Mock provider + isolated HERMES_HOME + a shared store.
 
     Yields (make_agent, handler, db, sid): ``make_agent()`` builds a fresh
     AIAgent bound to the shared DB/session, so a second call models a
@@ -478,7 +482,7 @@ def wire_env():
 
     from pathlib import Path
 
-    db = SessionDB(db_path=Path(test_home) / "state.db")
+    db = open_persistence(profile_scope(home=Path(test_home)))
     sid = "sess-wire"
 
     def make_agent():
@@ -488,7 +492,7 @@ def wire_env():
             max_iterations=10, enabled_toolsets=[],
             quiet_mode=True, skip_context_files=True, skip_memory=True,
             save_trajectories=False, platform="cli",
-            session_db=db, session_id=sid,
+            persistence=db, session_id=sid,
         )
         agent.valid_tool_names = {"read_file"}
         return agent
@@ -547,7 +551,7 @@ class TestWireInvariant:
                 assert "api_content" not in m
 
         # Persisted row: clean content + exact sent bytes in the sidecar.
-        user_rows = [r for r in db.get_messages(sid) if r["role"] == "user"]
+        user_rows = [r for r in transcript_rows(db, sid) if r["role"] == "user"]
         assert user_rows[0]["content"] == "hello please"
         assert user_rows[0]["api_content"] == sent_1
 
@@ -563,7 +567,7 @@ class TestWireInvariant:
         turn_n_bytes = json.dumps(turn_n_user, sort_keys=True)
 
         # ── Turn N+1: fresh agent, history reloaded from the store ──
-        history = db.get_messages_as_conversation(sid)
+        history = conversation(db, sid)
         # The stored history carries the sidecar, not the injected content.
         assert history[0]["content"] == "hello please"
         assert history[0]["api_content"] == turn_n_user["content"]
@@ -597,7 +601,7 @@ class TestWireInvariant:
         sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
         assert sent == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
 
-        history = db.get_messages_as_conversation(sid)
+        history = conversation(db, sid)
         assert "PLUGIN-CTX" in history[0]["content"]  # persisted with the turn, not dropped
 
         handler.captured_requests = []
@@ -616,7 +620,7 @@ class TestWireInvariant:
             make_agent().run_conversation([{"type": "text", "text": "what is this"}, image],
                                           conversation_history=[], task_id="t1")
         assert "display_metadata" not in _user_messages(_chat_requests(handler)[0])[0]  # never on the wire
-        history = db.get_messages_as_conversation(sid)
+        history = conversation(db, sid)
         assert "PLUGIN-CTX" in history[0]["content"]  # flattened into the stored row with the ask
         return history
 
@@ -714,18 +718,17 @@ class TestPrologueMoaAndInPlaceBackfill:
 
 class TestSetLatestUserApiContent:
     def _open(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "s1", "cli")
         return db
 
     def test_updates_newest_active_user_row(self, tmp_path):
         db = self._open(tmp_path)
         try:
-            db.append_message("s1", "user", content="q1")
-            db.append_message("s1", "assistant", content="a1")
-            db.append_message("s1", "user", content="q2")
-            assert db.set_latest_user_api_content("s1", "q2", "q2\n\nCTX") == 1
-            msgs = db.get_messages_as_conversation("s1")
+            seed_messages(db, "s1", {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"},
+                          {"role": "user", "content": "q2"})
+            assert db.messages.set_latest_user_api_content("s1", "q2", "q2\n\nCTX") is True
+            msgs = conversation(db, "s1")
             assert "api_content" not in msgs[0]
             assert msgs[2]["api_content"] == "q2\n\nCTX"
         finally:
@@ -734,9 +737,9 @@ class TestSetLatestUserApiContent:
     def test_content_mismatch_writes_nothing(self, tmp_path):
         db = self._open(tmp_path)
         try:
-            db.append_message("s1", "user", content="q1")
-            assert db.set_latest_user_api_content("s1", "other", "other+CTX") == 0
-            msgs = db.get_messages_as_conversation("s1")
+            seed_messages(db, "s1", {"role": "user", "content": "q1"})
+            assert db.messages.set_latest_user_api_content("s1", "other", "other+CTX") is False
+            msgs = conversation(db, "s1")
             assert "api_content" not in msgs[0]
         finally:
             db.close()
@@ -752,7 +755,7 @@ class TestFlushCompressedSummaryOverrideGuard:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id=sid,
         )
         agent._session_db_created = True
@@ -764,9 +767,9 @@ class TestFlushCompressedSummaryOverrideGuard:
         durable clean transcript."""
         from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-merged"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             merged = "[prior context]\ncompaction summary\n\nactual question"
@@ -782,7 +785,7 @@ class TestFlushCompressedSummaryOverrideGuard:
             agent._persist_user_message_timestamp = None
             agent._flush_messages_to_session_db(messages, None)
 
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = conversation(db, sid)
             assert msgs[0]["content"] == merged  # summary survives
             assert "api_content" not in msgs[0]  # wire == row, no sidecar
         finally:
@@ -799,9 +802,9 @@ class TestFlushCompressedSummaryOverrideGuard:
         """
         from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-merged-live"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             merged = "[prior context]\ncompaction summary\n\nactual question"
@@ -828,9 +831,9 @@ class TestFlushCompressedSummaryOverrideGuard:
 
     def test_live_override_still_applies_without_merge_marker(self, tmp_path):
         """Negative control: an ordinary turn is still cleaned in place."""
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-plain-live"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             messages = [
@@ -860,7 +863,7 @@ class TestFlushSanitizeDivergenceCapture:
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id=sid,
         )
         agent._session_db_created = True
@@ -872,9 +875,9 @@ class TestFlushSanitizeDivergenceCapture:
         session replays what was actually on the wire."""
         from session_rules.turns import sanitize_context
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-fence"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             raw = "what does a literal <memory-context> tag do?"
@@ -885,7 +888,7 @@ class TestFlushSanitizeDivergenceCapture:
             ]
             agent._flush_messages_to_session_db(messages, None)
 
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = conversation(db, sid)
             assert msgs[0]["content"] == sanitize_context(raw).strip()
             assert msgs[0]["api_content"] == raw
             assert msgs[1]["api_content"] == (
@@ -897,14 +900,14 @@ class TestFlushSanitizeDivergenceCapture:
     def test_plain_whitespace_padding_not_captured(self, tmp_path):
         """The api build strips every outgoing content string, so mere
         surrounding whitespace replays identically — no sidecar bloat."""
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-ws"
-        db.create_session(session_id=sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = self._make_agent(db, sid)
             messages = [{"role": "user", "content": "  hello  \n"}]
             agent._flush_messages_to_session_db(messages, None)
-            msgs = db.get_messages_as_conversation(sid)
+            msgs = conversation(db, sid)
             assert "api_content" not in msgs[0]
         finally:
             db.close()
@@ -972,7 +975,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     ``parent_session_id`` points at the current row — both run during
     preflight compression, which a fresh oversized first turn reaches
     before the delayed persist. Drives the real ``compress_context`` path
-    against a real, empty SessionDB."""
+    against a real, empty store."""
 
     def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
         from run_agent import AIAgent
@@ -984,7 +987,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
                 model="test/model",
                 platform="cli",
                 quiet_mode=True,
-                session_db=db,
+                persistence=db,
                 session_id=sid,
                 skip_context_files=True,
                 skip_memory=True,
@@ -1012,7 +1015,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
             # The ordering invariant under test: the row must already exist
             # when compression starts — the DB writes right after this call
             # (archive_and_compact / child create_session) reference it.
-            seen["row_at_compress"] = db.get_session(sid)
+            seen["row_at_compress"] = session_row(db, sid)
             return compacted
 
         compressor = MagicMock()
@@ -1042,7 +1045,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         ]
 
     def test_in_place_first_turn_compaction_persists(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-fresh-inplace"
         try:
             agent, seen = self._make_agent(db, sid, in_place=True)
@@ -1055,7 +1058,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert seen["row_at_compress"] is not None
             assert agent.session_id == sid  # no rotation
             assert agent._last_compaction_in_place is True
-            contents = [m["content"] for m in db.get_messages(sid)]
+            contents = [m["content"] for m in transcript_rows(db, sid)]
             assert "[CONTEXT COMPACTION] summary" in contents
             # And the live context is the compacted set.
             assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello"
@@ -1067,7 +1070,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         row BEFORE the prologue appends the ``pre_llm_call`` text part, and the crash persist
         identity-skips compacted dicts — the part must be pushed into that row, or a
         resumed session replays a view the model never saw."""
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-inplace-mm"
         image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         turn = [{"type": "text", "text": "what is this"}, image]
@@ -1082,14 +1085,14 @@ class TestSessionRowExistsBeforePreflightCompaction:
             live = ctx.messages[ctx.current_turn_user_idx]["content"]
             assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
             # Reload: the durable row carries the same parts the model saw.
-            reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
+            reloaded = [m for m in conversation(db, sid) if m["role"] == "user"]
             assert reloaded[-1]["content"] == live
             assert reloaded[-1]["display_metadata"][TYPED_ASK] == "what is this"  # backfilled with the part
         finally:
             db.close()
 
     def test_rotation_first_turn_compaction_creates_child(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-fresh-rot"
         try:
             agent, seen = self._make_agent(db, sid, in_place=False)
@@ -1103,10 +1106,10 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert seen["row_at_compress"] is not None
             child = agent.session_id
             assert child != sid
-            child_row = db.get_session(child)
+            child_row = session_row(db, child)
             assert child_row is not None
             assert child_row["parent_session_id"] == sid
-            parent_row = db.get_session(sid)
+            parent_row = session_row(db, sid)
             assert parent_row is not None
             assert parent_row["end_reason"] == "compression"
         finally:

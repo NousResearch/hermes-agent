@@ -35,11 +35,12 @@ from agent.conversation_compression import (
     _pruned_skill_reload_notice,
     _strip_stale_todo_snapshot,
 )
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "cli"):
+def _build_agent_with_db(db, session_id: str, platform: str = "cli"):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -49,7 +50,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "cli"):
             model="test/model",
             platform=platform,
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -158,9 +159,9 @@ class TestSkillGuidanceSurvivesWithTodos:
     the preserved todo list — retention parity, not asymmetry."""
 
     def _run_compaction(self, tmp_path: Path, summary_content: str):
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         parent = "PARENT_SKILL_TODO_PARITY"
-        db.create_session(parent, source="cli")
+        seed_session(db, parent, "cli")
         agent = _build_agent_with_db(db, parent)
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": summary_content},
@@ -210,9 +211,9 @@ class TestSkillGuidanceSurvivesWithTodos:
             "[CONTEXT COMPACTION] summary\n\n## Pruned Skills\n"
             + _skill_pruned_marker("frontend-design")
         )
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         parent = "PARENT_SKILL_TODO_SYNTH"
-        db.create_session(parent, source="cli")
+        seed_session(db, parent, "cli")
         agent = _build_agent_with_db(db, parent)
         # Assistant tail → snapshot cannot merge; standalone flagged row.
         agent.context_compressor.compress.return_value = [
@@ -288,9 +289,9 @@ class TestNoticeStripLifecycle:
             + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
             + "\nstale notice body skill_view(name='stale-skill')."
         )
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         parent = "PARENT_SKILL_TODO_RESTRIP"
-        db.create_session(parent, source="cli")
+        seed_session(db, parent, "cli")
         agent = _build_agent_with_db(db, parent)
         original = _msgs()
         agent.context_compressor.compress.return_value = [

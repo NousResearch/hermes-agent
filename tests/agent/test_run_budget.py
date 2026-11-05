@@ -340,19 +340,20 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
     """The wrap-up notice must be injected BEFORE the tool row is flushed, or it
     never reaches SQLite: prepare_iteration's own call always runs on an
     already-persisted row (the previous iteration's flush already ran)."""
-    from hermes_state import SessionDB
     from agent.tool_executor import _flush_session_db_after_tool_progress
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
     from agent.conversation_loop import RUN_BUDGET_WRAPUP_NOTICE
 
-    session_db = SessionDB(db_path=tmp_path / "proof.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
-        agent = _make_agent(tmp_path, monkeypatch, session_db=session_db, run_budget_seconds=900)
+        agent = _make_agent(tmp_path, monkeypatch, persistence=session_db, run_budget_seconds=900)
         agent._run_budget_started_at = time.time() - 800  # 89% elapsed
         messages = _tool_messages()
 
         assert _flush_session_db_after_tool_progress(agent, messages, stage="checkpoint")
 
-        persisted = session_db.get_messages(agent.session_id)
+        persisted = transcript_rows(session_db, agent.session_id)
         assert any(RUN_BUDGET_WRAPUP_NOTICE in str(row["content"]) for row in persisted)
         assert agent._run_budget_wrapup_injected is True
     finally:

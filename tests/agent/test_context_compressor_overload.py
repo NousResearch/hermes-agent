@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class StubProviderError(Exception):
@@ -96,24 +98,22 @@ class TestSustainedOverloadEscalation:
         restart the budget at zero, so a sustained outage never escalated (#123167;
         same contract as the durable fallback streak, #100185).
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = storage_handle(tmp_path)
         session_id = "OVERLOAD_FRESH_BIND"
-        db.create_session(session_id, source="telegram")
+        seed_session(db, session_id, "telegram")
         msgs = self._msgs(12)
 
         first = self._compressor(abort_on_summary_failure=False)
-        first.bind_session_state(db, session_id)
+        first.bind_session_state(db, session_id, persistence=db)
         with patch("agent.context_compressor.call_llm", side_effect=self._err()):
             for _ in range(2):  # exactly two aborts — one below the escalation threshold
                 assert first.compress(msgs, current_tokens=999999, force=True) == msgs
         assert first._consecutive_overload_aborts == 2
-        assert db.get_compression_overload_streak(session_id) == 2
+        assert db.lineage.compression_overload_streak(session_id) == 2
 
         # Fresh agent, same session (eviction / restart / API-server request construction).
         second = self._compressor(abort_on_summary_failure=False)
-        second.bind_session_state(db, session_id)
+        second.bind_session_state(db, session_id, persistence=db)
         assert second._consecutive_overload_aborts == 2  # inherited, not restarted
         with patch("agent.context_compressor.call_llm", side_effect=self._err()):
             third = second.compress(msgs, current_tokens=999999, force=True)
@@ -127,7 +127,7 @@ class TestSustainedOverloadEscalation:
         # The committed degraded fallback settles the budget so recovery gets a fresh run
         # (the boundary caller records the completed compaction, as compress_context does).
         second.record_completed_compaction(used_fallback=True)
-        assert db.get_compression_overload_streak(session_id) == 0
+        assert db.lineage.compression_overload_streak(session_id) == 0
 
     def _msgs(self, n=10):
         return [

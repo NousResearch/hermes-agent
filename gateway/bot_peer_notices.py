@@ -12,6 +12,6 @@ from typing import Any
 
 
 def automatic_notices_allowed(source: Any) -> bool:
-    """False when the message came from a known bot (``source.is_bot``: platform bot flag or the
-    adapter's ``bot_users`` opt-in)."""
-    return not bool(getattr(source, "is_bot", False))
+    """False when the message came from a known bot (``SessionSource.is_bot``, a bool: the platform's
+    bot flag or the adapter's ``bot_users`` opt-in). Anything but a real ``True`` is not a known bot."""
+    return getattr(source, "is_bot", False) is not True

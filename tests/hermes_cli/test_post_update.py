@@ -271,3 +271,95 @@ def test_scope_cli_rejects_unrelated_flags_without_running_steps(monkeypatch):
             post_update.main(flags)
         assert exc.value.code == 2
         assert ran == []
+
+
+# ── step_sync_skills: relocation diagnostics survive quiet mode (#143470) ──────
+
+
+def _renamed_behind_symlink_fixture(tmp_path):
+    """One renamed bundled skill whose only copy lives behind a category symlink
+    pointing outside the skills tree — the #143470 scenario. sync_skills(quiet=True)
+    cannot print it, so the step must carry it in its result."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from tools.skills_sync import dir_hash
+
+    bundled = tmp_path / "bundled"
+    external = tmp_path / "external-research"
+    copy = external / "demo"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: demo\n---\n# Body\n", encoding="utf-8")
+    origin_hash = dir_hash(copy)
+    skills_dir = tmp_path / "user_skills"
+    skills_dir.mkdir()
+    manifest_file = skills_dir / ".bundled_manifest"
+    manifest_file.write_text(f"demo:{origin_hash}\n", encoding="utf-8")
+    (skills_dir / "research").symlink_to(external, target_is_directory=True)
+    new = bundled / "web" / "demo"
+    new.mkdir(parents=True)
+    (new / "SKILL.md").write_text("---\nname: demo\n---\n# Updated upstream\n", encoding="utf-8")
+
+    def patches():
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(
+            patch("tools.skills_sync._get_optional_dir", return_value=tmp_path / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    return SimpleNamespace(
+        patches=patches, external_copy=copy, origin_hash=origin_hash,
+        manifest_file=manifest_file, skills_dir=skills_dir)
+
+
+def test_step_sync_skills_exposes_relocation_warnings(tmp_path):
+    from hermes_cli.post_update import step_sync_skills
+    from tools.skills_sync import dir_hash, _read_manifest
+    from unittest.mock import patch
+
+    fx = _renamed_behind_symlink_fixture(tmp_path)
+    with fx.patches():
+        result = step_sync_skills()
+
+    assert result["ok"] is True, "a deferred relocation is a warning, not a step failure"
+    assert result["copied"] == 0 and result["updated"] == 0
+    warnings = result.get("warnings") or []
+    assert any(w.startswith("demo:") and "not automatically relocated" in w for w in warnings), (
+        "quiet sync's relocation diagnostic never reached the step result")
+    assert dir_hash(fx.external_copy) == fx.origin_hash, "external content was mutated"
+    with patch("tools.skills_sync.MANIFEST_FILE", fx.manifest_file):
+        assert _read_manifest() == {"demo": fx.origin_hash}
+
+
+def test_step_sync_skills_result_has_no_warning_key_when_clean(tmp_path):
+    """No deferred relocations → the result keeps its established shape (no warnings key)."""
+    from hermes_cli.post_update import step_sync_skills
+    from unittest.mock import patch
+
+    bundled = tmp_path / "bundled"
+    new = bundled / "cat" / "fresh"
+    new.mkdir(parents=True)
+    (new / "SKILL.md").write_text("---\nname: fresh\n---\n# New\n", encoding="utf-8")
+    skills_dir = tmp_path / "user_skills"
+    skills_dir.mkdir()
+    with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+            patch("tools.skills_sync._get_optional_dir", return_value=tmp_path / "optional-skills"), \
+            patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+            patch("tools.skills_sync.MANIFEST_FILE", skills_dir / ".bundled_manifest"):
+        result = step_sync_skills()
+
+    assert result == {"ok": True, "copied": 1, "updated": 0}
+
+
+def test_main_prints_step_warnings(monkeypatch, capsys):
+    """The scope CLI's per-step report renders a step's warnings visibly."""
+    step = lambda: {"ok": True, "warnings": ["demo: not automatically relocated (fixture)"]}
+    monkeypatch.setattr(post_update, "HOME_STEPS", (("warnstep", step),))
+    monkeypatch.setattr(post_update, "MACHINE_STEPS", ())
+    assert post_update.main(["--scope", "home"]) == 0
+    out = capsys.readouterr().out
+    assert "post-update warnstep: ok" in out
+    assert "⚠ demo:" in out, "step warning was not rendered by the report"

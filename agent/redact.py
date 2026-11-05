@@ -15,6 +15,7 @@ from urllib.parse import unquote_plus
 # Shared with agent/file_safety's read-block list so the two defenses can't
 # drift: a blocked file_tools read that falls back to ``cat`` is still caught.
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
+from agent.redact_connstr import _KV_CONNSTR_GATE_RE, _redact_kv_connection_strings
 
 logger = logging.getLogger(__name__)
 
@@ -352,11 +353,9 @@ _CFG_ANCHORED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Unquoted YAML / colon config (``password: secret``): keyword in the KEY
-# (anchored to line start) and a single whitespace-free value, so ``note:
-# secret meeting`` is left alone. Bare ``auth`` excluded so ``Authorization:``
-# (masked by _AUTH_HEADER_RE) / ``author:`` don't match; ``auth_token`` still
-# matches via ``token``. Quoted values defer to _JSON_FIELD_RE (lookahead).
+# YAML / colon config: bare-key quoted scalars cannot match _JSON_FIELD_RE.
+# Match escaped double quotes, doubled single quotes, or an unquoted token.
+# An unterminated quote masks to end-of-line; no branch crosses LF or CRLF.
 # NOTE(perf): possessive where the successor is disjoint; the leading class
 # stays backtrackable (see _CFG_DOTTED_RE).
 _YAML_CFG_NAMES = (
@@ -364,9 +363,12 @@ _YAML_CFG_NAMES = (
     r"|client[ _.\-]?key[ _.\-]?data|(?:private|signing|encryption|master|hmac)[ _.\-]?key)"
 )
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
+    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*\"|'(?:''|[^'\r\n])*'|['\"][^\r\n]*|[^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+_YAML_CFG_WORD_RE = re.compile(_YAML_CFG_NAMES, re.IGNORECASE)
 
 # Word-boundary validation for the key patterns above: their classes allow
 # arbitrary affixes (``client_secret``, ``s3.secret-key``), which also matched
@@ -446,9 +448,30 @@ def _has_word_bounded_keyword(key: str, keyword_re: re.Pattern[str]) -> bool:
     return any(_is_word_start(key, m.start()) and _is_word_end(key, m.end()) for m in keyword_re.finditer(key))
 
 
+_PASSWORD_WORD_RE = re.compile(r"passwd|password", re.IGNORECASE)
+
+
+def _has_password_keyword(key: str) -> bool:
+    """``password``/``passwd`` ending a word, wherever it starts: no prose word ends in them, so
+    concatenated keys (``dbpassword``, ``rootpasswd``) are credentials, while ``passwordless``
+    is not. Requiring a word START too passed ``dbpassword: <v>`` through in clear."""
+    return any(_is_word_end(key, m.end()) for m in _PASSWORD_WORD_RE.finditer(key))
+
+
+# Tool-defined env names that glue the keyword onto a prefix with no separator, so the
+# word-boundary test can never see it: libpq's ``PGPASSWORD``, MySQL's ``MYSQL_PWD`` (bare
+# ``PWD`` is the shell's working directory, so only this exact name), sshpass's ``SSHPASS``.
+_GLUED_CREDENTIAL_ENV_RE = re.compile(r"PGPASSWORD|MYSQL_PWD|SSHPASS", re.IGNORECASE)
+
+
+def _is_glued_credential_env(key: str) -> bool:
+    return _GLUED_CREDENTIAL_ENV_RE.fullmatch(key.strip("\"'")) is not None
+
+
 def _key_has_secret_keyword(key: str) -> bool:
     """Post-match key validator: ``API_KEY``/``DB_PW`` count, ``KEYBOARD``/``secretary`` do not."""
-    return _has_word_bounded_keyword(key, _KEY_KEYWORD_RE)
+    return (_has_word_bounded_keyword(key, _KEY_KEYWORD_RE) or _has_password_keyword(key)
+            or _is_glued_credential_env(key))
 
 
 def _looks_like_opaque_credential(value: str) -> bool:
@@ -486,7 +509,8 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         return False
     # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
     # readable; only password-class keys mask a path/variable reference.
-    if _PATH_OR_VAR_VALUE_RE.match(value) and not _has_word_bounded_keyword(key, _PASSWORD_KEY_RE):
+    password_key = _has_word_bounded_keyword(key, _PASSWORD_KEY_RE) or _has_password_keyword(key)
+    if _PATH_OR_VAR_VALUE_RE.match(value) and not password_key:
         # ``$VAR`` is an unambiguous reference. A bare ``/...`` or ``~...`` is not:
         # ``/home/u/.docker`` and ``/8f3kd9sKd0als...`` have the same shape, so every
         # segment has to look like a path (see _OPAQUE_PATH_SEGMENT_RE) before the
@@ -495,7 +519,8 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
             return False
     # ``signing_key`` / ``privateKey`` are credentials at any length, the same policy
     # is_secret_field_name applies to mappings, so JSON text and dicts agree.
-    return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+    return (password_key or _has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+            or _is_glued_credential_env(key)
             or (_is_qualified_key_name(key) and not _CONFIG_PLACEHOLDER_VALUE_RE.fullmatch(value))
             or _looks_like_opaque_credential(value))
 
@@ -510,7 +535,7 @@ _KEY_QUALIFIED_NAME = (
     r"[_.\-]?(?:key|Key|KEY)"
 )
 _JSON_KEY_NAMES = (
-    r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer"
+    r"(?:api_?[Kk]ey|token|secret|password|pgpassword|mysql_pwd|sshpass|access_token|refresh_token|auth_token|bearer"
     r"|secret_value|raw_secret|secret_input|key_material|client[_.\-]?key[_.\-]?data"
     rf"|{_KEY_QUALIFIED_NAME})"
 )
@@ -519,6 +544,16 @@ _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORE
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
 # The backreference keeps the key's and value's escape depth equal.
 _JSON_FIELD_ESCAPED_RE = re.compile(rf'((\\+)"{_JSON_KEY_NAMES}\2")\s*:\s*\2"([^"\\]+)\2"', re.IGNORECASE)
+# Any other identifier-shaped key (``"API_TOKEN"``, ``"DB_PASSWORD"``, ``"client_secret"``): the closed
+# list above misses affixed names that the ENV and YAML passes already accept (#147240). The callback
+# applies the YAML pass's word set at a word boundary, then the shared assignment gate.
+# The value may carry JSON escapes (``"s3cret\\value"``): ``\\.`` consumes each escape pair whole.
+_JSON_ANY_KEY_FIELD_RE = re.compile(r'("([A-Za-z0-9_.\-]{1,128}+)")\s*+:\s*+"((?:[^"\\\n]|\\.)++)"')
+# The same field inside a JSON-encoded string (``{"output": "{\\"DB_PASSWORD\\": \\"…\\"}"}``),
+# like _JSON_FIELD_ESCAPED_RE does for the closed key list: group 2 is the escape run.
+_JSON_ANY_KEY_FIELD_ESCAPED_RE = re.compile(
+    r'((\\++)"([A-Za-z0-9_.\-]{1,128}+)\2")\s*+:\s*+\2"([^"\\\n]++)\2"')
+_JSON_KEY_NAMES_FULL_RE = re.compile(_JSON_KEY_NAMES, re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
 # tracebacks and pytest failure introspection bypass the double-quoted JSON rule
@@ -664,10 +699,11 @@ _DB_CONNSTR_RE = re.compile(
 # belong to _DB_CONNSTR_RE. 8+ char floor skips short usernames; the class
 # forbids ``/`` so an ``@`` in a path/query (``?q=user@example.com``) never counts.
 # This is the ``git remote set-url origin https://PASSWORD@github.com/...`` shape from issue #6396 — a
-# single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form
-# ``user:pass@`` is deliberately left to pass through (commit "pass web URLs through unchanged", #34029) and
-# is NOT matched here — the token class forbids ``:``. DB schemes are handled by _DB_CONNSTR_RE above and
-# excluded here. Guards against false positives:
+# single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form's
+# PASSWORD is masked separately by _redact_userinfo_passwords (issue #125664) — #34029's pass-through
+# was about query-string round-trip tokens (magic links / OAuth callbacks / pre-signed URLs live in
+# the query, never in userinfo), and a userinfo password is a credential, not a workflow token. DB
+# schemes are handled by _DB_CONNSTR_RE above and excluded here. Guards against false positives:
 _URL_BARE_TOKEN_RE = re.compile(
     r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
     r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
@@ -702,6 +738,56 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
 _STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
+# The same authority span with the delimiter and userinfo captured, for _redact_userinfo_passwords.
+_URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@]+)@")
+
+# ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
+# this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
+# debug dumps, session export all pass force=True): ordinary prose/config keeps today's behaviour.
+# Guards against non-secret colon values: the password needs an 8-char floor AND a letter (ports and
+# digit-only tags fail it), the password group is a single token (no whitespace, quotes or ``/`` —
+# so ``registry.example.com:5000/repo`` keeps its path, and an ISO timestamp's ``:00:00`` tail
+# truncates the group to digits), and a version-shaped tail (``24.04-noble``, ``v1.2.3-alpine``)
+# is rejected outright. The value is the WHOLE assignment (``user`` cannot contain ``:``/``@``/``/``),
+# and the ``:(?!//)`` lookahead keeps ``scheme://`` values (``MY_URL=https://example.com``) out.
+# ``user`` must also be at least 2 characters: a single-letter ``user:`` is a Windows drive
+# (``SRC=C:\Users\...``), and masking the whole path as ``SRC=C:***`` at a force boundary is
+# unrecoverable data loss — no real Basic pair has a one-letter user, and a secret-keyword NAME
+# still masks via the ENV pass (#125680 review).
+# ``@`` is not a password character here either: a ``user:pass@host``-shaped value belongs to the
+# userinfo pass below, which knows the f-string ``{...}`` template exemption; excluding it lets that
+# pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
+_BASIC_PAIR_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
+    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2(?![^\s;,&|)\]}\"'`])"
+)
+
+# ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
+# — long and letter-bearing enough to pass the floor, yet never a credential.
+_VERSION_TAG_RE = re.compile(r"^[vV]?\d+(\.\d+)+")
+# ``nginx:stable-alpine`` / ``myrepo:latest-release``: lower-case words joined by ``-``/``.``
+# are image tags and labels; a password carries a digit, a capital or a symbol.
+_WORD_TAG_RE = re.compile(r"[a-z]++(?:[.\-][a-z]++)*+")
+
+# ``CHECKSUM=sha256:1234…`` digest labels: the hex body is long and letter-bearing, but a hash
+# algorithm name as the ``user`` half marks the pair as an algorithm:digest, not a credential
+# (#125680 review). No real Basic pair has one of these as its username.
+_HASH_ALGO_NAMES = frozenset({
+    "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256",
+    "sha3-384", "sha3-512", "blake2b", "blake2s", "ripemd160", "crc32", "crc32c",
+})
+
+# ``NAME=user:pass`` is only a Basic pair when NAME says it holds one: ``IMAGE=redis:7-alpine``,
+# ``BRANCH=origin:feature2``, ``LS_COLORS=...:mh=00:...`` and ``Server=tcp:db,1433`` are colon
+# values under names that never carry credentials (#149435 review).
+_BASIC_PAIR_NAME_RE = re.compile(r"auth|basic|cred|login|proxy|userpass|userinfo", re.IGNORECASE)
+
+
+def _is_basic_pair_password(password: str) -> bool:
+    """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
+    if _VERSION_TAG_RE.search(password) or _WORD_TAG_RE.fullmatch(password):
+        return False
+    return len(password) >= 8 and any(c.isalpha() for c in password)
 
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
@@ -720,7 +806,41 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
 
+def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
+    """_PREFIX_RE for the masking pass, also admitting a key glued to an identifier by ``-``/``_``
+    (``backup-sk-…``, ``x-ghp_…``), which _PREFIX_RE rejects so ``scikit-learn`` stays whole. One
+    fixed-width lookbehind keeps main's single scan; _mask_prefix_match masks a glued match only
+    when its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
+    # Branches grouped by their literal first char (every pattern opens on one, see
+    # register_redaction_patterns): admitting ``-``/``_`` before a key makes every separator a
+    # candidate, and a flat 60-way alternation per candidate doubled the cost of a ``_ghp_`` flood.
+    # Groups are disjoint by first char, so leftmost-first match order is unchanged.
+    by_first: dict = {}
+    for pattern in patterns:
+        by_first.setdefault(pattern[0], []).append(pattern[1:])
+    body = "|".join(f"{re.escape(c)}(?:{'|'.join(rest)})" for c, rest in by_first.items())
+    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")(?![A-Za-z0-9_-])")
+
+
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
+_PREFIX_SUB_RE = _compile_prefix_sub_matcher(_PREFIX_PATTERNS)
+# A real key body has a 16+ char run with no separator mixing two of lower/upper/digit;
+# ``sk-prod-deployment-01`` and ``fc-feature-flags-v2`` do not.
+_LONG_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]{16,}+")
+
+
+def _is_opaque_prefixed_token(token: str) -> bool:
+    for run in _LONG_ALNUM_RUN_RE.finditer(token):
+        run = run.group(0)
+        if (run.isalpha() and (run.islower() or run.isupper())) or run.isdigit():
+            continue
+        return True
+    return False
+
+
+def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
+    glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
+    return m.group(0) if glued and not _is_opaque_prefixed_token(m.group(1)) else mask(m.group(1))
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
@@ -1148,6 +1268,38 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+_JSON_FLAG_VALUES = frozenset({"true", "false", "yes", "no", "null", "none"})
+_JSON_VALUE_SUFFIX_RE = re.compile(r"[_.\-]?(?:value|Value|VALUE)$")
+
+
+def _json_affixed_key_secret(key: str, value: str) -> bool:
+    """Whether ``"key": "value"`` holds a credential under an affixed secret-word key (#147240)."""
+    if _JSON_KEY_NAMES_FULL_RE.fullmatch(key):  # the closed-list pass already decided this field
+        return False
+    if not (_has_word_bounded_keyword(key, _YAML_CFG_WORD_RE) or _has_password_keyword(key)):
+        return False
+    if _DSN_PW_PLACEHOLDER_RE.fullmatch(value) or not _should_redact_assignment(key, value, check_keyword=True):
+        return False
+    # A key that does not END in the credential word is metadata about one: ``passwordChanged``,
+    # ``password_expires_at``, ``tokenUrl``, ``secret_id``, ``secret_arn``, ``PASSWORD_STORE_DIR``
+    # carry timestamps, URLs and ids that look opaque, so the value shape cannot decide (#149435
+    # review). A boolean answers ``has_password``, it does not hold one.
+    # ``api_key_value`` / ``passwordValue`` hold the credential itself: drop that one suffix first.
+    return _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key)) and value.casefold() not in _JSON_FLAG_VALUES
+
+
+def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
+    if not _json_affixed_key_secret(m.group(2), m.group(3)):
+        return m.group(0)
+    return f'{m.group(1)}: "{mask(m.group(3))}"'
+
+
+def _redact_json_affixed_key_escaped(m: "re.Match[str]", mask) -> str:
+    if not _json_affixed_key_secret(m.group(3), m.group(4)):
+        return m.group(0)
+    return f'{m.group(1)}: {m.group(2)}"{mask(m.group(4))}{m.group(2)}"'
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -1186,16 +1338,31 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
         if '\\"' in text:
             text = _JSON_FIELD_ESCAPED_RE.sub(
                 _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
+        text = _JSON_ANY_KEY_FIELD_RE.sub(lambda m: _redact_json_affixed_key(m, mask), text)
+        if '\\"' in text:
+            text = _JSON_ANY_KEY_FIELD_ESCAPED_RE.sub(lambda m: _redact_json_affixed_key_escaped(m, mask), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
     if ":" in text and "'" in text:
         text = _redact_python_repr_fields(text)
 
-    # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
+    # YAML after JSON; unwrap scalars before the shared assignment gate so
+    # quoted programmatic env lookups retain the same exemption as bare ones.
     if ":" in text and "://" not in text:
-        text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+        def _redact_yaml(m):
+            key, sep, value = m.groups()
+            quote = value[0] if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0] else ""
+            inner = value[1:-1] if quote else value
+            # An empty or docs-placeholder scalar (``""``, ``"<your key>"``, ``"${API_KEY}"``) is not
+            # a credential; masking it hides what the config expects, as _redact_db already rules.
+            if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)
+                          or (inner.startswith("{{") and inner.endswith("}}"))):  # Helm/Jinja template
+                return m.group(0)
+            if not _should_redact_assignment(key, inner, check_keyword=True):
+                return m.group(0)
+            return f"{key}{sep}{quote}{mask(inner)}{quote}"
+        text = _YAML_ASSIGN_RE.sub(_redact_yaml, text)
     return text
 
 
@@ -1205,8 +1372,36 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 _DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?")
 
 
+# ``https://user:password@host`` in docs names the field instead of filling it in.
+_USERINFO_PLACEHOLDER_WORDS = frozenset({"password", "passwd", "pass", "pw", "pwd", "secret", "token"})
+
+
+def _is_userinfo_placeholder(password: str) -> bool:
+    """A template (``{pw}``, ``{{ pw }}``), docs placeholder or field name, never a literal secret."""
+    return ((password.startswith("{") and password.endswith("}"))
+            or _DSN_PW_PLACEHOLDER_RE.fullmatch(password) is not None
+            or password.casefold() in _USERINFO_PLACEHOLDER_WORDS)
+
+
+def _redact_userinfo_passwords(text: str) -> str:
+    """Mask the password half of ``scheme://user:pass@host`` userinfo (#125664).
+
+    #34029's pass-through was about query-string round-trip tokens (magic links, OAuth callbacks,
+    pre-signed URLs live in the query, never in userinfo); the userinfo password is a credential —
+    the same reasoning #6396 used to mask the bare-token form. Keeps scheme, username and host
+    visible. Templates and docs samples (``{pw}``, ``${TOKEN}``, ``password``) stay as written."""
+    def _sub(m):
+        user, sep, password = m.group(2).partition(":")
+        # f-string / Jinja templates and docs samples (``user:{pw}@``, ``user:${TOKEN}@``,
+        # ``user:password@``) in prose and logs as much as in code files.
+        if not sep or not password or _is_userinfo_placeholder(password):
+            return m.group(0)
+        return f"{m.group(1)}{user}:***@"
+    return _URL_USERINFO_PAIR_RE.sub(_sub, text)
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
-    """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
+    """DB connection-string passwords, bare-token and ``user:pass`` URL userinfo (``://`` text only)."""
     def _redact_db(m):
         # code_file: a pure ``{...}`` password is an f-string template reference
         # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
@@ -1218,7 +1413,8 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
-    return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
+    text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
+    return _redact_userinfo_passwords(text)
 
 
 def _redact_phone(m):
@@ -1288,7 +1484,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
-        text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+        text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1302,6 +1498,25 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # the surfaces that leaked them (approval cards, chat status) run this pass anyway.
     text = _redact_private_key_blocks(text)
     text = _redact_cli_secrets(text, _mask_token_nonreusable if file_read else None)
+
+    if force and "=" in text:
+        # ``NAME=user:pass`` under an innocuous name (#125664): shape-only, so force-only — every
+        # force=True caller (persistence boundary, debug dumps, session export) is a safety boundary
+        # that must not return raw secrets; ordinary flows keep today's pass-through.
+        def _basic_pair(m):
+            password = m.group(4)
+            if password is None or not _BASIC_PAIR_NAME_RE.search(m.group(1)) \
+                    or not _is_basic_pair_password(password):
+                return m.group(0)
+            # ``CHECKSUM=sha256:<hex>``: an algorithm:digest label, not a user:credential pair.
+            if m.group(3).lower() in _HASH_ALGO_NAMES:
+                return m.group(0)
+            # A template or docs placeholder, not a literal credential — the rule
+            # _redact_userinfo_passwords applies below.
+            if _is_userinfo_placeholder(password):
+                return m.group(0)
+            return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
+        text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
@@ -1317,6 +1532,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # #33801.
     if "://" in text:
         text = _redact_url_credentials(text, code_file)
+
+    # Keyword/value connection strings (``Host=…;Password=…``, libpq ``host=… password=…``):
+    # the forms the URL pass above never sees. Gate: a ``password=``/``pwd=`` key in any casing;
+    # the per-line companion-key check in _redact_kv_connection_strings keeps prose out.
+    if _KV_CONNSTR_GATE_RE.search(text):
+        text = _redact_kv_connection_strings(text, code_file)
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
@@ -1640,9 +1861,10 @@ def _plugin_patterns() -> list:
 def _rebuild_prefix_matcher() -> None:
     """Recompile the prefix alternation and pre-screen substrings; callers read the
     module globals at call time, so the swap propagates immediately."""
-    global _PREFIX_RE, _PREFIX_SUBSTRINGS
+    global _PREFIX_RE, _PREFIX_SUB_RE, _PREFIX_SUBSTRINGS
     combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = _compile_prefix_matcher(combined)
+    _PREFIX_SUB_RE = _compile_prefix_sub_matcher(combined)
     _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
 
 

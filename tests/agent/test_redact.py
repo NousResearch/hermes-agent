@@ -848,10 +848,11 @@ class TestBareTokenUserinfoRedaction:
         assert "ftptoken123456" not in result
 
 
-    def test_user_pass_form_still_passes_through(self):
-        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+    def test_user_pass_form_password_redacted(self):
+        """The ``user:pass@`` colon form's PASSWORD is redacted (#125664): #34029's pass-through
+        is about query-string round-trip tokens, never userinfo. Username, host and path stay."""
         text = "URL: https://user:supersecretpw@host.example.com/path"
-        assert redact_sensitive_text(text) == text
+        assert redact_sensitive_text(text) == "URL: https://user:***@host.example.com/path"
 
     def test_short_username_not_redacted(self):
         """Short userinfo (git, admin, deploy) below the 8-char floor passes."""

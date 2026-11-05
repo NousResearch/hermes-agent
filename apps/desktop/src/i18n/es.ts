@@ -20,6 +20,7 @@ import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPluginUpdateAll } from './es_plugin_update_all'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -2509,6 +2510,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginUpdateAll,
       ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
@@ -5172,6 +5174,10 @@ export const esOverrides = {
       authorized: server => `${server} autorizado`,
       failed: server => `La configuración falló para ${server}`,
       toolCount: count => (count === 1 ? '1 herramienta' : `${count} herramientas`),
+      launchCommand: target => `Ejecuta: ${target}`,
+      launchRemote: target => `Se conecta a: ${target}`,
+      launchEnv: keys => `Entorno: ${keys}`,
+      launchCwd: dir => `Directorio de trabajo: ${dir}`,
       envRequired: 'Rellena primero las credenciales obligatorias',
       sendFailed: 'No se pudo enviar la respuesta de configuración MCP',
       reloadFailed: 'Servidor guardado, pero falló la recarga de herramientas MCP — se cargarán en la próxima sesión',

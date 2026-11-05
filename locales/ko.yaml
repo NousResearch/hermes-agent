@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "권한이 있는 Matrix 사용자만 이 컨트롤을 사용할 수 있어요."
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
   feishu:
+    clarify:
+      title: "Hermes가 입력을 기다리고 있어요"
+      other: "✏️ 기타 (직접 입력)"
+      awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
+    picker:
+      apply_error: "선택 적용 오류: {error}"
     approval:
       action_session: "세션"
       action_always: "항상"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
 slash:
+  rewind:
+    description: "이전 프롬프트로 되감아 편집 후 다시 보내거나, 그 지점에서 분기 (Esc Esc)"
   approve:
     description: "대기 중인 위험 명령 승인"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
+  backtrack:
+    title: "↺ 되감기 — 이전 프롬프트 선택"
+    keys_hint: "↑/↓ 선택 · Enter 편집 후 다시 보내기 · f 여기서 분기 · Esc 닫기"
+    preview_label: "프롬프트 {number} / {total}:"
+    more_lines: "… ({count}줄 더 있음)"
+    editing_hint: "↺ 프롬프트 {number} 편집 중 — Enter를 누르면 여기로 되감고 전송 · Esc Esc 취소"
+    edit_cancelled: "↺ 되감기가 취소되었습니다. 아무것도 제거되지 않았습니다."
+    rewound: "↺ 프롬프트 {number}(으)로 되감았습니다({count}개 메시지 보관됨). 편집 내용을 전송합니다."
+    forked: "⑂ 프롬프트 {number} 이전에서 분기했습니다. 원래 세션 {parent}은(는) 변경되지 않았습니다. 아래 프롬프트를 편집하고 Enter를 눌러 전송하세요."
+    nothing: "(._.) 되감을 이전 프롬프트가 없습니다."
+    target_changed: "(x_x) 프롬프트 {number}을(를) 선택한 이후 세션이 변경되었습니다. 아무것도 제거되지 않았습니다. 편집 내용이 입력창으로 돌아왔습니다."
+    invalid: "(._.) 프롬프트 {value}이(가) 없습니다 — 1부터 {total} 사이에서 선택하세요."
+    usage: "사용법: /rewind [N | fork N]"
+    rewind_failed: "(x_x) 되감기에 실패했습니다. 기록은 변경되지 않았습니다: {error}"
   modern:
     thought_for: "{seconds}초 동안 생각함"
     thought: "생각함"

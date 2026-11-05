@@ -8,6 +8,7 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from gateway import hosted_room_driver as driver
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_controls import AuthorityConnection
 from gateway.session_hosted_service import CanonicalHostedRoomService
@@ -102,6 +103,10 @@ async def test_groups_approve_refusal_matches_local_nonpending_approval(lender, 
     params = dict(room_id='room-1', member_id='member-peer', task_id='task',
                   execution_generation=7, request_id='prompt', choice='once')
     request = {'id': 1, 'method': 'groups.approve', 'params': params}
+    monkeypatch.setattr(driver, 'list_tasks', lambda *_a, **_kw: [{
+        'identity': driver.TaskIdentity('room-1', 'task', 'thread', 'turn'),
+        'execution_generation': 7, 'status': 'running',
+        'payload': {'target_member_id': 'member-peer', 'target_profile': 'default'}}])
     key = ('room-1', 'member-peer')
     service.peer_routes[key] = SimpleNamespace(grant=lender.grant)
     service.peer_clients[key] = lender.client

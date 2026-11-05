@@ -19,6 +19,7 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { hasPasteChip } from '../domain/pasteExpand.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
@@ -68,6 +69,7 @@ import { captureDestination, isCurrentDestination, type SubmissionDestination } 
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useApprovalAnswers } from './useApprovalAnswers.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -1246,39 +1248,7 @@ export function useMainApp(gw: GatewayClient) {
     done()
   }, [])
 
-  const answerApproval = useCallback(
-    (choice: string) => {
-      const fresh = capturePromptResponseGuard('approval', overlay.approval)
-
-      if (!fresh() || !overlay.approval) {
-        return
-      }
-
-      const settle = () => {
-        if (!fresh()) {
-          return
-        }
-
-        patchOverlayState({ approval: null })
-        patchTurnState({
-          outcome: choice === 'deny' ? t('session.approval.denied') : t('session.approval.approved', choice)
-        })
-        patchUiState({ status: 'running…' })
-      }
-
-      // Canonical shared controls answer through the generation-bound RPC; a
-      // legacy server→client request resolves its response frame locally.
-      if (overlay.approval.sharedControl) {
-        return rpc<SharedControlRespondResponse>('approval.respond', {
-          choice,
-          ...sharedControlParams(overlay.approval)
-        }).then(r => r && settle())
-      }
-
-      respondWith(overlay.approval.requestId, { choice }, settle)
-    },
-    [overlay.approval, respondWith, rpc]
-  )
+  const approvalAnswers = useApprovalAnswers(overlay.approval, gw.isCanonical, composerActions.enqueue, respondWith, rpc, sys)
 
   const answerSudo = useCallback(
     (pw: string) => {
@@ -1513,7 +1483,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
-      answerApproval,
+      ...approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1539,7 +1509,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
-      answerApproval,
+      approvalAnswers,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
@@ -1588,6 +1558,11 @@ export function useMainApp(gw: GatewayClient) {
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,
+      pasteHint: composerState.pasteExpanded
+        ? ('collapse' as const)
+        : hasPasteChip(composerState.input, composerState.tokens)
+          ? ('expand' as const)
+          : null,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,

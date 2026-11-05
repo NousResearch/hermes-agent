@@ -8,6 +8,7 @@ import { stageImagePath } from '../lib/imageAttachments.js'
 import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
 import type { Msg } from '../types.js'
 
+import { takePastes } from './pasteStore.js'
 import { markBubbleShown } from './pendingBubbles.js'
 import { retireCanonicalControls } from './slash/canonicalSessionControls.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -87,9 +88,13 @@ function beginOwnedTurn(
   deps.setLastUserMsg(text)
 
   if (show) {
+    const shown = displayOverride || displayText
+    const pastes = takePastes(text)
+
     deps.appendMessage({
       role: 'user',
-      text: displayOverride || displayText,
+      text: shown,
+      ...(pastes?.display === shown && { pastes: pastes.pastes }),
       // Each sent turn is its own revision: the legacy attach path keeps the user's own file path,
       // so a re-attached, overwritten file must not reuse the previous turn's render.
       ...(images.length && { imageRevision: `turn-${++userImageTurns}`, images })

@@ -125,18 +125,19 @@ def test_host_path_under_a_workspace_mount_aliases_the_container_path(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_tilde_is_the_backend_home_not_a_dir_under_cwd(tmp_path, monkeypatch):
-    """``~/x.txt`` is $HOME/x.txt; ``./~/x.txt`` is a directory named ``~`` under cwd: two files."""
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+def test_tilde_is_the_backend_home_not_a_dir_under_cwd(tmp_path):
+    """``~/x.txt`` is the backend's $HOME/x.txt; ``./~/x.txt`` is a directory named ``~`` under cwd: two files."""
     work = tmp_path / "work"
     (work / "~").mkdir(parents=True)
     (work / "~" / "x.txt").write_text("foo\n")
     with _non_host_file_ops(work) as fo:
-        home = Path(fo.env.execute("echo $HOME")["output"].strip())
-        assert tmp_path in home.parents or home == tmp_path / "home", home
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "x.txt").write_text("foo\n")
-        result = fo.patch_v4a("*** Begin Patch\n" + _update("~/x.txt", "foo", "X")
-                              + _update("./~/x.txt", "foo", "Y") + "*** End Patch\n")
-    assert result.success is True, result.error
-    assert ((home / "x.txt").read_text(), (work / "~/x.txt").read_text()) == ("X\n", "Y\n")
+        home = Path(fo.env.execute("echo $HOME")["output"].strip())  # whatever HOME the backend runs with
+        target = home / f"hermes-alias-probe-{tmp_path.name}.txt"
+        target.write_text("foo\n")
+        try:
+            result = fo.patch_v4a("*** Begin Patch\n" + _update(f"~/{target.name}", "foo", "X")
+                                  + _update("./~/x.txt", "foo", "Y") + "*** End Patch\n")
+            assert result.success is True, result.error
+            assert (target.read_text(), (work / "~/x.txt").read_text()) == ("X\n", "Y\n")
+        finally:
+            target.unlink(missing_ok=True)

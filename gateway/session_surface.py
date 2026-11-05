@@ -29,6 +29,9 @@ def clip_voice_context(context: str) -> str:
     if len(context) <= _VOICE_CONTEXT_LIMIT:
         return context
     tail = context[-_VOICE_CONTEXT_LIMIT:]
+    if context[-_VOICE_CONTEXT_LIMIT - 1] == '\n':
+        # The tail already starts at a turn: keep that whole first line instead of trimming it.
+        return tail
     _head, separator, rest = tail.partition('\n')
     return rest if separator and rest else tail
 

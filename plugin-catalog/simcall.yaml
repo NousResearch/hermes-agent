@@ -1,6 +1,6 @@
 name: simcall
 repo: https://github.com/dpvanhoose/hermes-simcall
-sha: d5581b5a3bfb58c5adb83096bc1fa9a51ec7b95c
+sha: cfca2d7a2c7156603f6fe993fd8a2299f8fbd99c
 description: >-
   Let your agent make real phone calls from your own Android phone and SIM over
   USB. It listens, talks and presses keypad digits, and when the far side asks
@@ -25,7 +25,7 @@ category: voice
 title: SimCall
 docs_url: https://github.com/dpvanhoose/hermes-simcall#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/dpvanhoose/hermes-simcall/d5581b5a3bfb58c5adb83096bc1fa9a51ec7b95c/docs/banner.png
+image: https://raw.githubusercontent.com/dpvanhoose/hermes-simcall/cfca2d7a2c7156603f6fe993fd8a2299f8fbd99c/docs/banner.png
 requires_hermes: ">=0.22.7"
 platforms:
   - macos

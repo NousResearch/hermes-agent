@@ -1,0 +1,26 @@
+name: agenda-guardian
+title: Agenda Guardian
+repo: https://github.com/Moodtuner997/hermes-agenda-guardian
+sha: b15ba5eba6a18ac1a54b94fae3e95c9ba02f38c8
+version: "0.1.0"
+description: "A day planner for people whose discipline cannot be the plan. You write your rules once (work hours, protected time, focus window, longest stretch, tasks per day), estimate each task, and report the real time when it is done: from the third finished task of a kind it multiplies your estimates by your own median error and says so. It places tasks in the free time around the meetings of any calendar source (the Google Workspace skill, an ICS file or URL, a JSON file, or any command that prints event JSON), every block states the rule it comes from, and a full day says what does not fit. Optional morning brief and block reminders run as two script-only cron jobs. Deterministic, no model call, never writes to a calendar. Slash command, CLI, six agent tools and a Today dashboard tab. Disclosure — no network by default; with an ICS URL it fetches that URL; with the google or cmd source it runs the program you configure (no shell, 25 s timeout); reads the calendar source you configure (event titles and times); writes only its own data folder (one SQLite file), and, after /day cron on, two small Python scripts in HERMES_HOME/scripts and two cron jobs named agenda-guardian-brief and agenda-guardian-nudge, created through the cronjob_manage tool; no model calls; no stored credentials; no background process; no telemetry; registers no hook or middleware."
+maintainer: Moodtuner997
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Moodtuner997/hermes-agenda-guardian#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/Moodtuner997/hermes-agenda-guardian/b15ba5eba6a18ac1a54b94fae3e95c9ba02f38c8/docs/today.png
+platforms: [linux, windows]
+capabilities:
+  provides_tools:
+    - day_setup
+    - day_add_task
+    - day_plan
+    - day_done
+    - day_tasks
+    - day_schedule
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

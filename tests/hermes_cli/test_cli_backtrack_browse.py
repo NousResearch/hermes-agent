@@ -157,13 +157,10 @@ def test_enter_prefills_the_prompt_and_cuts_nothing(cli):
     assert len(cli.conversation_history) == 6
 
 
-@pytest.mark.parametrize("close", ["escape", "q", "ctrl_c"])
-def test_close_keys_leave_everything_as_it_was(cli, close):
+def test_ctrl_c_closes_browse_and_leaves_everything_as_it_was(cli):
+    # Esc and q go through the real key processor in test_cli_backtrack_keys.py.
     assert cli._open_backtrack_picker()
-    if close == "ctrl_c":
-        cli._tui_handle_ctrl_c(_event())
-    else:
-        cli._close_backtrack_picker()  # the Esc and q bindings call this directly
+    cli._tui_handle_ctrl_c(_event())
     assert cli._backtrack_state is None and cli._backtrack_edit is None
     cli._prefill_input_buffer.assert_not_called()
 

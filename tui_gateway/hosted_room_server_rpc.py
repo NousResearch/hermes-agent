@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from gateway import hosted_room_driver as state
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 _LockType = type(threading.Lock())
 
@@ -71,7 +71,7 @@ class HostedRoomServerRPC:
             "profile": profile, "session_id": session_id, "omit_messages": True, "source": source})
 
     def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: HostedTaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
@@ -90,7 +90,7 @@ class HostedRoomServerRPC:
             token = set_hermes_home_override(str(home)) if home is not None else None
             try:
                 inputs = prepare_before_submit(lambda: bound_submission_payload(
-                    self.db_path, room_id=task.room_id, member_id=member_id, prompt=prompt,
+                    self, room_id=task.room_id, member_id=member_id, prompt=prompt,
                     attachments=list(attachments)))
             finally:
                 if token is not None:

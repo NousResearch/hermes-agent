@@ -98,26 +98,26 @@ def _standalone_holder(room_id: str) -> str | None:
     """Where the standalone store says ``room_id`` lives: ``"gateway"`` (handed to the root
     gateway's store), ``"local"`` (any other room it holds: only this backend drives or mirrors
     it) or ``None`` (not a standalone room)."""
-    from contextlib import closing
-    from gateway.hosted_rooms import _read_connection, default_db_path
+    from gateway.hosted_rooms import default_db_path, room_state
     from gateway.hosted_rooms_gateway_import import handoff_gateway_id
-    source = default_db_path()
-    if not source.is_file():
+    from persistence.gateway.hosted_rooms import HostedRoomError
+    from tui_gateway.methods_groups import _active_store
+    if not default_db_path().is_file():
         return None
-    with closing(_read_connection(source)) as conn:
-        row = conn.execute("SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=?",
-                           (room_id,)).fetchone()
-    if row is None:
+    try:
+        room = room_state(_active_store(), placement="shared", room_id=room_id, include_disbanded=True)
+    except HostedRoomError:  # no row for this id (or not an id a row can hold)
         return None
-    return "gateway" if str(row[0]) == handoff_gateway_id() else "local"
+    return "gateway" if str(room["authority_gateway_id"]) == handoff_gateway_id() else "local"
 
 
 def _standalone_rooms(params: dict | None = None) -> list[dict]:
     """The standalone store's rooms that were not handed to the gateway (the gateway-less list)."""
     from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT, default_db_path, list_rooms
+    from tui_gateway.methods_groups import _active_store
     if not default_db_path().is_file():
         return []
-    return local_rooms(list_rooms(default_db_path(), limit=MAX_ROOM_LIST_LIMIT,
+    return local_rooms(list_rooms(_active_store(), placement="shared", limit=MAX_ROOM_LIST_LIMIT,
                                   include_disbanded=bool(params and params.get("include_disbanded") is True)))
 
 

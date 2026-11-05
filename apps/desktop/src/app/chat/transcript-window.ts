@@ -156,12 +156,25 @@ export function advanceTranscriptWindow(
       }
 
       if (weight <= budget + TRANSCRIPT_WINDOW_SLACK) {
-        const window: TranscriptWindow =
-          start === 0
-            ? { messages: messages as ChatMessage[], windowed: prev.anchorId !== null }
-            : { messages: messages.slice(start), windowed: true }
+        // #133569: the cut sits at the store head, so the window IS the whole
+        // store and the store holds nothing older — `windowed` must say false
+        // (see the `TranscriptWindow` interface doc, lines 41-42). Reporting
+        // the stale anchor as windowed keeps "Show earlier" armed while gating
+        // OFF the REST backfill (`expandWindow` runs that branch only when
+        // !windowed), and hands retention an anchor that no longer marks a cut.
+        if (start === 0) {
+          return {
+            anchorId: null,
+            pages,
+            window: { messages: messages as ChatMessage[], windowed: false }
+          }
+        }
 
-        return { anchorId: prev.anchorId, pages, window }
+        return {
+          anchorId: prev.anchorId,
+          pages,
+          window: { messages: messages.slice(start), windowed: true }
+        }
       }
     }
   }

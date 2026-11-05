@@ -180,6 +180,8 @@ terminal:
   #   - ~/.zshrc
 ```
 
+When your login shell (`$SHELL`) is zsh, Hermes also runs `zsh -l` once per process, reads the `PATH` it sets up (`/etc/zprofile`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`; for example Homebrew's `brew shellenv`), and puts those directories first in the snapshot, ahead of the system directories. That shell is not interactive, so `~/.zshrc` is not read for this: move `PATH` exports from `~/.zshrc` to `~/.zprofile`, or list `~/.zshrc` above. If the probe fails or takes longer than 5 seconds, the snapshot is built as before.
+
 Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
 
 Independently of the init files, every terminal command's `PATH` is completed with the standard system directories (`/usr/local/bin`, `/opt/homebrew/bin`, …), the Hermes-managed runtime dirs, and `~/.local/bin` when it exists (the `pip --user` / `pipx` / `uv tool` install target) — appended after your own entries, so precedence is unchanged. This covers backends started with a thin non-interactive PATH (systemd, GUI launchers, the Desktop SSH remote backend) without any configuration.

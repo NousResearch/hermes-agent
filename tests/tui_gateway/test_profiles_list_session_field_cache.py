@@ -13,7 +13,8 @@ import time
 import pytest
 
 import tui_gateway.server as srv
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import profile_roster_cache as cache
 
 @pytest.fixture(autouse=True)
@@ -29,13 +30,9 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 def _seed(profile_dir, session_id: str, title: str, text: str = "hello") -> None:
-    db = SessionDB(db_path=profile_dir / "state.db")
-    try:
-        db.create_session(session_id=session_id, source="cli")
-        db.set_session_title(session_id, title)
-        db.append_message(session_id=session_id, role="user", content=text)
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=profile_dir)) as db:
+        seed_session(db, session_id, "cli", title=title)
+        seed_messages(db, session_id, {"role": "user", "content": text})
 
 def _rows(params=None):
     return srv._methods["profiles.list"](1, params or {})["result"]["profiles"]
@@ -58,11 +55,8 @@ def test_a_message_appended_to_an_existing_session_is_not_masked(home):
     _seed(bob, "20260920_000001_a", "Bot Chat", text="first")
     before = _row("bob")["canonical_session"]
 
-    db = SessionDB(db_path=bob / "state.db")
-    try:
-        db.append_message(session_id="20260920_000001_a", role="assistant", content="a later reply")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=bob)) as db:
+        seed_messages(db, "20260920_000001_a", {"role": "assistant", "content": "a later reply"})
 
     after = _row("bob")["canonical_session"]
     assert after != before, "an append inside the store was served from the memo"

@@ -40,8 +40,8 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
     ``session``'s own store: a named-profile session's lineage lives in ``profiles/<x>/state.db``,
     where the launch handle cannot see it."""
     try:
-        with _session_db(session or {}) as db:
-            return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
+        with _session_db(session or {}) as db, _persistence_for(db) as persistence:
+            return (persistence.lineage.resolve_resume_target(evt_key) if persistence is not None else evt_key) or evt_key
     except Exception:
         return evt_key
 
@@ -275,9 +275,9 @@ def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
     own store for a per-profile gateway), so both are consulted; no entry is fail-open.
     """
     try:
-        with _session_db(session) as db:
-            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
-                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+        with _session_db(session) as db, _persistence_for(db) as own, _persistence_for(_get_db()) as launch:
+            for store in {id(p): p for p in (own, launch) if p is not None}.values():
+                if (entry := store.routing.routing_entry_for_session(session_key)) is not None:
                     return bool(entry.get("origin")) and not entry.get("suspended")
         return False
     except Exception:

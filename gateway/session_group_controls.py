@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 import weakref
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence, owner_rule
+from persistence.core.errors import AuthorityRefusal, StoreUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -52,78 +53,92 @@ async def dispatch_group_control(connection, method, params):
     authority, actor = connection.authority, connection.actor
     capability = GROUP_METHODS.get(method, 'session:read')
     if capability not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if method not in _FIELDS or not isinstance(params, dict) or set(params) - (_FIELDS[method] | {'profile'}):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     home = Path(authority.profile_id)
-    db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+    db_path = await asyncio.to_thread(_store_path(authority).resolve)
     if db_path.parent != await asyncio.to_thread(home.resolve):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     from hermes_cli.profiles import profile_matches_home
     profile = params.get('profile')
     if profile is not None and not isinstance(profile, str):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if profile and not profile_matches_home(profile, home):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     supplied = {key: value for key, value in params.items() if key != 'profile'}
     siblings = _roster_siblings(connection, supplied) if method == 'profiles.list' else ()
 
     def invoke():
         from gateway.run import _profile_runtime_scope
-        from gateway.hosted_rooms import HostedRoomError
+        from persistence.gateway.hosted_rooms import HostedRoomError
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied, siblings)
             try:
                 return _group(authority, actor, method, supplied, host_scope=connection.host_scoped)
-            except RuntimeStoreError:
+            except AuthorityRefusal:
                 raise
             except HostedRoomError as exc:
-                raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
+                raise AuthorityRefusal(getattr(exc, 'reason', None) or 'invalid_params') from exc
             except (ValueError, TypeError) as exc:
-                raise RuntimeStoreError('invalid_params') from exc
+                raise AuthorityRefusal('invalid_params') from exc
     return await asyncio.to_thread(invoke)
+
+
+def _store(authority):
+    """*authority*'s storage interface handle; without one, ``StoreUnavailable``."""
+    store = authority_persistence(authority)
+    if store is None:
+        raise StoreUnavailable('the authority has no storage interface handle')
+    return store
+
+
+def _store_path(authority):
+    """The file that holds *authority*'s store."""
+    from persistence_assembly import store_location
+    return Path(store_location(_store(authority).scope))
 
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     from gateway.hosted_room_context import room_context, set_room_context
-    db_path = authority.db.db_path
+    store = _store(authority)
+    db_path = _store_path(authority)
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
         if Path(service.db_path).resolve() != Path(db_path).resolve():
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         status = service.runtime.status()
         if not status.get('running') or status.get('stopping'):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
-    admit = None
+    owner = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         if method == 'groups.create':
-            # Claim ownership inside the room insert's transaction: a create rejected by
+            # The owner claim runs inside the room insert's write: a create rejected by
             # validation or storage must not leave an owner-only reservation behind.
-            def admit(conn):
-                room_authorizer(actor.subject, params['room_id'], create=True, conn=conn)
+            owner = actor.subject
         else:
             room_authorizer(actor.subject, params['room_id'])
     if method in {'groups.attachment.upload', 'groups.attachment.download'}:
         if service is None:
-            raise RuntimeStoreError('runtime_coordination_required')
+            raise AuthorityRefusal('runtime_coordination_required')
         from gateway.session_hosted_attachments import upload, download
         handler = upload if method == 'groups.attachment.upload' else download
         return handler(service, actor, params)
     if method in execution_methods:
         if service is None:
-            raise RuntimeStoreError('runtime_coordination_required')
+            raise AuthorityRefusal('runtime_coordination_required')
         if not params.get('room_id'):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return _execution_control(service, method, params)
 
     def capabilities():
@@ -141,16 +156,16 @@ def _group(authority, actor, method, params, *, host_scope=False):
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
         if getattr(authority, 'hosted_room_service', None) is None:
-            result = rooms.list_rooms(db_path, **params)
+            result = rooms.list_rooms(store, placement='profile', **params)
             return {'rooms': result, 'next_offset': offset + limit if len(result) == limit else None}
         authorize = room_authorizer
         if authorize is None:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
 
         def visible(room):
             try:
                 authorize(actor.subject, room['room_id'])
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 if exc.reason != 'permission_denied':
                     raise
                 return False
@@ -161,7 +176,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         # that underlying continuation cursor, as returned in ``next_offset``.
         found, cursor, next_offset = [], offset, None
         while next_offset is None:
-            batch = rooms.list_rooms(db_path, **{**params, 'offset': cursor})
+            batch = rooms.list_rooms(store, placement='profile', **{**params, 'offset': cursor})
             for room in batch:
                 if visible(room):
                     if len(found) == limit:
@@ -185,38 +200,41 @@ def _group(authority, actor, method, params, *, host_scope=False):
         try:
             members = validate_roster(params.get('members'), local_profiles=homes)
             if service is not None:
-                return {'room': service.create_room(**params, admit=admit)}
+                return {'room': service.create_room(**params, owner=owner)}
         except DiscussionValidationError as exc:
             # Name the refused member; the bare code left Desktop and gateway.log silent (#139002).
-            raise RuntimeStoreError('invalid_params', field='members', detail=str(exc)) from exc
+            raise AuthorityRefusal('invalid_params', field='members', detail=str(exc)) from exc
         normalized = [{'member_id': m.member_id, 'profile': m.profile, 'handle': m.handle,
                        'target': dict(m.target or {}),
                        **({'display_name': m.display_name} if m.display_name else {})} for m in members]
-        return {'room': rooms.create_room(db_path, room_id=params.get('room_id'),
-                name=params.get('name'), members=normalized, authority_gateway_id=gateway_id,
-                admit=admit)}
+        if owner is not None:
+            return {'room': authority.hosted_room_service.insert_room(
+                room_id=params.get('room_id'), name=params.get('name'), members=normalized, owner=owner)}
+        return {'room': rooms.create_room(store, placement='profile', room_id=params.get('room_id'),
+                name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
 
     def disband():
         from gateway.hosted_room_driver import list_tasks
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
+        state = rooms.room_state(store, placement='profile', room_id=params.get('room_id'), include_disbanded=True)
         if service is not None and state.get('disbanded_at') is None:
             service.stop_room(params.get('room_id'),
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
             service.revoke_room_routes(params.get('room_id'))
         # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+        if service is None and any(list_tasks(store, placement='profile',
+                                              room_id=params.get('room_id'), status=status)
                for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
-            raise RuntimeStoreError('runtime_coordination_required')
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
+            raise AuthorityRefusal('runtime_coordination_required')
+        state = rooms.room_state(store, placement='profile', room_id=params.get('room_id'), include_disbanded=True)
+        return {'tombstone': rooms.disband_room(store, placement='profile', room_id=params.get('room_id'),
                 expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
 
     def state():
-        room = rooms.room_state(db_path, **params)
+        room = rooms.room_state(store, placement='profile', **params)
         result = {'room': room}
         if room.get('disbanded_at') is None:
-            result['context'] = room_context(db_path, room_id=room['room_id'])
+            result['context'] = room_context(store, placement='profile', room_id=room['room_id'])
             if service is not None:
                 result['driver_status'] = service.status(room['room_id'])
         return result
@@ -226,9 +244,9 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.list': listing,
         'groups.create': create,
         'groups.state': state,
-        'groups.log': lambda: rooms.read_events(db_path, **params),
-        'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
-        'groups.context': lambda: set_room_context(db_path, **params),
+        'groups.log': lambda: rooms.read_events(store, placement='profile', **params),
+        'groups.rename': lambda: {'room': rooms.rename_room(store, placement='profile', **params)},
+        'groups.context': lambda: set_room_context(store, placement='profile', **params),
         'groups.disband': disband,
     }
     return handlers[method]()
@@ -247,7 +265,7 @@ def _execution_control(service, method, params):
         if (type(params.get('execution_generation')) is not int
                 or params['execution_generation'] < 1
                 or not params.get('member_id') or not params.get('task_id')):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         operation = service.discard_room_task if method == 'groups.discard' else service.retry_room_task
         task = operation(**params)
         identity = task['identity']
@@ -262,7 +280,7 @@ def _execution_control(service, method, params):
                 or params['execution_generation'] < 1
                 or params.get('choice') not in {'once', 'deny'}
                 or not isinstance(params.get('request_id'), str) or not params['request_id']):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         return {'approved': True, 'result': service.approve_room_task(**params)}
 
     handlers = {
@@ -276,12 +294,6 @@ def _execution_control(service, method, params):
     return handlers[method]()
 
 
-# A local chat: minted by this owner (``local-*``), or a pre-upgrade chat it adopted, which keeps its
-# historical id as chat_id under a ``gateway.local_legacy.v1:`` binding. These are the chats
-# ``resolve_local_target`` resolves by chat_id without adopting anything (its policy-receipt arm adds
-# none: a receipt-bound chat_id that is not ``local-*`` is an adopted one). A messaging or API
-# conversation with the same title is neither.
-_LOCAL_CHAT = "(chat_id LIKE 'local-%' OR EXISTS (SELECT 1 FROM state_meta WHERE key = ? || sessions.chat_id))"
 # Sibling authorities whose last roster read failed: warned once per outage, then logged at debug.
 # Weak, so an unserved profile drops out with its authority and a re-served one (a new authority)
 # is warned again.
@@ -313,67 +325,21 @@ def _bot_sessions(authority, actor):
     "Bot Chat" title (the status dot's session and the row's age) and the newest visible local
     conversation, each only when the actor owns it or holds operator access. Reused while the
     store has not moved, as the pre-unified roster did (#117257): every connection polls every 5 s.
-    Discovery is read-only: no legacy restore/unarchive or new SessionDB handle."""
+    Discovery is read-only: no restore/unarchive and no new store handle."""
     from tui_gateway.profile_roster_cache import cached_reader_session_fields
     operator = 'session:operator' in actor.capabilities
-    return cached_reader_session_fields(Path(authority.db.db_path).parent, (actor.subject, operator),
-                                        lambda: _read_bot_sessions(authority.db, actor.subject, operator))
+    return cached_reader_session_fields(_store_path(authority).parent, (actor.subject, operator),
+                                        lambda: _read_bot_sessions(_store(authority), actor.subject, operator))
 
 
-def _read_bot_sessions(db, subject, operator):
-    from hermes_state_local_migration import LEGACY_PREFIX
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-    hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
-    owner_filter, owner_params = ('', ()) if operator else ('user_id=? AND ', (subject,))
-    # One read connection for the whole row. A store closed meanwhile (its profile unserved
-    # mid-poll) refuses rather than reopening a writer into a home that is being deleted.
-    with db._read_ctx(reopen=False) as conn:
-        def summary(root):
-            tip = db._compression_tip_on(conn, root['id'])
-            target = conn.execute('SELECT * FROM sessions WHERE id=?', (tip,)).fetchone() or root
-            message = conn.execute(
-                "SELECT content FROM messages WHERE session_id=? AND active=1 "
-                "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
-                "ORDER BY id DESC LIMIT 1", (tip,)).fetchone()
-            text = ' '.join(str(message[0] or '').split()) if message else ''
-            return {'id': root['id'], 'resolved_id': tip, 'title': target['title'] or '',
-                    'root_title': root['title'] or '',
-                    'preview': text[:80] + '...' if len(text) > 80 else text,
-                    'started_at': target['started_at'] or 0,
-                    'last_active': target['last_activity_at'] or target['started_at'] or 0,
-                    'message_count': target['message_count'] or 0}
-
-        fields: dict = {'last_session': None, 'worker_session': None, 'canonical_session': None}
-        # The named registry is not a recency window and canonical chats are hidden.
-        canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
-                                 ('Bot Chat', LEGACY_PREFIX)).fetchone()
-        from gateway.owner_identity import same_owner
-        if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
-            fields['canonical_session'] = summary(canonical)
-        # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
-        # never wins, as in the pre-unified roster's listing.
-        latest = conn.execute(
-            f"SELECT * FROM sessions WHERE {owner_filter}{_LOCAL_CHAT} AND archived=0 AND hidden=0 "
-            f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
-            "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
-            (*owner_params, LEGACY_PREFIX, *INTERNAL_LISTING_SOURCES)).fetchone()
-        if latest and fields['canonical_session'] and latest['id'] == canonical['id']:
-            fields['last_session'] = dict(fields['canonical_session'])
-        elif latest:
-            fields['last_session'] = summary(latest)
-        # The profile's freshest worker (#90268, #140977): workers are deny-listed out of every
-        # conversation listing, so a roster row that only carried conversation fields read "idle"
-        # while a kanban/tool run was heartbeating (#72016). Newest DENIED source wins, never an
-        # archived or hidden row; no owner filter -- a worker's ``user_id`` is the dispatch identity
-        # (a bot, the kanban dispatcher), not this reader, and the legacy roster read it the same way.
-        worker = conn.execute(
-            f"SELECT id, source, title, COALESCE(last_activity_at, started_at) AS last_active FROM sessions "
-            f"WHERE COALESCE(source,'') IN ({hidden_sources}) AND archived=0 AND hidden=0 "
-            "ORDER BY last_active DESC LIMIT 1", INTERNAL_LISTING_SOURCES).fetchone()
-        if worker:
-            fields['worker_session'] = {'id': worker['id'], 'source': (worker['source'] or '').strip().lower(),
-                                        'title': worker['title'] or '', 'last_active': worker['last_active'] or 0}
-    return fields
+def _read_bot_sessions(store, subject, operator):
+    """*store*'s roster fields. A store closed meanwhile (its profile unserved mid-poll) refuses rather
+    than reopening a writer into a home that is being deleted."""
+    from dataclasses import asdict
+    roster = store.sessions.roster_sessions(owner_user_id=None if operator else subject, owner=owner_rule())
+    return {name: asdict(value) if value is not None else None for name, value in (
+        ('last_session', roster.last_session), ('worker_session', roster.worker_session),
+        ('canonical_session', roster.canonical_session))}
 
 
 def _sibling_sessions(authority, reader):
@@ -401,7 +367,7 @@ def _profiles(authority, actor, home, params, siblings=()):
     import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from gateway.session_authorities import served_profile_name
     name = served_profile_name(home)
     profile = _profile_info(name, home, is_default=name == 'default')

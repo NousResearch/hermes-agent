@@ -10,7 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import store_location
 
+from tests.fixtures.storage_holder import policy_key, raw_holder
 from tests.waiting import async_wait_until
 
 
@@ -47,7 +49,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
     for name in ("HERMES_DESKTOP", "HERMES_DASHBOARD_SESSION_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     store = SessionStore(home / "sessions", GatewayConfig())
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _peek_session_state=lambda key: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -148,14 +150,13 @@ async def test_a_trial_users_desktop_chat_runs_on_the_free_model(tmp_path, monke
         await _request(conn, 1, "client.capabilities", {"desktop_local": True})
         created = await _request(conn, 2, "session.create", {"source": "gui", "request_id": "a"})
         assert "result" in created, created
-        from hermes_state_local import local_receipt
-        receipt = local_receipt(conn.authority.db, created["result"]["stored_session_id"])
-        assert receipt["policy"]["model"] == anon_auth.GUEST_MODEL
+        receipt = conn.authority.persistence.bindings.receipt(created["result"]["stored_session_id"])
+        assert receipt.policy["model"] == anon_auth.GUEST_MODEL
 
         conn.transport.desktop_local = False
         other = await _request(conn, 3, "session.create", {"source": "gui", "request_id": "b"})
         assert "result" in other, other
-        assert local_receipt(conn.authority.db, other["result"]["stored_session_id"])["policy"]["model"] == anon_auth.GUEST_MODEL
+        assert conn.authority.persistence.bindings.receipt(other["result"]["stored_session_id"]).policy["model"] == anon_auth.GUEST_MODEL
     finally:
         await conn.connection.close()
 
@@ -272,7 +273,6 @@ async def test_a_chat_opened_on_the_trial_moves_to_the_provider_the_user_connect
     """A trial-only chat runs on the free model; once the user connects a real provider, the same
     chat's next turn runs on that provider's model instead of asking a paid route for nous/welcome."""
     from hermes_cli import anon_auth
-    from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     guest = {"auth_method": anon_auth.ANON_AUTH_METHOD, anon_auth.WELCOME_CLAIM_FLAG: True}
     monkeypatch.setattr(anon_auth, "current_nous_state", lambda *a, **k: guest)
@@ -283,10 +283,10 @@ async def test_a_chat_opened_on_the_trial_moves_to_the_provider_the_user_connect
         stored = created["result"]["stored_session_id"]
 
         def next_model():
-            return restore_policy(local_receipt(conn.authority.db, stored)["policy"]).current_model(conn.authority)
+            return restore_policy(conn.authority.persistence.bindings.receipt(stored).policy).current_model(conn.authority)
 
         assert next_model() == anon_auth.GUEST_MODEL
-        (Path(conn.authority.db.db_path).parent / "config.yaml").write_text(  # the owning profile's
+        (Path(store_location(conn.authority.persistence.scope)).parent / "config.yaml").write_text(  # the owning profile's
             "model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n", encoding="utf-8")
         assert next_model() == "anthropic/claude-sonnet-4"
     finally:
@@ -334,7 +334,6 @@ async def test_a_desktop_chat_saved_before_the_mark_moved_still_resumes_and_runs
     from gateway.session_local_recovery import local_source
     from gateway.session_policy import local_desktop_turn
     from hermes_cli.anon_auth import on_local_desktop_backend
-    from hermes_state_local import POLICY_PREFIX
 
     conn = await _connect(tmp_path, monkeypatch,
                           config="model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n")
@@ -342,10 +341,10 @@ async def test_a_desktop_chat_saved_before_the_mark_moved_still_resumes_and_runs
         await _request(conn, 1, "client.capabilities", {"desktop_local": True})
         stored = (await _request(conn, 2, "session.create", {"source": "gui", "request_id": "a"}))[
             "result"]["stored_session_id"]
-        db = conn.authority.db
+        db = raw_holder(conn.authority.persistence)
 
         def saved_the_old_way(c):
-            key = POLICY_PREFIX + stored
+            key = policy_key(stored)
             receipt = json.loads(c.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()[0])
             policy = receipt["policy"]
             config = json.loads(policy["config_json"])

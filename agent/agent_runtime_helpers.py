@@ -22,6 +22,7 @@ from agent.message_sanitization import (
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.cache_bounds import publish_lru
+from agent.agent_init_session import agent_interface
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -663,11 +664,11 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import CONTENT_JSON_PREFIX
 
     def _plain_text(content: Any) -> bool:
         # never rewrite the persisted row around undecodable content
-        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
+        return isinstance(content, str) and not content.startswith(CONTENT_JSON_PREFIX)
 
     repairs = 0
     merged: list[dict] = []
@@ -749,13 +750,13 @@ def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
     image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
     as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
     that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
-    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
+    from session_rules.turns import decode_content  # lazy: the store's turn policy owns the sentinel codec
 
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         content = msg.get("content")
-        decoded = SessionDB._decode_content(content)
+        decoded = decode_content(content)
         if decoded is not content:
             msg["content"] = decoded
             # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
@@ -2371,14 +2372,13 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
 def _persist_switch_billing_route(agent) -> None:
     """Persist the billing route so dashboard Model cards show the post-switch provider."""
     # _session_db / session_id may be unset (tests, bare agents).
-    session_db = getattr(agent, "_session_db", None)
-    session_id = getattr(agent, "session_id", None)
+    session_db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if session_db is None or not session_id:
         return
     try:
-        session_db.update_session_billing_route(
-            session_id, provider=agent.provider, base_url=agent.base_url,
-            billing_mode=getattr(agent, "api_mode", None),
+        store = agent_interface(agent)
+        (store.usage.set_billing_route if store is not None else session_db.update_session_billing_route)(
+            session_id, provider=agent.provider, base_url=agent.base_url, billing_mode=getattr(agent, "api_mode", None),
         )
     except Exception:
         logger.warning("Failed to persist billing route after model switch", exc_info=True)

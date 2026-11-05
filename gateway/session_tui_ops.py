@@ -18,7 +18,7 @@ from pathlib import Path
 
 from gateway.session_busy_controls import authorize
 from gateway.session_tui_reads import context_breakdown
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def handlers(connection):
@@ -50,7 +50,7 @@ def _multiplexed(authority):
 
 def _live_ref(connection, ref, params, fields, capability):
     if set(params) - fields or not isinstance(ref.session_id, str) or not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authorize(connection, ref, params, capability)
     return connection.authority.sessions[ref.session_id]
 
@@ -66,20 +66,22 @@ async def save_session(connection, ref, params):
 
     def write():
         from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-        from hermes_state import SessionExportTooLargeError
+        from gateway.session_persistence import authority_persistence
+        from persistence.core.errors import ExportTooLarge
         try:
-            data = load_save_snapshot(authority.db, target, 'json')
-        except SessionExportTooLargeError as exc:
-            raise RuntimeStoreError('export_too_large') from exc
+            store = authority_persistence(authority)
+            data = load_save_snapshot(store, target, 'json', persistence=store)
+        except ExportTooLarge as exc:
+            raise AuthorityRefusal('export_too_large') from exc
         if not data:
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         path = (_profile_home(authority) / 'sessions' / 'saved'
                 / f'hermes_conversation_{datetime.now():%Y%m%d_%H%M%S}.json')
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(render_session_for_save(data, 'json'), encoding='utf-8')
         except OSError as exc:
-            raise RuntimeStoreError('storage_unavailable') from exc
+            raise AuthorityRefusal('storage_unavailable') from exc
         return {'file': str(path)}
     return await asyncio.to_thread(write)
 
@@ -91,25 +93,27 @@ async def export_session(connection, ref, params):
     _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
     fmt, redact = params.get('format', 'json'), params.get('redact', False)
     if not isinstance(fmt, str) or not isinstance(redact, bool):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from hermes_cli.session_export import default_save_filename, normalize_save_format
     try:
         fmt = normalize_save_format(fmt)
     except ValueError:
-        raise RuntimeStoreError('invalid_params') from None
+        raise AuthorityRefusal('invalid_params') from None
     authority = connection.authority
     from gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
 
     def render():
         from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-        from hermes_state import SessionExportTooLargeError
+        from gateway.session_persistence import authority_persistence
+        from persistence.core.errors import ExportTooLarge
         try:
-            data = load_save_snapshot(authority.db, target, fmt)
-        except SessionExportTooLargeError as exc:
-            raise RuntimeStoreError('export_too_large') from exc
+            store = authority_persistence(authority)
+            data = load_save_snapshot(store, target, fmt, persistence=store)
+        except ExportTooLarge as exc:
+            raise AuthorityRefusal('export_too_large') from exc
         if not data:
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             data = redact_session_data(data)
@@ -128,7 +132,10 @@ async def session_history(connection, ref, params):
 
     def read():
         from gateway.session_controls import display_projection
-        rows = authority.db.get_messages_as_conversation(target, include_ancestors=True, include_row_ids=True)
+        from gateway.session_persistence import authority_persistence
+        from persistence.conversation.messages import ConversationRequest
+        rows = [row.as_openai_message() for row in authority_persistence(authority).messages.read_conversation(
+            target, ConversationRequest(include_lineage=True, include_row_ids=True))]
         return {'count': len(rows), 'messages': display_projection(rows, authority.profile_id)}
     return await asyncio.to_thread(read)
 
@@ -176,19 +183,19 @@ async def pause_delegation(connection, ref, params):
     is for; ``delegation.status`` reports the same flag to every client."""
     paused = params.get('paused', True)
     if set(params) - {'paused', 'profile', 'session_id'} or type(paused) is not bool:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if ref.session_id:
         authorize(connection, ref, params, 'session:control')
     else:
         if 'session:control' not in connection.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         profile = params.get('profile')
         if profile is not None and not isinstance(profile, str):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if profile:
             from hermes_cli.profiles import profile_matches_home
             if not profile_matches_home(profile, Path(connection.authority.profile_id)):
-                raise RuntimeStoreError('profile_mismatch')
+                raise AuthorityRefusal('profile_mismatch')
     from tools.delegate_tool_registry import set_spawn_paused
     return {'paused': set_spawn_paused(paused)}
 
@@ -215,17 +222,17 @@ async def rollback(connection, ref, params, *, kind):
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
            for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
                params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     file_path = params.get('file_path') or ''
     if kind == 'restore' and not file_path and authority._handle(ref).execution_state != 'idle':
         # Main refuses a full-history rollback mid-turn; a file-scoped restore only touches disk.
-        raise RuntimeStoreError('session_busy')
+        raise AuthorityRefusal('session_busy')
     from gateway.session_ancillary import physical_target
     task_id = physical_target(authority, ref)
     from gateway.run import _checkpoint_agent_kwargs
@@ -259,11 +266,11 @@ async def rollback(connection, ref, params, *, kind):
             target = _resolve_checkpoint_hash(mgr, cwd, params['hash'])
         except ValueError as exc:
             if kind == 'diff':
-                raise RuntimeStoreError('invalid_checkpoint') from exc
+                raise AuthorityRefusal('invalid_checkpoint') from exc
             return {'success': False, 'error': str(exc)}
         if kind == 'diff':
             if refusal:
-                raise RuntimeStoreError('unsupported_terminal_backend')
+                raise AuthorityRefusal('unsupported_terminal_backend')
             from tui_gateway.render import render_diff
             result = mgr.diff(cwd, target)
             raw = result.get('diff', '')[:4000]
@@ -329,7 +336,7 @@ async def _rewind_last_turn(connection, ref):
     if target is None:
         return 0
     from gateway.session_mutations import mutate_session
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from persistence.core.errors import MUTATION_GUARD_REFUSALS
     handle = authority._handle(ref)
     try:
         result = await mutate_session(authority, connection.actor, ref, {
@@ -337,5 +344,5 @@ async def _rewind_last_turn(connection, ref):
             'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
             'operation': 'rewind', 'payload': {'target_message_id': target}})
     except MUTATION_GUARD_REFUSALS as exc:
-        raise RuntimeStoreError('session_busy') from exc
+        raise AuthorityRefusal('session_busy') from exc
     return int(result.get('rewound_count') or 0)

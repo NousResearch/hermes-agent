@@ -344,6 +344,7 @@ from pathlib import Path
 from typing import Optional
 
 
+from hermes_cli.main_resume_args import apply_in_dir as _apply_in_dir
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
@@ -1294,30 +1295,27 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
-    never opens a writer beside the one the CLI acquires from the registry a moment later.
-    Open failures yield None and any error raised by the ``with`` body is swallowed —
-    callers fall through to their ``return None``."""
-    db = None
+    """Yield main's read-only session reads over a storage interface reader on the current home's state.db, or None
+    when it cannot open (lazy imports, so test patches on ``persistence_assembly`` intercept). Every caller is a lookup
+    (last session, title → id, recorded cwd), so it never opens a writer beside the one the CLI opens a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed: callers fall through to their
+    ``return None``."""
+    reader, handles = None, contextlib.ExitStack()
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+        from persistence_assembly import open_persistence_reader
+        store = handles.enter_context(open_persistence_reader(get_hermes_home() / "state.db"))
+        store.ready()
+        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
+        from hermes_cli.gateway_session_store import SurfaceLabelReader
+        reader = SurfaceLabelReader(store)
     except Exception:
         pass
     try:
-        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
-        from hermes_cli.gateway_session_store import SurfaceLabelReader
-        yield SurfaceLabelReader(db) if db is not None else None  # body errors (incl. AttributeError on a None db) are swallowed
+        yield reader  # body errors (incl. AttributeError on a None reader) are swallowed
     except Exception:
         pass
     finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
+        handles.close()
 
 
 def _latest_session_id(use_tui: bool) -> Optional[str]:
@@ -1359,17 +1357,18 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     old root ID (exit summary, notes) resumes at the live tip.
     """
     with _session_db() as db:
+        store = db.persistence
         # Exact session ID first, then title (with auto-latest for lineage).
-        session = db.get_session(name_or_id)
-        resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
+        session = store.sessions.get(name_or_id)
+        resolved_id = session.session_id if session else store.sessions.resolve_by_title(name_or_id)
         if not resolved_id and name_or_id.startswith("local-"):
             # The TUI epilogue prints a canonical session's unique 22-char prefix.
-            resolved_id = db.resolve_session_id(name_or_id)
+            resolved_id = store.sessions.resolve_id(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = store.lineage.tip(resolved_id) or resolved_id
             except Exception:
                 pass
         return resolved_id
@@ -1476,36 +1475,6 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     sys.exit(1)
 
 
-def _apply_in_dir(args) -> None:
-    """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
-    in_dir = getattr(args, "in_dir", None)
-    if not in_dir:
-        return
-    # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
-    # translate drive-root spellings to native Windows form. No-op elsewhere.
-    from tools.environments.local import _msys_to_windows_path
-
-    _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
-    if not os.path.isdir(_target_dir):
-        print(f"Error: --in directory not found: {in_dir}")
-        sys.exit(1)
-    try:
-        os.chdir(_target_dir)
-    except OSError as e:
-        print(f"Error: cannot enter --in directory {in_dir}: {e}")
-        sys.exit(1)
-    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
-    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
-    # cwd, so a value inherited from a parent surface, the shell or .env outlives
-    # this chdir and re-homes the session in the old directory (#106220). Refresh
-    # it. An unset variable stays unset: the backends then derive from the new
-    # process cwd (local exports it at cli import, docker mounts it, ssh and
-    # container backends keep their own remote/sandbox default).
-    if os.environ.get("TERMINAL_CWD", "").strip():
-        os.environ["TERMINAL_CWD"] = _target_dir
-    args.no_restore_cwd = True
-
-
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1551,7 +1520,8 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
         and not getattr(args, "worktree", False)
     ):
         with _session_db() as db:  # never let cwd-restore break a resume
-            _saved_cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
+            session = db.persistence.sessions.get(args.resume)
+            _saved_cwd = ((session.cwd if session else None) or "").strip()
             if _saved_cwd and not os.path.isdir(_saved_cwd):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):

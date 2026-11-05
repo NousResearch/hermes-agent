@@ -975,7 +975,10 @@ def rejected_reasoning_carriers(agent: Any) -> frozenset:
     session_id = getattr(agent, "session_id", None)
     if session_id and getattr(agent, "_reasoning_rejections_loaded_for", None) != session_id:
         agent._reasoning_rejections_loaded_for = session_id
-        getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+        from agent.agent_init_session import agent_interface
+        store = agent_interface(agent)
+        getter = (store.sessions.get_model_config_value if store is not None
+                  else getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None))
         stored = getter(session_id, _REJECTION_MODEL_CONFIG_KEY, []) if callable(getter) else []
         for entry in stored if isinstance(stored, list) else ():
             if isinstance(entry, list) and len(entry) == 4 and isinstance(entry[3], list):
@@ -1004,7 +1007,10 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
         return frozenset()
     routes = agent._reasoning_rejecting_routes
     routes.setdefault(reasoning_route_key(agent), set()).update(new)
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = (store.sessions.patch_model_config if store is not None
+               else getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None))
     if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
         patcher(agent.session_id, {_REJECTION_MODEL_CONFIG_KEY: [[*key, sorted(v)] for key, v in sorted(routes.items())]})
     return frozenset(new)

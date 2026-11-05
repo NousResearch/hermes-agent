@@ -19,22 +19,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_state_guard as state_guard
+from persistence.sqlite._state import guard as state_guard
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _CHILD_PROBE = r"""
 import json, os, sys
 sys.path.insert(0, {repo!r})
-import hermes_state_guard
+import persistence.sqlite._state.guard
 from persistence.sqlite import _holder
 fired = False
 try:
-    _holder._ensure_test_isolation(hermes_state_guard._real_platform_state_root() / "state.db")
+    _holder._ensure_test_isolation(persistence.sqlite._state.guard._real_platform_state_root() / "state.db")
 except RuntimeError:
     fired = True
 print(json.dumps({{
-    "armed": hermes_state_guard._running_under_pytest(),
+    "armed": persistence.sqlite._state.guard._running_under_pytest(),
     "fired": fired,
 }}))
 """

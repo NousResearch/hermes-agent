@@ -103,7 +103,7 @@ def _stub_plugin_discovery(monkeypatch):
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
-    """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
+    """hermes -z bypasses HermesCLI, but recall still needs the session store."""
     from hermes_cli.oneshot import _run_agent
 
     captured = {}
@@ -120,7 +120,10 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             captured["prompt"] = prompt
             return {"final_response": "ok", "failed": False, "partial": False}
 
-    def fake_acquire(db_path=None):
+    opened = []
+
+    def fake_open_persistence(scope, *, eager=False):
+        opened.append(eager)
         return sentinel_db
 
     def mod(name, **attrs):
@@ -130,8 +133,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         return module
 
     monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
-    # Oneshot borrows the process-shared registry handle (one writer per state.db path).
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", mod("hermes_state_registry", acquire=fake_acquire))
+    # Oneshot opens a handle on the process-shared store (one writer per state.db path).
+    monkeypatch.setitem(sys.modules, "persistence_assembly", mod(
+        "persistence_assembly", open_persistence=fake_open_persistence, profile_scope=lambda: "current-home"))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -168,7 +172,8 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     text, result = _run_agent("recall this")
     assert text == "ok"
     assert not result.get("failed")
-    assert captured["session_db"] is sentinel_db
+    assert captured["session_db"] is sentinel_db and captured["persistence"] is sentinel_db
+    assert opened == [True]
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
 

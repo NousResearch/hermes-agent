@@ -509,8 +509,7 @@ def _effective_file_timeout(
     approaches the flat cap.
 
     The flat ``file_timeout`` (default 300s) is sized for the typical file,
-    but a handful of large-collection files (e.g. ``tests/test_hermes_state.py``,
-    239 tests × subprocess-per-test overhead) legitimately run 200s+ on a
+    but a handful of large-collection files legitimately run 200s+ on a
     quiet runner. Under CI load that dilates past the cap, the file is
     SIGKILL'd mid-run, and the automatic retry then passes — a manufactured
     FLAKY report for a file that was never broken (seen 2026-08-18 on main:

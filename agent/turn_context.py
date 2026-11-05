@@ -210,6 +210,7 @@ def _maybe_title_session_at_turn_start(
     if platform in _UNTITLED_PLATFORMS:
         return
     try:
+        from agent.agent_init_session import agent_interface
         from agent.message_content import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title
 
@@ -235,8 +236,9 @@ def _maybe_title_session_at_turn_start(
                 ensure()
             if not getattr(agent, "_session_db_created", False):
                 return
+        persistence = agent_interface(agent)
         if platform == "subagent":
-            apply_subagent_title(session_db, session_id, user_text)
+            apply_subagent_title(session_db, session_id, user_text, persistence=persistence)
             return
         # Snapshot runtime identity so the background titler can skip if the user
         # switches models before it fires.
@@ -263,6 +265,7 @@ def _maybe_title_session_at_turn_start(
                 and getattr(agent, "provider", None) == main_runtime["provider"]
             ),
             title_preview=title_preview,
+            persistence=persistence,
         )
         # Unstarted = the title call would share a self-hosted endpoint with this turn's request
         # (#117296); ``finalize_turn`` starts it once the model has answered.
@@ -838,10 +841,15 @@ def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: A
         _row_id = turn_user_msg.get("_row_id")
         if _db is None or not isinstance(_row_id, int):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        # A submit-time row is addressed under the session that wrote it (a rotation may follow).
+        _row_session_id = turn_user_msg.get("_submit_row_session_id") or agent.session_id
         try:
-            # A submit-time row is addressed under the session that wrote it (a rotation may follow).
-            _db.set_user_message_content(turn_user_msg.get("_submit_row_session_id") or agent.session_id,
-                                         _row_id, withheld, metadata)
+            if _store is not None:
+                _store.messages.set_user_message_content(_row_session_id, _row_id, withheld, display_metadata=metadata)
+            else:
+                _db.set_user_message_content(_row_session_id, _row_id, withheld, metadata)
         except Exception:
             logger.warning("withheld-prompt rewrite failed for session=%s", agent.session_id or "none", exc_info=True)
 
@@ -1030,6 +1038,9 @@ def _stamp_api_content_sidecar(
         _db = getattr(agent, "_session_db", None)
         if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        _db = _store.messages if _store is not None else _db
         try:
             if isinstance(_row_id, int):
                 _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
@@ -1065,6 +1076,9 @@ def _append_multimodal_context(
         _db = getattr(agent, "_session_db", None)
         if _db is None or not isinstance(_row_id, int):
             return
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
+        _db = _store.messages if _store is not None else _db
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
         try:

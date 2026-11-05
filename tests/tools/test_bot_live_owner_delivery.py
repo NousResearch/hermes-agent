@@ -104,12 +104,12 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
     intent read back intact, a pinned intent is never replaced by a rewritten payload, and a
     damaged intent retains its evidence instead of retrying a transport."""
     import hermes_cli.gateway_runtime as runtime
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     from tools import bot_mode_dm
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="chat", source="cli")
-    db.set_session_title("chat", "Bot Chat")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "chat", "cli", title="Bot Chat")
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
@@ -197,8 +197,9 @@ def _ready(instance_id):
 
 
 def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
     import hermes_cli.gateway_runtime as runtime
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     from types import SimpleNamespace
 
@@ -209,20 +210,18 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
 
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
     assert mailbox.find_canonical_live_owner(tmp_path) is None  # no state.db yet
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_id="scratch", source="cli")
-        db.set_session_title("scratch", "Scratch")
+        seed_session(db, "scratch", "cli", title="Scratch")
         # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
         # first delivery (create-if-missing), so discovery reports an empty tip, not None.
         assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
-        db.create_session(session_id="chat", source="cli")
-        db.set_session_title("chat", "Bot Chat")
+        seed_session(db, "chat", "cli", title="Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
         assert owner["canonical"] is True and owner["lease_id"] == "authority-1"
         assert owner["session_id"] == owner["live_session_id"] == "chat"
-        db.end_session("chat", "compression")
-        db.create_session(session_id="tip", source="cli", parent_session_id="chat")
+        db.sessions.end("chat", "compression")
+        seed_session(db, "tip", "cli", parent_session_id="chat")
         assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == "tip"
     finally:
         db.close()

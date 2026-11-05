@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_wal as state_wal
+from persistence.sqlite._state import wal as state_wal
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session
 
@@ -123,12 +123,12 @@ _GATEWAY_CHILD = textwrap.dedent(
     repo, hermes_home, db_path = sys.argv[1], sys.argv[2], sys.argv[3]
     sys.path.insert(0, repo)
     os.environ["HERMES_HOME"] = hermes_home
-    import hermes_state_wal
-    if hermes_state_wal.is_sqlite_wal_reset_vulnerable():
-        hermes_state_wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
-    hermes_state_wal.resolve_journal_mode = lambda: "wal"
+    import persistence.sqlite._state.wal
+    if persistence.sqlite._state.wal.is_sqlite_wal_reset_vulnerable():
+        persistence.sqlite._state.wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
+    persistence.sqlite._state.wal.resolve_journal_mode = lambda: "wal"
     from persistence.sqlite._holder import StoreHolder
-    from hermes_state_errors import DeletedWalGenerationError
+    from persistence.sqlite._state.errors import DeletedWalGenerationError
     from persistence.sqlite.conversation._store.messages import append_message
     from persistence.sqlite.conversation._store.sessions import create_session
 

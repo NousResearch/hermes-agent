@@ -14,7 +14,7 @@ from typing import Optional
 from hermes_cli.backup_restore import _restore_db_pages
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.doctor_report import check_info
-from hermes_state_holders import read_only_db_uri
+from persistence.sqlite._state.holders import read_only_db_uri
 
 # The logger of the module the restore functions come from.
 logger = logging.getLogger("hermes_cli.backup_restore")
@@ -39,7 +39,7 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
     that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
     store is probed in place. Returns the failure reason, or None when healthy or skipped."""
-    from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
+    from persistence.sqlite._state.repair import _db_opens_cleanly, _live_writer_holds_db
     if not _live_writer_holds_db(state_db_path):
         return _db_opens_cleanly(state_db_path)
     if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
@@ -91,8 +91,8 @@ def _refusal(target: str, current: str, *, on_cross_vm_fs: bool) -> Optional[str
 
 def cmd_set_journal_mode(args) -> int:
     from hermes_state import _default_db_path
-    from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
-    from hermes_state_wal import _path_on_cross_vm_fs, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable
+    from persistence.sqlite._state.holders import describe_holder_pid, foreign_state_db_holders
+    from persistence.sqlite._state.wal import _path_on_cross_vm_fs, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable
     from sqlite_support import resolve_journal_mode
 
     target = args.mode
@@ -348,7 +348,7 @@ _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
 def _has_ledger_rows(db_path: Path) -> bool:
     if not db_path.is_file():
         return False
-    from hermes_state_holders import read_only_db_uri
+    from persistence.sqlite._state.holders import read_only_db_uri
     try:
         with closing(sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)) as conn:
             return bool(conn.execute(_LEDGER_PROBE).fetchone()[0])
@@ -359,7 +359,7 @@ def _has_ledger_rows(db_path: Path) -> bool:
 def _pre_runtime_snapshot(home: Path) -> str | None:
     """Newest quick snapshot of ``home`` holding a state.db from before the runtime ledger."""
     from hermes_cli.backup import _quick_snapshot_root
-    from hermes_state_holders import read_only_db_uri
+    from persistence.sqlite._state.holders import read_only_db_uri
     root = _quick_snapshot_root(home)
     for snap in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         db = snap / "state.db"

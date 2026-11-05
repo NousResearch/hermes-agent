@@ -24,7 +24,7 @@ SITE_FAILURE_CODES = frozenset({
 
 
 def launch_credentials_copy(error: Any) -> str:
-    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    """The refusal for a session whose own launch/route API key changed or is gone (``AuthorityRefusal``
     or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
     started with, so /retry repeats the refusal: the copy names /new on every surface."""
     from agent.i18n import t

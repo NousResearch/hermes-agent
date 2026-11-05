@@ -5,7 +5,7 @@ from __future__ import annotations
 import errno
 import sqlite3
 
-from hermes_state_errors import is_disk_full_error
+from persistence.sqlite._state.errors import is_disk_full_error
 
 
 def test_enospc_oserror():

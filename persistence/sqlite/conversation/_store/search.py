@@ -7,9 +7,9 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any, Collection, Optional
-from hermes_state_errors import is_malformed_db_error
-from hermes_state_common import fts_rebuild_admission
-from hermes_state_common import routed_sessions_setting
+from persistence.sqlite._state.errors import is_malformed_db_error
+from persistence.sqlite._state.common import fts_rebuild_admission
+from sqlite_support import routed_sessions_setting
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import _enter_fts_fail_open, _present_fts_tables
 from persistence.sqlite._schema_ddl import (

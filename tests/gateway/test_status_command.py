@@ -1,4 +1,4 @@
-from hermes_state import AsyncSessionDB, SessionDB
+from persistence_assembly import open_persistence, profile_scope
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
@@ -18,6 +18,8 @@ from gateway.session import (
     SessionStore,
     build_session_key,
 )
+from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+from tests.fixtures.storage_seed import seed_session
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -38,10 +40,27 @@ def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> Message
     )
 
 
+def _row(**fields):
+    """A session record as the storage interface returns it; fields /status reads and the test omits are None."""
+    columns = ("model", "billing_provider", "billing_base_url", "title", "input_tokens", "output_tokens",
+               "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+    return SimpleNamespace(**{**dict.fromkeys(columns), **fields})
+
+
+def _route(model, billing_provider, billing_base_url=None):
+    """A recent-route usage row as the storage interface returns it."""
+    return SimpleNamespace(route=SimpleNamespace(model=model, billing_provider=billing_provider,
+                                                 billing_base_url=billing_base_url, billing_mode=None),
+                           api_call_count=0)
+
+
 def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.TELEGRAM):
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle the test gives the runner
+
+    runner = object.__new__(_Runner)
     runner.config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
@@ -61,11 +80,13 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.get_session_title.return_value = None
+    runner._session_db = MagicMock()
+    runner.persistence = MagicMock()
+    runner.persistence.aio.sessions.get_title = AsyncMock(return_value=None)
+    runner.persistence.aio.usage.recent_route = AsyncMock(return_value=None)
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
     # the populated path override this.
-    runner._session_db._db.get_session.return_value = None
+    runner.persistence.aio.sessions.get = AsyncMock(return_value=None)
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -84,7 +105,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
 @pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
-    SQLite SessionDB (where run_agent.py persists them) and sum all component
+    SQLite store (where run_agent.py persists them) and sum all component
     counts, not from SessionEntry (which the agent never writes)."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -96,13 +117,13 @@ async def test_status_command_reads_token_totals_from_session_db():
         total_tokens=0,  # SessionEntry never gets written to — always 0.
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 1000,
-        "output_tokens": 250,
-        "cache_read_tokens": 500,
-        "cache_write_tokens": 100,
-        "reasoning_tokens": 50,
-    }
+    runner.persistence.aio.sessions.get.return_value = _row(
+        input_tokens=1000,
+        output_tokens=250,
+        cache_read_tokens=500,
+        cache_write_tokens=100,
+        reasoning_tokens=50,
+    )
 
     result = await runner._handle_message(_make_event("/status"))
 
@@ -122,14 +143,14 @@ async def test_status_command_includes_live_agent_model_and_context():
         total_tokens=0,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 1000,
-        "output_tokens": 250,
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_tokens": 0,
-        "model": "openai/gpt-test",
-    }
+    runner.persistence.aio.sessions.get.return_value = _row(
+        input_tokens=1000,
+        output_tokens=250,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        model="openai/gpt-test",
+    )
     running_agent = SimpleNamespace(
         model="openai/gpt-test",
         provider="openai",
@@ -160,29 +181,25 @@ async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
         chat_type="dm",
     )
     runner = _make_runner(session_entry)
-    db = SessionDB(db_path=tmp_path / "state.db")
-    runner._session_db = AsyncSessionDB(db)
+    runner.persistence = db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
-        db.update_token_counts(
-            "sess-1",
-            model="z-ai/glm-5.2",
-            billing_provider="nvidia",
-            billing_base_url="https://integrate.api.nvidia.com/v1/",
-            input_tokens=480,
+        seed_session(db, "sess-1", "telegram", model="z-ai/glm-5.2")
+        db.usage.queue_usage("sess-1", UsageDelta(
+            tokens=TokenCounts(input_tokens=480),
             api_call_count=48,
-        )
-        db.update_token_counts(
-            "sess-1",
-            model="upstage/solar-pro4:free",
-            billing_provider="nous",
-            billing_base_url="https://inference-api.nousresearch.com/v1/",
-            input_tokens=60,
+            route=BillingRoute(model="z-ai/glm-5.2", billing_provider="nvidia",
+                               billing_base_url="https://integrate.api.nvidia.com/v1/"),
+        ))
+        db.usage.queue_usage("sess-1", UsageDelta(
+            tokens=TokenCounts(input_tokens=60),
             api_call_count=6,
-        )
+            route=BillingRoute(model="upstage/solar-pro4:free", billing_provider="nous",
+                               billing_base_url="https://inference-api.nousresearch.com/v1/"),
+        ))
+        db.usage.flush_usage()
         # Reproduce the inconsistent legacy summary observed in #87227.
-        db.update_session_model("sess-1", "z-ai/glm-5.2")
-        db.update_session_billing_route(
+        db.sessions.update_model("sess-1", "z-ai/glm-5.2")
+        db.usage.set_billing_route(
             "sess-1",
             provider="nous",
             base_url="https://inference-api.nousresearch.com/v1/",
@@ -205,17 +222,15 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
     runner = _make_runner(session_entry)
     runner.session_store = store
     runner._async_session_store = AsyncSessionStore(store)
-    db = SessionDB(db_path=tmp_path / "state.db")
-    runner._session_db = AsyncSessionDB(db)
+    runner.persistence = db = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session(session_entry.session_id, "telegram", model="model-a")
-        db.update_token_counts(
-            session_entry.session_id,
-            model="model-a",
-            billing_provider="provider-a",
-            input_tokens=480,
+        seed_session(db, session_entry.session_id, "telegram", model="model-a")
+        db.usage.queue_usage(session_entry.session_id, UsageDelta(
+            tokens=TokenCounts(input_tokens=480),
             api_call_count=48,
-        )
+            route=BillingRoute(model="model-a", billing_provider="provider-a"),
+        ))
+        db.usage.flush_usage()
         result = SimpleNamespace(
             new_model="model-b",
             target_provider="provider-b",
@@ -324,7 +339,7 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
 @pytest.mark.asyncio
 async def test_status_command_default_route_keeps_runtime_endpoint_and_context_pin():
     """No /model switch and no resident agent (first /status after a restart): the winner is the
-    persisted route or the SessionDB row, which carry no endpoint of their own. The window must then
+    persisted route or the session row, which carry no endpoint of their own. The window must then
     be resolved against the default runtime route (custom base_url + key, ``model.context_length``
     pin intact) exactly as /context does, not against an empty endpoint that drops the pin."""
     config = {"model": {"default": "my-local-model", "provider": "custom",
@@ -343,8 +358,8 @@ async def test_status_command_default_route_keeps_runtime_endpoint_and_context_p
         )
         session_entry.last_prompt_tokens = 9_000
         runner = _make_runner(session_entry)
-        runner._session_db._db.get_session.return_value = session_row
-        runner._session_db._db.get_recent_session_model_route.return_value = persisted_route
+        runner.persistence.aio.sessions.get.return_value = _row(**session_row) if session_row else None
+        runner.persistence.aio.usage.recent_route.return_value = _route(**persisted_route) if persisted_route else None
 
         with patch("gateway.run._load_gateway_config", return_value=config), patch(
             "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
@@ -658,7 +673,7 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
     )
     session_entry.last_prompt_tokens = 66_570
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {"model": model}
+    runner.persistence.aio.sessions.get.return_value = _row(model=model)
 
     config = {
         "model": {

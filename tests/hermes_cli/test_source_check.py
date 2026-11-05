@@ -5,6 +5,7 @@ import subprocess
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -771,8 +772,9 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     tree = f"/repos/fixture/fork/git/trees/{sha}"
     module = f"/fixture/fork/{sha}/hermes_state_common.py"
     responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
-    from hermes_state_common import SCHEMA_SQL
-    responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+    from hermes_cli.update_downgrade_guard import BACKEND_SCHEMA
+    schema = (Path(source_check.__file__).resolve().parent.parent / BACKEND_SCHEMA).read_text(encoding="utf-8")
+    responses[module] = (200, schema if runtime else "SCHEMA_SQL = 'old schema'")
     failed_path = tree if failure == "tree" else module
     good = responses[failed_path]
     responses[failed_path] = (503, {})
@@ -789,3 +791,16 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     clock[0] += 10 * source_check._UPDATE_CHECK_CACHE_SECONDS
     assert check() is not runtime
     assert requests == seen
+
+
+def test_a_release_whose_ledger_is_only_in_the_backend_schema_does_not_predate_the_runtime(installation):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, _requests, _git = installation
+    responses[f"/repos/fixture/fork/git/trees/{sha}"] = (200, {"tree": [
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "persistence", "type": "tree"}]})
+    responses[f"/fixture/fork/{sha}/hermes_state.py"] = (200, "from persistence_assembly import open_persistence\n")
+    responses[f"/fixture/fork/{sha}/persistence/sqlite/_schema_ddl.py"] = (
+        200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'\n")
+
+    assert source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json") is False

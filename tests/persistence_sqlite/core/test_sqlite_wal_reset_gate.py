@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-import hermes_state_wal as wal_module
-from hermes_state_wal import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
+from persistence.sqlite._state import wal as wal_module
+from persistence.sqlite._state.wal import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
 
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
@@ -346,7 +346,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "nfs.db"), factory=_LockedProbeConnection
         )
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+            with caplog.at_level(logging.WARNING, logger="persistence.sqlite._state.wal"):
                 result = apply_wal_with_fallback(conn, db_label="nfs.db")
             # The set-pragma never ran (it would have raised "locking
             # protocol" above); the configured WAL mode is assumed instead.

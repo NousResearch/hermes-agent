@@ -296,7 +296,7 @@ async def test_native_admission_envelope_round_trips_the_names(tmp_path, monkeyp
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native, snapshot_native
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     chat = "15551234567@s.whatsapp.net"
@@ -323,7 +323,7 @@ async def test_native_admission_envelope_round_trips_the_names(tmp_path, monkeyp
         assert restored.media_filenames == ["Plan A.pdf", ""]
         assert len(restored.media_urls) == 2
         for bad in (["only-one.pdf"], "x", [1, 2]):
-            with pytest.raises(RuntimeStoreError, match="invalid_params"):
+            with pytest.raises(AuthorityRefusal, match="invalid_params"):
                 snapshot_native(runner, replace(event, media_filenames=bad))
     finally:
-        authority.db.close()
+        authority.persistence.close()

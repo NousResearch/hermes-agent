@@ -9,10 +9,10 @@ and re-appended the ENTIRE transcript. Compression cycles then doubled the
 copies: the incident session grew 998 → 1995 → 3990 → 7981 rows across three
 aborted rotations (15,962 active rows / 472 distinct contents).
 
-Fix: rows are stamped durable at materialization time in
-``SessionDB._rows_to_conversation`` — a dict built FROM a durable row is
-persisted by construction, no matter which caller loads it or how it is later
-handed to a flush.
+Fix: rows are stamped durable at materialization time in the store's
+conversation read, so a dict built FROM a durable row is persisted by
+construction, no matter which caller loads it or how it is later handed to a
+flush.
 """
 
 from __future__ import annotations
@@ -20,15 +20,18 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _make_flush_agent(db: SessionDB, session_id: str):
+def _make_flush_agent(db, session_id: str):
     """Minimal agent shell that owns the real flush implementation."""
     agent = SimpleNamespace(
         _session_db=db,
+        persistence=db,
         _session_db_created=True,
         _persist_disabled=False,
         session_id=session_id,
@@ -51,21 +54,18 @@ def _make_flush_agent(db: SessionDB, session_id: str):
     return agent
 
 
-def _seed_session(db: SessionDB, sid: str, turns: int = 3) -> None:
-    db.create_session(sid, source="cli")
+def _seed_session(db, sid: str, turns: int = 3) -> None:
+    seed_session(db, sid, "cli")
     for i in range(turns):
-        db.append_message(sid, "user", f"question {i}")
-        db.append_message(sid, "assistant", f"answer {i}")
+        seed_messages(db, sid, {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}"})
 
 
 def test_marker_constant_in_sync() -> None:
     """One shared literal across every module that touches the marker.
 
-    ``hermes_state`` and ``agent.turn_finalizer`` import the constant from
-    ``agent.context_compressor`` (single source), so the only genuine drift
-    surface left is ``run_agent``'s predating copy — hermes_state cannot
-    import run_agent (circular), and run_agent's own literal predates the
-    consolidation.
+    ``agent.turn_finalizer`` and ``agent.session_persistence`` import the
+    constant from ``agent.context_compressor`` (single source).
     """
     import agent.context_compressor as cc
     import agent.turn_finalizer as tf
@@ -77,14 +77,16 @@ def test_marker_constant_in_sync() -> None:
 
 
 def test_loaded_rows_are_stamped_durable(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_session(db, "S1")
 
-    loaded = db.get_messages_as_conversation("S1")
+    loaded = conversation(db, "S1")
     assert loaded
     assert all(m.get(_DB_PERSISTED_MARKER_KEY) is True for m in loaded)
 
-    model_history, display_history = db.get_resume_conversations("S1")
+    resumed = db.messages.read_resume_conversations("S1")
+    model_history = [m.as_openai_message() for m in resumed.model]
+    display_history = [m.as_openai_message() for m in resumed.display]
     assert model_history and display_history
     assert all(m.get(_DB_PERSISTED_MARKER_KEY) is True for m in model_history)
     assert all(m.get(_DB_PERSISTED_MARKER_KEY) is True for m in display_history)
@@ -98,24 +100,24 @@ def test_repeated_identityless_flushes_do_not_amplify(tmp_path: Path) -> None:
     and flush it with NO ``conversation_history`` boundary. Pre-fix each cycle
     doubled the row count (998 → 1995 → 3990 → 7981 in the incident session).
     """
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_session(db, "S2", turns=4)
-    baseline = len(db.get_messages("S2"))
+    baseline = len(transcript_rows(db, "S2"))
 
     for _ in range(3):
-        loaded = db.get_messages_as_conversation("S2")
+        loaded = conversation(db, "S2")
         agent = _make_flush_agent(db, "S2")  # fresh agent: no identity state
         agent._flush_messages_to_session_db(loaded)
 
-    assert len(db.get_messages("S2")) == baseline
+    assert len(transcript_rows(db, "S2")) == baseline
 
 
 def test_new_tail_after_loaded_history_still_flushes(tmp_path: Path) -> None:
     """Guard against over-skipping: only loaded rows are exempt, new turns write."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_session(db, "S3", turns=1)
 
-    loaded = db.get_messages_as_conversation("S3")
+    loaded = conversation(db, "S3")
     live = [
         *loaded,
         {"role": "user", "content": "new question"},
@@ -124,7 +126,7 @@ def test_new_tail_after_loaded_history_still_flushes(tmp_path: Path) -> None:
     agent = _make_flush_agent(db, "S3")
     agent._flush_messages_to_session_db(live)
 
-    contents = [m.get("content") for m in db.get_messages("S3")]
+    contents = [m.get("content") for m in transcript_rows(db, "S3")]
     assert contents == ["question 0", "answer 0", "new question", "new answer"]
 
 
@@ -139,22 +141,22 @@ def test_compaction_copy_strips_stamp_so_child_flush_writes(tmp_path: Path) -> N
     """
     from agent.context_compressor import _fresh_compaction_message_copy
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_session(db, "PARENT", turns=2)
-    db.create_session("CHILD", source="cli", parent_session_id="PARENT")
+    seed_session(db, "CHILD", "cli", parent_session_id="PARENT")
 
-    loaded = db.get_messages_as_conversation("PARENT")
+    loaded = conversation(db, "PARENT")
     compacted = [_fresh_compaction_message_copy(m) for m in loaded]
     assert all(_DB_PERSISTED_MARKER_KEY not in m for m in compacted)
 
     agent = _make_flush_agent(db, "CHILD")
     agent._flush_messages_to_session_db(compacted)
-    child_rows = db.get_messages("CHILD")
+    child_rows = transcript_rows(db, "CHILD")
     assert len(child_rows) == len(loaded)
 
     # Idempotent thereafter: the flush stamped the copies on write.
     agent._flush_messages_to_session_db(compacted)
-    assert len(db.get_messages("CHILD")) == len(loaded)
+    assert len(transcript_rows(db, "CHILD")) == len(loaded)
 
 
 def test_noop_progress_check_is_marker_insensitive(tmp_path: Path) -> None:
@@ -168,10 +170,10 @@ def test_noop_progress_check_is_marker_insensitive(tmp_path: Path) -> None:
     """
     from agent.conversation_compression import _strip_marker_for_comparison
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_session(db, "NOOP", turns=2)
 
-    stamped = db.get_messages_as_conversation("NOOP")
+    stamped = conversation(db, "NOOP")
     assert all(m.get(_DB_PERSISTED_MARKER_KEY) is True for m in stamped)
     # What a no-op engine hands back after the terminal marker sweep.
     swept = [

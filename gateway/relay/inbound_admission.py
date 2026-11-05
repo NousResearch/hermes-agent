@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger("gateway.relay.adapter")
 
@@ -50,7 +50,7 @@ async def _admit(adapter, runner, event):
     except ParkedProfileRefusal as exc:
         refuse_parked_route(adapter, event.source, exc.profile, reply_to=event.message_id)
         return
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason not in _PERMANENT_REFUSALS:
             raise
         logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",

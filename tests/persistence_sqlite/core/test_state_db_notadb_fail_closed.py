@@ -15,8 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import StateDbCorruptError
-from hermes_state_wal import _on_disk_journal_mode
+from persistence.sqlite._state.errors import StateDbCorruptError
+from persistence.sqlite._state.wal import _on_disk_journal_mode
 from persistence.sqlite.conversation._store.sessions import create_session, list_sessions_rich
 
 

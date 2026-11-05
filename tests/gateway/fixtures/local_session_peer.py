@@ -11,6 +11,7 @@ import time
 import traceback
 
 from authority_controls_peer import ModelPeer
+from tests.fixtures.storage_read import session_row
 
 
 async def probe(peer, target, kind):
@@ -69,7 +70,7 @@ async def probe(peer, target, kind):
         info = await rpc(a, 'session.info', session_id=sid)
         assert info['result']['source'] == 'cli', info
         assert info['result']['lazy'] is True, info
-        assert authority.db.get_session(sid) is not None
+        assert session_row(authority.persistence, sid) is not None
         # Private route identity cannot be reconstructed from its serialized source,
         # even under an unrelated messaging allow-all policy.
         from dataclasses import replace
@@ -83,7 +84,7 @@ async def probe(peer, target, kind):
             os.environ.pop('GATEWAY_ALLOW_ALL_USERS')
         from gateway.session_local import create_local_session
         from gateway.session_contract import SessionActor
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         for actor, reason in ((SessionActor('read-only', 'fixture', frozenset({'session:read'}), 'readonly'),
                                'permission_denied'),
                               (SessionActor('creator', 'foreign', frozenset({'session:create'}), 'foreign'),
@@ -91,7 +92,7 @@ async def probe(peer, target, kind):
             try:
                 create_local_session(authority, actor, {'api_key': 'denied-launch-key',
                     'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1', 'ignore_rules': True})
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 assert exc.reason == reason
             else:
                 raise AssertionError('restricted principal created a local route')

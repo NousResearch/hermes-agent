@@ -401,8 +401,8 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
     if _pending := session.get("pending_title"):
         _session_key = session.get("session_key") or sid
         try:
-            with _session_db(session) as _pdb:
-                if _pdb and _pdb.set_session_title(_session_key, _pending):
+            with _session_db(session) as _pdb, _persistence_for(_pdb) as persistence:
+                if persistence is not None and persistence.sessions.set_title(_session_key, _pending):
                     session["pending_title"] = None
         except ValueError as exc:
             # Invalid/duplicate title — non-retryable, drop it; auto-title takes over.
@@ -539,16 +539,18 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
     # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
     # silently never sees them (#123545).
-    with _session_db(session) as db:
+    from persistence.conversation.messages import TranscriptRead
+    with _session_db(session) as db, _persistence_for(db) as persistence:
         try:
-            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
+            newer = persistence.messages.read_transcript(
+                _submit_row_target_key(session), TranscriptRead(after_id=seen)) if persistence is not None else ()
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return
-    newer = [row for row in newer if _foreign(row.get("id"))]
+    newer = [row for row in newer if _foreign(row.id)]
     if not newer:
         return
-    rewritten = any(row.get("_compressed_summary") for row in newer)
+    rewritten = any(row.compressed_summary for row in newer)
     rows = _load_durable_truncation_history(session, repair_alternation=rewritten) or []
     keep = _below_ceiling if rewritten else _foreign
     tail = canonicalize_replay_history([m for m in rows if keep(_message_row_id(m))])
@@ -619,8 +621,8 @@ def _install_has_prior_sessions(session: dict) -> bool:
     its first-ever message holds exactly one row.
     """
     try:
-        with _session_db(session) as db:
-            return db is not None and db.session_count_ge(2)
+        with _session_db(session) as db, _persistence_for(db) as persistence:
+            return persistence is not None and persistence.sessions.count_at_least(2)
     except Exception:
         logger.debug("session count probe failed for first-contact check", exc_info=True)
         return False
@@ -843,11 +845,11 @@ def _absorb_turn_result(
     result, agent = st.result, st.agent
     if display_kind and isinstance(text, str):
         # Post-turn fallback stamp of a synthesized turn's display kind (DB row + result).
-        db = getattr(agent, "_session_db", None)
+        persistence = getattr(agent, "persistence", None)
         current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
-        if db is not None:
+        if persistence is not None:
             try:
-                db.set_latest_matching_message_display_kind(
+                persistence.messages.set_latest_matching_message_display_kind(
                     current_session_id, role="user", content=text, display_kind=display_kind,
                     display_metadata=display_metadata)
             except Exception:
@@ -1085,7 +1087,7 @@ _ROUTING_REOPEN_PATIENCE_S = 0.5
 
 
 def _routing_provenance_db(session: dict):
-    """The session's own SessionDB for :func:`_reopen_routed_session_row`, or a ``None`` context."""
+    """The session's own SessionDB (its handle goes to :func:`_reopen_routed_session_row`), or a ``None`` context."""
     try:
         return _session_db(session)
     except Exception:
@@ -1093,7 +1095,7 @@ def _routing_provenance_db(session: dict):
         return contextlib.nullcontext(None)
 
 
-def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
+def _reopen_routed_session_row(persistence, sid: str, session: dict) -> None:
     """Routing provenance for #106459, called under ``_sessions_lock`` while this backend still has the
     session registered and is about to start a turn for it: an explicit-close stamp on its row missed a
     live conversation, so it is cleared (the gateway's #54878 stale-route self-heal, which this backend
@@ -1101,10 +1103,10 @@ def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
     ``_finalize_session`` stamps, so a close of THIS session is either not written yet or already stops
     the turn -- it is never cleared here. Best-effort: a failure never blocks the turn."""
     session_id = getattr(session.get("agent"), "session_id", None)  # the compression tip this turn writes
-    if db is None or not session_id:
+    if persistence is None or not session_id:
         return
     try:
-        db.reopen_if_explicitly_closed(
+        persistence.sessions.reopen_if_explicitly_closed(
             session_id, provenance=f"TUI session {sid} is still registered and accepting a turn",
             patience_s=_ROUTING_REOPEN_PATIENCE_S)
     except Exception:
@@ -1251,14 +1253,14 @@ def _run_prompt_submit(
             _run_post_turn_followups(rid, sid, session, *followup)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
-    with _routing_provenance_db(session) as routing_db, _sessions_lock:
+    with _routing_provenance_db(session) as routing_db, _persistence_for(routing_db) as routing, _sessions_lock:
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
             # Only a registered session is proof the conversation is routed here; an unregistered one may
             # still run its turn, but its stamp stays (#106459).
             if registered is session:
-                _reopen_routed_session_row(routing_db, sid, session)
+                _reopen_routed_session_row(routing, sid, session)
             can_start = _start_session_work(run, name=f"prompt-turn-{sid}", session=session) is not None
     if not can_start:
         with session["history_lock"]:

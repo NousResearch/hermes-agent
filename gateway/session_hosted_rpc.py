@@ -11,10 +11,11 @@ from functools import partial
 import hashlib
 import json
 
-from gateway.hosted_room_driver import TaskIdentity
 from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
 # Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
@@ -25,16 +26,16 @@ class HostedRoomAuthorityRPC:
     accepts_attachments = True  # submit resolves event-bound bytes per member
 
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
-                 authorize, authorize_write=None, timeout=30):
+                 authorize, hosted_guard=None, timeout=30):
         self.authority, self.loop = authority, loop
         self.room_id, self.member_id, self.profile = room_id, member_id, profile
         self.principal, self.authorizer, self.timeout = principal, authorize, timeout
-        self.authorize_write = authorize_write
+        self.hosted_guard = hosted_guard  # (task, generation) -> the admission's hosted member check
         self.callbacks = {}
         binding = json.dumps([room_id, member_id, profile], separators=(',', ':'))
         self.creation_id = 'hosted:' + hashlib.sha256(binding.encode()).hexdigest()
-        from gateway.session_local_recovery import local_identity
-        self.ref = SessionRef(authority.profile_id, local_identity(
+        from persistence.authority.bindings import local_session_id
+        self.ref = SessionRef(authority.profile_id, local_session_id(
             authority.profile_id, principal.subject, self.creation_id))
 
     def _call(self, operation, **params):
@@ -43,9 +44,9 @@ class HostedRoomAuthorityRPC:
         except RuntimeError:
             running = None
         if running is self.loop:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if not self.loop.is_running():
-            raise RuntimeStoreError('runtime_draining')
+            raise AuthorityRefusal('runtime_draining')
         future = asyncio.run_coroutine_threadsafe(self._dispatch(operation, params), self.loop)
         # A timeout is ambiguous: never cancel an admission or claim not_admitted.
         return future.result(self.timeout)
@@ -58,33 +59,33 @@ class HostedRoomAuthorityRPC:
     async def _dispatch_owned(self, operation, params):
         if (params.get('profile', self.profile) != self.profile
                 or self.principal.profile_id != self.authority.profile_id):
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
         if (params.get('source', 'bot_room') != 'bot_room'
                 or params.get('session_id', self.ref.session_id) != self.ref.session_id
                 or params.get('title', f'Group: {self.room_id}') != f'Group: {self.room_id}'):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         task, generation = params.get('task'), params.get('execution_generation')
-        if operation == 'submit' and (not isinstance(task, TaskIdentity)
+        if operation == 'submit' and (not isinstance(task, HostedTaskIdentity)
                 or task.room_id != self.room_id or type(generation) is not int or generation < 1):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if self.authorizer(operation, task, generation) is not True:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         return await getattr(self, '_' + operation)(params)
 
     async def _resolve_exact(self, params):
-        if self.authority.db.get_session(self.ref.session_id) is None:
+        if authority_persistence(self.authority).sessions.get(self.ref.session_id) is None:
             return None
         return await self._resume(params)
 
     async def _create(self, params):
-        if self.authority.db.get_session(self.ref.session_id) is not None:
+        store = authority_persistence(self.authority)
+        if store.sessions.get(self.ref.session_id) is not None:
             return await self._resume(params)
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.session_policy import build_policy
-        from gateway.session_local import stage_local_session
+        from gateway.session_local import commit_local_session, stage_local_session
         from gateway.session_local_recovery import restore_local_session
         from gateway.session_runtime_workers import tracked_write
-        from hermes_state_local import commit_local_session
         from agent.skill_utils import parse_config_string_list
         private = {}
         config = _load_gateway_config()
@@ -103,14 +104,11 @@ class HostedRoomAuthorityRPC:
         # Creation commit and label run off the owner loop (N90); a concurrent duplicate converges.
         if isinstance(staged, dict):
             await tracked_write(self.authority, partial(
-                commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=staged))
+                commit_local_session, store, epoch=self.authority.epoch, receipt=staged))
             restore_local_session(self.authority, staged['session_id'])
-        from hermes_state_runtime import _epoch
-        def label(conn):
-            _epoch(conn, self.authority.epoch)
-            conn.execute('UPDATE sessions SET title=?, hidden=1 WHERE id=?',
-                         (f'Group: {self.room_id}', self.ref.session_id))
-        await tracked_write(self.authority, partial(self.authority.db._execute_write, label))
+        await tracked_write(self.authority, partial(
+            store.hosted_rooms.label_room_session, epoch=self.authority.epoch, session_id=self.ref.session_id,
+            title=f'Group: {self.room_id}'))
         return await self._resume(params)
 
     async def _resume(self, params):
@@ -119,27 +117,29 @@ class HostedRoomAuthorityRPC:
 
     def _rows(self):
         self.authority.authorize(self.principal, self.ref, 'session:read')
-        rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
+        from gateway.session_authority import admission_row
+        rows = [admission_row(row) for row in authority_persistence(self.authority).admissions.list(
+            session_id=self.ref.session_id, pending_only=False)]
         result = []
         for row in rows:
             if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
                 continue
             try:
                 task, generation = json.loads(row['request_id'][7:])
-                identity = TaskIdentity(**task)
+                identity = HostedTaskIdentity(**task)
                 if identity.room_id != self.room_id or type(generation) is not int:
                     raise ValueError('invalid hosted identity')
             except (TypeError, ValueError, KeyError) as exc:
-                raise RuntimeStoreError('storage_unavailable') from exc
+                raise AuthorityRefusal('storage_unavailable') from exc
             result.append((row, identity, generation))
         return result
 
     def _terminal(self, row, task, generation):
         from gateway.session_results import admission_result
-        saved = admission_result(self.authority.db, row['admission_id'])
+        saved = admission_result(authority_persistence(self.authority), row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
         if saved is None and row['outcome'] not in _RESULTLESS_OUTCOMES:
-            raise RuntimeStoreError('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable')
         value = saved['result'] if saved is not None else {}
         status = {'completed': 'settled', 'interrupted': 'cancelled', 'cancelled': 'cancelled'}.get(row['outcome'], 'failed')
         receipt = {'status': status, 'text': value.get('final_response', ''),
@@ -156,7 +156,7 @@ class HostedRoomAuthorityRPC:
         # Refuse unknown before submit: submit itself schedules the queue on retries.
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
-            raise RuntimeStoreError('unknown_execution')
+            raise AuthorityRefusal('unknown_execution')
         from gateway.session_hosted_attachments import prepare_before_submit, submission_payload
         from gateway.session_ingress_media import capture_lease
         # One lease from capture through the admission commit: documents ride in the prompt text,
@@ -165,11 +165,9 @@ class HostedRoomAuthorityRPC:
         with capture_lease():
             payload = await asyncio.to_thread(prepare_before_submit, partial(
                 submission_payload, self, params['prompt'], params.get('attachments')))
-            authorize_write = self.authorize_write
+            hosted = self.hosted_guard(task, generation) if self.hosted_guard is not None else None
             receipt = await self.authority.submit(self.principal, Submission(
-                request_id, self.ref, payload, 'queue'),
-                _authorize_write=(lambda conn: authorize_write(conn, task, generation))
-                if authorize_write is not None else None)
+                request_id, self.ref, payload, 'queue'), hosted=hosted)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)
@@ -222,7 +220,7 @@ class HostedRoomAuthorityRPC:
         wanted = params.get('admission_ids')
         if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
                                    or not all(isinstance(i, str) and i for i in wanted)):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
         receipts, used = [], 0
         for row, task, generation in reversed(self._rows()):
@@ -265,10 +263,10 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         current = next(((row, task) for row, task, _ in rows if row['status'] in {'started', 'unknown', 'queued'}), None)
         if current is None or current[1].task_id != params['expected_task_id']:
-            raise RuntimeStoreError('stale_generation')
+            raise AuthorityRefusal('stale_generation')
         row, _ = current
         if row['status'] == 'unknown':
-            raise RuntimeStoreError('unknown_execution')
+            raise AuthorityRefusal('unknown_execution')
         if row['status'] == 'queued':
             row = await self.authority.cancel_or_claimed(self.principal, self.ref, row['admission_id'])
         if row is not None:
@@ -278,13 +276,13 @@ class HostedRoomAuthorityRPC:
     async def _discard(self, params):
         generation = params['execution_generation']
         if type(generation) is not int or generation < 1:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
                    if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
                    and task.task_id == params['expected_task_id']
                    and hosted_generation == generation]
         if len(matches) != 1:
-            raise RuntimeStoreError('stale_generation')
+            raise AuthorityRefusal('stale_generation')
         row, task = matches[0]
         # The public fence is hosted; the canonical CAS uses its own generation.
         if row['status'] == 'unknown':
@@ -295,12 +293,12 @@ class HostedRoomAuthorityRPC:
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         prompt = next((p for p in snapshot.prompts if p.get('prompt_id') == params['request_id']
                        and p.get('kind') == 'approval'), None)
         if prompt is None:
-            raise RuntimeStoreError('stale_generation')
+            raise AuthorityRefusal('stale_generation')
         return await self.authority.respond(self.principal, self.ref,
             snapshot.handle.execution_generation, params['request_id'], {'choice': params['choice']})
 
@@ -317,7 +315,7 @@ class HostedRoomAuthorityRPC:
                member_id=None, attachments=None):
         # One producer per member binding: a task for another member reached the wrong producer.
         if member_id is not None and member_id != self.member_id:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
                           attachments=attachments)

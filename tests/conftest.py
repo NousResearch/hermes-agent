@@ -83,7 +83,7 @@ def _hermes_home_points_at_production(value: str) -> bool:
     Gateway-launched shells (and developer shells that ``export
     HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
     the session sandbox below honored any pre-set value, so collection-time
-    imports (logging handlers, ``hermes_state.DEFAULT_DB_PATH``) froze paths
+    imports (logging handlers, module-level home paths) froze paths
     inside the real ``~/.hermes`` — the escape vector that landed pytest
     fixture rows (chat-1 / wx-chat sessions, /tmp/pytest-of-* routing
     scopes) in the live state.db and flipped its journal mode under the
@@ -97,7 +97,7 @@ def _hermes_home_points_at_production(value: str) -> bool:
         # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
         # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
         # install so the state.db guard tripped on every store-touching test (#112692).
-        from hermes_state_guard import _real_platform_state_root
+        from persistence.sqlite._state.guard import _real_platform_state_root
 
         resolved = Path(value).expanduser().resolve()
         real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
@@ -136,7 +136,7 @@ if _HERMES_EXPORTED_TMP:
             del os.environ[_key]
     del os.environ[SCRATCH_DIR_MARKER_ENV]
 
-from hermes_state_guard import _real_platform_state_root
+from persistence.sqlite._state.guard import _real_platform_state_root
 
 _real_test_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
 _guarded_tmp_roots = [_real_test_root]
@@ -177,11 +177,11 @@ except AttributeError:
 # Subprocess-surviving isolation marker (#82770). PYTEST_CURRENT_TEST /
 # PYTEST_VERSION are pytest's own vars, and tests that spawn children
 # routinely rebuild the child env and strip them ("the subprocess must look
-# like a real CLI") — which used to disarm hermes_state's live-DB guard in
+# like a real CLI") — which used to disarm the live-DB guard in
 # the child at the same moment the child lost the HERMES_HOME redirect.
 # HERMES_TEST_ISOLATION is OUR marker: exported here (before any test module
 # imports), inherited by every child by default, and honored by
-# hermes_state_guard._running_under_pytest() as a test-context signal. A child
+# persistence.sqlite._state.guard._running_under_pytest() as a test-context signal. A child
 # that carries it and still resolves the production state.db fails hard.
 # Tests that legitimately need a child to look like a non-test process AND
 # open a real DB must export HERMES_STATE_DB_GUARD_BYPASS=1 in that child's
@@ -354,22 +354,14 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
-    # hermes_state's live-DB guard stays armed in them even when the test
+    # the live-DB guard stays armed in them even when the test
     # strips pytest's own PYTEST_* vars from the child env.
     monkeypatch.setenv("HERMES_TEST_ISOLATION", str(fake_hermes_home))
     # And never let a developer-shell (or leaked child) bypass disarm the
     # guard for in-process code under test.
     monkeypatch.delenv("HERMES_STATE_DB_GUARD_BYPASS", raising=False)
 
-    # 3b. hermes_state computes ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"``
-    #     at import time. When the module is first imported at collection (any
-    #     test file with a top-level ``from hermes_state import ...``) that
-    #     happens BEFORE this fixture ever runs, so every argless
-    #     ``SessionDB()`` in every test opens the developer's REAL state.db —
-    #     reading real sessions into assertions and writing test rows into the
-    #     real profile. Re-pin the constant to this test's home. (Several test
-    #     files already do this locally; this makes it an invariant.)
-    # 3c. Multi-profile hosting is a process-global latch (``set_multiplex_active`` and the
+    # 3b. Multi-profile hosting is a process-global latch (``set_multiplex_active`` and the
     #     launch-env snapshot flip once and stay). A test that routes one RPC/request to a named
     #     profile would otherwise leave every later test in the file fail-closed (unscoped
     #     ``get_env_value`` in a test body raises). Reset the latch per test.
@@ -388,12 +380,6 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tools_config_mod = sys.modules.get("hermes_cli.tools_config")
     if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
         monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolsets", None)
-
-    hermes_state_mod = sys.modules.get("hermes_state")
-    if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
-        monkeypatch.setattr(
-            hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
-        )
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
@@ -498,10 +484,10 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _close_leaked_session_dbs():
-    """Close every SessionDB a test constructed but forgot to close.
+    """Close every store holder a test constructed but forgot to close.
 
     Root cause of OOM incident 20260816: ~40 files under tests/hermes_cli/
-    build ``SessionDB(...)`` directly and never call ``close()``. Each open
+    built store handles directly and never called ``close()``. Each open
     instance holds the writer connection (state.db + -wal fds), up to
     ``_READ_POOL_MAX`` pooled read connections, per-connection SQLite page
     caches, and — once token accounting has run — an ``atexit`` registration
@@ -510,8 +496,8 @@ def _close_leaked_session_dbs():
     ``pytest tests/hermes_cli/`` accumulated 16-25 GB RSS and had to be
     OOM-killed three times in one day.
 
-    Rather than editing every test file, ``SessionDB.__init__`` registers each
-    instance in ``hermes_state_guard._test_instance_registry`` (a WeakSet,
+    Rather than editing every test file, ``StoreHolder.__init__`` registers each
+    instance in ``persistence.sqlite._state.guard._test_instance_registry`` (a WeakSet,
     populated only when the ``HERMES_TEST_ISOLATION`` marker is set — i.e.
     only under this suite). This teardown closes whatever the test left open.
     ``close()`` is idempotent (``self._conn`` is None afterwards) and also
@@ -522,13 +508,13 @@ def _close_leaked_session_dbs():
     were leaked by an earlier test in the same process) and the simpler
     close-everything sweep is what actually bounds the process.
 
-    Instances opened through ``hermes_state_registry.acquire()`` are skipped:
+    Instances opened through ``persistence.sqlite._registry.acquire()`` are skipped:
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
 
     Before the sweep, the auto-title upgrade threads a turn spawned are joined
-    (bounded): they hold the turn's SessionDB and write to it (and print to
+    (bounded): they hold the turn's store and write to it (and print to
     ``sys.stdout``) after the turn returns, so left running they race this
     close (``_reopen_after_close_locked`` on a daemon thread), the next test's
     capture, and interpreter finalization — the ``Fatal Python error`` /
@@ -542,7 +528,7 @@ def _close_leaked_session_dbs():
     if wait is not None:
         wait()
     try:
-        from hermes_state_guard import _test_instance_registry as registry
+        from persistence.sqlite._state.guard import _test_instance_registry as registry
     except Exception:
         return
     if not registry:
@@ -726,8 +712,8 @@ def scratch_prune_spawns(monkeypatch):
 
 # ── Live state.db write guard ───────────────────────────────────────────────
 # Companion to the kanban guard above, for the MAIN state database.
-# ``hermes_state._ensure_test_isolation`` (the single choke point every
-# ``SessionDB()`` construction goes through) refuses, under pytest, any DB
+# ``persistence.sqlite._holder._ensure_test_isolation`` (the single choke point every
+# store holder's construction goes through) refuses, under pytest, any DB
 # path that resolves inside the REAL Hermes root. This fixture wires the
 # test-side knobs:
 #   • honors ``@pytest.mark.live_system_guard_bypass`` (the established
@@ -736,12 +722,12 @@ def scratch_prune_spawns(monkeypatch):
 #     installs where HERMES_HOME is not ~/.hermes) into the guard's
 #     deny-list, mirroring the kanban deny-list capture above.
 # The guard itself is env-activated (PYTEST_CURRENT_TEST / PYTEST_VERSION),
-# so subprocess children that import hermes_state directly are covered even
+# so subprocess children that open a store directly are covered even
 # without this fixture.
 
 
-# Both modules that open state.db keep their own copy of the guard knobs.
-_STATE_DB_GUARD_MODULES = ("hermes_state", "persistence.sqlite._holder")
+# The module that opens state.db keeps the guard knobs.
+_STATE_DB_GUARD_MODULES = ("persistence.sqlite._holder",)
 
 
 @pytest.fixture(autouse=True)
@@ -983,15 +969,11 @@ def _wal_is_usable() -> bool:
     3.50.4 (vulnerable → DELETE) alongside a Hermes managed runtime on 3.53.1
     (fixed → WAL). The same test then passes in one and fails in the other.
 
-    IMPORTANT: this must NOT import ``hermes_state``. That module computes
-    ``DEFAULT_DB_PATH`` from ``get_hermes_home()`` at import time, so importing
-    it during collection — before the per-test ``_isolate_hermes_home`` fixture
-    redirects ``HERMES_HOME`` — permanently caches the DEVELOPER'S REAL
-    ``~/.hermes/state.db`` for the whole session. Tests then read live
-    production sessions instead of a tempdir. The version predicate is
-    duplicated from ``hermes_state._is_sqlite_wal_reset_vulnerable`` (upstream
-    fixed ranges, stable) rather than imported, and
-    ``test_conftest_wal_gate.py`` pins the two implementations in agreement.
+    The version predicate is duplicated from
+    ``persistence.sqlite._state.wal.is_sqlite_wal_reset_vulnerable`` (upstream
+    fixed ranges, stable) rather than imported, so collecting this conftest
+    loads no store module, and ``test_conftest_wal_gate.py`` pins the two
+    implementations in agreement.
     """
     info = sqlite3.sqlite_version_info
     if info < (3, 7, 0):

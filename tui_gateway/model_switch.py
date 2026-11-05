@@ -461,8 +461,9 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     try:
         title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not title:
-            db, key = getattr(agent, "_session_db", None), session.get("session_key") or ""
-            title = str((db.get_session_title(key) if (db and key) else None) or "").strip()
+            key = session.get("session_key") or ""
+            with _persistence_for(getattr(agent, "_session_db", None)) as persistence:
+                title = str(persistence.sessions.get_title(key) or "").strip() if persistence is not None and key else ""
         if title != "Bot Chat":
             return
         from tools.bot_mode_probe import capability_fingerprint

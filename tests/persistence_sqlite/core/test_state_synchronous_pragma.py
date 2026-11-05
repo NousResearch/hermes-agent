@@ -14,8 +14,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state_wal as wal_module
-from hermes_state_wal import apply_database_pragmas
+from persistence.sqlite._state import wal as wal_module
+from sqlite_support import apply_database_pragmas
 from sqlite_support import resolve_synchronous_level
 
 

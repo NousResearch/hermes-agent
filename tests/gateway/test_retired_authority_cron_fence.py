@@ -10,7 +10,8 @@ import pytest
 
 from gateway import run_runtime, session_bot, session_cron
 from gateway.session_contract import SessionActor, Submission
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_profile_retire_stops_turns import REF, _Agent, _authority
 
 CRON = SessionActor('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')
@@ -57,14 +58,14 @@ async def _worker_adopt(authority, receipt):
 
 
 SITES = {
-    'authority.cancel_queued': (_cancel_queued, None, lambda db, home: list_session_admissions(
-        db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
-    'authority.submit': (_submit_more, None, lambda db, home: len(list_session_admissions(
-        db, session_id='s', pending_only=False)) == 1),
-    'worker.adopt': (_worker_adopt, None, lambda db, home: list_session_admissions(
-        db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
-    'cron.cancel': (_cron_cancel, None, lambda db, home: list_session_admissions(
-        db, session_id='s', pending_only=False)[0]['status'] == 'queued'),
+    'authority.cancel_queued': (_cancel_queued, None, lambda db, home: db.admissions.list(
+        session_id='s', pending_only=False)[0].status == 'queued'),
+    'authority.submit': (_submit_more, None, lambda db, home: len(db.admissions.list(
+        session_id='s', pending_only=False)) == 1),
+    'worker.adopt': (_worker_adopt, None, lambda db, home: db.admissions.list(
+        session_id='s', pending_only=False)[0].status == 'queued'),
+    'cron.cancel': (_cron_cancel, None, lambda db, home: db.admissions.list(
+        session_id='s', pending_only=False)[0].status == 'queued'),
     'bot_relay.outbox.drain': (_relay('outbox', {}), _outbox,
                                lambda db, home: (home / 'bot_relay' / 'outbox' / 'e1.json').exists()),
     'bot_relay.reply': (_relay('reply', {'id': 'e1', 'reply': 'hi'}), None,
@@ -88,9 +89,9 @@ async def test_retired_authority_refuses_writes_before_successor_epoch(tmp_path,
             if arrange is not None:
                 arrange(tmp_path)
             assert await run_runtime._retire_profile_authority(authority, timeout=1.0) is True
-            with pytest.raises(RuntimeStoreError, match='runtime_retired'):
+            with pytest.raises(AuthorityRefusal, match='runtime_retired'):
                 await call(authority, receipt)
-            assert untouched(db, tmp_path)
+            assert untouched(storage_handle(tmp_path), tmp_path)
     finally:
         await asyncio.sleep(0)  # a yield for done-callbacks; retirement already joined every task and thread
         db.close()

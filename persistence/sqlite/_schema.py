@@ -24,11 +24,13 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
-from hermes_state_common import (
-    TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM, TITLE_SOURCE_USER as _TITLE_SOURCE_USER, escape_like as _escape_like, fts_rebuild_admission,
+from persistence.sqlite._state.common import (
+    TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
+    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
+    escape_like as _escape_like, fts_rebuild_admission,
 )
-from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
-from hermes_state_holders import _read_proc_argv
+from persistence.sqlite._state.errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
+from persistence.sqlite._state.holders import _read_proc_argv
 
 from ._schema_ddl import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_CJK_TABLE_SQL, FTS_CJK_TRIGGER_SQL, FTS_REBUILD_DEFERRAL_KEY,
@@ -1818,7 +1820,7 @@ def _reap_inactive_orphan_desktop_holders(
 
     Fails closed: anything whose parent, age, argv, or network connections
     cannot be proved safe remains a repair-blocking holder."""
-    from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
+    from persistence.sqlite._state.dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
     if not sys.platform.startswith("linux") or psutil is None:
         return []
     try:

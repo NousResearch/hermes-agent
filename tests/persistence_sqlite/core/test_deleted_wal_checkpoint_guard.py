@@ -21,8 +21,8 @@ from persistence import DeletedWalGeneration
 from persistence.sqlite import _registry
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import retry_deferred_fts_recovery
-import hermes_state_wal as state_wal
-from hermes_state_errors import DeletedWalGenerationError
+from persistence.sqlite._state import wal as state_wal
+from persistence.sqlite._state.errors import DeletedWalGenerationError
 from persistence.sqlite.admin import SQLiteStoreAdmin
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session

@@ -409,7 +409,7 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
     "utils.py",
-    "hermes_state.py",
+    "persistence_assembly.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
@@ -426,7 +426,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/e2e/",
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
-        "hermes_state",
+        "persistence/sqlite/",
+        "sqlite_support.py",  # journal mode, WAL fallback and durability barriers
         # Messaging-gated gateway cases: only the e2e job installs the real
         # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
         "tests/gateway/test_native_role_reauthorization.py",
@@ -446,10 +447,14 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
-        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state_holders.py",
-        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
-        "hermes_state_fts.py",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) and the search-index notice
+        # (hermes_cli/update_cmd_maint.py) read state.db through the store admin: its contract, the
+        # ledger probes and read-only URI, and the stored FTS layout read.
+        "persistence/core/admin.py",
+        "persistence/sqlite/admin/_backup.py",
+        "persistence/sqlite/_state/holders.py",
+        "persistence/sqlite/admin/_maintenance.py",
+        "persistence/sqlite/_schema_ddl.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

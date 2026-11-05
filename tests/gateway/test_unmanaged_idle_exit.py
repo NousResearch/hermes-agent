@@ -15,16 +15,32 @@ from gateway import run_idle_exit
 from gateway.config import Platform
 from gateway.runtime_bootstrap import TicketStore
 from gateway.session_authorities import SessionAuthorities
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, cancel_session_input
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
+
+# Storage interface handles the tests opened; closed after each test.
+_STORAGE_HANDLES = []
+
+
+@pytest.fixture(autouse=True)
+def _close_storage_handles():
+    yield
+    while _STORAGE_HANDLES:
+        _STORAGE_HANDLES.pop().close()
+
+
+def _authority(home):
+    """A served profile's authority stand-in: its ledger, read through a storage interface handle on ``home``'s state.db."""
+    _STORAGE_HANDLES.append(open_persistence(profile_scope(home=home)))
+    return SimpleNamespace(profile_id=str(home), persistence=_STORAGE_HANDLES[-1])
 
 
 def _runner(tmp_path, monkeypatch, *, window=0.2):
     home = tmp_path / "home"
     home.mkdir()
-    db = SessionDB(db_path=home / "state.db")
+    db = open_persistence(profile_scope(home=home))
     registry = SessionAuthorities(home)
-    registry.add(home, SimpleNamespace(profile_id=str(home), db=db))
+    registry.add(home, _authority(home))
     stops = []
 
     async def stop():
@@ -65,12 +81,12 @@ async def test_queued_work_clients_adapters_and_cron_each_keep_it_up(tmp_path, m
     runner, home, db, _stops = _runner(tmp_path, monkeypatch)
     try:
         assert run_idle_exit.busy_reason(runner, window=0.2) is None
-        db.create_session("s", source="cli")
-        epoch = begin_runtime_epoch(db, instance_id="owner")
-        row = admit_session_input(db, epoch=epoch, principal_id="p", session_id="s", request_id="r",
-                                  payload={"text": "queued while idle"})
+        seed_session(db, "s", "cli")
+        epoch = db.runtime.begin_epoch(instance_id="owner")
+        row, _ = db.admissions.admit(epoch=epoch, principal_id="p", session_id="s", request_id="r",
+                                     payload={"text": "queued while idle"})
         assert "admissions pending" in run_idle_exit.busy_reason(runner, window=0.2)
-        cancel_session_input(db, epoch=epoch, admission_id=row["admission_id"])
+        db.admissions.cancel(epoch=epoch, admission_id=row.admission_id)
         with run_idle_exit.attached_client(runner):
             assert "client(s) attached" in run_idle_exit.busy_reason(runner, window=0.2)
         assert "client activity" in run_idle_exit.busy_reason(runner, window=60)
@@ -99,9 +115,9 @@ def test_a_profile_still_starting_leaves_the_served_ledgers_readable(tmp_path, m
     starting.mkdir()
     runner.session_authorities.add(starting, None, name="starting")  # as serve_profile_runtime does
     try:
-        db.create_session("s", source="cli")
-        epoch = begin_runtime_epoch(db, instance_id="owner")
-        admit_session_input(db, epoch=epoch, principal_id="p", session_id="s", request_id="r",
+        seed_session(db, "s", "cli")
+        epoch = db.runtime.begin_epoch(instance_id="owner")
+        db.admissions.admit(epoch=epoch, principal_id="p", session_id="s", request_id="r",
                             payload={"text": "queued while another profile starts"})
         assert "admissions pending" in run_idle_exit.busy_reason(runner, window=0.2)
     finally:
@@ -122,12 +138,8 @@ def test_a_profile_still_starting_keeps_an_otherwise_idle_gateway_up(tmp_path, m
         registry.remove(starting)  # the build failed
         assert run_idle_exit.busy_reason(runner, window=0.2) is None
         registry.add(starting, None, name="starting")
-        starting_db = SessionDB(db_path=starting / "state.db")
-        registry.replace(starting, SimpleNamespace(profile_id=str(starting), db=starting_db))
-        try:
-            assert run_idle_exit.busy_reason(runner, window=0.2) is None
-        finally:
-            starting_db.close()
+        registry.replace(starting, _authority(starting))
+        assert run_idle_exit.busy_reason(runner, window=0.2) is None
     finally:
         db.close()
 
@@ -137,9 +149,8 @@ def test_secondary_local_session_adapter_does_not_count_as_messaging(tmp_path, m
     runner, _home, db, _stops = _runner(tmp_path, monkeypatch)
     secondary_home = tmp_path / "secondary"
     secondary_home.mkdir()
-    secondary_db = SessionDB(db_path=secondary_home / "state.db")
     runner.session_authorities.add(
-        secondary_home, SimpleNamespace(profile_id=str(secondary_home), db=secondary_db), name="secondary")
+        secondary_home, _authority(secondary_home), name="secondary")
     try:
         runner._profile_adapters["secondary"] = {Platform.LOCAL: object()}
         assert run_idle_exit.busy_reason(runner, window=0.2) is None
@@ -147,5 +158,4 @@ def test_secondary_local_session_adapter_does_not_count_as_messaging(tmp_path, m
         runner._profile_adapters["secondary"][Platform.TELEGRAM] = object()
         assert "telegram" in run_idle_exit.busy_reason(runner, window=0.2)
     finally:
-        secondary_db.close()
         db.close()

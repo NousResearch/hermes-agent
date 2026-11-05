@@ -13,7 +13,7 @@ sessions a user happens to call "Bot Chat" stay freely renameable.
 """
 import pytest
 
-from hermes_state_common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
+from persistence.sqlite._state.common import TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM
 from persistence.sqlite.conversation._store.core import CANONICAL_BOT_CHAT_TITLE
 from persistence.sqlite.conversation._store.sessions import (
     create_session,

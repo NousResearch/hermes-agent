@@ -11,10 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from gateway.hosted_room_driver import TaskIdentity
 from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
 class HostedRoomPeerClient(Protocol):
@@ -194,7 +194,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         return session
 
     def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: HostedTaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
         member_id: str | None = None, attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:

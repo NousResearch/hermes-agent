@@ -269,7 +269,7 @@ class AIAgent(
         gateway_session_key: str | None = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
-        session_db=None, parent_session_id: str | None = None,
+        session_db=None, persistence=None, parent_session_id: str | None = None,
         iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
         fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
@@ -281,6 +281,9 @@ class AIAgent(
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
+        if session_db is None and persistence is not None and not persistence.read_only:
+            # A writer's storage interface handle passed alone is the agent's store as well.
+            init_kwargs["session_db"] = persistence
         if tool_delay is not None:
             warnings.warn("tool_delay is deprecated and ignored; sequential tool calls "
                           "no longer sleep between executions.", DeprecationWarning, stacklevel=2)
@@ -288,8 +291,9 @@ class AIAgent(
         init_agent(self, **init_kwargs)
 
     def _get_session_db_for_recall(self):
-        """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the
-        advertised ``session_search`` tool stays usable."""
+        """The agent's store for recall, opening the current home's store when no ``session_db`` was passed so the
+        advertised ``session_search`` tool stays usable. The store opened here is a storage interface handle, held
+        as both the store and its interface."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
         if getattr(self, "_persist_disabled", False):
@@ -297,14 +301,14 @@ class AIAgent(
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_state_registry import acquire
+            from persistence_assembly import open_persistence, profile_scope
 
-            self._session_db = acquire()
+            self._session_db = self.persistence = open_persistence(profile_scope(), eager=True)
             self._owns_session_db = True  # we opened it, so close() must release it
-            return self._session_db
         except Exception:
-            logger.debug("SessionDB unavailable for recall", exc_info=True)
+            logger.debug("Session store unavailable for recall", exc_info=True)
             return None
+        return self._session_db
 
     def _session_row_model_config(self) -> Any:
         """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
@@ -332,16 +336,23 @@ class AIAgent(
                 profile_for_session = None
             # Carry the gateway routing identity: when the gateway SessionStore degraded to JSONL (corrupt
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
-            self._session_db.create_session(
+            row = dict(
                 session_id=self.session_id, source=source, model=self.model,
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),
                 thread_id=getattr(self, "_thread_id", None),
                 display_name=getattr(self, "_chat_name", None) or getattr(self, "_user_name", None),
-                origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
+                parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
+            origin_json = _gateway_origin_json(self)
+            from agent.agent_init_session import agent_interface
+            if (store := agent_interface(self)) is not None:
+                from persistence.conversation.sessions import NewSession
+                store.sessions.create(NewSession(**row, origin=json.loads(origin_json) if origin_json else None))
+            else:
+                self._session_db.create_session(**row, origin_json=origin_json)
             self._session_db_created = True
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
@@ -423,7 +434,9 @@ class AIAgent(
         if (engine is not None and hasattr(engine, "bind_session_state") and target_session_id
                 and target_session_id != getattr(engine, "_session_id", "")):
             try:
-                engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
+                from agent.conversation_compression import context_engine_session_db
+                engine.bind_session_state(context_engine_session_db(self, getattr(self, "_session_db", None)),
+                                          target_session_id)
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
@@ -962,6 +975,8 @@ class AIAgent(
             _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
                                                  getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
+        from agent.conversation_compression import close_context_engine_session_db
+        _quietly(close_context_engine_session_db, self)
         _quietly(self._finalize_owned_session_row)
 
     # -- close()/release_clients() phases -------------------------------------------------------------
@@ -1023,13 +1038,21 @@ class AIAgent(
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "session_id", None)
         if getattr(self, "_end_session_on_close", True) and session_db and session_id:
-            _quietly(lambda: session_db.end_session(session_id, "agent_close"))
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(self)
+            _quietly(lambda: store.sessions.end(session_id, "agent_close") if store is not None
+                     else session_db.end_session(session_id, "agent_close"))
         if getattr(self, "_owns_session_db", False) and session_db is not None:
             self._owns_session_db = False
-            # Shared instances no-op on close(); release the refcount so the registry closes on the last caller.
+            # A registry-lent store's close() releases one reference, so the registry closes on the last caller.
             # See #90837.
-            from hermes_state_registry import release_or_close
-            release_or_close(session_db)
+            from persistence_beside import close_beside
+            persistence, self.persistence = getattr(self, "persistence", None), None
+            try:
+                if session_db is not persistence:
+                    session_db.close()
+            finally:
+                close_beside(persistence)
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
@@ -1393,7 +1416,9 @@ class AIAgent(
         if db is None:
             return start
         try:
-            return db.get_conversation_root(start) or start
+            from agent.agent_init_session import agent_interface
+            store = agent_interface(self)
+            return (store.lineage.conversation_root(start) if store is not None else db.get_conversation_root(start)) or start
         except Exception:
             logger.debug("Conversation root lineage walk failed", exc_info=True)
             return start

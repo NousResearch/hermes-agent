@@ -205,6 +205,35 @@ class GatewayRuntimeInitMixin:
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
         # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
 
+    @property
+    def persistence(self):
+        """The storage interface handle for the active profile scope, one per ``state.db`` path
+        ``_session_db`` resolves: borrowed from ``session_store`` as ``_session_db`` is (the store
+        closes it), else opened lazily and kept until shutdown; None while ``_session_db`` is pinned
+        or when the handle cannot open (the next read tries again)."""
+        from gateway.run import _SESSION_DB_UNPINNED
+        from persistence_assembly import profile_scope, store_location
+        from persistence_beside import open_beside
+        if getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED) is not _SESSION_DB_UNPINNED:
+            return None
+        if (store := getattr(self, "session_store", None)) is not None:
+            return getattr(store, "persistence", None)
+        path = store_location(profile_scope())
+        with self._session_db_handles_lock:
+            handles = self.__dict__.setdefault("_persistence_handles", {})
+            handle = handles.get(path)
+            if handle is None and (handle := open_beside(path.parent)) is not None:
+                handles[path] = handle
+        return handle
+
+    def close_all_persistence_handles(self) -> None:
+        """Close every storage interface handle ``persistence`` opened."""
+        from persistence_beside import close_beside
+        with self._session_db_handles_lock:
+            handles = list(self.__dict__.pop("_persistence_handles", {}).values())
+        for handle in handles:
+            close_beside(handle)
+
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
         from gateway.run import (Dict, List, Optional, asyncio, time)

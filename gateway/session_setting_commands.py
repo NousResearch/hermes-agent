@@ -75,7 +75,7 @@ def _reasoning_mutation(ref, row, effort):
     """The owner's fenced ``reasoning`` mutation of a ``/reasoning`` command, on *row*'s current fences."""
     import uuid
     return {'session_id': ref.session_id, 'request_id': 'reasoning-command:' + uuid.uuid4().hex,
-            'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+            'expected_revision': row.runtime_revision, 'expected_generation': row.runtime_generation,
             'operation': 'reasoning', 'payload': {'effort': effort}}
 
 
@@ -89,9 +89,9 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     import asyncio
     from gateway.config import Platform
     from gateway.session_mutations import mutate_session
+    from gateway.session_persistence import authority_persistence
     from hermes_constants import parse_reasoning_effort
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import MUTATION_GUARD_REFUSALS, AuthorityRefusal
     if value == 'reset' and not persist_global:  # ``reset --global`` is the handler's named refusal
         effort = None
     elif value != 'reset' and parse_reasoning_effort(value) is not None:
@@ -105,13 +105,13 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     # (``revision_conflict``) is no verdict on this command, so it re-reads them. A fence that keeps
     # moving defers to the turn boundary like a busy session, as main always applied the command.
     for _attempt in range(_FENCE_ATTEMPTS):
-        row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+        row = await asyncio.to_thread(authority_persistence(authority).sessions.get, ref.session_id)
         if row is None:
-            raise RuntimeStoreError('not_found')
+            raise AuthorityRefusal('not_found')
         try:
             await mutate_session(authority, actor, ref, _reasoning_mutation(ref, row, effort))
             return
-        except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+        except (AuthorityRefusal, *MUTATION_GUARD_REFUSALS) as exc:
             reason = getattr(exc, 'reason', 'session_busy')
             if reason == 'revision_conflict':
                 continue
@@ -126,15 +126,15 @@ async def apply_pending_reasoning(authority, ref, live):
     under the claim gate and mutation lock, before a deferred model pick (whose level wins, as on main)."""
     import asyncio
     from gateway.session_mutations import write_mutation
-    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import MUTATION_GUARD_REFUSALS, AuthorityRefusal
     pending, live.pending_reasoning = live.pending_reasoning, None
     if pending is None:
         return
     try:
-        row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+        row = await asyncio.to_thread(authority_persistence(authority).sessions.get, ref.session_id)
         await write_mutation(authority, ref, _reasoning_mutation(ref, row, pending[1]), None, principal_id=pending[0])
-    except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+    except (AuthorityRefusal, *MUTATION_GUARD_REFUSALS) as exc:
         if getattr(exc, 'reason', 'session_busy') in ('session_busy', 'unknown_execution'):
             live.pending_reasoning = live.pending_reasoning or pending  # a worker still runs: the next boundary
         else:
@@ -152,9 +152,9 @@ def defer_local_model_pick(authority, live, result, effort=''):
     import uuid
     from gateway.session_contract import SessionRef
     from gateway.session_deferred_pick import defer_pick
-    from hermes_state_local import local_receipt
+    from gateway.session_persistence import authority_persistence
     sid = live.source.chat_id
-    owner = SimpleNamespace(subject=local_receipt(authority.db, sid)['principal_id'])
+    owner = SimpleNamespace(subject=authority_persistence(authority).bindings.receipt(sid).principal_id)
     # The alias the user typed, not the bare model it names: two aliases may name one model on one
     # provider at different endpoints, and re-resolving the bare id picks the first such alias.
     payload = {'model': result.resolved_via_alias or result.new_model}

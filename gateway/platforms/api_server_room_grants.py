@@ -97,14 +97,20 @@ def _decode_request_grant(self, request: web.Request, *, permission: str) -> dic
     return decode_room_grant(self._room_grant_secret(), token, permission=permission)
 
 
+def _room_store():
+    """A handle on the active home's store; its ``'shared'`` placement is the install's hosted-room file."""
+    from persistence_assembly import open_persistence, profile_scope
+    return open_persistence(profile_scope())
+
+
 def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
-    db_path = hosted_rooms.default_db_path()
-    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
-        raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
-        raise RoomGrantReauthorizationRequired("room grant is no longer current")
+    with _room_store() as store:
+        if hosted_rooms.room_grant_is_revoked(store, placement="shared", claims=claims):
+            raise RoomGrantReauthorizationRequired("room grant is revoked")
+        if not hosted_rooms.peer_room_grant_is_current(store, placement="shared", claims=claims):
+            raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
 
 
@@ -142,8 +148,9 @@ async def _handle_room_member_invitation(
             execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
             ttl_seconds=ttl, status_ttl_seconds=status_ttl)
         claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
-        hosted_rooms.reserve_peer_room(
-            hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+        with _room_store() as store:
+            hosted_rooms.reserve_peer_room(
+                store, placement="shared", claims=claims, expires_at=_hard_expiry(claims))
     except Exception as exc:
         return _json_error(_openai_error, str(exc), code="invalid_room_invitation", status=400)
     return web.json_response({
@@ -221,8 +228,9 @@ async def _handle_room_member_grant_revoke(
         # verify signature/scope/horizon directly (not _room_grant_claims) and upsert the id.
         claims = _decode_request_grant(self, request, permission="status")
         _local_target(claims, _api_request_profile)
-        hosted_rooms.revoke_room_grant_scope(
-            hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
+        with _room_store() as store:
+            hosted_rooms.revoke_room_grant_scope(
+                store, placement="shared", claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
     return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})

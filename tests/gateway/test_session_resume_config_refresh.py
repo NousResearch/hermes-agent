@@ -12,7 +12,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import store_location
 
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.fixtures.storage_read import session_row
 from tests.waiting import async_wait_until
 
 BEFORE = ('model: {default: m1, provider: custom, base_url: "http://127.0.0.1:9/v1"}\n'
@@ -36,7 +39,7 @@ def _home(monkeypatch):
 
 
 def _runner(store, handle=None):
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None,
                              _set_session_reasoning_override=lambda route, value: None,
                              _resolve_session_agent_runtime=lambda **k: ('m1', {}), _handle_message=handle)
@@ -69,14 +72,14 @@ async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_pick
     from gateway.session_controls import AuthorityConnection
     home = _home(monkeypatch)
     store = SessionStore(home / 'sessions', GatewayConfig())
-    assert store._db.db_path.parent.resolve() == home.resolve()
+    assert store_location(store.persistence.scope).parent.resolve() == home.resolve()
     first = await initialize_session_authority(_runner(store), profile_id=str(home), instance_id='first')
     owner = AuthorityConnection(first, object(), {'user_id': 'human'})
     plain = (await _call(owner, 'session.create', request_id='plain', source='cli', cwd=str(tmp_path)))['session_id']
     flags = (await _call(owner, 'session.create', request_id='flags', source='cli', cwd=str(tmp_path),
                          toolsets=['web'], max_turns=5, reasoning='minimal', checkpoints=True))['session_id']
     picked = (await _call(owner, 'session.create', request_id='picked', source='cli', cwd=str(tmp_path)))['session_id']
-    snap = store._db.get_session(picked)
+    snap = session_row(store.persistence, picked)
     mutation = dict(session_id=picked, request_id='r1', operation='reasoning', payload={'effort': 'medium'},
                     expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])
     applied = await _call(owner, 'session.mutate', **mutation)
@@ -90,15 +93,14 @@ async def test_resume_after_restart_rereads_config_derived_fields_and_keeps_pick
     cold = await initialize_session_authority(_runner(store), profile_id=str(home), instance_id='restarted')
     viewer = AuthorityConnection(cold, object(), {'user_id': 'human'})
     try:
-        before = store._db.get_session(plain)['runtime_generation']
+        before = session_row(store.persistence, plain)['runtime_generation']
         resumed = await _call(viewer, 'session.resume', session_id=plain)
         assert _view(_policy(cold, plain)) == {'web': False, 'max_turns': 7, 'checkpoints': True, 'effort': 'low',
                                               'backend': 'docker', 'model': 'm1'}
         # A new policy generation the resume reply already reports, durable in the receipt.
-        assert resumed['execution_generation'] == before + 1 == store._db.get_session(plain)['runtime_generation']
-        from hermes_state_local import local_receipt
+        assert resumed['execution_generation'] == before + 1 == session_row(store.persistence, plain)['runtime_generation']
         from gateway.session_policy import restore_policy
-        assert restore_policy(local_receipt(store._db, plain)['policy']) == _policy(cold, plain)
+        assert restore_policy(store.persistence.bindings.receipt(plain).policy) == _policy(cold, plain)
         # The launch flags stay the session's own; a config-derived field still follows.
         await _call(viewer, 'session.resume', session_id=flags)
         kept = _view(_policy(cold, flags))
@@ -128,10 +130,9 @@ async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
-    import hermes_state_runtime as rt
     home = _home(monkeypatch)
     store = SessionStore(home / 'sessions', GatewayConfig())
-    assert store._db.db_path.parent.resolve() == home.resolve()
+    assert store_location(store.persistence.scope).parent.resolve() == home.resolve()
     started, release, seen = asyncio.Event(), asyncio.Event(), []
 
     async def handle(event):
@@ -152,12 +153,12 @@ async def test_resume_never_changes_a_running_turns_policy(tmp_path, monkeypatch
                                                                {'text': 'one'}, 'queue'))
         await asyncio.wait_for(started.wait(), 10)
         (home / 'config.yaml').write_text(AFTER)
-        generation = store._db.get_session(sid)['runtime_generation']
+        generation = session_row(store.persistence, sid)['runtime_generation']
         await _call(viewer, 'session.resume', session_id=sid)
         assert 'web' in _policy(authority, sid).toolsets  # the running turn's policy is untouched
-        assert store._db.get_session(sid)['runtime_generation'] == generation
+        assert session_row(store.persistence, sid)['runtime_generation'] == generation
         release.set()
-        await async_wait_until(lambda: rt.get_session_admission(store._db, admission_id=turn.admission_id)['status']
+        await async_wait_until(lambda: store.persistence.admissions.get(admission_id=turn.admission_id).status
                                == 'terminal', what='turn-1 to settle')
         # A snapshot poll on an attachment is not an attach: like main's running process, it re-reads nothing.
         await _call(viewer, 'session.resume', session_id=sid)
@@ -195,7 +196,7 @@ async def _owner_authority(home, instance='only'):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     store = SessionStore(home / 'sessions', GatewayConfig())
-    assert store._db.db_path.parent.resolve() == home.resolve()
+    assert store_location(store.persistence.scope).parent.resolve() == home.resolve()
     return store, await initialize_session_authority(_runner(store), profile_id=str(home), instance_id=instance)
 
 
@@ -210,21 +211,21 @@ async def test_a_resume_cancelled_mid_commit_still_publishes_the_committed_polic
     policy ahead of the live one (restore_local_session refuses that mismatch, and a later refresh that finds
     the stored policy current returns early without repairing it)."""
     import threading
-    import hermes_state_mutation_prepared as prepared
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy
     from gateway.session_runtime_workers import mutation_tasks
-    from hermes_state_local import local_receipt
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     owner, viewer = _connect(authority), _connect(authority)
     entered, release = threading.Event(), threading.Event()
-    commit = prepared.commit_refreshed_policy
+    runtime = authority_persistence(authority).runtime
+    commit = runtime.commit_refreshed_policy
 
     def held_commit(*args, **kwargs):
         entered.set()
         assert release.wait(10)
         return commit(*args, **kwargs)
-    monkeypatch.setattr(prepared, 'commit_refreshed_policy', held_commit)
+    monkeypatch.setattr(runtime, 'commit_refreshed_policy', held_commit)
     try:
         sid = (await _call(owner, 'session.create', request_id='c', source='cli', cwd=str(tmp_path)))['session_id']
         (home / 'config.yaml').write_text(AFTER)
@@ -236,7 +237,7 @@ async def test_a_resume_cancelled_mid_commit_still_publishes_the_committed_polic
             await resume
         release.set()
         await asyncio.gather(*mutation_tasks(authority), return_exceptions=True)
-        stored = restore_policy(local_receipt(store._db, sid)['policy'])
+        stored = restore_policy(store.persistence.bindings.receipt(sid).policy)
         assert stored.max_turns == 7  # the commit landed
         assert _policy(authority, sid) == stored  # and its publication with it
     finally:
@@ -260,7 +261,7 @@ async def test_resume_keeps_a_moved_workspace_on_a_backend_with_its_own_cwd(tmp_
     later = _connect(authority)
     try:
         sid = (await _call(owner, 'session.create', request_id='w', source='cli', cwd=str(tmp_path)))['session_id']
-        snap = store._db.get_session(sid)
+        snap = session_row(store.persistence, sid)
         await _call(owner, 'session.mutate', session_id=sid, request_id='move', operation='workspace',
                     payload={'cwd': str(moved)}, expected_revision=snap['runtime_revision'],
                     expected_generation=snap['runtime_generation'])
@@ -307,13 +308,14 @@ async def test_a_refresh_by_one_viewer_reaches_every_attached_viewer(tmp_path, m
         store.close_all_db_handles()
 
 
-def hold_refresh_commit(monkeypatch):
-    """A barrier at the refresh's commit seam (its preflight has read the stored policy and generation, its
-    write transaction has not begun): ``(entered, release, done, outcome)``, *outcome* what the commit did."""
+def hold_refresh_commit(monkeypatch, authority):
+    """A barrier at *authority*'s refresh commit seam (its preflight has read the stored policy and generation,
+    its write transaction has not begun): ``(entered, release, done, outcome)``, *outcome* what the commit did."""
     import threading
-    import hermes_state_mutation_prepared as prepared
+    from gateway.session_persistence import authority_persistence
     entered, release, done, outcome = threading.Event(), threading.Event(), threading.Event(), []
-    commit = prepared.commit_refreshed_policy
+    runtime = authority_persistence(authority).runtime
+    commit = runtime.commit_refreshed_policy
 
     def held_commit(*args, **kwargs):
         entered.set()
@@ -325,7 +327,7 @@ def hold_refresh_commit(monkeypatch):
             raise
         finally:
             done.set()
-    monkeypatch.setattr(prepared, 'commit_refreshed_policy', held_commit)
+    monkeypatch.setattr(runtime, 'commit_refreshed_policy', held_commit)
     return entered, release, done, outcome
 
 
@@ -334,24 +336,22 @@ async def admit_during_refresh(authority, actor, sid, refresh, barrier):
     while that admission is still queued: the owner loop is held until it finishes, so the drain (a task the
     admission scheduled) cannot start the turn first. The refused transaction left the stored policy and its
     generation as they were. ``(refresh result, admission)``."""
-    import hermes_state_runtime as rt
     from gateway.session_contract import SessionRef, Submission
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     entered, release, done, outcome = barrier
     task = asyncio.create_task(refresh)
     await async_wait_until(entered.is_set, what='the refresh to reach its commit')
-    stored = local_receipt(authority.db, sid)['policy']
+    stored = authority.persistence.bindings.receipt(sid).policy
     turn = await authority.submit(actor, Submission('queued-1', SessionRef(authority.profile_id, sid),
                                                     {'text': 'one'}, 'queue'))
-    assert rt.get_session_admission(authority.db, admission_id=turn.admission_id)['status'] == 'queued'
-    generation = authority.db.get_session(sid)['runtime_generation']
+    assert authority.persistence.admissions.get(admission_id=turn.admission_id).status == 'queued'
+    generation = session_row(authority.persistence, sid)['runtime_generation']
     release.set()
     assert done.wait(10)  # blocks the loop on purpose
-    assert isinstance(outcome[0], RuntimeStoreError) and outcome[0].reason == 'session_busy', outcome
-    assert rt.get_session_admission(authority.db, admission_id=turn.admission_id)['status'] == 'queued'
-    assert local_receipt(authority.db, sid)['policy'] == stored
-    assert authority.db.get_session(sid)['runtime_generation'] == generation
+    assert isinstance(outcome[0], AuthorityRefusal) and outcome[0].reason == 'session_busy', outcome
+    assert authority.persistence.admissions.get(admission_id=turn.admission_id).status == 'queued'
+    assert authority.persistence.bindings.receipt(sid).policy == stored
+    assert session_row(authority.persistence, sid)['runtime_generation'] == generation
     return await task, turn
 
 
@@ -359,8 +359,6 @@ async def admit_during_refresh(authority, actor, sid, refresh, barrier):
 async def test_an_admission_queued_during_an_attach_refresh_keeps_the_old_policy(tmp_path, monkeypatch):
     """The idle check is inside the refresh's write transaction: a turn queued after the refresh read the
     stored policy refuses the commit, and that turn runs the policy it was admitted under."""
-    import hermes_state_runtime as rt
-    from hermes_state_local import local_receipt
     home = _home(monkeypatch)
     seen = []
 
@@ -373,14 +371,14 @@ async def test_an_admission_queued_during_an_attach_refresh_keeps_the_old_policy
     owner, later = _connect(authority), _connect(authority)
     try:
         sid = (await _call(owner, 'session.create', request_id='q', source='cli', cwd=str(tmp_path)))['session_id']
-        stored = local_receipt(store._db, sid)['policy']
+        stored = store.persistence.bindings.receipt(sid).policy
         (home / 'config.yaml').write_text(AFTER)
-        barrier = hold_refresh_commit(monkeypatch)
+        barrier = hold_refresh_commit(monkeypatch, authority)
         resume = later.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}})
         reply, turn = await admit_during_refresh(authority, owner.actor, sid, resume, barrier)
         assert 'result' in reply, reply  # the refusal never fails the attach
-        assert local_receipt(store._db, sid)['policy'] == stored
-        await async_wait_until(lambda: rt.get_session_admission(store._db, admission_id=turn.admission_id)['status']
+        assert store.persistence.bindings.receipt(sid).policy == stored
+        await async_wait_until(lambda: store.persistence.admissions.get(admission_id=turn.admission_id).status
                                == 'terminal', what='the queued turn to run')
         assert seen == [True] and 'web' in _policy(authority, sid).toolsets
     finally:
@@ -390,7 +388,7 @@ async def test_an_admission_queued_during_an_attach_refresh_keeps_the_old_policy
 
 
 async def _mutate(connection, store, sid, request_id, operation, payload):
-    snap = store._db.get_session(sid)
+    snap = session_row(store.persistence, sid)
     return await _call(connection, 'session.mutate', session_id=sid, request_id=request_id, operation=operation,
                        payload=payload, expected_revision=snap['runtime_revision'],
                        expected_generation=snap['runtime_generation'])
@@ -432,8 +430,6 @@ async def test_a_branch_stored_before_receipts_carried_picks_keeps_its_lineages_
     """A branch stored before its receipt recorded ``picks`` takes them from its lineage: the parent's pick
     receipts committed before the branch, and the parent's own inherited picks, walking up. A pick the parent
     committed after the branch is not the branch's."""
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_mutation_prepared import policy_picks
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     owner, later = _connect(authority), _connect(authority)
@@ -445,11 +441,11 @@ async def test_a_branch_stored_before_receipts_carried_picks_keeps_its_lineages_
         (tmp_path / 'project').mkdir()
         await _mutate(owner, store, sid, 'move', 'workspace', {'cwd': str(tmp_path / 'project')})
         for branch in (child, grandchild):  # the receipt shape before this field existed
-            store._db._execute_write(lambda conn, key=POLICY_PREFIX + branch: conn.execute(
+            raw_holder(store.persistence)._execute_write(lambda conn, key=policy_key(branch): conn.execute(
                 "UPDATE state_meta SET value=json_remove(value, '$.picks') WHERE key=?", (key,)))
         (home / 'config.yaml').write_text(AFTER)
         for branch in (child, grandchild):
-            assert policy_picks(store._db, branch) == {'reasoning'}, branch
+            assert store.persistence.runtime.policy_picks(branch) == {'reasoning'}, branch
             await _call(later, 'session.resume', session_id=branch)
             policy = _policy(authority, branch)
             assert (policy.max_turns, policy.reasoning_config.get('effort')) == (7, 'medium'), branch
@@ -598,12 +594,11 @@ async def test_the_next_command_after_a_workspace_move_runs_in_the_new_folder(tm
         # A teardown that fails must not leave the committed move unpublished (the queue would stall).
         from gateway import session_policy_refresh
         from gateway.session_policy import restore_policy
-        from hermes_state_local import local_receipt
         monkeypatch.setattr(session_policy_refresh, 'drop_session_terminal', _raise)
         again = tmp_path / 'again'
         again.mkdir()
         await _mutate(owner, store, sid, 'again', 'workspace', {'cwd': str(again)})
-        stored = restore_policy(local_receipt(authority.db, sid)['policy']).cwd
+        stored = restore_policy(authority.persistence.bindings.receipt(sid).policy).cwd
         assert (stored, _policy(authority, sid).cwd) == (str(again), str(again))
     finally:
         await owner.close()
@@ -632,7 +627,7 @@ async def test_a_second_resume_during_terminal_cleanup_waits_for_the_refresh(tmp
     resumes = []
     try:
         sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
-        generation = store._db.get_session(sid)['runtime_generation']
+        generation = session_row(store.persistence, sid)['runtime_generation']
         (home / 'config.yaml').write_text(AFTER)
         resume = {'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}}
         resumes.append(asyncio.create_task(first.dispatch(resume)))
@@ -645,7 +640,7 @@ async def test_a_second_resume_during_terminal_cleanup_waits_for_the_refresh(tmp
         release.set()
         replies = await asyncio.gather(*resumes)
         assert [reply['result']['execution_generation'] for reply in replies] == [generation + 1] * 2, replies
-        assert store._db.get_session(sid)['runtime_generation'] == generation + 1
+        assert session_row(store.persistence, sid)['runtime_generation'] == generation + 1
         assert cleaned and len(cleaned) == len(set(cleaned)), cleaned
     finally:
         release.set()
@@ -660,8 +655,8 @@ def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, 
     silent no-refresh, so it is a WARNING."""
     import logging
     from gateway import session_policy_refresh as refresh
-    from hermes_state_runtime import RuntimeStoreError
-    for failure in (RuntimeStoreError('session_busy'), RuntimeStoreError('launch_credentials_unavailable'),
+    from persistence.core.errors import AuthorityRefusal
+    for failure in (AuthorityRefusal('session_busy'), AuthorityRefusal('launch_credentials_unavailable'),
                     OSError('config.yaml unreadable')):
         async def fail(authority, ref, failure=failure):
             raise failure

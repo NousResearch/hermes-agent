@@ -499,7 +499,7 @@ def test_record_retired_media_matches_legacy(seeded, legacy_store):
 
 @pytest.mark.parametrize("kind", ["media", "spillover"])
 def test_retired_candidates_match_legacy(seeded, legacy_store, kind):
-    from hermes_state_keys import prefix_range
+    from persistence.sqlite._state.keys import prefix_range
     from hermes_state_media import PREFIX, SPILLOVER_PREFIX, retire_media
 
     def seed(db, epoch):

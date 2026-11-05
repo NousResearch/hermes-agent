@@ -3,7 +3,7 @@ from dataclasses import asdict
 
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, _row
+from persistence import STORE_FAILURES, AuthorityRefusal
 
 
 def _authority(adapter):
@@ -20,10 +20,10 @@ _STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_
 
 
 def store_error_response(_openai_error, exc):
-    """A refused store call -> HTTP: a ``RuntimeStoreError`` keeps its reason; any other failure
-    (SQLite writer patience exhausted, I/O) is ``storage_unavailable``."""
+    """A refused store call -> HTTP: a refusal (``AuthorityRefusal``) keeps its reason;
+    any other failure (writer patience exhausted, I/O) is ``storage_unavailable``."""
     from aiohttp import web
-    reason = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+    reason = exc.reason if isinstance(exc, AuthorityRefusal) else 'storage_unavailable'
     if reason == 'admission_queued':
         # Accepted and still queued for the next owner, so not retryable: no Retry-After, and
         # x-should-retry tells the OpenAI/Anthropic SDKs not to retry the 503 on their own.
@@ -45,7 +45,7 @@ async def continued_session(adapter, session_id, request_id=None):
     try:
         return await asyncio.to_thread(
             continued_api_session, adapter.gateway_runner, session_id, request_id), None
-    except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
+    except (AuthorityRefusal, sqlite3.Error, OSError, *STORE_FAILURES) as exc:
         return session_id, store_error_response(_openai_error, exc)
 
 
@@ -57,12 +57,11 @@ def run_admission(adapter, run_id):
     # its own request holds; every other run id is the admission's durable request id.
     alias = getattr(adapter, '_run_admission_aliases', {}).get(run_id)
     column, value = ('admission_id', alias) if alias else ('request_id', run_id)
-    with authority.db._read_ctx() as conn:
-        rows = conn.execute(f"SELECT * FROM session_admissions WHERE principal_id='api' AND {column}=?",
-                            (value,)).fetchall()
+    from gateway.platforms.api_server_store import authority_store
+    rows = authority_store(authority).admissions.match(principal_id='api', **{column: value})
     if len(rows) > 1:
-        raise RuntimeStoreError('admission_conflict')
-    return (authority, _row(rows[0])) if rows else None
+        raise AuthorityRefusal('admission_conflict')
+    return (authority, asdict(rows[0])) if rows else None
 
 
 def run_projection(adapter, run_id):
@@ -73,7 +72,8 @@ def run_projection(adapter, run_id):
     # ``unknown`` is not terminal: later turns wait for POST /v1/runs/{id}/resolve-unknown, and
     # ``interrupted`` is in TERMINAL_STATUSES, so a poller would stop at a paused head.
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
-    saved = admission_result(authority.db, row['admission_id'])
+    from gateway.platforms.api_server_store import authority_store
+    saved = admission_result(authority_store(authority), row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':
         if result.get('interrupted') or row['outcome'] == 'interrupted':
@@ -114,22 +114,22 @@ async def respond_run(adapter, run_id, body, *, kind):
     import uuid
     owned = run_admission(adapter, run_id)
     if owned is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authority, row = owned
     generation = body.get('execution_generation')
     prompt_id = body.get('request_id')
     field = 'choice' if kind == 'approval' else 'answer'
     if set(body) != {'request_id', 'execution_generation', field}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if row['status'] != 'started' or type(generation) is not int or generation != row['generation']:
-        raise RuntimeStoreError('stale_generation')
+        raise AuthorityRefusal('stale_generation')
     ref = SessionRef(authority.profile_id, row['target_session_id'])
     actor = SessionActor('api', authority.profile_id,
         frozenset({'session:read', 'session:approve', 'session:respond'}), 'api-control:' + uuid.uuid4().hex)
     snapshot = await authority.attach(actor, ref, history=False)  # prompts only
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
-            raise RuntimeStoreError('approval_not_pending')
+            raise AuthorityRefusal('approval_not_pending')
         return await authority.respond(actor, ref, generation, prompt_id, {field: body[field]}, kind=kind)
     finally:
         await authority.detach(actor, snapshot.subscription_id)
@@ -138,7 +138,7 @@ async def respond_run(adapter, run_id, body, *, kind):
 async def stop_run(adapter, run_id):
     owned = run_admission(adapter, run_id)
     if owned is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authority, row = owned
     ref = SessionRef(authority.profile_id, row['target_session_id'])
     actor = SessionActor('api', authority.profile_id,
@@ -146,7 +146,7 @@ async def stop_run(adapter, run_id):
     if row['status'] == 'queued':
         try:
             await authority.cancel_queued(actor, ref, row['admission_id'])
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             # The drain claimed the head between the read above and the cancel commit: the run is
             # executing now, so Stop that exact claim below instead of refusing a live run.
             if exc.reason != 'stale_generation':
@@ -163,7 +163,7 @@ async def stop_run(adapter, run_id):
         adapter._stopping_run_ids.add(run_id)
         return {'run_id': run_id, 'status': 'stopping', 'admission_id': row['admission_id']}
     elif row['status'] == 'unknown':
-        raise RuntimeStoreError('unknown_execution')
+        raise AuthorityRefusal('unknown_execution')
     return run_projection(adapter, run_id)
 
 
@@ -171,12 +171,12 @@ async def resolve_unknown_run(adapter, run_id, body):
     """Resolve only the exact unknown admission durably bound to an owned API run."""
     owned = run_admission(adapter, run_id)
     if owned is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authority, row = owned
     if not isinstance(body, dict) or set(body) != {'admission_id', 'execution_generation'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if body['admission_id'] != row['admission_id']:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     generation = body['execution_generation']
     # Status/generation are the store's decision (``resolve_unknown_session_input``): it also replays the
     # committed receipt to an exact retry whose acknowledgement was lost, which a pre-check here refused.

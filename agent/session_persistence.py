@@ -24,9 +24,11 @@ from agent.memory_context import sanitize_context
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
 from agent.message_metadata import (
-    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, RESTORED_FROM_STORE, TOOL_CALL_UID,
-    copy_identity_fields, message_uid_or_none, tool_call_uid_from_history)
+    ABSORBED_MESSAGE_UIDS, DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, MESSAGE_UID, REPAIR_BOOKKEEPING_FIELDS,
+    RESTORED_FROM_STORE, TOOL_CALL_UID, TOOL_CALL_UIDS, copy_identity_fields, message_uid_or_none,
+    tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
+from persistence.conversation.messages import NewMessage, RowDisposition
 
 
 logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
@@ -275,9 +277,11 @@ def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any
     spill file. A store without the in-place writer, or a row another writer moved, keeps
     today's row.
     """
+    from agent.agent_init_session import agent_interface
     session_db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    store = agent_interface(agent)
     rewrite = getattr(session_db, "rewrite_pruned_rows", None)
-    if getattr(agent, "_persist_disabled", False) or not session_id or not callable(rewrite):
+    if getattr(agent, "_persist_disabled", False) or not session_id or (store is None and not callable(rewrite)):
         return 0
     changed = [
         (msg, before) for msg, before in zip(batch, contents_before)
@@ -286,14 +290,25 @@ def sync_rewritten_tool_rows(agent, batch: list[dict], contents_before: list[Any
         return 0
     rows = [(_db_flush_row(agent, {**msg, "content": before}, False), _db_flush_row(agent, msg, False))
             for msg, before in changed]
-    from hermes_state_errors import PruneRowUnresolvedError, SessionTurnLeaseLostError
+    from persistence.core.errors import PruneRowUnresolved, TurnLeaseLost
+    lease = dict(turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+                 turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0)
     try:
         with _persist_lock(agent):
-            written = rewrite(
-                session_id, rows, turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
-                turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
-            )
-    except (PruneRowUnresolvedError, SessionTurnLeaseLostError) as exc:  # another writer owns the row or turn
+            if store is not None:
+                from agent.conversation_compression_archive import held_message
+                from persistence.conversation.messages import PrunedRowChange
+                result = store.messages.rewrite_pruned_rows(session_id, [
+                    PrunedRowChange(held_message(original), NewMessage.from_live(replacement),
+                                    NewMessage.from_live(original))
+                    for original, replacement in rows], **lease)
+                for (_original, replacement), snapshot in zip(rows, result.snapshots):
+                    if snapshot is not None:
+                        replacement[DB_ROW_SNAPSHOT] = snapshot
+                written = result.rewritten
+            else:
+                written = rewrite(session_id, rows, **lease)
+    except (PruneRowUnresolved, TurnLeaseLost) as exc:  # another writer owns the row or turn
         logger.info("Tool-result rewrite not persisted; the stored row keeps the full body: %s", exc)
         return 0
     except Exception as exc:  # health: allow BLE001 -- a store failure must not fail the turn; the row keeps its body
@@ -360,16 +375,42 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
+def _new_message(row: dict[str, Any]) -> NewMessage:
+    """A ``_db_flush_row`` row as the storage interface's ``NewMessage``."""
+    return NewMessage(
+        role=row["role"], content=row["content"], timestamp=row["timestamp"], tool_calls=tuple(row["tool_calls"] or ()),
+        tool_name=row["tool_name"], tool_call_id=row["tool_call_id"], display_kind=row["display_kind"],
+        compressed_summary=row["_compressed_summary"], api_content=row["api_content"],
+        display_metadata=row["display_metadata"], platform_message_id=row["platform_message_id"],
+        observed=row["observed"], effect_disposition=row["effect_disposition"], finish_reason=row["finish_reason"],
+        **{key: row[key] for key in _ROW_REASONING_KEYS}, repair_target=row.get("_row_id"),
+        db_row_snapshot=row.get(DB_ROW_SNAPSHOT), message_uid=row.get(MESSAGE_UID),
+        absorbed_message_uids=tuple(row.get(ABSORBED_MESSAGE_UIDS) or ()), tool_call_uids=row.get(TOOL_CALL_UIDS),
+        tool_call_uid=row.get(TOOL_CALL_UID), token_count=row["token_count"],
+        restored_from_store=row.get(RESTORED_FROM_STORE) is True)
+
+
 def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[dict], messages: list[dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
-    agent._session_db.append_messages_batch(
-        session_id=agent.session_id, messages=batch_rows,
-        compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
-        turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
-        turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
-    )
+    from agent.agent_init_session import agent_interface
+    guards = {
+        "compression_lock_holder": getattr(agent, "_active_compression_lock_holder", None),
+        "turn_lease_holder": getattr(agent, "_active_session_turn_lease_holder", None),
+        "turn_lease_ttl_seconds": getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+    }
+    if (store := agent_interface(agent)) is not None:
+        result = store.messages.append_batch(agent.session_id, [_new_message(row) for row in batch_rows], **guards)
+        # Stamp each row with the state the write gave it, as the store's own writer stamps the dicts it takes. A
+        # restored row the store skipped (no row address, no snapshot) is only marked durable, as that writer marks it.
+        for row, outcome in zip(batch_rows, result.outcomes):
+            if (outcome.disposition is RowDisposition.REPAIRED and row.get(RESTORED_FROM_STORE) is True
+                    and row.get("_row_id") is None and row.get(DB_ROW_SNAPSHOT) is None):
+                continue
+            row.update((key, value) for key, value in outcome.as_row_annotation().items() if value is not None)
+    else:
+        agent._session_db.append_messages_batch(session_id=agent.session_id, messages=batch_rows, **guards)
     sync_flushed_message_markers(batch_msgs, batch_rows)
     _db_flush_store_uids(agent).update(uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
@@ -382,19 +423,20 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
 def _db_flush_adopt_compression_tip(agent) -> bool:
     """Adopt the live continuation of a compression-closed session. Same-id tip = no continuation; a tip
     whose row is missing or already ended is not adopted either."""
-    old_id = agent.session_id
+    from agent.agent_init_session import agent_interface
+    old_id, store = agent.session_id, agent_interface(agent)
     try:
-        tip = agent._session_db.get_compression_tip(old_id)
+        tip = store.lineage.tip(old_id) if store is not None else agent._session_db.get_compression_tip(old_id)
     except Exception as tip_exc:
         logger.warning("compression tip lookup failed for %s: %s", old_id, tip_exc)
         return False
     if not tip or tip == old_id:
         return False
     try:
-        tip_row = agent._session_db.get_session(tip)
+        tip_row = store.sessions.get(tip) if store is not None else agent._session_db.get_session(tip)
     except Exception:
         tip_row = None
-    if tip_row is None or tip_row.get("ended_at") is not None:
+    if tip_row is None or (tip_row.ended_at if store is not None else tip_row.get("ended_at")) is not None:
         return False
     logger.warning("Adopted live compression tip %s for closed session %s; retrying flush once", tip, old_id)
     agent.session_id, agent._flushed_db_message_ids, agent._last_flushed_db_idx = tip, set(), 0
@@ -404,8 +446,10 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
 
 def _db_flush_session_row_gone(agent, session_id: Optional[str]) -> bool:
     """True only when ``session_id``'s row is confirmed absent; a failed lookup is not proof."""
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
     try:
-        return agent._session_db.get_session(session_id) is None
+        return (store.sessions.get(session_id) if store is not None else agent._session_db.get_session(session_id)) is None
     except Exception as lookup_exc:
         logger.warning("session row lookup failed for %s: %s", session_id, lookup_exc)
         return False
@@ -422,8 +466,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adop
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
     # explanation names the real cause.
-    from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
-    from hermes_state_errors import CompressionSessionClosedError
+    from agent.agent_init_session import agent_interface
+    from persistence import CompressionClosed, StoreQuarantined, StoreReplaced
+    from session_rescue import divert_session_transcript_jsonl
+    from storage_errors import classify_persistence_error
     agent._last_persistence_error_cause = classify_persistence_error(e)
     if agent._last_persistence_error_cause == "session_row_missing":
         # The session row was removed under this live agent (`hermes sessions delete`, the Desktop/web
@@ -463,17 +509,18 @@ def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adop
         logger.warning("Session DB row for %s was removed under the live agent; recreated it and replaying the transcript",
                        getattr(agent, "session_id", None))
         return "healed"
-    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
-        # A replaced/quarantined handle will not take this batch again — keep it on disk.
+    if isinstance(e, (StoreReplaced, StoreQuarantined)):
+        # A replaced/quarantined handle will not take this batch again — keep it on disk, beside its store.
         try:
             # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
                                             [{k: v for k, v in r.items() if k not in REPAIR_BOOKKEEPING_FIELDS}
-                                             for r in batch_rows])
+                                             for r in batch_rows],
+                                            sessions_dir=agent_interface(agent).scope.profile_dir / "sessions")
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)
-    if isinstance(e, CompressionSessionClosedError):
+    if isinstance(e, CompressionClosed):
         # Compression race: another path rotated this session mid-write. Retry exactly once on the live tip; a
         # second closed-parent write fails closed.
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
@@ -514,6 +561,7 @@ class SessionPersistenceMixin:
         ``_flush_messages_to_session_db`` and written only to the DB row, never mutating the live message
         list used by the API call (#48677 is thus closed for every persist caller, not just this one).
         """
+        from agent.agent_init_session import agent_interface
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
             # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
@@ -523,7 +571,9 @@ class SessionPersistenceMixin:
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
-            if self._session_db is not None:
+            if (store := agent_interface(self)) is not None:
+                store.usage.flush_usage()
+            elif self._session_db is not None:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
 

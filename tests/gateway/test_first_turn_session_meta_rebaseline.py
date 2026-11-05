@@ -15,7 +15,7 @@ On a fresh gateway conversation the post-turn re-baseline
             append_to_transcript({"role": "session_meta", ...})
 
 ``append_to_transcript`` (no ``skip_db``) increments the session's
-``message_count`` unconditionally (hermes_state.append_message), so the
+``message_count`` unconditionally (the store's message append), so the
 snapshot ends up exactly +1 below the live on-disk count.
 
 The cross-process coherence guard (#45966) compares the live count against
@@ -28,7 +28,7 @@ The fix re-baselines AFTER all of this turn's transcript writes (including the
 first-turn ``session_meta`` row), so the snapshot matches the live count and
 the guard fires only on genuinely foreign writes.
 
-This drives the REAL ``_handle_message_with_agent`` against a REAL SessionDB
+This drives the REAL ``_handle_message_with_agent`` against a REAL store
 (the ``session_meta`` write actually increments ``message_count``) and asserts
 the invariant: after a first turn, snapshot == live count → next turn reuses.
 """
@@ -45,14 +45,17 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 SESSION_KEY = "agent:main:telegram:group:-1001:12345"
 SESSION_ID = "sess-first-turn"
 
 
-def _bootstrap(monkeypatch, tmp_path, db):
-    """GatewayRunner wired to a REAL SessionDB for count reads, mirroring the
+def _bootstrap(monkeypatch, tmp_path, store):
+    """GatewayRunner wired to a REAL store for count reads, mirroring the
     proven #42039 harness but with a live cache + real transcript counter."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -68,12 +71,8 @@ def _bootstrap(monkeypatch, tmp_path, db):
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_active_session_busy_message = AsyncMock(return_value=False)
-    # REAL SessionDB behind the async facade the gateway holds — the
-    # production re-baseline does ``await self._session_db.get_session(...)``,
-    # so it must be the AsyncSessionDB wrapper, not the raw sync DB.
-    from hermes_state import AsyncSessionDB
-
-    runner._session_db = AsyncSessionDB(db)
+    # The REAL store's handle, as the gateway holds it.
+    runner._session_db = store
     runner._recover_telegram_topic_thread_id = lambda _source: None
     runner._cache_session_source = lambda _key, _source: None
     runner._is_session_run_current = lambda _key, _gen: True
@@ -109,11 +108,10 @@ def _bootstrap(monkeypatch, tmp_path, db):
     # already persisted them via _flush_messages_to_session_db) are no-ops here.
     def _append(session_id, message, skip_db=False):
         if not skip_db:
-            db.append_message(
-                session_id=session_id,
-                role=message.get("role", "unknown"),
-                content=message.get("content"),
-            )
+            store.messages.append(session_id, NewMessage.from_live({
+                "role": message.get("role", "unknown"),
+                "content": message.get("content"),
+            }))
 
     runner.session_store.append_to_transcript = MagicMock(side_effect=_append)
 
@@ -150,14 +148,14 @@ def _source():
     )
 
 
-def _live_count(db, session_id):
-    row = db.get_session(session_id)
+def _live_count(store, session_id):
+    row = session_row(store, session_id)
     return (row.get("message_count", 0) if row else 0)
 
 
 @pytest.mark.asyncio
 async def test_first_turn_session_meta_is_captured_by_rebaseline(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, request
 ):
     """After a fresh first turn, the cache snapshot must equal the live
     message_count — including the first-turn ``session_meta`` row.
@@ -166,16 +164,19 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     session_meta append, leaving the snapshot one short; the cross-process
     guard then rebuilds the cached agent on turn 2 (prompt-cache churn).
     """
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=tmp_path / "sessions.db")
-    db.create_session(SESSION_ID, source="telegram")
+    handle = open_persistence(profile_scope(home=tmp_path))
+    request.addfinalizer(handle.close)
+    seed_session(handle, SESSION_ID, "telegram")
+    # The re-baseline reads through the storage interface handle.
+    monkeypatch.setattr(gateway_run.GatewayRunner, "persistence", handle)
 
-    runner = _bootstrap(monkeypatch, tmp_path, db)
+    runner = _bootstrap(monkeypatch, tmp_path, handle)
 
     # Cache snapshot taken at agent-BUILD time = count before this turn's
     # writes (a fresh session → 0). This is what the #45966 guard stores.
-    build_count = _live_count(db, SESSION_ID)
+    build_count = _live_count(handle, SESSION_ID)
     agent_obj = object()
     with runner._agent_cache_lock:
         runner._agent_cache[SESSION_KEY] = (agent_obj, "sig", build_count)
@@ -199,7 +200,7 @@ async def test_first_turn_session_meta_is_captured_by_rebaseline(
     await runner._handle_message_with_agent(_event(), _source(), SESSION_KEY, 1)
 
     # The first-turn session_meta row was written → live count advanced.
-    live = _live_count(db, SESSION_ID)
+    live = _live_count(handle, SESSION_ID)
     assert live == build_count + 1, (
         "first-turn session_meta should increment message_count by exactly 1"
     )

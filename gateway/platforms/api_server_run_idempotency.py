@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
-from hermes_cli.sqlite_util import add_column_if_missing
+from sqlite_support import add_column_if_missing
 
 
 # Keep the extracted store's log records on the API server logger.
@@ -82,7 +82,7 @@ class RunIdempotencyStore:
                 "process memory, so replay will not survive a restart: %s", exc)
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
-        from hermes_state_wal import apply_wal_with_fallback
+        from sqlite_support import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="runs_idempotency.db")
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS run_idempotency (

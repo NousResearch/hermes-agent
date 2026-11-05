@@ -31,6 +31,10 @@ import time
 import types
 from unittest.mock import MagicMock, patch
 
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 def _make_cli():
     """Build a HermesCLI with prompt_toolkit stubbed (same pattern as
@@ -243,17 +247,16 @@ def test_chat_preserves_clean_multimodal_input_when_note_changes_api_message():
 
 def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
     """The real CLI-to-agent path stores clean image parts, never the queued note."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     cli = _make_cli()
     session_id = cli.session_id
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id=session_id, source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, session_id, "cli")
 
     agent = object.__new__(AIAgent)
-    agent._session_db = db
+    agent._session_db = agent.persistence = db
     agent._session_db_created = True
     agent.session_id = session_id
     agent.platform = "cli"
@@ -363,7 +366,7 @@ def test_chat_multimodal_note_persists_clean_input_once(tmp_path, monkeypatch):
 
     assert captured["persist_user_message"] == clean_parts
     assert captured["user_message"][0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
-    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+    assert [m["content"] for m in conversation(db, session_id)] == [
         "Describe this screenshot\n[screenshot]"
     ]
 
@@ -419,27 +422,21 @@ def test_chat_clears_previous_turn_persistence_override_before_staging():
 
 def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatch):
     """Close cannot retain the mutable pre-append history as its DB baseline."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     cli = _make_cli()
     session_id = cli.session_id
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id=session_id, source="cli")
+    db = storage_handle(tmp_path)
+    seed_session(db, session_id, "cli")
     prefix = [
         {"role": "user", "content": "old prompt"},
         {"role": "assistant", "content": "old answer"},
     ]
-    for message in prefix:
-        db.append_message(
-            session_id=session_id,
-            role=message["role"],
-            content=message["content"],
-        )
+    seed_messages(db, session_id, *prefix)
 
     agent = object.__new__(AIAgent)
-    agent._session_db = db
+    agent._session_db = agent.persistence = db
     agent._session_db_created = True
     agent.session_id = session_id
     agent.platform = "cli"
@@ -531,7 +528,7 @@ def test_close_waits_for_atomic_cli_staging_before_snapshot(tmp_path, monkeypatc
 
     assert not chat_thread.is_alive()
     assert not close_thread.is_alive()
-    assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [
+    assert [m["content"] for m in conversation(db, session_id)] == [
         "old prompt",
         "old answer",
         "new prompt",

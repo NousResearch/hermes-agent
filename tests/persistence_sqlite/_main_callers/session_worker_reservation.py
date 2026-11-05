@@ -3,7 +3,7 @@
 import os
 import secrets
 import subprocess
-from hermes_state_keys import admission_fingerprint
+from persistence.sqlite._state.keys import admission_fingerprint
 from hermes_state_runtime import _admission, _epoch, _secret_digest, _session
 from persistence.core.errors import AuthorityRefusal
 

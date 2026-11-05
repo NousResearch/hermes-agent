@@ -20,7 +20,7 @@ The result preserves `session_id`, `stored_session_id`, `messages`, `message_cou
 the same stable persisted **logical** ID. Compression and reset may rotate the private
 physical transcript target without changing either client ID. Creation is lazy with respect
 to the agent, but reserves the real
-SessionDB/SessionStore identity before returning. One canonical SQLite transaction commits
+stored-session/SessionStore identity before returning. One canonical SQLite transaction commits
 the session row, route, and private `gateway.local_policy.v1:<stored-id>` creation receipt.
 Repeating the request ID for the same principal and profile reuses that identity and frozen
 policy, including after daemon death. Omit the ID for a new session; clients that need

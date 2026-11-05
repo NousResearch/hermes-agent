@@ -7,7 +7,7 @@ advertised loopback port is therefore trusted with the user's session traffic.
 
 Real processes throughout:
 
-* the lease holder is a separate Python process that creates the session through ``SessionDB`` and
+* the lease holder is a separate Python process that creates the session through the storage interface and
   acquires its lease through ``try_acquire_active_session`` (the registry path production uses);
 * the client is the real ``hermes --tui --resume SID`` CLI (argparse, profile-home resolution, the
   launcher's discovery, its error exit);
@@ -79,13 +79,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
 from hermes_cli.active_sessions import try_acquire_active_session
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 sid, advertise, token = sys.argv[1], sys.argv[2], sys.argv[3]
-db = SessionDB()
-db.create_session(session_id=sid, source="cli")
-db.close()
+with open_persistence(profile_scope()) as store:
+    seed_session(store, sid, "cli")
 home = str(Path(get_hermes_home()).resolve())
 state = {}
 

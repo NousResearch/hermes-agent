@@ -299,7 +299,7 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     from queue import Empty, Queue
     from threading import Thread
 
-    from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+    from hermes_cli.update_downgrade_guard import BACKEND_SCHEMA, STATE_MODULES, defines_runtime
 
     deadline = time.monotonic() + _RUNTIME_LOOKUP_SECONDS
     replies: Queue[Optional[str]] = Queue()
@@ -326,6 +326,10 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
             return None
         paths = [e["path"] for e in entries if isinstance(e, dict) and e.get("type") == "blob"
                  and isinstance(e.get("path"), str) and fnmatchcase(e["path"], STATE_MODULES)]
+        # The tree read is one level deep: the backend's schema is read when its top folder is there.
+        if any(isinstance(e, dict) and e.get("type") == "tree" and e.get("path") == BACKEND_SCHEMA.split("/")[0]
+               for e in entries):
+            paths.append(BACKEND_SCHEMA)
         if not paths:
             return None  # not a recognised Hermes tree: no claim either way
         urls = iter(f"https://raw.githubusercontent.com/{repository}/{sha}/{quote(path)}" for path in paths)

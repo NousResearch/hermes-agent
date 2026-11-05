@@ -385,7 +385,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Best-effort ``_meta.hermes.sessionProvenance`` for an ACP session."""
         try:
             return session_provenance_meta(
-                self.session_manager._get_db(), acp_session_id, current_hermes_session_id,
+                self.session_manager._get_persistence(), acp_session_id, current_hermes_session_id,
                 previous_hermes_session_id=previous_hermes_session_id,
             )
         except Exception:
@@ -401,13 +401,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not self._conn:
             return
         try:
-            row = self.session_manager._get_db().get_session(session_id)
+            row = self.session_manager._get_persistence().sessions.get(session_id)
         except Exception:
             logger.debug("Could not read ACP session info for %s", session_id, exc_info=True)
             return
-        if not row:
+        if row is None:
             return
-        title = row.get("title")
+        title = row.title
         # `sessions` has no `updated_at`; "now" is right since this fires when the title changed.
         update = SessionInfoUpdate(
             session_update="session_info_update",

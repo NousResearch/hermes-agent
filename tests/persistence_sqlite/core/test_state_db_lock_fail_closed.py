@@ -33,10 +33,10 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_repair as repair_module
-import hermes_state_common as common_module
+from persistence.sqlite._state import repair as repair_module
+from persistence.sqlite._state import common as common_module
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_repair import repair_state_db_schema
+from persistence.sqlite._state.repair import repair_state_db_schema
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.search import rebuild_fts
 from persistence.sqlite.conversation._store.sessions import create_session

@@ -116,14 +116,18 @@ def test_managed_workers_run_each_sessions_tools_under_its_client_toolchain(tmp_
     assert outputs['alpha'].strip().endswith('/nvm/alpha|alpha'), outputs
     assert outputs['beta'].strip().endswith('/nvm/beta|beta'), outputs
     assert outputs['desktop'].strip().endswith('|daemon'), outputs  # no client_env: the gateway's own
-    from hermes_state import SessionDB
-    db = SessionDB(home / 'state.db')
-    try:
-        public += [db.export_session(sid, include_compacted=True) for sid in sessions.values()]
-        public += [db.list_sessions_rich(search_query='sentinel', order_by_last_active=True, include_archived=True),
-                   db.list_sessions_rich(limit=50), db.search_sessions(limit=50),
-                   db.search_messages('sentinel')]
-    finally:
-        db.close()
+    from dataclasses import asdict
+    from hermes_cli.session_export import to_legacy_export_dict
+    from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+    from persistence_assembly import open_persistence, profile_scope
+    with open_persistence(profile_scope(home=home)) as db:
+        public += [to_legacy_export_dict(db.maintenance.export_session(sid, include_compacted=True))
+                   for sid in sessions.values()]
+        public += [[entry.as_list_row() for entry in db.sessions.list_sessions(SessionQuery(
+                       search_text='sentinel', order=SessionOrder.LAST_ACTIVE, include_archived=True))],
+                   [entry.as_list_row() for entry in db.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50))],
+                   [{**entry.session.as_session_row(), 'last_active': entry.last_active}
+                    for entry in db.sessions.search_sessions(window=SessionWindow(limit=50))],
+                   [asdict(hit) for hit in db.search.search_messages('sentinel')]]
     text = json.dumps(public, default=str)
     assert not [s for s in sentinels.values() if s in text], 'client_env leaked into a public projection'

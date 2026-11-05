@@ -10,6 +10,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore, build_session_key
+from tests.fixtures.storage_read import session_row
 
 
 def _event(text: str, source: SessionSource) -> MessageEvent:
@@ -82,7 +83,7 @@ async def test_owner_reset_returns_a_local_session_to_the_configured_default_rea
         live = authority.sessions[sid]
 
         async def pick(model):
-            snap = authority.db.get_session(sid)
+            snap = session_row(authority.persistence, sid)
             response = await owner.dispatch({"id": model, "method": "session.mutate", "params": dict(
                 session_id=sid, request_id=f"{model}-{snap['runtime_revision']}", operation="model",
                 payload={"model": model}, expected_revision=snap["runtime_revision"],
@@ -94,10 +95,10 @@ async def test_owner_reset_returns_a_local_session_to_the_configured_default_rea
         _profile(home, "cfg-b", 1, "k")  # edited after launch: reset reads config.yaml now
         await pick("reset")
         assert policy_for_source(runner, live.source).model == "cfg-b"
-        revision = authority.db.get_session(sid)["runtime_revision"]
+        revision = session_row(authority.persistence, sid)["runtime_revision"]
         again = await pick("reset")
         assert again["status"] == "noop" and "cfg-b" in again["note"]  # nothing to reset, nothing written
-        assert authority.db.get_session(sid)["runtime_revision"] == revision
+        assert session_row(authority.persistence, sid)["runtime_revision"] == revision
     finally:
         await owner.close()
         store.close_all_db_handles()

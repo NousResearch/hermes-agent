@@ -12,8 +12,11 @@ instead of writing a duplicate.
 import types
 
 from agent.turn_context import _stage_turn_user_message
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, HeldCoverage, NewMessage, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages
 from tui_gateway import server
 
 
@@ -36,13 +39,13 @@ def _busy(session, in_flight="prompt A"):
 
 
 def _active_rows(db, key):
-    return db.get_messages_as_conversation(key, repair_alternation=True, include_row_ids=True)
+    return conversation(db, key, ConversationRequest(repair_alternation=True, include_row_ids=True))
 
 
 def _flush_agent(db, key):
     """Agent shell owning the real flush (the crash persist at turn start runs this same code)."""
     agent = types.SimpleNamespace(
-        _session_db=db, _session_db_created=True, _persist_disabled=False, session_id=key,
+        _session_db=db, persistence=db, _session_db_created=True, _persist_disabled=False, session_id=key,
         _session_persist_lock=None, _flushed_db_message_ids=set(), _flushed_db_message_session_id=None,
         _last_flushed_db_idx=0, _persist_user_message_idx=None, _persist_user_message_override=None,
         _persist_user_message_timestamp=None, _pending_cli_user_message=None)
@@ -68,15 +71,15 @@ def _accept_busy_then_run_both_turns(monkeypatch, tmp_path, queued_text="queued 
     """Real two-turn flow: turn A's row is in the transcript, turn A is live, B is accepted busy,
     A's reply lands, the real ``_drain_queued_prompt`` dispatches B and B's turn body (adopt +
     crash-persist + flush) writes reply B. Returns ``(db, sid, key)`` in steady state."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     server._ensure_session_db_row(session)  # the lazy row a real first submit would have written
-    db.append_message(key, "user", content="prompt A")  # turn A's row, as A's turn would have written it
+    seed_messages(db, key, {"role": "user", "content": "prompt A"})  # turn A's row, as A's turn would have written it
     _busy(session)
     resp = server._handle_busy_submit("r1", sid, session, queued_text, "ws-1", queued=True, display_kind=None)
     assert resp["result"]["status"] == "queued"
-    db.append_message(key, "assistant", content="reply A")  # turn A concludes
+    seed_messages(db, key, {"role": "assistant", "content": "reply A"})  # turn A concludes
     with session["history_lock"]:
         session["running"] = False
         server._clear_inflight_turn(session)
@@ -89,7 +92,7 @@ def _accept_busy_then_run_both_turns(monkeypatch, tmp_path, queued_text="queued 
 def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_path):
     """RED for the bug: accept acked {"status": "queued"} with no DB write, so a cold read
     (session.resume) or a restart saw nothing until the queued turn actually ran."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -117,7 +120,7 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
         # Exactly one ACTIVE row carries the queued text; the accept-time row survives inactive.
         active = [r for r in _active_rows(db, key) if "QUEUED-MARKER" in str(r["content"])]
         assert len(active) == 1
-        every = db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
+        every = conversation(db, key, ConversationRequest(view=TranscriptView.ALL, include_row_ids=True))
         superseded = [r for r in every if "QUEUED-MARKER" in str(r["content"]) and r["_row_id"] != active[0]["_row_id"]]
         assert len(superseded) == 1  # durable history, never deleted
     finally:
@@ -126,20 +129,20 @@ def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tm
 
 
 def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
-    """A queued prompt is durable at accept: a brand-new SessionDB on the same file (the shape a
+    """A queued prompt is durable at accept: a brand-new store handle on the same file (the shape a
     restarted backend opens) reads the queued message back."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         _busy(session)
         server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
                                    queued=True, display_kind=None)
-        fresh = SessionDB(db_path=tmp_path / "state.db")  # a restarted backend opens a new handle
+        fresh = open_persistence(profile_scope(home=tmp_path))  # a restarted backend opens a new handle
         try:
             assert any(r["role"] == "user" and "queued text QUEUED-MARKER" in str(r["content"])
-                       for r in fresh.get_messages_as_conversation(key, repair_alternation=True,
-                                                                   include_row_ids=True))
+                       for r in conversation(fresh, key, ConversationRequest(repair_alternation=True,
+                                                                            include_row_ids=True)))
         finally:
             fresh.close()
     finally:
@@ -150,7 +153,7 @@ def test_queued_prompt_survives_a_backend_restart(monkeypatch, tmp_path):
 def test_merged_queue_text_updates_the_written_row_in_place(monkeypatch, tmp_path):
     """A text-only arrival merges into the queued envelope; the already-written row must not
     lag the envelope, or cold readers see half the merged prompt and adoption stops matching."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -171,7 +174,7 @@ def test_merged_queue_text_updates_the_written_row_in_place(monkeypatch, tmp_pat
 def test_cleared_queue_keeps_the_queued_row_as_the_interrupted_shape(monkeypatch, tmp_path):
     """A cancelled queued prompt keeps its trailing user row: a trailing user row with no reply
     is the documented interrupted-transcript shape (never delete it on cancel)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
@@ -192,7 +195,7 @@ def test_drained_turn_adopts_the_replaced_row_and_writes_no_duplicate(monkeypatc
     re-placed row instead of appending a fifth."""
     db, sid, key = _accept_busy_then_run_both_turns(monkeypatch, tmp_path)
     try:
-        assert len(db.get_messages_as_conversation(key)) == 4
+        assert len(conversation(db, key)) == 4
     finally:
         server._sessions.pop(sid, None)
         db.close()
@@ -204,12 +207,12 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
     the second prompt must never render before the first. Without queue-wide re-placement at each
     drain, the second prompt's accept-time row stays ahead of the in-flight reply while the first's
     heals past it — permanently rendering the later prompt before the earlier one."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         server._ensure_session_db_row(session)  # the lazy row a real first submit would have written
-        db.append_message(key, "user", content="prompt A")  # turn A's row
+        seed_messages(db, key, {"role": "user", "content": "prompt A"})  # turn A's row
         _busy(session)
         session["attached_images"] = ["/tmp/b.png"]
         assert server._handle_busy_submit("r1", sid, session, "prompt B QUEUED-B", "ws-1",
@@ -217,7 +220,7 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
         session["attached_images"] = ["/tmp/c.png"]
         assert server._handle_busy_submit("r2", sid, session, "prompt C QUEUED-C", "ws-1",
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
-        db.append_message(key, "assistant", content="reply A")  # turn A concludes
+        seed_messages(db, key, {"role": "assistant", "content": "reply A"})  # turn A concludes
         with session["history_lock"]:
             session["running"] = False
             server._clear_inflight_turn(session)
@@ -239,28 +242,28 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
 def _compact_in_place_while_queued(db, key):
     """The live turn compacts in place: it holds its own rows, never the queued prompt's accept-time
     row, so the commit re-sequences that row to a new id after the compacted set."""
-    held = [r["_row_id"] for r in db.get_messages_as_conversation(key, include_row_ids=True)
+    held = [r["_row_id"] for r in conversation(db, key, ConversationRequest(include_row_ids=True))
             if "QUEUED-MARKER" not in str(r["content"])]
-    db.archive_and_compact(key, [{"role": "user", "content": "[CONTEXT COMPACTION] summary of turn A"},
-                                 {"role": "assistant", "content": "ok, continuing"}],
-                           covered_ids=held, unresolved_held=[])
+    db.messages.compact(key, [NewMessage.from_live(m) for m in (
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary of turn A"},
+        {"role": "assistant", "content": "ok, continuing"})], coverage=HeldCoverage(covered_ids=tuple(held)))
 
 
 def test_drain_after_in_place_compaction_leaves_one_active_queued_row(monkeypatch, tmp_path):
     """The envelope kept the accept-time id after the compaction re-sequenced the row, so the drain
     deactivated the (already inactive) original and the clone stayed live: the queued prompt was
     active twice, once before reply A, which then replayed as the answer to it."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         server._ensure_session_db_row(session)
-        db.append_message(key, "user", content="prompt A")
+        seed_messages(db, key, {"role": "user", "content": "prompt A"})
         _busy(session)
         server._handle_busy_submit("r1", sid, session, "queued text QUEUED-MARKER", "ws-1",
                                    queued=True, display_kind=None)
         _compact_in_place_while_queued(db, key)
-        db.append_message(key, "assistant", content="reply A")
+        seed_messages(db, key, {"role": "assistant", "content": "reply A"})
         with session["history_lock"]:
             session["running"] = False
             server._clear_inflight_turn(session)
@@ -281,12 +284,12 @@ def test_drain_after_in_place_compaction_leaves_one_active_queued_row(monkeypatc
 def test_merge_after_in_place_compaction_updates_the_live_queued_row(monkeypatch, tmp_path):
     """A text-only arrival after the compaction merged into the envelope, but the row update used the
     stale id, matched no active row, and the live clone kept only the first fragment."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key = _desktop_session(monkeypatch, db)
     session = server._sessions[sid]
     try:
         server._ensure_session_db_row(session)
-        db.append_message(key, "user", content="prompt A")
+        seed_messages(db, key, {"role": "user", "content": "prompt A"})
         _busy(session)
         server._handle_busy_submit("r1", sid, session, "first QUEUED-MARKER", "ws-1", queued=True, display_kind=None)
         _compact_in_place_while_queued(db, key)

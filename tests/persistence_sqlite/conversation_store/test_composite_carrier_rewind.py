@@ -13,8 +13,10 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import (
-    CompressionSessionClosedError, SessionCompressionInProgressError, SessionTurnLeaseLostError,
+from persistence.sqlite._state.errors import (
+    CompressionSessionClosedError,
+    SessionCompressionInProgressError,
+    SessionTurnLeaseLostError,
 )
 from persistence.sqlite.conversation._store.messages import (
     append_message,

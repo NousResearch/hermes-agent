@@ -30,6 +30,9 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, Hang, Text, ToolCall, write_hermes_home
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_run_progress_topics import _make_runner
 from tests.waiting import wait_until
 
@@ -311,13 +314,13 @@ def test_each_profile_resolves_its_own_mode_under_the_multiplexer(monkeypatch, t
 
 async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restart_between=False):
     """Two turns on one Telegram chat through a runner WITH an agent cache (the second turn reuses the first turn's
-    agent) and a real SessionDB in the temp HERMES_HOME (the tools[] pin is persisted). ``restart_between`` drops
+    agent) and a real store in the temp HERMES_HOME (the tools[] pin is persisted). ``restart_between`` drops
     the cache between the turns, so the second turn builds a fresh agent that restores the session's pin.
     Returns (chat, the delegate_task definition of each parent request, the persisted pin)."""
     import json
 
     import gateway.run as gateway_run
-    from hermes_state import SessionDB
+    from gateway.run import _SESSION_DB_UNPINNED
     from tools import async_delegation
 
     home = Path(os.environ["HERMES_HOME"])
@@ -336,8 +339,9 @@ async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restar
             "api_key": "sk-fake-e2e", "base_url": srv.base_url, "provider": "custom", "api_mode": "chat_completions"})
         runner = _make_runner(chat)
         runner.config.streaming = StreamingConfig(enabled=False)
-        runner._session_db = SessionDB(home / "state.db")
-        runner._session_db.create_session("s1", source=platform.value)  # the session store creates the row first
+        runner._session_db_pinned = _SESSION_DB_UNPINNED  # the turn's agent writes through runner.persistence
+        runner.session_store.persistence = db = storage_handle(home)
+        seed_session(db, "s1", platform.value)  # the session store creates the row first
         runner._agent_cache, runner._agent_cache_lock = {}, threading.Lock()
         heartbeats, history = [first_heartbeat, False], []
 
@@ -357,7 +361,7 @@ async def _two_turns(monkeypatch, config: dict, *, first_heartbeat: bool, restar
             event = MessageEvent(text=f"How is billing doing? ({i})", source=source, message_type=MessageType.TEXT)
             await asyncio.wait_for(chat._process_message_background(event, session_key), timeout=60)
             await asyncio.to_thread(wait_until, lambda: async_delegation.active_count() == 0, 30, 0.02, "async units")
-        row = runner._session_db.get_session("s1") or {}
+        row = session_row(db, "s1") or {}
         pin = json.loads(row["tool_names"]) if row.get("tool_names") else None
     schemas = [_delegate_def(r["body"]) for r in srv.requests if r["kind"] == "main" and GOAL not in _first_user_text(r)]
     return chat, schemas, pin

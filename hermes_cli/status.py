@@ -272,18 +272,15 @@ def _render_sessions(ctx):
     # Gateway session count: state.db is the source of truth; fall back to sessions.json for
     # pre-migration installs.
     try:
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-        try:
-            gateway_rows = db.list_gateway_sessions(active_only=True) or []
-        finally:
-            db.close()
+        from persistence_assembly import open_persistence_reader
+        with open_persistence_reader(get_hermes_home()) as store:
+            gateway_rows = store.sessions.list_gateway_sessions(active_only=True)
     except Exception:
         gateway_rows = []
 
     if gateway_rows:
         _kv("Active:", f"{len(gateway_rows)} session(s)")
-        freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
+        freshest = max((float(r.last_active or 0) for r in gateway_rows), default=0.0)
         if freshest > 0:
             from hermes_cli.timefmt import relative_time
             print(f"  Last activity:{relative_time(freshest):>13}")

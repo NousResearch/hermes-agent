@@ -391,12 +391,16 @@ class MicroCompactionMixin:
         land during the summary call.
         """
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        store = self._store_interface()
         watermark_of = getattr(session_db, "get_active_message_watermark", None)
-        if not session_id or not callable(watermark_of):
+        if not session_id or (store is None and not callable(watermark_of)):
             return None, None
         try:
-            watermark = watermark_of(session_id)
-            _cc()._archive_watermark_for(session_db, session_id, held, watermark)
+            if store is not None:
+                watermark = int(store.messages.active_watermark(session_id).last_active or 0)
+            else:
+                watermark = watermark_of(session_id)
+            _cc()._archive_watermark_for(session_db, session_id, held, watermark, persistence=store)
         except _cc().StaleHeldHistory as exc:
             logger.info("micro-compaction: skipping this pass, %s", exc)
             return "stale_generation", None
@@ -416,7 +420,7 @@ class MicroCompactionMixin:
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
-        from hermes_state_errors import HeldRowRewrittenError
+        from persistence.core.errors import HeldRowRewritten
         try:
             # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
             # byte-identical originals by their persistence marker; the state transaction resolves each
@@ -427,15 +431,17 @@ class MicroCompactionMixin:
                 message for message in compacted_messages
                 if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
             ]
+            from agent.conversation_compression_archive import commit_compaction, coverage_for_commit
+            store = self._store_interface()
             watermark = None
             covered_ids = unresolved_held = None
             if held is not None and start_watermark is not None:
-                watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
-                from agent.conversation_compression_archive import coverage_for_commit
-                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
-            session_db.archive_and_compact(
-                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
-                covered_ids=covered_ids, unresolved_held=unresolved_held,
+                watermark = _cc()._archive_watermark_for(
+                    session_db, session_id, held, start_watermark, persistence=store)
+                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held, persistence=store)
+            commit_compaction(
+                session_db, store, session_id, compacted_messages, carried_messages=carried_messages,
+                watermark=watermark, covered_ids=covered_ids, unresolved_held=unresolved_held,
                 held_for_cas=held)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
@@ -446,7 +452,7 @@ class MicroCompactionMixin:
             # and summary); otherwise finalize_turn would append the unmarked summary row beside the winner.
             logger.info("Micro-compaction commit skipped, %s", exc)
             return False
-        except HeldRowRewrittenError as exc:
+        except HeldRowRewritten as exc:
             # The in-transaction CAS fence tripped: a held row changed between the precheck and the
             # commit. Same disposition as a stale generation — nothing written, the pass is discarded.
             logger.info("Micro-compaction commit skipped, %s", exc)

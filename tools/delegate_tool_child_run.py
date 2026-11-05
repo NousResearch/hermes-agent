@@ -38,10 +38,9 @@ def _reserve_child_transcript(child: Any) -> None:
     try:
         # Leave model_config and the prompt unset. The constructor upsert keeps
         # existing values, so a partial config here would freeze first-turn state.
-        db.create_session(
-            session_id=child.session_id, source="subagent",
-            parent_session_id=child._parent_session_id,
-        )
+        from persistence.conversation.sessions import NewSession
+        child.persistence.sessions.create(NewSession(
+            session_id=child.session_id, source="subagent", parent_session_id=child._parent_session_id))
         child._session_db_reserved = True
     except BaseException:
         # Ownership has transferred, but the child is not attached or published yet.

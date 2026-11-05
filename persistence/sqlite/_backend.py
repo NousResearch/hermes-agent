@@ -24,8 +24,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, NoReturn, Optional
 
-from hermes_state_errors import (
-    _DISK_IO_ERROR_MARKER, DeletedWalGenerationError, StateDbCorruptError, StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_disk_full_error, is_fts_scoped_corruption_error, is_malformed_schema_error, is_sqlite_lock_error,
+from persistence.sqlite._state.errors import (
+    _DISK_IO_ERROR_MARKER, DeletedWalGenerationError, StateDbCorruptError, StateDbReplacedError, _is_no_more_rows,
+    classify_persistence_error, is_disk_full_error, is_fts_scoped_corruption_error, is_malformed_schema_error,
+    is_sqlite_lock_error,
 )
 from persistence import (
     AwaitableStore, CapabilityUnsupported, CorruptStoreError, DeletedWalGeneration, DiskFull, MalformedSchema,

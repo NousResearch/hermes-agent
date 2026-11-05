@@ -11,12 +11,13 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_state_dbfile import collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders
-from hermes_state_holders import describe_holder_pid, foreign_state_db_holders, held_store_refusal, read_only_db_uri
-from hermes_state_repair import (
-    _FTS_TABLES, _connect_repair_durable, _exclusive_repair_db_guard, _live_writer_holds_db, _schema_not_built, repair_state_db_schema, state_db_has_structural_damage,
+from persistence.sqlite._state.dbfile import collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders
+from persistence.sqlite._state.holders import describe_holder_pid, foreign_state_db_holders, held_store_refusal, read_only_db_uri
+from persistence.sqlite._state.repair import (
+    _FTS_TABLES, _connect_repair_durable, _exclusive_repair_db_guard, _live_writer_holds_db, _schema_not_built,
+    repair_state_db_schema, state_db_has_structural_damage,
 )
-from hermes_state_wal import (
+from persistence.sqlite._state.wal import (
     _on_disk_journal_mode, _path_on_cross_vm_fs, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable,
 )
 from persistence import PermanentStoreError, StoreContention

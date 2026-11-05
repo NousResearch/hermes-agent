@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+from persistence_assembly import close_stores_under, store_location
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
@@ -62,32 +65,32 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             )
             entry = store.get_or_create_session(source)
             sid = entry.session_id
-            db = store._db_for_session_id(sid)
+            db = store._persistence_for_session_id(sid)
             owner = f"accepted-owner-{index}"
             metadata = {"gateway_input_owner": owner}
             prepared = runner._PreparedTurn(
                 [], "", "same", [{"type": "text", "text": "same"}],
                 1700000000, None, sid, owner,
             )
-            db.append_message(sid, "user", "same [screenshot]")
+            seed_messages(db, sid, {"role": "user", "content": "same [screenshot]"})
             middle = sid + "-middle"
-            db.create_session(middle, source="telegram", parent_session_id=sid)
+            seed_session(db, middle, "telegram", parent_session_id=sid)
             orphan = sid + "-orphan"
             child = sid + "-live"
-            db.create_session(orphan, source="telegram", parent_session_id=middle)
-            db.end_session(orphan, "ws_orphan_reap")
-            db.create_session(child, source="telegram", parent_session_id=middle)
+            seed_session(db, orphan, "telegram", parent_session_id=middle)
+            db.sessions.end(orphan, "ws_orphan_reap")
+            seed_session(db, child, "telegram", parent_session_id=middle)
             target = {"ancestor": sid, "middle-ancestor": middle, "reaped": orphan}.get(location, child)
             marker = {"gateway_input_owner": "foreign-writer"} if location == "foreign" else metadata
-            current_id = db.append_message(
-                target, "user", "same [screenshot]", platform_message_id=pid,
-                observed=location == "observed",
-                display_metadata=None if location == "unmarked" else marker,
-            )
-            db.end_session(sid, "compression")
-            db.end_session(middle, "compression")
+            [current_id] = seed_messages(db, target, {
+                "role": "user", "content": "same [screenshot]", "platform_message_id": pid,
+                "observed": location == "observed",
+                "display_metadata": None if location == "unmarked" else marker,
+            })
+            db.sessions.end(sid, "compression")
+            db.sessions.end(middle, "compression")
             if location in ("ancestor", "middle-ancestor", "undone"):
-                with sqlite3.connect(db.db_path) as conn:
+                with sqlite3.connect(store_location(db.scope)) as conn:
                     conn.execute(
                         "UPDATE messages SET active=0, compacted=? WHERE id=?",
                         (int(location != "undone"), current_id),
@@ -98,7 +101,7 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             # A restarted store has no published map and must pick the same live child.
             store._transcript_reroutes.clear()
             assert store.has_input_owner(sid, owner) is owned, location
-            before = db.message_count()
+            before = db.messages.count_all()
             open_tail = store.transcript_tail_role(sid) == "user"
             reply = await runner._hmwa_agent_error_reply(
                 RuntimeError("controlled post-compaction failure"),
@@ -107,10 +110,10 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             )
             # Exception fallback adds the missing user only when unowned, and a boundary iff that
             # leaves an open user tail on the live route — never anything else.
-            assert db.message_count() == before + (not owned) + ((not owned) or open_tail), location
+            assert db.messages.count_all() == before + (not owned) + ((not owned) or open_tail), location
             assert store.has_input_owner(sid, owner), location
             assert PARTIAL_FAILED_TURN_NOTICE in reply
-            live_messages = db.get_messages(child)
+            live_messages = transcript_rows(db, child)
             assert not live_messages or live_messages[-1]["role"] != "user", location
             assert sum(m["role"] == "assistant" for m in live_messages) <= 1, location
             if not owned:
@@ -119,13 +122,13 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
                 assert persisted_user["content"] == prepared.persist_user_message
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
             # A repeated delivery of the same closed turn adds no second boundary.
-            closed = db.message_count()
+            closed = db.messages.count_all()
             await runner._hmwa_agent_error_reply(
                 RuntimeError("redelivered"), MessageEvent(text="same", source=source, message_id=pid),
                 source, entry, entry.session_key, prepared,
             )
-            assert db.message_count() == closed, location
-        db.close()
+            assert db.messages.count_all() == closed, location
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())
 
@@ -150,19 +153,19 @@ def test_context_overflow_exception_persists_nothing(tmp_path):
         runner._hmwa_stop_typing_for_turn = stop_typing
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="overflow", user_id="u")
         entry = store.get_or_create_session(source)
-        db = store._db_for_session_id(entry.session_id)
+        db = store._persistence_for_session_id(entry.session_id)
         prepared = runner._PreparedTurn(
             [{"role": "user", "content": "x"}] * 51, "", "x", "x", None, None, entry.session_id, "owner-overflow",
         )
         err = RuntimeError("payload too large")
         err.status_code = 400
-        before = db.message_count()
+        before = db.messages.count_all()
         reply = await runner._hmwa_agent_error_reply(
             err, MessageEvent(text="x", source=source, message_id="m-overflow"), source, entry, entry.session_key, prepared,
         )
-        assert db.message_count() == before
+        assert db.messages.count_all() == before
         assert "/compress" in reply and "/new" in reply
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())
 
@@ -220,8 +223,8 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="fresh", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        db = store._db_for_session_id(sid)
-        db.append_message(sid, "user", "reset the password", platform_message_id="m-1")
+        db = store._persistence_for_session_id(sid)
+        seed_messages(db, sid, {"role": "user", "content": "reset the password", "platform_message_id": "m-1"})
         failed = {"failed": True, "final_response": "429", "error": "429", "messages": [],
                   "history_offset": 0, "last_prompt_tokens": 0}
         for _ in range(2):  # second pass = platform redelivery of the same failed message
@@ -232,12 +235,12 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
                 response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
                 is_context_overflow_failure=False,
             )
-        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
         assert [m["role"] for m in rows] == ["user", "assistant"]
         # Typed like the core closer's row, or Desktop reads the boundary as the model's reply.
         assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
         assert store.transcript_tail_role(sid) == "assistant"
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())
 
@@ -264,11 +267,11 @@ def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="tool-tail", user_id="u")
         entry = store.get_or_create_session(source)
         sid = entry.session_id
-        db = store._db_for_session_id(sid)
+        db = store._persistence_for_session_id(sid)
         call = {"id": "call-1", "type": "function", "function": {"name": "reset_password", "arguments": "{}"}}
-        db.append_message(sid, "user", "reset the password", platform_message_id="m-1")
-        db.append_message(sid, "assistant", "", tool_calls=[call])
-        db.append_message(sid, "tool", "Password reset", tool_call_id="call-1")
+        seed_messages(db, sid, {"role": "user", "content": "reset the password", "platform_message_id": "m-1"},
+                      {"role": "assistant", "content": "", "tool_calls": [call]},
+                      {"role": "tool", "content": "Password reset", "tool_call_id": "call-1"})
         failed = {"failed": True, "final_response": "429", "error": "429", "history_offset": 0,
                   "last_prompt_tokens": 0, "messages": [
                       {"role": "user", "content": "reset the password"},
@@ -284,9 +287,9 @@ def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
                 response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
                 is_context_overflow_failure=False,
             )
-        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        rows = [m for m in transcript_rows(db, sid) if m["role"] != "session_meta"]
         assert [m["role"] for m in rows] == ["user", "assistant", "tool", "assistant"]
         assert (rows[-1]["content"], rows[-1]["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
-        db.close()
+        close_stores_under(db.scope.profile_dir)
 
     asyncio.run(check())

@@ -2,7 +2,7 @@
 
 import pytest
 
-import hermes_state_wal as state_wal
+from persistence.sqlite._state import wal as state_wal
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ class TestApplyWalProbe:
     def test_sets_wal_on_fresh_connection(self, tmp_path):
         """Probe sees 'delete', then set-pragma runs and returns 'wal'."""
         import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
+        from persistence.sqlite._state.wal import apply_wal_with_fallback
 
         class _TracingConn(sqlite3.Connection):
             def __init__(self, *a, **kw):
@@ -52,7 +52,7 @@ class TestApplyWalProbe:
         import sys
         import threading
         import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
+        from persistence.sqlite._state.wal import apply_wal_with_fallback
 
         db_path = tmp_path / "concurrent.db"
         errors = []
@@ -105,7 +105,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -118,7 +118,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -135,7 +135,7 @@ class TestApplyDatabasePragmas:
 
     def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -150,7 +150,7 @@ class TestApplyDatabasePragmas:
         """journal_mode is owned by apply_wal_with_fallback — a database:
         journal_mode entry must NOT cause a second, unguarded mode switch."""
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -163,7 +163,7 @@ class TestApplyDatabasePragmas:
 
     def test_ignores_non_integer_values(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -180,7 +180,7 @@ class TestApplyDatabasePragmas:
     def test_ignores_non_integer_performance_values(self, tmp_path, monkeypatch):
         """Garbage cache_size/mmap_size/temp_store values must be rejected."""
         import sqlite3
-        from hermes_state_wal import apply_database_pragmas
+        from sqlite_support import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:

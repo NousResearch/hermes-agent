@@ -26,7 +26,10 @@ import pytest
 
 from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
 
@@ -34,8 +37,8 @@ class TestSetMessageApiContent:
     """The store primitive: addressed by row id, guarded on the rest."""
 
     def _open(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
+        db = open_persistence(profile_scope(home=tmp_path))
+        seed_session(db, "s1", "cli")
         return db
 
     def test_older_identical_row_is_untouched(self, tmp_path):
@@ -46,14 +49,13 @@ class TestSetMessageApiContent:
         """
         db = self._open(tmp_path)
         try:
-            db.append_message("s1", "user", content="ok", api_content="ok\n\nTURN-1")
-            db.append_message("s1", "assistant", content="reply")
-            db.append_message("s1", "user", content="ok")
-            rows = db.get_messages("s1")
+            seed_messages(db, "s1", {"role": "user", "content": "ok", "api_content": "ok\n\nTURN-1"},
+                          {"role": "assistant", "content": "reply"}, {"role": "user", "content": "ok"})
+            rows = transcript_rows(db, "s1")
             turn_1_id, turn_2_id = rows[0]["id"], rows[2]["id"]
 
-            assert db.set_message_api_content("s1", turn_2_id, "ok", "ok\n\nTURN-2") == 1
-            rows = {r["id"]: r for r in db.get_messages("s1")}
+            assert db.messages.set_message_api_content("s1", turn_2_id, "ok", "ok\n\nTURN-2") is True
+            rows = {r["id"]: r for r in transcript_rows(db, "s1")}
             assert rows[turn_1_id]["api_content"] == "ok\n\nTURN-1"
             assert rows[turn_2_id]["api_content"] == "ok\n\nTURN-2"
 
@@ -63,18 +65,18 @@ class TestSetMessageApiContent:
     def test_guards_refuse_wrong_session_or_mismatched_content_or_archived_row(self, tmp_path):
         db = self._open(tmp_path)
         try:
-            db.create_session("s2", source="cli")
-            db.append_message("s1", "user", content="hello")
-            row_id = db.get_messages("s1")[0]["id"]
+            seed_session(db, "s2", "cli")
+            seed_messages(db, "s1", {"role": "user", "content": "hello"})
+            row_id = transcript_rows(db, "s1")[0]["id"]
 
-            assert db.set_message_api_content("s2", row_id, "hello", "x") == 0
-            assert db.set_message_api_content("s1", row_id, "other", "x") == 0
-            assert db.set_message_api_content("s1", row_id + 999, "hello", "x") == 0
-            assert db.get_messages("s1")[0]["api_content"] is None
+            assert db.messages.set_message_api_content("s2", row_id, "hello", "x") is False
+            assert db.messages.set_message_api_content("s1", row_id, "other", "x") is False
+            assert db.messages.set_message_api_content("s1", row_id + 999, "hello", "x") is False
+            assert transcript_rows(db, "s1")[0]["api_content"] is None
 
             # Archived by compaction: active = 0, so the row is off limits.
-            db.archive_and_compact("s1", [{"role": "user", "content": "hello"}])
-            assert db.set_message_api_content("s1", row_id, "hello", "x") == 0
+            db.messages.compact("s1", [NewMessage.from_live({"role": "user", "content": "hello"})])
+            assert db.messages.set_message_api_content("s1", row_id, "hello", "x") is False
         finally:
             db.close()
 
@@ -106,6 +108,7 @@ class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
     def __init__(self, db=None, sid="s1"):
         _FakeAgent.__init__(self)
         self._session_db = db
+        self.persistence = db
         self.session_id = sid
         self._session_db_created = True
         self._flushed_db_message_ids = set()
@@ -125,10 +128,9 @@ class TestRealEarlyFlushAndOverrideLifecycle:
     def test_real_close_flush_syncs_row_id_and_prologue_backfills(self, tmp_path):
         """Proof that the real _flush_messages_to_session_db path syncs _row_id onto
         the live dict (via sync_flushed_message_markers) and the prologue backfills it."""
-        path = tmp_path / "state.db"
-        db = SessionDB(db_path=path)
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-real-flush"
-        db.create_session(sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = _RealPersistenceAgent(db, sid)
 
@@ -140,9 +142,9 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             assert flushed is True
             assert staged.get("_db_persisted") is True
             assert isinstance(staged.get("_row_id"), int)
-            assert staged["_row_id"] == db.get_messages(sid)[-1]["id"]
+            assert staged["_row_id"] == transcript_rows(db, sid)[-1]["id"]
             # At this point, the row in SQLite has api_content = None
-            assert db.get_messages(sid)[-1]["api_content"] is None
+            assert transcript_rows(db, sid)[-1]["api_content"] is None
 
             # Now build_turn_context runs
             with patch(
@@ -154,7 +156,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             expected = compose_user_api_content("hello", "", "PLUGIN-CTX")
             assert ctx.messages[ctx.current_turn_user_idx]["api_content"] == expected
             # Backfilled to the exact row in SQLite!
-            assert db.get_messages(sid)[-1]["api_content"] == expected
+            assert transcript_rows(db, sid)[-1]["api_content"] == expected
         finally:
             db.close()
 
@@ -163,10 +165,9 @@ class TestRealEarlyFlushAndOverrideLifecycle:
         variant (e.g. voice prefix) and NO memory/plugin injection is composed.
         compose_user_api_content returns None, but the differing API-only bytes must
         be preserved as api_content and backfilled onto the row."""
-        path = tmp_path / "state.db"
-        db = SessionDB(db_path=path)
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-api-only-no-inj"
-        db.create_session(sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             agent = _RealPersistenceAgent(db, sid)
 
@@ -192,14 +193,14 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             assert turn_msg["api_content"] == api_text
 
             # Database row has clean text as content, but api_text as api_content!
-            db_rows = db.get_messages(sid)
+            db_rows = transcript_rows(db, sid)
             assert len(db_rows) == 1
             assert db_rows[0]["content"] == clean_text
             assert db_rows[0]["api_content"] == api_text
 
             # Replay via get_messages_as_conversation preserves clean content
             # alongside the api_content sidecar.
-            conv = db.get_messages_as_conversation(sid)
+            conv = conversation(db, sid)
             assert conv[0]["content"] == clean_text
             assert conv[0]["api_content"] == api_text
             from agent.turn_context import substitute_api_content
@@ -211,15 +212,14 @@ class TestRealEarlyFlushAndOverrideLifecycle:
     def test_repeated_prompt_protected_against_positional_overwrite(self, tmp_path):
         """Repeated prompts 'ok' across turns: Turn 1 has sidecar, Turn 2 is pre-flushed.
         Row-addressed backfill on Turn 2 never mutates Turn 1's stored sidecar."""
-        path = tmp_path / "state.db"
-        db = SessionDB(db_path=path)
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "sess-repeated-ok"
-        db.create_session(sid, source="cli")
+        seed_session(db, sid, "cli")
         try:
             # Turn 1
-            db.append_message(sid, "user", content="ok", api_content="ok\n\nTURN-1-CTX")
-            db.append_message(sid, "assistant", content="acknowledged")
-            t1_user_row = db.get_messages(sid)[0]
+            seed_messages(db, sid, {"role": "user", "content": "ok", "api_content": "ok\n\nTURN-1-CTX"},
+                          {"role": "assistant", "content": "acknowledged"})
+            t1_user_row = transcript_rows(db, sid)[0]
 
             # Turn 2: staged and pre-flushed
             staged_t2 = {"role": "user", "content": "ok"}
@@ -227,7 +227,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             agent._pending_cli_user_message = staged_t2
 
             agent._flush_messages_to_session_db([staged_t2], None)
-            t2_user_row = db.get_messages(sid)[2]
+            t2_user_row = transcript_rows(db, sid)[2]
             assert t2_user_row["id"] != t1_user_row["id"]
             assert t2_user_row["api_content"] is None
 
@@ -238,8 +238,54 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             ):
                 _build(agent, user_message="ok")
 
-            rows = {r["id"]: r for r in db.get_messages(sid)}
+            rows = {r["id"]: r for r in transcript_rows(db, sid)}
             assert rows[t1_user_row["id"]]["api_content"] == "ok\n\nTURN-1-CTX"
             assert rows[t2_user_row["id"]]["api_content"] == "ok\n\nTURN-2-CTX"
         finally:
             db.close()
+
+
+class TestRowAddressedBackfillThroughTheWriterHandle:
+    """The prologue's row-addressed backfills go through the agent's writer handle; the store beside it is not called."""
+
+    @staticmethod
+    def _agent(compacted=False):
+        import threading
+
+        return types.SimpleNamespace(
+            _session_db=MagicMock(), persistence=types.SimpleNamespace(read_only=False, messages=MagicMock()),
+            session_id="s1", _session_persist_lock=threading.Lock(), _persist_user_message_override=None,
+            _last_compaction_in_place=compacted,
+        )
+
+    def test_sidecar_addresses_the_row_by_id(self):
+        agent = self._agent()
+        _stamp_api_content_sidecar(
+            agent, [{"role": "user", "content": "question", "_row_id": 7}], 0, "", "PLUGIN CONTEXT",
+            preflight_compressed=False,
+        )
+        agent.persistence.messages.set_message_api_content.assert_called_once_with(
+            "s1", 7, "question", "question\n\nPLUGIN CONTEXT")
+        assert agent._session_db.method_calls == []
+
+    def test_sidecar_after_in_place_compaction_stamps_the_newest_user_row(self):
+        agent = self._agent(compacted=True)
+        _stamp_api_content_sidecar(
+            agent, [{"role": "user", "content": "question"}], 0, "", "PLUGIN CONTEXT", preflight_compressed=True,
+        )
+        agent.persistence.messages.set_latest_user_api_content.assert_called_once_with(
+            "s1", "question", "question\n\nPLUGIN CONTEXT")
+        assert agent._session_db.method_calls == []
+
+    def test_multimodal_context_rewrites_the_row_by_id(self):
+        from agent.session_persistence import _durable_content
+        from agent.turn_context import _append_multimodal_context
+
+        agent = self._agent()
+        message = {"role": "user", "_row_id": 9, "content": [
+            {"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+        ]}
+        _append_multimodal_context(agent, message, "", "PLUGIN CONTEXT", preflight_compressed=False)
+        agent.persistence.messages.set_user_message_content.assert_called_once_with(
+            "s1", 9, _durable_content(message["content"]))
+        assert agent._session_db.method_calls == []

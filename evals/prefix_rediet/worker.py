@@ -107,20 +107,22 @@ def fixtures():
     with open(os.path.join(workspace, "backup.sh"), "w") as f:
         f.write("#!/bin/sh\necho backing up\n")
     os.chmod(os.path.join(workspace, "backup.sh"), 0o755)
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(), eager=True)
     t = time.time() - 30 * 86400
-    db.create_session("seed_shadow_vet", source="cli")
+    db.sessions.create(NewSession(session_id="seed_shadow_vet", source="cli"))
     for role, content in [
         ("user", "Back from the vet with Shadow. They put him on carprofen for the leg inflammation."),
         ("assistant", "Got it, what dose did they prescribe for Shadow?"),
         ("user", "Shadow's carprofen dose is 12.5 mg, twice a day with food. Two week course."),
         ("assistant", "Noted: Shadow takes 12.5 mg carprofen twice daily with food, for two weeks."),
     ]:
-        db.append_message("seed_shadow_vet", role, content=content, timestamp=t)
+        db.messages.append("seed_shadow_vet", NewMessage(role=role, content=content, timestamp=t))
         t += 60
-    db.create_session("seed_decoy", source="cli")
-    db.append_message("seed_decoy", "user", content="My cat Biscuit is on 5 mg cetirizine.", timestamp=t + 9e4)
+    db.sessions.create(NewSession(session_id="seed_decoy", source="cli"))
+    db.messages.append("seed_decoy", NewMessage(role="user", content="My cat Biscuit is on 5 mg cetirizine.", timestamp=t + 9e4))
     db.close()
 
 

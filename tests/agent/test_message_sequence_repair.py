@@ -9,9 +9,15 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+import json
+
 import pytest
 
+from persistence.conversation.messages import CONTENT_JSON_PREFIX
 from run_agent import AIAgent
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _bare_agent():
@@ -1589,14 +1595,13 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
     text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
-    from hermes_state import SessionDB
     from agent.agent_runtime_helpers import repair_message_sequence
 
     parts = [
         {"type": "text", "text": "look at this"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 4000}},
     ]
-    encoded = SessionDB._encode_content(parts)
+    encoded = CONTENT_JSON_PREFIX + json.dumps(parts)
     messages = [
         {"role": "user", "content": encoded},
         {"role": "user", "content": "any follow-up thoughts?"},
@@ -1611,7 +1616,7 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     assert messages[1]["content"] == "any follow-up thoughts?"
 
     # A body that no longer parses stays encoded and is never welded onto the next text turn.
-    corrupt = SessionDB._CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
+    corrupt = CONTENT_JSON_PREFIX + '[{"type": "text"} EXTRA garbage'
     messages = [{"role": "user", "content": corrupt}, {"role": "user", "content": "still there?"}]
 
     repair_message_sequence(_bare_agent(), messages)
@@ -1621,7 +1626,7 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
 
 def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     """ehz0ah #125331 (blocking): decoding a *durable* sentinel row is representation-only —
-    ``SessionDB._encode_content(decoded)`` reproduces the exact ``\\x00json:`` scalar already stored —
+    re-encoding the decoded content reproduces the exact ``\\x00json:`` scalar already stored,
     so the row must KEEP its ``_db_persisted`` marker. Dropping it makes the append-only flush treat
     the historical user turn as new (user ``_row_id`` values are never update targets in
     ``resolve_and_repair_transcript_batch``), re-appending a duplicate user turn on the durable
@@ -1629,7 +1634,6 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     count and role order do not change — a regression the content-only repair tests cannot catch."""
     import os
     from unittest.mock import patch
-    from hermes_state import SessionDB
     from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
@@ -1637,21 +1641,21 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
         {"type": "text", "text": "look"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 2000}},
     ]
-    # The stored durable scalar is exactly what _encode_content(parts) produces; a resumed row re-enters
+    # The stored durable scalar is exactly the prefixed JSON of parts; a resumed row re-enters
     # the working set as this same string (e.g. after a proactive prune re-inserts history, #124102).
-    encoded = SessionDB._encode_content(parts)
+    encoded = CONTENT_JSON_PREFIX + json.dumps(parts)
 
-    db = SessionDB(db_path=tmp_path / "t.db")
+    db = storage_handle(tmp_path)
     sid = "20260928_000000_dup"
-    db.create_session(sid, "cli", model="test/model")
-    db.append_message(session_id=sid, role="user", content=encoded)
-    db.append_message(session_id=sid, role="assistant", content="ok")
+    seed_session(db, sid, "cli", model="test/model")
+    seed_messages(db, sid, {"role": "user", "content": encoded}, {"role": "assistant", "content": "ok"})
 
     def _active_rows():
-        return db._conn.execute(
-            "SELECT role FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
-            (sid,),
-        ).fetchall()
+        with raw_holder(db)._read_ctx() as conn:
+            return conn.execute(
+                "SELECT role FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (sid,),
+            ).fetchall()
 
     before = [r[0] for r in _active_rows()]
     assert before == ["user", "assistant"]
@@ -1662,7 +1666,7 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=sid,
             skip_context_files=True,
             skip_memory=True,

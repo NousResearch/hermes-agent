@@ -31,16 +31,15 @@ def two_homes(tmp_path, monkeypatch):
 
 def test_served_profile_reads_its_own_sessions_settings(two_homes, monkeypatch):
     _root, alpha = two_homes
-    from hermes_state_fts import _cjk_fts_config_enabled
-    from hermes_state_search import _search_slow_ms
+    from tests.fixtures.storage_holder import cjk_fts_config_enabled, search_slow_ms
     # The multiplexer bridged the LAUNCH (default) profile's sessions.* into env at import.
     monkeypatch.setenv("HERMES_CJK_FTS", "true")
     monkeypatch.setenv("HERMES_SEARCH_SLOW_MS", "1000")
-    assert _cjk_fts_config_enabled() is True and _search_slow_ms() == 1000.0  # unscoped = env bridge
+    assert cjk_fts_config_enabled() is True and search_slow_ms() == 1000.0  # unscoped = env bridge
     token = set_hermes_home_override(str(alpha))
     try:
-        assert _cjk_fts_config_enabled() is False
-        assert _search_slow_ms() == 50.0
+        assert cjk_fts_config_enabled() is False
+        assert search_slow_ms() == 50.0
     finally:
         reset_hermes_home_override(token)
 
@@ -83,9 +82,9 @@ def test_stale_served_turn_never_recreates_archived_profile(two_homes):
     shutil.rmtree(alpha)
     ss.set_multiplex_active(True)
     with gw_run._profile_runtime_scope(alpha):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         with pytest.raises(FileNotFoundError):
-            SessionDB()
+            open_persistence(profile_scope(), eager=True)
     assert not alpha.exists()
 
 

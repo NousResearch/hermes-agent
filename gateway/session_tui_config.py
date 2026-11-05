@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 import threading
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 _SESSION_CONTROL_KEYS = frozenset({'busy', 'verbose', 'yolo', 'show_reasoning', 'service_tier', 'model'})
 _DETAIL_SECTIONS = ('thinking', 'tools', 'subagents', 'activity')
@@ -80,25 +80,25 @@ def _set_display(cfg, key, value):
         field, aliases, flipped, report = toggles[key]
         new = flipped(display) if raw in ('', 'toggle') else aliases.get(raw)
         if new is None:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         display[field] = new
         return {'value': report(new)}
     if key in (words := _words()):
         field, allowed = words[key]
         if raw not in allowed:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         display[field] = raw
         return {'value': raw}
     if key == 'details_mode':
         if raw not in _DETAIL_MODES:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         display['details_mode'] = raw
         _sections(display).update(dict.fromkeys(_DETAIL_SECTIONS, raw))
         return {'value': raw}
     if key.startswith('details_mode.'):
         section = key.split('.', 1)[1]
         if section not in _DETAIL_SECTIONS or (raw and raw not in _DETAIL_MODES):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if raw:
             _sections(display)[section] = raw
         else:  # empty clears the override (the client falls back to its section default)
@@ -108,10 +108,10 @@ def _set_display(cfg, key, value):
         return _set_focus(display, raw)
     if key == 'skin':
         if not isinstance(value, str) or not value.strip():
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         display['skin'] = value.strip()
         return {'value': value.strip()}
-    raise RuntimeStoreError('invalid_params')
+    raise AuthorityRefusal('invalid_params')
 
 
 def _set_focus(display, raw):
@@ -121,7 +121,7 @@ def _set_focus(display, raw):
     configured = normalize_tool_progress_mode(display.get('tool_progress', 'all'))
     action, target = resolve_focus_arg(raw, current)
     if action == 'usage':
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if action == 'status' or target is None:
         return {'value': 'on' if current else 'off', 'tool_progress': configured}
     if target:
@@ -144,14 +144,14 @@ def _write_profile_config(connection, edit):
         try:
             cfg = read_user_config_raw(path)
         except Exception as exc:  # unparseable: never overwrite the user's file
-            raise RuntimeStoreError('storage_unavailable') from exc
+            raise AuthorityRefusal('storage_unavailable') from exc
         before = copy.deepcopy(cfg)
         result = edit(cfg)
         if cfg != before:
             try:
                 atomic_config_replace(path, cfg)
             except Exception as exc:
-                raise RuntimeStoreError('storage_unavailable') from exc
+                raise AuthorityRefusal('storage_unavailable') from exc
         return result
 
 
@@ -160,7 +160,7 @@ def _authorize_write(connection, ref, params):
     from gateway.session_config import _authorize
     policy = _authorize(connection, ref, params)
     if 'session:control' not in connection.actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     return policy
 
 
@@ -178,7 +178,7 @@ async def config_set(connection, ref, params):
         from gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params, write=True)
     if set(params) - {'session_id', 'profile', 'key', 'value'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     policy = _authorize_write(connection, ref, params)
     value = params.get('value')
     if key == 'fast':
@@ -264,7 +264,7 @@ async def _set_fast(connection, ref, policy, value):
     (``current_service_tier``). TUI-only on top: ``toggle`` / ``status`` and the route check."""
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier, service_tier_word
     if not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     raw, current = _word(value), current_tier(connection, ref, policy)
     if raw == 'status':
         return {'key': 'fast', 'value': service_tier_word(current)}
@@ -273,12 +273,12 @@ async def _set_fast(connection, ref, policy, value):
     try:
         tier = parse_exact_service_tier(raw) or None
     except ValueError:
-        raise RuntimeStoreError('invalid_params') from None
+        raise AuthorityRefusal('invalid_params') from None
     if tier in STATIC_TIERS:
         options = await asyncio.to_thread(service_tier_options, connection, ref, policy,
                                           include_ultrafast=tier == 'ultrafast')
         if service_tier_word(tier) not in options:
-            raise RuntimeStoreError('fast_unavailable')
+            raise AuthorityRefusal('fast_unavailable')
     from gateway.session_busy_controls import service_tier_config
     service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
     return {'key': 'fast', 'value': service_tier_word(tier)}
@@ -295,9 +295,9 @@ def _set_personality(connection, value):
         try:
             name, _prompt = resolve_personality(str(value or ''), load_config())
         except ValueError as exc:
-            raise RuntimeStoreError('unknown_personality') from exc
+            raise AuthorityRefusal('unknown_personality') from exc
         if not persist_personality(name):
-            raise RuntimeStoreError('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable')
     return {'key': 'personality', 'value': str(value or 'none'), 'history_reset': False}
 
 
@@ -306,11 +306,11 @@ def _set_profile_leaf(cfg, key, value):
     if key == 'voice.voice_chat_mode':
         new = _word(value)
         if new not in _VOICE_CHAT_MODES:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     else:
         new = {**_BOOL_WORDS, '1': True, '0': False}.get(_word(value))
         if new is None:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     if not isinstance(cfg.get(section), dict):
         cfg[section] = {}
     cfg[section][leaf] = new
@@ -324,8 +324,8 @@ def _set_approval_mode(connection, value):
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
         result = run_approval_mode_command(_word(value) or None)
     if not result.ok:
-        raise RuntimeStoreError('invalid_params' if _word(value) not in ('manual', 'smart', 'off')
-                                else 'storage_unavailable')
+        raise AuthorityRefusal('invalid_params' if _word(value) not in ('manual', 'smart', 'off')
+                               else 'storage_unavailable')
     return {'key': 'approvals.mode', 'value': result.mode}
 
 
@@ -336,16 +336,16 @@ async def _set_command_setting(connection, ref, params):
     (``approvals.mode`` off / manual)."""
     if (set(params) - {'session_id', 'profile', 'key', 'value', 'scope'} or not ref.session_id
             or params.get('scope', 'session') not in ('session', 'global')):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     _authorize_write(connection, ref, params)
     connection.authority.authorize(connection.actor, ref, 'session:control')
     value, scope = _word(params.get('value')), params.get('scope', 'session')
     if params['key'] == 'yolo':
         if scope != 'global':
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         on = {**_BOOL_WORDS, '1': True, '0': False}.get(value)
         if on is None and value not in ('', 'toggle'):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
 
         def flip():
             from tools.approval_context import _get_approval_mode
@@ -356,12 +356,12 @@ async def _set_command_setting(connection, ref, params):
         enable, _ = await asyncio.to_thread(flip)
         return {'key': 'yolo', 'value': '1' if enable else '0', 'scope': 'global'}
     if not value:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     from gateway.run import _profile_runtime_scope
     from hermes_constants import parse_reasoning_effort
     from gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
     from gateway.session_setting_commands import commit_reasoning_command
     await commit_reasoning_command(connection.authority, connection.actor, ref, value, scope == 'global')

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_errors import StateDbCorruptError
-from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
+from persistence.sqlite._state.errors import StateDbCorruptError
+from persistence.sqlite._state.repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
 from persistence import CorruptStoreError, PermanentStoreError
 from persistence.sqlite import _registry
 from persistence.sqlite.admin import SQLiteStoreAdmin

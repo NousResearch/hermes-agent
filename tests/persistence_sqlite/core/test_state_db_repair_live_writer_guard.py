@@ -28,10 +28,10 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_repair as repair_module
-import hermes_state_holders as holders_module
+from persistence.sqlite._state import repair as repair_module
+from persistence.sqlite._state import holders as holders_module
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_repair import repair_state_db_schema
+from persistence.sqlite._state.repair import repair_state_db_schema
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session
 
@@ -276,7 +276,7 @@ def test_uninspectable_watched_identity_blocks_alias_before_sqlite(
         # swallow the error and report the database missing).
         frame = sys._getframe(1)
         if (str(path) == str(db) and not args and not kwargs
-                and frame.f_globals.get("__name__") == "hermes_state_holders"):
+                and frame.f_globals.get("__name__") == "persistence.sqlite._state.holders"):
             raise PermissionError(errno.EACCES, "watched identity denied", path)
         if path == "/proc/4242/fd/7":
             return real_stat(db)

@@ -1,44 +1,51 @@
 """Server-only binding of API transcript identities to the existing TurnRunner."""
 import asyncio
-from functools import partial
 import hashlib
-import json
 import logging
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal, StoreUnavailable
 
-from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
+
+def _handle(store, persistence):
+    """*persistence*, else *store* when it is a storage interface handle. A caller that passes only its
+    ``state.db`` has no handle to read through: ``StoreUnavailable``."""
+    if persistence is not None:
+        return persistence
+    if hasattr(store, 'bindings'):
+        return store
+    raise StoreUnavailable('no storage interface handle for the API session lookup')
 
 
-def declared_api_session(db, key):
-    with db._read_ctx() as conn:
-        row = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                           (_DECLARED_PREFIX + key,)).fetchone()
-    if row:
-        return row[0]
+def declared_api_session(store, key, *, persistence=None):
+    """The session the declared conversation key *key* names, else None. *store* is the profile's
+    storage interface handle (*persistence*, when given, is used instead)."""
+    store = _handle(store, persistence)
+    found = store.bindings.declared_session(key)
+    if found:
+        return found
     # Earlier releases kept no declared-key registry: the declared key itself sat in
     # ``sessions.session_key`` (#139835). The pre-binding lookup finds that conversation, and
     # ``bind_api_steps`` adopts it under the same key, so later requests hit the registry.
-    legacy = db.find_latest_gateway_session_for_peer(source='api_server', session_key=key)
-    return legacy['id'] if legacy else None
+    legacy = store.routing.latest_session_for_peer(source='api_server', session_key=key)
+    return str(legacy.session.session_id) if legacy else None
 
 
-def implicit_api_session(db, session_id, request_id=None):
+def implicit_api_session(store, session_id, request_id=None, *, persistence=None):
     """The session a header-less Chat Completions turn lands on. Its id is derived from the
     conversation's opening, and a deleted id stays retired for good, so a NEW conversation that
     opens like a deleted one moves to the next generation of that opening, the way a deleted Bot
     Chat is replaced: the first ``api-<digest(id, n)>`` that is not retired. Read from durable rows
     only, so every later turn of that conversation (same opening) lands on the same session. An
     exact retry stays on the generation holding its request id's terminal identity; explicit ids
-    never come here."""
-    from hermes_state_mutation_retirement import first_generation
-    from hermes_state_terminal import identity_key
-    pinned = None if not request_id else lambda conn, sid: conn.execute(
-        'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
-    return first_generation(db, partial(api_generation_id, session_id), pinned=pinned)[1]
+    never come here. *store* is the profile's storage interface handle (*persistence*, when given, is
+    used instead)."""
+    from persistence.authority.runtime import ApiGenerations, PinnedIdentity
+    pinned = PinnedIdentity('api', request_id) if request_id else None
+    return _handle(store, persistence).runtime.first_generation(ApiGenerations(session_id), pinned=pinned).session_id
 
 
 def api_generation_id(session_id, generation):
@@ -55,7 +62,9 @@ def continued_api_session(runner, session_id, request_id=None):
     comes from the response store). An exact retry stays on the generation holding its identity."""
     from gateway.session_authorities import active_authority
     authority = active_authority(runner) if session_id else None
-    return implicit_api_session(authority.db, session_id, request_id) if authority is not None else session_id
+    if authority is None:
+        return session_id
+    return implicit_api_session(authority_persistence(authority), session_id, request_id)
 
 
 def room_session_id(identity, generation=0):
@@ -65,12 +74,14 @@ def room_session_id(identity, generation=0):
     return 'room_' + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
-def hosted_member_session(db, identity):
+def hosted_member_session(store, identity, *, persistence=None):
     """``(generation, session_id)`` of the hidden session a hosted room member's dispatches land on:
     a deleted one stays retired, so the room's next task moves to the next generation. A room
-    retry is replayed by the run's Idempotency-Key, never by this id, so nothing pins it."""
-    from hermes_state_mutation_retirement import first_generation
-    return first_generation(db, lambda n: room_session_id(identity, n))
+    retry is replayed by the run's Idempotency-Key, never by this id, so nothing pins it. *store* is
+    the profile's storage interface handle (*persistence*, when given, is used instead)."""
+    from persistence.authority.runtime import RoomGenerations
+    pick = _handle(store, persistence).runtime.first_generation(RoomGenerations(tuple(identity)))
+    return pick.generation, pick.session_id
 
 
 def _served_profile(authority):
@@ -161,21 +172,22 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     aged out since that lookup, the bind refuses with the retryable ``chain_moved``."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
+    persistence = authority_persistence(authority)
     storage_source, title, room_identity, room_generation = 'api_server', None, None, 0
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
         room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
-        room_generation, expected = hosted_member_session(authority.db, room_identity)
+        room_generation, expected = hosted_member_session(persistence, room_identity)
         if expected != session_id:
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
     from gateway.session_history_mount import is_history_mount
     if session_id in authority.sessions and not is_history_mount(authority.sessions[session_id]):
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
-                or authority.db.get_session(session_id)['source'] != storage_source):
-            raise RuntimeStoreError('permission_denied')
+                or persistence.sessions.get(session_id).source != storage_source):
+            raise AuthorityRefusal('permission_denied')
     # An API session is the shared-listener row of the transport matrix: the launch profile's
     # ``api_server`` adapter receives ``/p/<name>/`` and answers it, while the turn RUNS under the
     # authority's own profile. Both ride the persisted source — ``source.profile`` places the runtime
@@ -198,82 +210,32 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         if room_generation:
             receipt['room_generation'] = room_generation
 
-    def write(conn):
-        _epoch(conn, authority.epoch)
-        authority._require_admission_open()  # a drain that began while this waited on the writer wins
-        from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences
-        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
-            raise RuntimeStoreError('not_found')
-        # The walk ran before this write: a sweep marker it passed may have been reclaimed since,
-        # and binding the successor then would split the chain (the next walk stops at the root).
-        if walked_from and not keep_passed_fences(conn, partial(api_generation_id, walked_from), session_id):
-            raise RuntimeStoreError('chain_moved')
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_BINDING_PREFIX + session_id,)).fetchone()
-        if saved is not None:
-            binding = json.loads(saved[0])
-            if binding.get('storage_source', 'api_server') != storage_source:
-                raise RuntimeStoreError('permission_denied')
-            if declared_key and binding.get('declared_key') != declared_key:
-                raise RuntimeStoreError('admission_conflict')
-            return
-        if declared_key:
-            existing_declared = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                (_DECLARED_PREFIX + declared_key,)).fetchone()
-            if existing_declared and existing_declared[0] != session_id:
-                raise RuntimeStoreError('admission_conflict')
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
-                         (_DECLARED_PREFIX + declared_key, session_id))
-        row = conn.execute('SELECT source,session_key,title FROM sessions WHERE id=?', (session_id,)).fetchone()
-        if row is not None and row['source'] != storage_source:
-            raise RuntimeStoreError('permission_denied')
-        if storage_source == 'bot_room':
-            if row is not None and row['title'] != title:
-                raise RuntimeStoreError('admission_conflict')
-            if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
-                raise RuntimeStoreError('admission_conflict')
-        # Earlier API releases stored the caller-declared key directly on the session row
-        # (#139835). A caller presenting that exact key adopts the row onto the canonical route;
-        # the declared-key registry above already refused a key owned by another session, and any
-        # other stored key (another conversation's, a foreign route) still conflicts.
-        legacy_key = declared_key or caller_key
-        if row is not None and row['session_key'] not in (None, '', route):
-            if not legacy_key or row['session_key'] != legacy_key:
-                raise RuntimeStoreError('admission_conflict')
-            # The rewrite below replaces the stamped key with the route: the registry keeps it,
-            # so a later request selecting the conversation by that key still finds this row.
-            owner = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                                 (_DECLARED_PREFIX + legacy_key,)).fetchone()
-            if owner is not None and owner[0] != session_id:
-                raise RuntimeStoreError('admission_conflict')
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
-                         (_DECLARED_PREFIX + legacy_key, session_id))
-            receipt['declared_key'] = legacy_key
-        existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
-                                (route,)).fetchone()
-        held = json.loads(existing[0])['session_id'] if existing is not None else session_id
-        if held != session_id and not _heal_replacement(conn, session_id, held):
-            raise RuntimeStoreError('admission_conflict')
-        conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
-                        ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
-                                                       int(storage_source == 'bot_room'), now.timestamp()))
-        conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
-                     (route, session_id, source.user_id, 'dm', _json(source.to_dict()), session_id))
-        conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?) "
-                     'ON CONFLICT(scope,session_key) DO UPDATE SET entry_json=excluded.entry_json',
-                     (route, _json(entry.to_dict()), now.timestamp()))
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (_BINDING_PREFIX + session_id, _json(receipt)))
-    yield partial(authority.db._execute_write, write)
+    from persistence.authority.bindings import NewApiBinding
+    binding = NewApiBinding(session_id=session_id, route=route, storage_source=storage_source, title=title,
+                            declared_key=declared_key or None, caller_key=caller_key or None,
+                            origin=source.to_dict(), entry=entry.to_dict(), receipt=receipt,
+                            started_at=now.timestamp())
+
+    def write():
+        # One write: a retired id, a chain the walk passed that moved since (``walked_from``) and a
+        # conflicting binding, declared key, row or route refuse; a row an earlier release stamped with
+        # the caller's key is adopted (#139835) and a route a heal replacement holds is taken back. The
+        # admission gate is decided in this thread right before the write.
+        persistence.bindings.bind_api(epoch=authority.epoch, binding=binding, gate=authority.gate_refusal(),
+                                      walked_from=walked_from)
+    yield write
     return restore_api_session(authority, session_id)
 
 
-def _heal_replacement(conn, caller, holder):
+def _heal_replacement(persistence, caller, holder):
     """The route is derived from the caller's id, so only the stale-route heal (#54878) names another
     session on it, one with no binding of its own: the caller takes the route back, used or not, and
     the replacement keeps its transcript under its own id. A holder with its own binding refuses."""
-    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (_BINDING_PREFIX + holder,)).fetchone():
-        return False
+    try:
+        if persistence.bindings.api_binding(holder) is not None:
+            return False
+    except ValueError:
+        return False  # a binding that does not decode is still the holder's own
     logging.getLogger(__name__).warning('API route of %s taken back from heal replacement %s', caller, holder)
     return True
 
@@ -283,55 +245,53 @@ def reopen_api_session(authority, ref):
     local one: the binding keeps the route on it (``SessionStore._api_bound``). So does a turn of a
     conversation its chat moved past (gateway/session_detached.py), whose row the chat's /new ended."""
     target = authority.physical_target(ref)
-    row = authority.db.get_session(target)
-    if row is not None and row.get('end_reason') is not None:
-        authority.db.reopen_session(target)
+    persistence = authority_persistence(authority)
+    row = persistence.sessions.get(target)
+    if row is not None and row.end_reason is not None:
+        persistence.sessions.reopen(target)
 
 
-def api_storage_source(db, session_id, fallback):
+def api_storage_source(store, session_id, fallback):
+    """*fallback*, or for ``api_server`` the storage source *session_id*'s binding names; *store* is the
+    storage interface handle of the session's profile."""
     if fallback != 'api_server':
         return fallback
-    with db._read_ctx() as conn:
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_BINDING_PREFIX + session_id,)).fetchone()
-    return json.loads(saved[0]).get('storage_source', fallback) if saved else fallback
+    binding = store.bindings.api_binding(session_id)
+    return binding.storage_source if binding is not None else fallback
 
 
 def restore_api_session(authority, session_id):
     from gateway.session_authority import LiveSession
-    with authority.db._read_ctx() as conn:
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_BINDING_PREFIX + session_id,)).fetchone()
-    if saved is None:
-        raise RuntimeStoreError('not_found')
-    receipt = json.loads(saved[0])
-    if receipt['profile_id'] != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
-    entry = SessionEntry.from_dict(receipt['entry'])
+    persistence = authority_persistence(authority)
+    receipt = persistence.bindings.api_binding(session_id)
+    if receipt is None:
+        raise AuthorityRefusal('not_found')
+    if receipt.profile_id != authority.profile_id:
+        raise AuthorityRefusal('profile_mismatch')
+    entry = SessionEntry.from_dict(receipt.entry)
     source = entry.origin
     _pin_api_identity(authority.runner, source, transport_profile=entry.transport_profile)
-    row = authority.db.get_session(session_id)
-    if (receipt['session_id'] != session_id or entry.session_id != session_id
+    row = persistence.sessions.get(session_id)
+    if (receipt.session_id != session_id or entry.session_id != session_id
             or source.platform != Platform.API_SERVER or source.chat_id != session_id
-            or row is None or row['source'] != receipt.get('storage_source', 'api_server')
-            or (row['session_key'], row['chat_id'], row['user_id']) != (entry.session_key, session_id, source.user_id)
+            or row is None or row.source != receipt.storage_source
+            or (row.session_key, row.chat_id, row.user_id) != (entry.session_key, session_id, source.user_id)
             or entry.session_key != authority.runner.session_store._generate_session_key(source)):
-        raise RuntimeStoreError('admission_conflict')
-    if receipt.get('storage_source') == 'bot_room':
-        identity = receipt['room_identity']
-        expected = room_session_id(identity, receipt.get('room_generation', 0))
-        if expected != session_id or row['title'] != 'Group: ' + identity[1] or not row['hidden']:
-            raise RuntimeStoreError('admission_conflict')
+        raise AuthorityRefusal('admission_conflict')
+    if receipt.storage_source == 'bot_room':
+        identity = receipt.room_identity
+        expected = room_session_id(identity, receipt.room_generation)
+        if expected != session_id or row.title != 'Group: ' + identity[1] or not row.hidden:
+            raise AuthorityRefusal('admission_conflict')
     store = authority.runner.session_store
     target = authority.physical_target(SessionRef(authority.profile_id, session_id))
     entry.session_id = target
     with store._lock:
         store._ensure_loaded_locked()
         current = store._entries.get(entry.session_key)
-        if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
-            with authority.db._read_ctx() as conn:
-                if not _heal_replacement(conn, session_id, current.session_id):
-                    raise RuntimeStoreError('admission_conflict')
+        if current is not None and current.session_id not in persistence.lineage.lineage(session_id):
+            if not _heal_replacement(persistence, session_id, current.session_id):
+                raise AuthorityRefusal('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     from gateway.session_history_mount import is_history_mount
     live = authority.sessions.get(session_id)

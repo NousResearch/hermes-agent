@@ -8,27 +8,28 @@ Left in place, every CJK search typed into the desktop/web search box becomes
 a search for a term ending in a literal asterisk and returns nothing, while
 the identical query without the star returns rows.
 
-Runs against a real SessionDB in a temp HERMES_HOME, on the trigram and LIKE
+Runs against a real store in a temp HERMES_HOME, on the trigram and LIKE
 routes only — no ``cjk_unicode61`` tokenizer toolchain is required.
 """
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 TWO_CHAR = "秃发"          # 2 CJK chars — below the trigram threshold, LIKE route
 FOUR_CHAR = "秃发应对"      # 4 CJK chars — trigram-eligible
 
 
 def make_db(tmp_path):
-    database = SessionDB(db_path=tmp_path / "state.db")
+    database = open_persistence(profile_scope(home=tmp_path))
     session_id = "20260820_000001_cjk001"
-    database.create_session(session_id, "cli")
-    database.append_message(session_id, "user", "关于秃发应对的讨论内容，请总结")
-    database.append_message(session_id, "assistant", "hello nimby world")
+    seed_session(database, session_id, "cli")
+    seed_messages(database, session_id, {"role": "user", "content": "关于秃发应对的讨论内容，请总结"},
+                  {"role": "assistant", "content": "hello nimby world"})
     return database
 
 
 def hits(database, query):
-    return database.search_messages(query=query, limit=10, fields=("session_id", "snippet"))
+    return list(database.search.search_messages(query, limit=10, fields=("session_id", "snippet")))
 
 
 def test_trailing_star_matches_the_bare_query(tmp_path):

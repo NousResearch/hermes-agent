@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 from tests.tui_gateway.test_tui_gateway_server import _write_profile_cfg
 from tui_gateway import server
 
@@ -57,9 +58,9 @@ def resume_path(monkeypatch):
     known = set(server._sessions)
 
     def run(flags: dict) -> str:
-        db = SessionDB(db_path=home / "state.db")
+        db = open_persistence(profile_scope(home=home))
         try:
-            db.create_session(KEY, source="desktop", model="test-model", cwd=str(root))
+            seed_session(db, KEY, "desktop", model="test-model", cwd=str(root))
             resp = server.handle_request({"id": "1", "method": "session.resume",
                                           "params": {"session_id": KEY, "profile": "austin", **flags}})
             assert "error" not in resp, resp
@@ -69,11 +70,8 @@ def resume_path(monkeypatch):
                 build.wait(5)
         finally:
             db.close()
-        reread = SessionDB(db_path=home / "state.db")
-        try:
-            return reread.get_session(KEY)["cwd"]
-        finally:
-            reread.close()
+        with open_persistence(profile_scope(home=home)) as reread:
+            return reread.sessions.get(KEY).cwd
 
     yield run, home
     with server._sessions_lock:

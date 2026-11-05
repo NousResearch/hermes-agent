@@ -9,14 +9,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_routers import _common, analytics
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def _malformed_state_db(home: Path) -> Path:
     db_path = home / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.create_session("s1", source="cli", model="m")
-    db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, "s1", "cli", model="m")
     for side in ("-wal", "-shm"):
         Path(str(db_path) + side).unlink(missing_ok=True)
     with open(db_path, "r+b") as f:
@@ -29,9 +29,7 @@ def _malformed_state_db(home: Path) -> Path:
 
 def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state
     db_path = _malformed_state_db(tmp_path)
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
     app = FastAPI()
     app.include_router(analytics.router)
@@ -44,7 +42,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     for resp in (first, second, third):
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "state_db_corrupt"
-    # Only the dashboard's own warning counts: hermes_state logs an unrelated
+    # Only the dashboard's own warning counts: the store logs an unrelated
     # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
     warnings = [
         r for r in caplog.records
@@ -69,12 +67,16 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     """A retired WAL generation / replaced state.db (RuntimeError subclasses, not sqlite3 errors)
     must come back as a structured 503 like the corrupt case, and the guidance must never tell the
     user to run `doctor --fix` while a holder is live (#110054). Busy/locked still propagates."""
+    from types import SimpleNamespace
+
     from fastapi import HTTPException
-    from hermes_state_errors import DeletedWalGenerationError, StateDbReplacedError
+    from persistence.sqlite._state.errors import _DELETED_WAL_GENERATION_MSG, DeletedWalGenerationError
+    from persistence.core.errors import DeletedWalGeneration, StoreReplaced
+    from persistence_assembly import profile_scope
 
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
     db_path = tmp_path / "state.db"
-    for exc_cls, code in ((DeletedWalGenerationError, "state_db_deleted_wal"), (StateDbReplacedError, "state_db_replaced")):
+    for exc_cls, code in ((DeletedWalGeneration, "state_db_deleted_wal"), (StoreReplaced, "state_db_replaced")):
         with pytest.raises(HTTPException) as info:
             with _common.corrupt_store_as_status(db_path):
                 raise exc_cls("retired WAL held by pid 4242")
@@ -95,24 +97,20 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     # RuntimeError family fall through to a generic 500.
     from hermes_cli.web_routers import sessions
 
-    class _RetiredDb:
-        db_path = str(tmp_path / "state.db")
+    def _retired_listing(*_args, **_kwargs):
+        raise DeletedWalGeneration(_DELETED_WAL_GENERATION_MSG)
 
-        def resolve_session_id(self, session_id):
-            raise DeletedWalGenerationError("retired WAL held by pid 4242")
+    def _retired_lookup(session_id):
+        raise DeletedWalGeneration("retired WAL held by pid 4242")
 
-        def list_sessions_rich(self, **kwargs):
-            raise DeletedWalGenerationError("retired WAL held by pid 4242")
-
-        def close(self):
-            pass
-
+    store = SimpleNamespace(sessions=SimpleNamespace(resolve_id=_retired_lookup), scope=profile_scope(home=tmp_path))
     with pytest.raises(HTTPException) as info:
-        sessions._resolve_session_id(_RetiredDb(), "abc")
+        sessions._resolve_session_id(store, "abc")
     assert (info.value.status_code, info.value.detail["error"]) == (503, "state_db_deleted_wal")
 
     monkeypatch.setattr(sessions, "_session_db_path_for_profile", lambda profile: db_path)
-    monkeypatch.setattr(sessions, "_open_session_db_for_profile", lambda profile, read_only: _RetiredDb())
+    retired = SimpleNamespace(sessions=SimpleNamespace(list_sessions=_retired_listing), close=lambda: None)
+    monkeypatch.setattr(sessions, "_open_session_db_for_profile", lambda profile, read_only: retired)
     app = FastAPI()
     app.include_router(sessions.list_router)
     resp = TestClient(app, raise_server_exceptions=False).get("/api/sessions")

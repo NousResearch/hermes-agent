@@ -1092,7 +1092,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ### `on_session_delete`
 
-Fires **once per operation, after the transaction commits**, when a session actually went away: deleted (single, bulk, the empty-session sweep, retention prune, ghost-prune maintenance, profile repair) or deliberately archived. Every surface ends in the same `SessionDB` methods, so CLI (`hermes sessions delete|prune|archive`, `/exit --delete`), TUI, Desktop/dashboard (single and bulk delete, archive) and the gateway API server are all covered. Plugins that keep per-session state on disk can clean up without polling the session store.
+Fires **once per operation, after the transaction commits**, when a session actually went away: deleted (single, bulk, the empty-session sweep, retention prune, ghost-prune maintenance, profile repair) or deliberately archived. Every surface ends in the same session-store operations, so CLI (`hermes sessions delete|prune|archive`, `/exit --delete`), TUI, Desktop/dashboard (single and bulk delete, archive) and the gateway API server are all covered. Plugins that keep per-session state on disk can clean up without polling the session store.
 
 **Callback signature:**
 

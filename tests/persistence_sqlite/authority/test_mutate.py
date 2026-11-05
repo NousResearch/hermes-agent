@@ -273,7 +273,7 @@ def test_delete_without_a_media_root_retires_no_hosted_document(store, frozen, e
 @pytest.mark.parametrize("key", [None, "", "agent", "agent:main:x", "agent::x", "agent:main~:y", "agent:work:z",
                                  "foo:bar", 12, "agent:default:q"])
 def test_the_branch_route_profile_matches_m1(key):
-    from hermes_state_keys import profile_from_session_key
+    from persistence.sqlite._state.keys import profile_from_session_key
     from persistence.sqlite.authority._mutation_publish import _profile_from_session_key
 
     assert _profile_from_session_key(key) == profile_from_session_key(key)
@@ -486,7 +486,7 @@ def test_branch_publishes_an_independent_route_like_m1(store, frozen, emitted, c
 
 
 def test_branch_commits_the_prepared_editor_selection_like_m1(store, frozen, emitted):
-    from hermes_state_keys import local_identity
+    from persistence.sqlite._state.keys import local_identity
 
     seed_store(store, reserved(make_binding(policy={"editor_mcp_json": '{"servers":1}'})))
     values = {"request_id": "branch:fixed", "child": local_identity("default", PRINCIPAL, "branch:fixed"),

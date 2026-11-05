@@ -65,7 +65,7 @@ def data_use_requirement(messages: Any) -> frozenset[str]:
 
 def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> None:
     """Mark a tool message with its requirement. The ``display_metadata`` copy is the durable one: that
-    column already rides every writer, branch and compaction copy, and replay lifts it back (SessionDB)."""
+    column already rides every writer, branch and compaction copy, and replay lifts it back (the session store)."""
     if not requires:
         return
     message[DATA_USE] = list(requires)
@@ -175,7 +175,7 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
 
 
 # Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
-# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# display_metadata (persisted by the session store, popped from every wire copy) so gateway replay can send the
 # row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
 INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
 

@@ -11,7 +11,7 @@ Build & install to `~/.hermes/lib/`:
 Uses the system `sqlite3ext.h` when available, else the vendored copy in
 `vendor/` — no libsqlite3-dev required.
 
-Once the extension is installed, the next `SessionDB` open creates the
+Once the extension is installed, the next open of the session store creates the
 `messages_fts_cjk` index (external-content, tool rows excluded — same v23
 storage discipline as the other indexes). On a populated database, run
 

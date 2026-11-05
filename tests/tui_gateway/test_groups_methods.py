@@ -330,6 +330,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -360,6 +361,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -382,6 +384,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -528,7 +531,8 @@ def test_foreign_authority_cannot_send_or_disband(home):
         new_gateway_id="foreign-gateway",
         event_id="claim-foreign",
     )
-    before = read_events(default_db_path(), room_id="room-1")
+    store = methods_groups._active_store()
+    before = read_events(store, placement="shared", room_id="room-1")
 
     sent = srv._methods["groups.send"](
         2,
@@ -544,8 +548,8 @@ def test_foreign_authority_cannot_send_or_disband(home):
     assert sent["error"]["data"] == {"reason": "authority_conflict"}
     assert disbanded["error"]["code"] == 4113
     assert disbanded["error"]["data"] == {"reason": "authority_conflict"}
-    assert read_events(default_db_path(), room_id="room-1") == before
-    assert list_rooms(default_db_path())[0]["room_id"] == "room-1"
+    assert read_events(store, placement="shared", room_id="room-1") == before
+    assert list_rooms(store, placement="shared")[0]["room_id"] == "room-1"
 
 
 def test_client_event_id_cannot_squat_disband_receipt(home, monkeypatch):
@@ -556,9 +560,9 @@ def test_client_event_id_cannot_squat_disband_receipt(home, monkeypatch):
     assert service is not None
 
     def append_without_starting_work(*, room_id, event_id, payload):
-        room = hosted_rooms.room_state(service.db_path, room_id=room_id)
+        room = hosted_rooms.room_state(service.store, placement=service.placement, room_id=room_id)
         return hosted_rooms.append_event(
-            service.db_path,
+            service.store, placement=service.placement,
             room_id=room_id,
             event_id=event_id,
             kind="message.user",
@@ -647,14 +651,14 @@ def test_create_ignores_client_supplied_authority_identity(home):
 
 
 def test_legacy_room_adoption_emits_one_lineage_receipt(home):
-    from gateway.hosted_rooms import create_room, default_db_path
+    from gateway.hosted_rooms import create_room
 
     members = [
         {"member_id": "default", "profile": "default", "handle": "hermes"},
         {"member_id": "ops", "profile": "ops", "handle": "ops"},
     ]
     create_room(
-        default_db_path(),
+        methods_groups._active_store(), placement="shared",
         room_id="legacy-room",
         name="Legacy",
         members=members,
@@ -845,7 +849,8 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
         {"member_id": "ops", "profile": "ops", "handle": "ops"},
     ]
     _create_room()
-    monkeypatch.setattr(hosted_rooms, "MAX_DISBANDED_ROOM_TOMBSTONES", 0)
+    # The store prunes tombstones past the bound it reads from its own module.
+    monkeypatch.setattr("persistence.sqlite.gateway.hosted_rooms.MAX_DISBANDED_ROOM_TOMBSTONES", 0)
     _result(srv._methods["groups.disband"](2, {"room_id": "room-1"}))
     repeated = _result(
         srv._methods["groups.disband"](3, {"room_id": "room-1"})
@@ -897,6 +902,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
@@ -916,6 +922,7 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -941,6 +948,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
 
     class FakeService:
         db_path = hosted_rooms_default_db_path()
+        store, placement = methods_groups._active_store(), "shared"
 
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))

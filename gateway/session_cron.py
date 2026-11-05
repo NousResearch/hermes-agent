@@ -12,20 +12,22 @@ from pathlib import Path
 import threading
 
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
+from gateway.session_persistence import authority_persistence
+from persistence.authority.bindings import cron_request_id
+from persistence.authority.vocabulary import CRON_PRINCIPAL_ID
+from persistence.core.errors import AuthorityRefusal
 
 _execution: ContextVar[tuple | None] = ContextVar('cron_owner_execution', default=None)
 _owners = {}
 
 
 def bind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_persistence(authority).scope.profile_dir
     _owners[home] = (os.getpid(), authority, asyncio.get_running_loop())
 
 
 def unbind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_persistence(authority).scope.profile_dir
     bound = _owners.get(home)
     if bound is not None and bound[1] is authority:
         del _owners[home]
@@ -73,7 +75,7 @@ def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
     try:
         admitted = asyncio.run_coroutine_threadsafe(
             _admit_local_delivery(authority, chat_id, text, metadata), loop).result(timeout=60)
-    except (RuntimeStoreError, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
+    except (AuthorityRefusal, KeyError, TimeoutError) as exc:  # unknown chat, refused admission, stalled owner
         return f"local chat {chat_id}: delivery not confirmed: {exc!r}"
     return None if admitted else f"local chat {chat_id}: delivery refused: the chat has no committed route"
 
@@ -93,9 +95,9 @@ def _actor(authority, actor):
         return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id,
                          frozenset({'session:create', 'session:submit', 'session:read', 'session:control'}), 'cron-ticker')
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if not {'session:create', 'session:submit', 'session:control'} <= actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     # Cron fires belong to the profile scheduler, not the transport that observes
     # them. The same execution ID from ticker and CLI must dedupe together.
     return SessionActor(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
@@ -103,7 +105,8 @@ def _actor(authority, actor):
 
 def _create(authority, actor, params):
     from cron.jobs import get_job
-    from gateway.session_local_recovery import local_identity, restore_local_session
+    from persistence.authority.bindings import local_session_id
+    from gateway.session_local_recovery import restore_local_session
     from gateway.session_policy import build_policy, bind_launch_key
     from gateway.run import _load_gateway_config
     from cron.scheduler import _load_cron_job_config
@@ -112,23 +115,23 @@ def _create(authority, actor, params):
     from gateway.session_lifecycle import _now
 
     if set(params) != {'job_id', 'request_id', 'extra_prompt'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     jid, request_id, extra = params['job_id'], params['request_id'], params['extra_prompt']
     if (not isinstance(jid, str) or not jid or not isinstance(request_id, str)
             or not request_id or len(request_id) > 256 or (extra is not None and not isinstance(extra, str))):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     execution_id, request_id = request_id, cron_request_id(jid, request_id)
-    sid = local_identity(authority.profile_id, actor.subject, request_id)
-    if authority.db.get_session(sid) is not None:
+    sid = local_session_id(authority.profile_id, actor.subject, request_id)
+    if authority_persistence(authority).sessions.get(sid) is not None:
         return restore_local_session(authority, sid), request_id
     if ':' in execution_id:
         # Fresh admissions only: ``cron:<job>:<execution>`` then splits at its one ``:`` after the
         # job. Ledger ids are hex, so only a hand-made id has one; an identity admitted before this
         # guard keeps its exact retry above, and run history files it by its stored policy.
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     job = get_job(jid)
     if job is None or job.get('no_agent'):
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     config = _load_gateway_config()
     private = {}
     launch = {'source': 'cli', 'request_id': request_id, 'toolsets': []}
@@ -166,20 +169,19 @@ async def operation(authority, name, params, actor=None):
     # already admitted, which the drain is waiting for: refusing them makes the firer give up
     # (CronExecutionUnknown pauses the job) on every restart that overlaps a cron run.
     if name == 'recover':
-        from gateway.session_local_recovery import local_identity
+        from persistence.authority.bindings import local_session_id
         if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
                 or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
                 or (params['extra_prompt'] is not None and not isinstance(params['extra_prompt'], str))):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         request_id = cron_request_id(params['job_id'], params['request_id'])
-        sid = local_identity(authority.profile_id, actor.subject, request_id)
-        from hermes_state_runtime import list_session_admissions
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        sid = local_session_id(authority.profile_id, actor.subject, request_id)
+        rows = authority_persistence(authority).admissions.list(session_id=sid, pending_only=False)
         from gateway.owner_identity import same_owner
-        row = next((r for r in rows if r['request_id'] == request_id and same_owner(r['principal_id'], actor.subject)), None)
+        row = next((r for r in rows if r.request_id == request_id and same_owner(r.principal_id, actor.subject)), None)
         if row is None:
             return {'status': 'missing', 'result': None}
-        state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row['admission_id']}, actor)
+        state = await operation(authority, 'status', {'session_id': sid, 'admission_id': row.admission_id}, actor)
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, sid)
         from gateway.config import Platform
@@ -187,10 +189,10 @@ async def operation(authority, name, params, actor=None):
         policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
         frozen = json.loads(policy.request_json)
         if frozen['extra_prompt'] != params['extra_prompt']:
-            raise RuntimeStoreError('admission_conflict')
+            raise AuthorityRefusal('admission_conflict')
         state['job'] = frozen['cron_job']
         # The receipt a firer whose submit answer was lost polls, exactly as if it had arrived.
-        state.update(session_id=sid, admission_id=row['admission_id'])
+        state.update(session_id=sid, admission_id=row.admission_id)
         return state
     if name == 'submit':
         authority._require_admission_open()
@@ -202,24 +204,28 @@ async def operation(authority, name, params, actor=None):
         from gateway.session_runtime_workers import tracked_write
         if isinstance(ref, dict):
             # The creation commit waits on the writer off the owner loop, like session.create (N50).
+            from gateway.session_local import commit_local_session
             from gateway.session_local_recovery import restore_local_session
-            from hermes_state_local import commit_local_session
-            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            await tracked_write(authority, partial(
+                commit_local_session, authority_persistence(authority), epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])
-        receipt = await tracked_write(authority, partial(
-            admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
-            session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
-            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, None), ordered=True,
-            after=partial(authority._schedule_admitted, ref))
+        from gateway.session_authority import admission_row
+        store = authority_persistence(authority)
+        receipt = await tracked_write(authority, lambda: admission_row(store.admissions.admit(
+            epoch=authority.epoch, principal_id=actor.subject, session_id=ref.session_id, request_id=request_id,
+            payload={'text': params['extra_prompt'] or ''}, gate=authority.gate_refusal())[0]),
+            then=partial(authority._admitted, ref, None), ordered=True, after=partial(authority._schedule_admitted, ref))
         return {'session_id': ref.session_id, 'admission_id': receipt.admission_id}
     if set(params) != {'session_id', 'admission_id'} or name not in {'status', 'cancel'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     ref = SessionRef(authority.profile_id, params['session_id'])
     authority.authorize(actor, ref, 'session:submit')
-    row = get_session_admission(authority.db, admission_id=params['admission_id'])
+    from gateway.session_authority import admission_row
+    store = authority_persistence(authority)
+    row = admission_row(store.admissions.get(admission_id=params['admission_id']))
     from gateway.owner_identity import same_owner
     if row is None or row['target_session_id'] != ref.session_id or not same_owner(row['principal_id'], actor.subject):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if name == 'cancel':
         if row['status'] == 'queued':
             row = await authority.cancel_or_claimed(actor, ref, row['admission_id']) or {'status': 'terminal'}
@@ -231,7 +237,7 @@ async def operation(authority, name, params, actor=None):
     result, flags = None, {}
     if row['status'] == 'terminal':
         from gateway.session_results import admission_result
-        saved = admission_result(authority.db, row['admission_id'])
+        saved = admission_result(store, row['admission_id'])
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
@@ -298,8 +304,7 @@ async def execute(authority, ref, row, policy):
     try:
         from cron.cancellation import CancelRequest, _CombinedCancelEvent
 
-        db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        with _profile_runtime_scope(db_path.parent):
+        with _profile_runtime_scope(authority_persistence(authority).scope.profile_dir):
             # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
             # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
             stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)

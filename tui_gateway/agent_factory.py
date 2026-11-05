@@ -141,9 +141,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     model = str(row.get("model") or model_config.get("model") or "").strip()
     # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
     # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
-    from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
-    provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    from persistence.gateway.routing import gateway_runtime
+    route = gateway_runtime(model_config, billing_provider=row.get("billing_provider"),
+                            billing_base_url=row.get("billing_base_url"))
+    provider, base_url, api_mode = (str(value or "").strip() for value in (route.provider, route.base_url, route.api_mode))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
@@ -220,21 +221,20 @@ def _persist_live_session_runtime(session: dict | None) -> None:
     if live is None:
         return
     agent, session_key, db = live
+    from persistence.conversation.sessions import ReplaceSessionConfig
     try:
-        row = db.get_session(session_key) or {}
-        model_config = _runtime_model_config(agent, _parse_model_config(row.get("model_config")))
-        if isinstance(composer_profile := session.get("composer_override_profile"), dict):
-            model_config["composer_override_profile"] = composer_profile
-        elif "composer_override_profile" in session:
-            model_config.pop("composer_override_profile", None)
-        if (tier_override := session.get("create_service_tier_override")) is not None:
-            # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
-            model_config["service_tier"] = tier_override or "normal"
-        model = str(model_config.get("model") or "").strip()
-        if hasattr(db, "update_session_meta"):
-            db.update_session_meta(session_key, json.dumps(model_config), model or None)
-        elif model and hasattr(db, "update_session_model"):
-            db.update_session_model(session_key, model)
+        with _persistence_for(db) as persistence:
+            row = persistence.sessions.get(session_key)
+            model_config = _runtime_model_config(agent, row.model_config if row is not None else None)
+            if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+                model_config["composer_override_profile"] = composer_profile
+            elif "composer_override_profile" in session:
+                model_config.pop("composer_override_profile", None)
+            if (tier_override := session.get("create_service_tier_override")) is not None:
+                # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
+                model_config["service_tier"] = tier_override or "normal"
+            model = str(model_config.get("model") or "").strip()
+            persistence.sessions.replace_session_config(session_key, ReplaceSessionConfig(model_config, model or None))
     except Exception:
         logger.debug("failed to persist live session runtime", exc_info=True)
 
@@ -630,7 +630,7 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None, persistence=None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -666,7 +666,8 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
-                                             session_db if session_db is not None else _get_db(), session_id or key),
+                                             session_db if session_db is not None else _get_db(), session_id or key,
+                                             persistence=persistence if session_db is not None else _launch_persistence()),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
@@ -676,7 +677,9 @@ def _make_agent(
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
-        session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        session_db=session_db if session_db is not None else _get_db(),
+        persistence=persistence if session_db is not None else _launch_persistence(),
+        ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),

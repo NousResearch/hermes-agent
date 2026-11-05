@@ -17,14 +17,14 @@ from pathlib import Path
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_dbfile as state_dbfile
-import hermes_state_readpool as state_readpool
-import hermes_state_wal as state_wal
-from hermes_state_errors import DeletedWalGenerationError, StateDbReplacedError, classify_persistence_error
+from persistence.sqlite._state import dbfile as state_dbfile
+from persistence.sqlite._state import readpool as state_readpool
+from persistence.sqlite._state import wal as state_wal
+from persistence.sqlite._state.errors import DeletedWalGenerationError, StateDbReplacedError, classify_persistence_error
 from persistence.sqlite.conversation._store.messages import append_message, get_messages
-from hermes_state_dbfile import refuse_deleted_wal_generation
+from persistence.sqlite._state.dbfile import refuse_deleted_wal_generation
 from persistence.sqlite._holder import _close_time_checkpoint_configurable
-from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
+from persistence.sqlite._state.dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 from tests.persistence_sqlite.core._wal_generation_harness import (
     gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
     write_second_generation,

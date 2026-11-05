@@ -27,7 +27,8 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
-from hermes_state import SessionDB
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import Persistence, open_persistence, profile_scope
 
 
 def _make_mock_parent(depth=0):
@@ -205,18 +206,16 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
-        """#81267: children must not share the parent's SessionDB object.
+        """#81267: children must not share the parent's store handle.
 
-        cron run_job closes its per-job SessionDB in its finally block while
-        a fire-and-forget background delegation subagent is still flushing on
-        a daemon thread. A SHARED handle then has ``_conn=None`` and every
-        child flush raises ``'NoneType' object has no attribute 'execute'`` —
-        the failure is downgraded to a WARNING and the child's transcript is
-        silently dropped. Each child must own a dedicated connection that no
-        parent teardown can close, released by the child's own close().
+        cron run_job closes its per-job store in its finally block while a fire-and-forget background
+        delegation subagent is still flushing on a daemon thread. A SHARED handle is then closed and every
+        child flush fails; the failure is downgraded to a WARNING and the child's transcript is silently
+        dropped. Each child must own a dedicated reference on the store that no parent teardown can close,
+        released by the child's own close().
         """
         parent = _make_mock_parent(depth=0)
-        parent_db = SessionDB()
+        parent_db = open_persistence(profile_scope(), eager=True)
         parent._session_db = parent_db
         try:
             with patch("run_agent.AIAgent") as MockAgent:
@@ -238,23 +237,25 @@ class TestDelegateTask(unittest.TestCase):
                 self.assertEqual(mock_child._owns_session_db, True)
 
             child_db = kwargs["session_db"]
-            self.assertIsInstance(child_db, SessionDB)
+            self.addCleanup(child_db.close)
+            self.assertIsInstance(child_db, Persistence)
             self.assertIsNot(child_db, parent_db)
+            self.assertEqual(child_db.scope, parent_db.scope)
 
             # Parent teardown (cron run_job finally, gateway session end)
             # must not break the child's handle — the #81267 crash mechanism.
             parent_db.close()
-            self.assertIsNotNone(child_db._conn)
-            child_db.create_session(
+            child_db.sessions.create(NewSession(
                 session_id="child-session-81267",
                 source="subagent",
                 model="test-model",
-            )
+            ))
+            self.assertIsNotNone(child_db.sessions.get("child-session-81267"))
         finally:
             parent_db.close()
 
     def test_child_without_parent_db_still_degrades_to_none(self):
-        """Parent without a SessionDB -> child gets None (pre-fix behaviour).
+        """Parent without a session store -> child gets None (pre-fix behaviour).
 
         The dedicated-handle path must not change the degradation contract:
         a parent that never opened a session store (headless/oneshot runs,
@@ -282,11 +283,11 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_child_dedicated_db_follows_parents_db_path(self):
         """Per-profile parents: the child's dedicated handle must target the
-        parent's database FILE, not the launch profile's default state.db.
+        parent's profile store, not the launch profile's default state.db.
 
         tui_gateway hands agents dedicated per-profile handles
-        (``SessionDB(db_path=<profile_home>/state.db)`` via
-        ``_transfer_db_to_agent``). A bare ``SessionDB()`` in
+        (``open_persistence(profile_scope(home=<profile_home>))`` via
+        ``_transfer_db_to_agent``). A handle on the current home in
         ``_build_child_agent`` would write the child's transcript into the
         launch profile's db — cross-profile leakage that breaks
         ``parent_session_id`` lineage and ``session_search``.
@@ -295,10 +296,9 @@ class TestDelegateTask(unittest.TestCase):
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
-            profile_db_path = Path(tmp) / "profile-work" / "state.db"
-            profile_db_path.parent.mkdir(parents=True)
+            (profile_home := Path(tmp) / "profile-work").mkdir(parents=True)
             parent = _make_mock_parent(depth=0)
-            parent_db = SessionDB(db_path=profile_db_path)
+            parent_db = open_persistence(profile_scope(home=profile_home), eager=True)
             parent._session_db = parent_db
             child_db = None
             try:
@@ -319,11 +319,11 @@ class TestDelegateTask(unittest.TestCase):
                     _, kwargs = MockAgent.call_args
 
                 child_db = kwargs["session_db"]
-                self.assertIsInstance(child_db, SessionDB)
+                self.assertIsInstance(child_db, Persistence)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
-                )
+                self.assertEqual((child_db.scope, child_db.scope.profile_dir), (parent_db.scope, profile_home.resolve()))
+                child_db.sessions.create(NewSession(session_id="child-in-profile", source="subagent"))
+                self.assertIsNotNone(parent_db.sessions.get("child-in-profile"))
             finally:
                 if child_db is not None:
                     child_db.close()

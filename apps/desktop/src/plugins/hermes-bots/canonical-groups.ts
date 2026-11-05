@@ -38,6 +38,8 @@ export interface CanonicalRoom {
   name: string
   members: CanonicalRoomMember[]
   disbanded_at?: number | null
+  /** Seconds; the last change to the room (`groups.list` orders by it). */
+  updated_at?: number
 }
 
 export interface CanonicalPendingAction {
@@ -52,16 +54,6 @@ function requireRoute(route: CanonicalGroupRoute): void {
   if (!route.connectionId?.trim() || !route.profile?.trim()) {
     throw new Error('Canonical groups require an explicit connection and profile')
   }
-}
-
-export function captureCanonicalGroupRoute(): CanonicalGroupRoute {
-  const connectionId = host.state.connectionId.get()
-
-  if (connectionId === null) {throw new Error('Canonical groups require an explicit connection')}
-  const route = { connectionId, profile: host.state.profile.get() }
-  requireRoute(route)
-
-  return route
 }
 
 export async function canonicalGroupRequest<T>(
@@ -88,6 +80,12 @@ export async function discoverCanonicalGroups(
   route: CanonicalGroupRoute
 ): Promise<{ driver: boolean; rooms: CanonicalRoom[] }> {
   const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+
+  return { driver: capabilities.driver === true, rooms: await listCanonicalRooms(route) }
+}
+
+/** Every live room on `route`, all pages. */
+export async function listCanonicalRooms(route: CanonicalGroupRoute): Promise<CanonicalRoom[]> {
   const rooms: CanonicalRoom[] = []
   let offset = 0
 
@@ -107,7 +105,7 @@ export async function discoverCanonicalGroups(
     offset = page.next_offset
   }
 
-  return { driver: capabilities.driver === true, rooms }
+  return rooms
 }
 
 export async function createCanonicalGroup(

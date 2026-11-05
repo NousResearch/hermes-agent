@@ -60,7 +60,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("voice_chat", "Voice chat", "spoken voice-mode replies"),
-    ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
@@ -234,7 +233,7 @@ def _aux_config_menu() -> None:
     while True:
         cfg = load_config()
         _say("", "  Auxiliary models — side-task routing", "",
-             "  Side tasks (vision, compression, web extraction, etc.) default",
+             "  Side tasks (vision, compression, title generation, etc.) default",
              '  to your main chat model.  "auto" means "use my main model" —',
              "  Hermes only falls back to a lightweight backend (OpenRouter,",
              "  Nous Portal) if the main model is unavailable.  Override a",

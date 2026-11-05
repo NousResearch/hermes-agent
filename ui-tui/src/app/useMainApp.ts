@@ -258,6 +258,32 @@ export async function startPromptLiveSession({
   return sid
 }
 
+// One bucket per layout that changes row heights (width, prompt, compact, inline images, details).
+function heightCacheBucket(
+  ui: { compact?: boolean; inlineImages?: boolean; sid?: null | string; theme: { brand: { prompt: string } } },
+  cols: number,
+  detailsLayoutKey: string
+): string {
+  const flags = `${ui.compact ? '1' : '0'}:${ui.inlineImages ? '1' : '0'}`
+
+  return `${ui.sid ?? 'draft'}:${cols}:${composerPromptWidth(ui.theme.brand.prompt)}:${flags}:${detailsLayoutKey}`
+}
+
+// 0 is a real measurement (a row that draws nothing), never a miss.
+function copyMeasuredHeights(
+  heights: ReadonlyMap<string, number>,
+  rows: readonly { key: string }[],
+  cache: Map<string, number>
+): void {
+  for (const row of rows) {
+    const h = heights.get(row.key)
+
+    if (h !== undefined) {
+      cache.set(row.key, h)
+    }
+  }
+}
+
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
@@ -479,8 +505,7 @@ export function useMainApp(gw: GatewayClient) {
     ui
   )
 
-  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const heightCacheKey = heightCacheBucket(ui, cols, detailsLayoutKey)
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -507,6 +532,7 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        inlineImages: ui.inlineImages,
         leadGap: hasLeadGap(
           prevRenderedMsg(i => virtualRows[i]?.msg, index, {
             commandOverride: ui.detailsModeCommandOverride,
@@ -529,6 +555,7 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.inlineImages,
       ui.detailsMode,
       ui.detailsModeCommandOverride,
       ui.sections,
@@ -539,13 +566,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
-      for (const row of virtualRows) {
-        const h = heights.get(row.key)
-
-        if (h) {
-          activeHeightCache.set(row.key, h)
-        }
-      }
+      copyMeasuredHeights(heights, virtualRows, activeHeightCache)
     },
     [activeHeightCache, virtualRows]
   )

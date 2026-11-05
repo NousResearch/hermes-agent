@@ -73,18 +73,27 @@ interface SubmitPromptOpts {
 
 type PendingOwner = ReturnType<typeof pendingInputOwner>
 
+let userImageTurns = 0
+
 function beginOwnedTurn(
   deps: SubmitPromptDeps,
   text: string,
   displayOverride: string | undefined,
   displayText: string,
-  show: boolean
+  show: boolean,
+  images: string[] = []
 ): void {
   turnController.clearStatusTimer()
   deps.setLastUserMsg(text)
 
   if (show) {
-    deps.appendMessage({ role: 'user', text: displayOverride || displayText })
+    deps.appendMessage({
+      role: 'user',
+      text: displayOverride || displayText,
+      // Each sent turn is its own revision: the legacy attach path keeps the user's own file path,
+      // so a re-attached, overwritten file must not reuse the previous turn's render.
+      ...(images.length && { imageRevision: `turn-${++userImageTurns}`, images })
+    })
   }
 
   patchUiState({ busy: true, status: 'running…' })
@@ -375,7 +384,9 @@ export function submitPrompt(
 
   const startSubmit = (displayText: string, submitText: string, show = true) => {
     if (ownsTurn()) {
-      beginOwnedTurn(deps, text, displayOverride, displayText, show)
+      const images = (opts.queueItem?.attachments ?? opts.attachments ?? []).map(attachment => attachment.path)
+
+      beginOwnedTurn(deps, text, displayOverride, displayText, show, images)
     }
 
     const item = opts.queueItem

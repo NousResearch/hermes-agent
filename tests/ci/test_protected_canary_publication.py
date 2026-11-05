@@ -19,7 +19,7 @@ import hermes_yaml
 import pytest
 
 from hermes_cli.release_channels import ChannelReader
-from scripts.releases import channel_releases, handoff
+from scripts.releases import channel_releases, desktop_targets, handoff
 from tests.ci.desktop_release_roles import canary_publisher, native_builds, stage_step
 from tests.ci.test_desktop_release_tag_admission import _git, _seed_repo
 from tests.scripts.test_release_r2 import r2_server
@@ -180,7 +180,7 @@ def stage_canary(clone, identity, env, run):
     root = clone / "apps/desktop/release"
     # Stage independent per-architecture job workspaces through the actual shell.
     import shutil
-    for platform, arch in (("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")):
+    for platform, arch in desktop_targets.TARGETS:
         if root.exists():
             shutil.rmtree(root)
         native_leg(root, identity, env, platform, arch)
@@ -247,8 +247,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert resolved.manifest is not None
     assert resolved.manifest["request"]["windowsVersion"] == "26.913.0.1000"
     assert resolved.manifest["request"]["commit"] == env["RELEASE_COMMIT"]
-    assert {(row["platform"], row["arch"]) for row in resolved.manifest["packages"]} == {
-        ("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
+    assert {(row["platform"], row["arch"]) for row in resolved.manifest["packages"]} == set(desktop_targets.TARGETS)
     # Bootstrap reads actual receipt-bound artifacts and the promoted native feeds,
     # rather than asking canary for a stable-only candidate manifest.
     from scripts.bundles.release_artifacts import write_appinstaller

@@ -1627,6 +1627,24 @@
       }
     },
     {
+      "name": "image.render",
+      "summary": "Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ImageRenderParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ImageRenderResult"
+        }
+      }
+    },
+    {
       "name": "input.detect_drop",
       "summary": "Recognise a terminal file drop pasted into the composer and turn it into an attachment.",
       "params": [
@@ -7838,6 +7856,74 @@
         "title": "CanonicalAttachment",
         "type": "object"
       },
+      "CanonicalBotCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "author_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Author Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CanonicalBotCancelParams",
+        "type": "object"
+      },
+      "CanonicalBotCancelResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "stopping",
+              "finished"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "receipt_status": {
+            "title": "Receipt Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "status",
+          "receipt_status"
+        ],
+        "title": "CanonicalBotCancelResult",
+        "type": "object"
+      },
       "CanonicalBotDeliverParams": {
         "additionalProperties": false,
         "properties": {
@@ -8002,6 +8088,25 @@
             ],
             "default": null,
             "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [
@@ -8200,6 +8305,28 @@
             ],
             "default": null,
             "title": "Scope"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "normal",
+                    "fast",
+                    "auto",
+                    "cold",
+                    "ultrafast"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
           }
         },
         "title": "CanonicalConfigGetResult",
@@ -21037,6 +21164,148 @@
         "title": "ImageGenerateResult",
         "type": "object"
       },
+      "ImageRenderParams": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "graphics": {
+            "default": false,
+            "title": "Graphics",
+            "type": "boolean"
+          },
+          "terminal": {
+            "default": "unicode",
+            "enum": [
+              "kitty",
+              "unicode"
+            ],
+            "title": "Terminal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "cols",
+          "rows"
+        ],
+        "title": "ImageRenderParams",
+        "type": "object"
+      },
+      "ImageRenderResult": {
+        "additionalProperties": false,
+        "description": "``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint\n``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``)\nas half-blocks. ``off``: inline images are disabled or the file is not a readable image.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "kitty",
+              "unicode",
+              "off"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Color"
+          },
+          "transmit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transmit"
+          },
+          "placeholder": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Placeholder"
+          },
+          "cells": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "items": {
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cells"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "ImageRenderResult",
+        "type": "object"
+      },
       "InflightTurn": {
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
@@ -25799,6 +26068,15 @@
             "default": false,
             "title": "Graphics",
             "type": "boolean"
+          },
+          "terminal": {
+            "default": "unicode",
+            "enum": [
+              "kitty",
+              "unicode"
+            ],
+            "title": "Terminal",
+            "type": "string"
           }
         },
         "title": "PetCellsParams",
@@ -44436,6 +44714,18 @@
             ],
             "default": null,
             "title": "Labels"
+          },
+          "image_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Path"
           }
         },
         "required": [
@@ -48103,6 +48393,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "bot_relay.cancel",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotCancelResult"
         }
       }
     },

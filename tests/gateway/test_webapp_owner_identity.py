@@ -103,11 +103,11 @@ def _bind(store, sid, subject, **row):
 
 def test_a_chat_a_webapp_tab_imported_before_the_upgrade_still_opens(store):
     """The sidebar (authorize_history) and the open (mount_history) read a binding by one rule."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_history_mount import mount_history
     from hermes_state_mutation_binding import authorize_history
     caps = frozenset({'session:create', 'session:read'})
-    owner, stranger = (Principal(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))
+    owner, stranger = (SessionActor(s, store.profile_id, caps, 't') for s in (OWNER, 'uid:999999'))
     _bind(store, 'imported-web', WEBAPP_LOGIN, source='webui')
     with store.db._read_ctx() as conn:
         assert authorize_history(conn, owner, 'imported-web') is True

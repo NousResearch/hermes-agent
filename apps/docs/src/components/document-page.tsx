@@ -29,6 +29,7 @@ export async function DocumentPage({ slugs, locale }: { slugs?: string[]; locale
   return (
     <DocsPage toc={toc} full={page.data.hide_table_of_contents}>
       {!page.data.hasH1 && !page.data.hide_title && <DocsTitle>{page.data.title}</DocsTitle>}
+      {/* The live DocSearch crawler selects `.theme-doc-markdown.markdown` for page content. */}
       <DocsBody className="theme-doc-markdown markdown"><Body components={getMDXComponents()} /></DocsBody>
       <a href={editUrl} target="_blank" rel="noreferrer noopener" className="text-sm text-fd-muted-foreground hover:text-fd-foreground">Edit this page on GitHub</a>
     </DocsPage>

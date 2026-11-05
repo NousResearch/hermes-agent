@@ -85,9 +85,11 @@ class _Model(FakeLLMServer):
 
     def _owner(self, port: int) -> str:
         """Label of the started process (or a descendant) holding the client end of ``port``."""
-        local = f"0100007F:{port:04X}"
+        # The whole 4-tuple: Linux shares a connect()-assigned local port across remotes, so another
+        # process's socket can carry the same local address and sort first.
+        local, remote = f"0100007F:{port:04X}", f"0100007F:{self.port:04X}"
         rows = Path("/proc/net/tcp").read_text().splitlines()[1:]
-        inode = next((f[9] for f in map(str.split, rows) if f[1] == local), None)
+        inode = next((f[9] for f in map(str.split, rows) if f[1] == local and f[2] == remote), None)
         for label, proc in self.procs.items():
             for pid in _tree(proc.pid):
                 try:

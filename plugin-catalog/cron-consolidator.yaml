@@ -1,0 +1,18 @@
+name: cron-consolidator
+title: Cron Consolidator
+repo: https://github.com/Moodtuner997/hermes-cron-consolidator
+sha: 52acc397a7eb4ccf809e03afbc021a29f440b28b
+version: "0.1.0"
+description: "A read-only plan for tidying a crowded cron list: groups jobs whose prompts are near-duplicates or that share skills and destination or run the same script (candidates to become one job), lists clock-time jobs that fire in the same minute, jobs on a failure streak and deliveries never confirmed, and estimates the prompt tokens a merge could save from usage_audit.jsonl. Deterministic (difflib, no model call); nothing is applied. Disclosure — no network; reads cron/jobs.json (including prompts, compared but never printed), cron/usage_audit.jsonl and cron/executions.db (opened read-only) of the chosen profile, and with --profile another profile's cron folder under the same Hermes root; writes nothing; runs no shell command and no background process; registers no hook, tool or middleware, only a slash command and a CLI command; no telemetry."
+maintainer: Moodtuner997
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Moodtuner997/hermes-cron-consolidator#readme
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

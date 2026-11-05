@@ -1,0 +1,34 @@
+name: proofops
+repo: https://github.com/rasrobo/proofops
+sha: eb711f7a8698bf0989f90ae7e3b9f9e9c3f74e37
+description: >-
+  Verification for completion claims. An agent runs a declared plan of read-only checks
+  against a system and gets a receipt: each check's actual result, what it proves, and -
+  printed on every receipt - what passing does NOT prove. Receipts are sealed with a
+  sha256 digest and can be signed, so editing a verdict after the run is detectable, and
+  `proofops verify` says so in one command. Refuses to contact an origin the plan never
+  declared, and refuses to run a command the plan does not list verbatim or the operator
+  did not authorise (that check returns NOT RUN, never FAIL).
+  Disclosure - network: HTTP GET only, against origins named in the plan; shell: a command
+  check executes exactly the argv the plan lists, and only when the operator passes
+  allow_commands; storage: receipts are written under the plugin's own data directory and
+  contain observed values, hostname, cwd and command output; no telemetry; no network
+  access at import or registration.
+maintainer: rasrobo
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/rasrobo/proofops#readme
+version: "0.2.0"
+platforms: [linux, macos]
+title: "ProofOps"
+readme: true
+capabilities:
+  provides_tools:
+    - proofops_plans
+    - proofops_run
+    - proofops_receipt
+    - proofops_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

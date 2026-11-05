@@ -1,9 +1,7 @@
 name: network-xray
 repo: https://github.com/rusty4444/hermes-network-xray
 sha: 75f1e458b4a39e7fdc6552f4968c1dde1edf910b
-description: Compare DNS, TCP, verified TLS and HTTP HEAD captures of one URL from two machines, find the
-  first observed difference and export a local evidence report. Read-only and local-first, with native
-  agent tools, a Desktop workbench and a stdlib-only portable collector for the second machine.
+description: "Compare DNS, TCP, verified TLS and HTTP HEAD captures of one URL from two machines, find the first observed difference and export a local evidence report. Read-only and local-first, with native agent tools, a Desktop workbench and a stdlib-only portable collector for the second machine. Disclosure — the network_xray_probe tool, the CLI and the Desktop page connect from the Hermes machine to a URL the model or user names, including private and loopback addresses (link-local, multicast and unspecified are refused): DNS, TCP, verified TLS and one HTTP HEAD request, with no query, credentials, redirects or body, run in an isolated Python child with a minimal environment; it saves the target, resolved IPs, certificate fingerprint and the server/content-type headers under the profile's plugin-data/network-xray/ folder, and imported bundles from a second machine are unauthenticated; no telemetry."
 maintainer: rusty4444
 tier: community
 category: tools

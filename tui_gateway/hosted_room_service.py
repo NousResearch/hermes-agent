@@ -122,6 +122,18 @@ def _grant_revoke_is_terminal(exc: PeerRunsHTTPError) -> bool:
         "invalid_room_grant", "room_reauthorization_required"}
 
 
+def disband_fence(service: Any, room_id: str):
+    """The service's Disband fence on new peer routes; a duck-typed service without one has none."""
+    fence = getattr(service, "disbanding", None)
+    return fence(room_id) if callable(fence) else contextlib.nullcontext()
+
+
+def route_publication_lock(service: Any):
+    """The lock that orders peer-route publication with Disband, when the service has one."""
+    lock = getattr(service, "peer_route_lock", None)
+    return lock if lock is not None else contextlib.nullcontext()
+
+
 def _member_of(task: Mapping[str, Any]) -> str:
     payload = task.get("payload") or {}
     return str(payload.get("target_member_id") or payload.get("target_profile") or "")
@@ -321,33 +333,27 @@ class HostedRoomService:
                 self.peer_clients[key] = client
 
     def revoke_room_routes(self, room_id: str) -> int:
-        """Drop every peer route of one room; nothing more is sent under them. Each stored route's
-        grant becomes a revoke this home owes its member's gateway, recorded in the transaction that
-        drops the route, so an unreachable gateway never holds Disband and a restart cannot lose the
-        debt. The worker cycle pays it (``retry_owed_revokes``), woken now."""
+        """Revoke and forget every scoped peer route for one room; an unreachable target
+        leaves the room intact for retry rather than a false disband with a live grant.
+        Held revokes owed for grants a renewal replaced become due once the routes are gone."""
         with self._policy_lock:
             routes = [(key, route) for key, route in self.peer_routes.items() if key[0] == room_id]
-            for key, route in routes:
-                self._keep_revoke_client(route.grant, self.peer_clients.get(key))
-        stored = {(row["room_id"], row["member_id"]) for row in hosted_rooms.list_room_link_records(self.db_path)}
         for key, route in routes:
-            if key not in stored:  # a route handed in without persistence: owe it at its client's URL
-                self._owe_unstored(key, route)
-        dropped = hosted_rooms.retire_room_link_records(
-            self.db_path, room_id=room_id, expiry=room_grant_hard_expiry)
+            revoke = _hook(self.peer_clients.get(key), "revoke_grant")
+            if revoke is None:
+                raise RuntimeError("peer room grant cannot be revoked safely")
+            try:
+                revoke(grant=route.grant)
+            except PeerRunsHTTPError as exc:
+                if not _grant_revoke_is_terminal(exc):
+                    raise
+        hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id)
         with self._policy_lock:
             for key, _route in routes:
                 for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
                     table.pop(key, None)
         self.runtime.wakeup()
-        return max(dropped, len(routes))
-
-    def _owe_unstored(self, key: tuple[str, str], route: PeerMemberRoute) -> None:
-        client = self.peer_clients.get(key)
-        url = getattr(client, "base_url", None)
-        if not isinstance(url, str) or not url:
-            raise RuntimeError("peer room grant cannot be revoked safely")
-        self.owe_grant_revoke(room_id=key[0], member_id=key[1], target_url=url, grant=route.grant, client=client)
+        return len(routes)
 
     def owe_grant_revoke(
         self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any = None) -> None:
@@ -859,9 +865,11 @@ class HostedRoomService:
             own_cancel_id = (
                 task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
             result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-            if result["status"] == "stopping" and not self._member_is_peer(room_id, _member_of(task)):
+            if result["status"] == "stopping":
                 pending += 1
-        if require_acknowledged and pending:
+        # Disband waits for every member's Stop, a member on another gateway included: a deferred
+        # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
+        if require_acknowledged and (pending or unconfirmed):
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks) - unconfirmed

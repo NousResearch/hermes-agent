@@ -332,12 +332,19 @@ def _(rid, params: dict, service) -> dict:
         # Owed at the URL this handler probes (``hermes serve`` takes the caller's URL, as it always
         # has), so a grant it was handed is never forgotten while it could still pass.
         service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+    from tui_gateway.hosted_room_service import route_publication_lock
+
+    def authorize_publication() -> None:
+        check = getattr(service, "route_authority", None)
+        if check is not None:
+            check(room_id)
     try:
-        with service.peer_route_lock:
-            service.route_authority(room_id)
+        with route_publication_lock(service):
+            authorize_publication()
             home_room = room_state(service.db_path, room_id=room_id)
     except RoomNotFoundError:
-        if service.ended_room(room_id) is not None:  # disbanded first: owed, never probed
+        ended = getattr(service, "ended_room", None)
+        if ended is not None and ended(room_id) is not None:  # disbanded first: owed, never probed
             owe()
         raise
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
@@ -364,10 +371,10 @@ def _(rid, params: dict, service) -> dict:
         execution_policy_digest=catalog.execution_policy.policy_digest,
         cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
         trace_id=str(params.get("trace_id") or trace_id), grant=grant)
-    with service.peer_route_lock:
+    with route_publication_lock(service):
         # The probe took time: publish only while the room is still the one it was checked against.
         try:
-            service.route_authority(room_id)
+            authorize_publication()
             live = room_state(service.db_path, room_id=room_id)
         except (RoomNotFoundError, AuthorityConflictError):
             live = None
@@ -487,11 +494,12 @@ def _(rid, params: dict, service) -> dict:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
-    with service.disbanding(room_id):
+    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    with disband_fence(service, room_id):
         service.stop_room(
             room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
             require_acknowledged=True)
-        with service.peer_route_lock:
+        with route_publication_lock(service):
             service.revoke_room_routes(room_id)
             return disband_with_state(existing)
 

@@ -715,22 +715,28 @@ def _owe_revoke_locked(
 
 
 def retire_room_link_records(
-    db_path: DbPath, *, room_id: str, expiry: Callable[[str], float], now: float | None = None) -> int:
-    """Drop one room's persisted peer routes, recording in the same transaction the revoke still owed
-    for each route's grant (``expiry`` reads when that grant dies), and releasing the room's held
-    ones. Returns the routes dropped."""
+    db_path: DbPath, *, room_id: str, expiry: Callable[[str], float] | None = None,
+    now: float | None = None) -> int:
+    """Drop one room's persisted peer routes and release the room's held owed revokes. With
+    ``expiry`` (when a grant dies) each route's grant becomes an owed revoke in the same
+    transaction; without it the caller already revoked every route's scope at its member gateway,
+    which also revoked the older grants the held rows name, so those are forgotten. Returns the
+    routes dropped."""
     timestamp = _now(now)
     with _transaction(db_path, immediate=True) as conn:
         rows = conn.execute(
             "SELECT member_id, target_url, grant FROM hosted_room_links WHERE room_id=?", (room_id,)).fetchall()
-        for row in rows:
+        for row in rows if expiry is not None else ():
             grant = str(row["grant"])
             _owe_revoke_locked(conn, room_id=room_id, member_id=str(row["member_id"]),
                                target_url=str(row["target_url"]), grant=grant, expires_at=expiry(grant),
                                now=timestamp)
         conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,))
-        conn.execute("UPDATE hosted_room_owed_revokes SET held=0, next_attempt_at=? WHERE room_id=? AND held=1",
-                     (timestamp, room_id))
+        if expiry is None:
+            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1", (room_id,))
+        else:
+            conn.execute("UPDATE hosted_room_owed_revokes SET held=0, next_attempt_at=? WHERE room_id=? AND held=1",
+                         (timestamp, room_id))
     return len(rows)
 
 

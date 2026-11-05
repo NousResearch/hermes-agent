@@ -7,6 +7,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _build_runtime(tmp_path, monkeypatch):
@@ -19,10 +21,6 @@ def _build_runtime(tmp_path, monkeypatch):
     root = tmp_path / '.hermes'
     root.mkdir(mode=0o700, exist_ok=True)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    # The autouse isolation fixture pins hermes_state.DEFAULT_DB_PATH to its own fake home once
-    # hermes_state is imported; per-home stores must follow the scoped HERMES_HOME here.
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     secondary = root / 'profiles' / 'secondary'
     secondary.mkdir(parents=True, mode=0o700, exist_ok=True)
     if not (secondary / 'config.yaml').exists():
@@ -30,39 +28,39 @@ def _build_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     registry = SessionAuthorities(root, multiplexed=True)
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={},
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={},
                              _draining=False, session_authorities=registry)
     return runner, registry, root, secondary
 
 
-async def _served_authority(tmp_path, monkeypatch, instance_id, db=None):
+async def _served_authority(tmp_path, monkeypatch, instance_id, persistence=None):
     """Launch home plus one served secondary sharing the runner's store, as a multiplex gateway
-    builds them; returns (served authority, its state db, the secondary home path)."""
+    builds them; returns (served authority, its storage interface handle, the secondary home path)."""
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import SessionDB
     runner, registry, root, secondary = _build_runtime(tmp_path, monkeypatch)
     launch = await initialize_session_authority(runner, profile_id=str(root), instance_id=instance_id)
     registry.add(root, launch, name='default')
-    if db is None:
-        db = SessionDB(db_path=secondary / 'state.db')
+    if persistence is None:
+        persistence = storage_handle(secondary)
     # Reserve-then-replace, as the multiplex bring-up does: recovery inside initialize must
     # already see the served slot (and thus the profile name) to rebuild a profiled source.
     registry.add(secondary, None, name='secondary')
     served = await initialize_session_authority(runner, profile_id=str(secondary),
-                                                instance_id=instance_id, register=False, db=db)
+                                                instance_id=instance_id, register=False,
+                                                persistence=persistence)
     registry.replace(secondary, served)
-    return served, db, secondary
+    return served, persistence, secondary
 
 
 def _age_receipt_origins(db, sid, mutate):
     """Rewrite every persisted origin copy of *sid*'s receipt through *mutate* (a dict -> dict
     function), the way an older build's on-disk spelling differs from the recomputed source."""
-    from hermes_state_local import POLICY_PREFIX
-    with db._read_ctx() as conn:
-        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()
+    holder = raw_holder(db)
+    with holder._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (policy_key(sid),)).fetchone()
     receipt = json.loads(row[0])
     receipt['entry']['origin'] = mutate(receipt['entry']['origin'])
-    db._write_sql('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(receipt), POLICY_PREFIX + sid))
+    holder._write_sql('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(receipt), policy_key(sid)))
 
     def age_routing(conn):
         rows = conn.execute('SELECT session_key, entry_json FROM gateway_routing WHERE session_key=?',
@@ -73,19 +71,19 @@ def _age_receipt_origins(db, sid, mutate):
                 entry['origin'] = mutate(entry['origin'])
                 conn.execute('UPDATE gateway_routing SET entry_json=? WHERE session_key=?',
                              (json.dumps(entry), key))
-    db._execute_write(age_routing)
-    with db._read_ctx() as conn:
+    holder._execute_write(age_routing)
+    with holder._read_ctx() as conn:
         row = conn.execute('SELECT origin_json FROM sessions WHERE id=?', (sid,)).fetchone()
-    db._write_sql('UPDATE sessions SET origin_json=? WHERE id=?', (json.dumps(mutate(json.loads(row[0]))), sid))
+    holder._write_sql('UPDATE sessions SET origin_json=? WHERE id=?', (json.dumps(mutate(json.loads(row[0]))), sid))
     return receipt
 
 
 def _store_receipt(db, sid, mutate):
     """Rewrite *sid*'s stored receipt text through *mutate* (a str -> str function)."""
-    from hermes_state_local import POLICY_PREFIX
-    with db._read_ctx() as conn:
-        stored = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()[0]
-    db._write_sql('UPDATE state_meta SET value=? WHERE key=?', (mutate(stored), POLICY_PREFIX + sid))
+    holder = raw_holder(db)
+    with holder._read_ctx() as conn:
+        stored = conn.execute('SELECT value FROM state_meta WHERE key=?', (policy_key(sid),)).fetchone()[0]
+    holder._write_sql('UPDATE state_meta SET value=? WHERE key=?', (mutate(stored), policy_key(sid)))
 
 
 def _with_receipt_field(path, value):
@@ -126,7 +124,7 @@ async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, mo
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
     actor = SessionActor('owner', str(secondary), frozenset({'session:create', 'session:read'}), 'socket')
@@ -135,13 +133,13 @@ async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, mo
     _RECEIPT_DAMAGE[damage](db, ref.session_id)
 
     with caplog.at_level(logging.WARNING, logger='gateway.session_local_recovery'):
-        cold, _, _ = await _served_authority(tmp_path, monkeypatch, 'second', db=db)
+        cold, _, _ = await _served_authority(tmp_path, monkeypatch, 'second', persistence=served.persistence)
         assert ref.session_id not in cold.sessions
         recovery = [r.getMessage() for r in caplog.records if ref.session_id in r.getMessage()]
         assert any(clause in message for message in recovery), recovery
         assert len(recovery) == 1, f'one boot warning per refused receipt: {recovery}'
         caplog.clear()
-        with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+        with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
             restore_local_session(cold, ref.session_id)
     resumed = [r.getMessage() for r in caplog.records if ref.session_id in r.getMessage()]
     assert any(clause in message for message in resumed), resumed

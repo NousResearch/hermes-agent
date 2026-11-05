@@ -12,6 +12,15 @@ import pytest
 from gateway import hosted_room_driver, hosted_rooms
 from gateway.run import GatewayRunner
 from tui_gateway.hosted_room_service import HostedRoomService
+from persistence_assembly import open_persistence, profile_scope
+
+
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
 
 
 class _RPC:
@@ -58,8 +67,8 @@ def _server():
     return SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
 
 
-def _service(db_path, *, profiles=("default",)):
-    service = HostedRoomService(_server(), db_path=db_path)
+def _service(store, *, profiles=("default",)):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _RPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -149,9 +158,8 @@ async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeyp
     assert runner._background_tasks == set()
 
 
-def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
-    db = tmp_path / "state.db"
-    first, _ = _service(db, profiles=("default", "ops"))
+def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(store):
+    first, _ = _service(store, profiles=("default", "ops"))
     first.create_room(
         room_id="room-1",
         name="Release room",
@@ -170,17 +178,17 @@ def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
         payload={"text": "@ops inspect", "thread_id": "thread-1"},
     )
     assert (
-        len(hosted_room_driver.list_tasks(db, room_id="room-1", status="queued")) == 1
+        len(hosted_room_driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")) == 1
     )
 
-    resumed, rpc = _service(db, profiles=("default", "ops"))
+    resumed, rpc = _service(store, profiles=("default", "ops"))
     resumed.start()
     try:
         _wait_for(
             lambda: any(
                 event["kind"] == "message.member"
                 for event in hosted_rooms.read_events(
-                    db, room_id="room-1", since_seq=0
+                    store, placement="profile", room_id="room-1", since_seq=0
                 )["events"]
             )
         )
@@ -188,13 +196,12 @@ def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
         assert resumed.stop(timeout=5.0)
 
     assert rpc.submits == ["ops"]
-    assert hosted_room_driver.list_tasks(db, room_id="room-1", status="settled")
+    assert hosted_room_driver.list_tasks(store, placement="profile", room_id="room-1", status="settled")
 
 
-def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path):
-    db = tmp_path / "state.db"
-    gateway, gateway_rpc = _service(db, profiles=("default", "ops"))
-    dashboard, dashboard_rpc = _service(db, profiles=("default", "ops"))
+def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(store):
+    gateway, gateway_rpc = _service(store, profiles=("default", "ops"))
+    dashboard, dashboard_rpc = _service(store, profiles=("default", "ops"))
     gateway.create_room(
         room_id="room-1",
         name="Release room",
@@ -220,7 +227,7 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
             lambda: any(
                 event["kind"] == "message.member"
                 for event in hosted_rooms.read_events(
-                    db, room_id="room-1", since_seq=0
+                    store, placement="profile", room_id="room-1", since_seq=0
                 )["events"]
             )
         )
@@ -230,5 +237,5 @@ def test_dashboard_and_gateway_workers_share_one_fenced_execution_owner(tmp_path
         assert dashboard.stop(timeout=5.0)
 
     assert len(gateway_rpc.submits) + len(dashboard_rpc.submits) == 1
-    events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]
+    events = hosted_rooms.read_events(store, placement="profile", room_id="room-1", since_seq=0)["events"]
     assert sum(event["kind"] == "message.member" for event in events) == 1

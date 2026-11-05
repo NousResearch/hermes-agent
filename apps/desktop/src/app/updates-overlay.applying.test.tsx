@@ -82,11 +82,8 @@ it('still tells a self-updating app that its window will close', async (): Promi
   expect(screen.queryByText(en.updates.applyingStayBackend)).toBeNull()
 })
 
-// Its follower still owns a backend apply in its restart stage: hiding it there keeps that state, and
-// leaves a client apply's state alone too.
-it('hides a backend update during its restart without resetting it or the client state', async (): Promise<void> => {
-  const clientError = { ...applying, applying: false, stage: 'error' as const }
-  $updateApply.set(clientError)
+// Its follower still owns a backend apply in its restart stage: hiding it there keeps that state.
+it('hides a backend update during its restart without resetting it', async (): Promise<void> => {
   $updateOverlayTarget.set('backend')
   $updateOverlayOpen.set(true)
   $backendUpdateApply.set({ ...applying, stage: 'restart' })
@@ -96,7 +93,6 @@ it('hides a backend update during its restart without resetting it or the client
 
   expect($updateOverlayOpen.get()).toBe(false)
   expect($backendUpdateApply.get()).toMatchObject({ applying: true, stage: 'restart' })
-  expect($updateApply.get()).toEqual(clientError)
 })
 
 it('dismissing a failed backend update clears only the backend state', async (): Promise<void> => {

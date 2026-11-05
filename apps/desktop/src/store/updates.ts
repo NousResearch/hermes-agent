@@ -1016,19 +1016,14 @@ let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 let joinGeneration = 0
 
 /** One running `hermes-update` action a window joined after it started (a reload, a second tab). */
-interface JoinedBackendUpdate {
-  name: string
-  action_id?: string
+type JoinedBackendUpdate = Pick<Awaited<ReturnType<typeof updateHermes>>, 'action_id' | 'name'> & {
   startedAtMs: number
   /** Joined from the update's receipt: the status's process and exit code are whatever action this
    *  dashboard last spawned, which the receipt does not name, so only that run's own evidence counts. */
   receiptOnly?: boolean
 }
 
-type BackendUpdateStart = Omit<Awaited<ReturnType<typeof updateHermes>>, 'pid'> & {
-  startedAtMs: number
-  receiptOnly?: boolean
-}
+type BackendUpdateStart = Omit<Awaited<ReturnType<typeof updateHermes>>, 'pid'> & JoinedBackendUpdate
 
 /** The exit code this follow can trust. A run the backend reads `interrupted` (its process died)
  *  failed, with no need to wait out the deadline. A receipt-only join takes the status's own exit
@@ -1043,9 +1038,7 @@ function followedExitCode(
     return 1
   }
 
-  return !started.receiptOnly || (!!started.action_id && status.action_id === started.action_id)
-    ? status.exit_code
-    : null
+  return !started.receiptOnly || status.action_id === started.action_id ? status.exit_code : null
 }
 
 /** Start a new `hermes update` on the backend: what an Update press runs. */

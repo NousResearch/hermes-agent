@@ -1,0 +1,37 @@
+name: creative-review
+repo: https://github.com/peterpeeterspeter/hermes-creative-review
+sha: 84f2d8734ccba0c6ead3e467ecf22f9132bd3ed0
+description: >-
+  An art director's desk for your agent: a native Hermes Desktop workspace to
+  visually review AI-generated images — compare a reference against generated
+  versions side by side or blended, zoom and pan, click anywhere to drop
+  numbered point annotations with notes, then "Request Revision" builds a
+  structured brief (markers, coordinates, notes, reference, version lineage) and
+  hands it to the LIVE Hermes conversation through host.composer.submit(), so
+  the agent receives it as a real user turn. Revisions are linked to their
+  parent image, and the final image can be approved and exported with its full
+  review history as JSON or Markdown. Local-first: boards and history live in a
+  SQLite database under the profile's plugin-data folder and images are read
+  from disk in place. Disclosure — no network calls, no cloud account, no
+  credentials, no shell, no background processes, no telemetry; the plugin reads
+  the local image files the user (or the agent) registers, by path, and writes
+  exports into its own plugin-data folder.
+maintainer: peterpeeterspeter
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/peterpeeterspeter/hermes-creative-review#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - creative_review_create_board
+    - creative_review_list_boards
+    - creative_review_add_image
+    - creative_review_get_board
+    - creative_review_revision_brief
+    - creative_review_approve
+    - creative_review_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -880,6 +880,8 @@ def _cmd_undo(rid, params, session, name, arg):
     _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
+    if hint := _tools_mod("tui_gateway.checkpoints").undo_rollback_hint_for(session, live_view, active):
+        notice += "\n" + hint["text"]
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
 
 

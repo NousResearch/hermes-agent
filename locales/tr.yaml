@@ -3981,3 +3981,10 @@ plan_usage:
   large_notice_limit: "Büyük model: {name} limitine ulaşıldı ({resets})."
   large_notice_limit_stops: "Büyük model: {name} limitine ulaşıldı ({resets}), o zamana kadar çalışmaz."
   large_notice_percent: "Büyük model: mesaj başına planından daha fazla kullanım harcar. Aylık büyük model limiti: {percent} kullanıldı."
+shared:
+  # /undo's pointer at the /rollback command that restores the undone turns' files
+  # (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    restore: "↶ Geri alınan turlarda değişen dosyalar: {files}. Geri yüklemek için: /rollback {number}"
+    list: "↶ Geri alınan turlarda değişen dosyalar: {files}. Kontrol noktalarını listelemek ve birini geri yüklemek için /rollback çalıştırın."
+    more: "+{count} daha"

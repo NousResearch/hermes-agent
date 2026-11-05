@@ -193,7 +193,7 @@ async def pause_delegation(connection, ref, params):
     return {'paused': set_spawn_paused(paused)}
 
 
-_ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
+_ROLLBACK_FIELDS = {'list': {'session_id', 'profile', 'undo_since'}, 'diff': {'session_id', 'profile', 'hash'},
                     'restore': {'session_id', 'profile', 'hash', 'file_path', 'all'},
                     'session_diff': {'session_id', 'profile'}}
 # ``rollback.session_diff`` stat + body bound, in bytes on the wire: half the 8 MiB frame every client
@@ -214,7 +214,9 @@ async def rollback(connection, ref, params, *, kind):
     fields = _ROLLBACK_FIELDS[kind]
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
            for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
-               params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
+               params.get('all') is not None and not isinstance(params['all'], bool)) or (  # nullable: null is omitted
+               params.get('undo_since') is not None and (isinstance(params['undo_since'], bool)
+                                                         or not isinstance(params['undo_since'], (int, float)))):
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -240,11 +242,6 @@ async def rollback(connection, ref, params, *, kind):
         cwd = policy.cwd
         if not mgr.enabled and kind in ('list', 'session_diff'):
             return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
-        if kind == 'list':
-            # The TUI renders ``message``; the manager calls it ``reason``.
-            return {'enabled': True, 'checkpoints': [
-                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
-                for c in mgr.list_checkpoints(cwd)]}
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
         from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
@@ -253,6 +250,20 @@ async def rollback(connection, ref, params, *, kind):
             refusal = mgr.unsupported_backend_reason(task_id)
         finally:
             reset_terminal_scope(token)
+        if kind == 'list':
+            # The TUI renders ``message``; the manager calls it ``reason``.
+            listed = {'enabled': True, 'checkpoints': [
+                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
+                for c in mgr.list_checkpoints(cwd)]}
+            if params.get('undo_since') is not None and not refusal:
+                # A rewired classic CLI's /undo: the /rollback line for the span it just undid.
+                # The live transcript is the rewind's kept prefix: its newest row bounds the span from below.
+                from gateway.session_local_recovery import transcript_target
+                from tools.checkpoint_undo_hint import undo_rollback_hint, undo_span_start
+                kept = authority.db.get_messages_as_conversation(transcript_target(authority, ref))
+                if hint := undo_rollback_hint(mgr, cwd, undo_span_start(params['undo_since'], kept), task_id=None):
+                    listed['undo_hint'] = hint.as_dict()
+            return listed
         if kind == 'session_diff':
             return _session_diff(mgr, cwd, refusal)
         try:

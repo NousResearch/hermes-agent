@@ -645,8 +645,15 @@ class GatewaySessionCommandsMixin:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t("gateway.undo.removed", turns=result["turns_undone"],
-                 count=result["rewound_count"], preview=preview)
+        reply = t("gateway.undo.removed", turns=result["turns_undone"],
+                  count=result["rewound_count"], preview=preview)
+        if (mgr := self._checkpoint_manager(source)) is not None:
+            # Same manager and cwd /rollback lists, so its number is the one /rollback takes.
+            from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_rollback_hint
+            hint = await asyncio.to_thread(undo_rollback_hint, mgr, self._terminal_cwd(), result.get("undo_since"))
+            if line := format_undo_rollback_hint(hint):
+                reply += "\n" + line
+        return reply
 
     # --------------------------------------------------------------------- /compress
 

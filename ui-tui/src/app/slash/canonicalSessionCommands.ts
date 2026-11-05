@@ -8,7 +8,7 @@ import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
-import type { BillingStateResponse } from '../../gatewayTypes.js'
+import type { BillingStateResponse, RollbackListResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
 import { patchUiState } from '../uiStore.js'
@@ -166,9 +166,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
 
       if (intent === 'undo') {
-        return ctx.transcript.sys(
+        ctx.transcript.sys(
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
+
+        return showUndoRollbackHint(ctx, sid, (result.target_message as undefined | { timestamp?: unknown })?.timestamp)
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -187,6 +189,22 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
         ctx.transcript.sys(busy)
       }
     })
+}
+
+/** `/undo`'s pointer at the `/rollback` that restores the undone turns' files; silent when the owner has none. */
+function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, since: unknown) {
+  if (typeof since !== 'number') {
+    return
+  }
+
+  void ctx.gateway
+    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: since })
+    .then(r => {
+      if (r?.undo_hint?.text && !ctx.stale()) {
+        ctx.transcript.sys(r.undo_hint.text)
+      }
+    })
+    .catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
 }
 
 /** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */

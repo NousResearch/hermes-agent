@@ -12,6 +12,7 @@ from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo,
                      Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
+from .tools_commands import UndoRollbackHint
 
 
 # ── shared live-session snapshot ──────────────────────────────────────────────────────────────
@@ -454,6 +455,8 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
+    # Present only when checkpoints are on and the undone turn took one (``rollback.list``'s field).
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("session.undo", params=SessionUndoParams, result=SessionUndoResult,

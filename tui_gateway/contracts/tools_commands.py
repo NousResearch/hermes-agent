@@ -367,6 +367,9 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 class RollbackListParams(Params):
     session_id: str
     profile: str | None = None
+    # Epoch seconds an /undo's span began (``tools/checkpoint_undo_hint.py::undo_span_start``): the result
+    # then carries ``undo_hint`` when a checkpoint taken in that span restores files changed since.
+    undo_since: float | None = None
 
 
 class RollbackCheckpoint(Result):
@@ -375,9 +378,21 @@ class RollbackCheckpoint(Result):
     message: str = ""
 
 
+class UndoRollbackHint(Result):
+    """``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,
+    so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;
+    ``text`` is the rendered line in the backend's language."""
+
+    number: int | None = None
+    files: list[str] = Field(default_factory=list)
+    more: int = 0
+    text: str
+
+
 class RollbackListResult(Result):
     enabled: bool
     checkpoints: list[RollbackCheckpoint] = Field(default_factory=list)
+    undo_hint: UndoRollbackHint | None = None
 
 
 method("rollback.list", params=RollbackListParams, result=RollbackListResult,

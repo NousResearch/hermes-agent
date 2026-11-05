@@ -5,7 +5,7 @@ from dataclasses import asdict, replace
 from typing import NamedTuple
 
 from gateway.session_route_identity import ROUTE_BOUND_KEYS
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 class _Route(NamedTuple):
@@ -69,7 +69,7 @@ async def prepare_model(authority, live, payload, prepared):
         is_global=False, user_providers=resolution.get('providers'),
         custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
-        raise RuntimeStoreError('model_resolution_failed')
+        raise AuthorityRefusal('model_resolution_failed')
     # The configured default is the user's own choice: a reset is never held behind a cost ask.
     refusal = None if reset else await _selection_guard_refusal(
         authority, live, payload, prepared['snapshot'], current, result)
@@ -105,11 +105,11 @@ async def prepare_model(authority, live, payload, prepared):
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.
-        from pathlib import Path
         from gateway.run import _load_gateway_config
+        from gateway.session_persistence import authority_persistence
         from gateway.session_policy import present_sections, profile_target
-        live = await asyncio.to_thread(
-            lambda: _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        home = authority_persistence(authority).scope.profile_dir
+        live = await asyncio.to_thread(lambda: _load_gateway_config(home / 'config.yaml'))
         frozen['model']['selection_profile'] = list(profile_target(present_sections(live)))
     # A direct alias's own credential is part of the selection (never ``result.api_key``, which the
     # switch resolved for its probe): its env pointer is committed and re-read every turn; a literal
@@ -161,7 +161,7 @@ def is_model_reset(payload):
     if payload['model'].strip().lower() != MODEL_SWITCH_RESET_TOKEN:
         return False
     if set(payload) - {'model', 'confirm'}:
-        raise RuntimeStoreError('invalid_params', field='payload',
+        raise AuthorityRefusal('invalid_params', field='payload',
                                 detail=MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_RESET_WITH_FLAGS])
     return True
 
@@ -186,7 +186,7 @@ def _reset_payload(authority, old, current):
     from agent.i18n import t
     model, provider = ('', '') if old.ignore_user_config else configured_default(authority)
     if not model:
-        raise RuntimeStoreError('invalid_params', field='payload.model', detail=t('cli.model.reset_no_default'))
+        raise AuthorityRefusal('invalid_params', field='payload.model', detail=t('cli.model.reset_no_default'))
     if model == current.model and provider in ('', current.provider):
         return {'status': 'noop', 'model': model, 'note': t('cli.model.reset_none', model=model)}
     return {'model': model, **({'provider': provider} if provider else {})}
@@ -198,11 +198,11 @@ def _provider_resolution_config(authority, config, bypass=False):
     frozen entry the profile no longer declares stays resolvable. A session that bypasses the
     profile (``ignore_user_config``, implied by safe mode) resolves only its own frozen config.
     ``${VAR}`` refs expand against the profile's CURRENT ``.env``, not the daemon's start env."""
-    from pathlib import Path
     from gateway.session_local import load_profile_config
+    from gateway.session_persistence import authority_persistence
     if bypass:
         return config
-    current = load_profile_config(Path(authority.db.db_path).resolve().parent)
+    current = load_profile_config(authority_persistence(authority).scope.profile_dir)
     if not isinstance(current, dict):
         return config
     resolved = dict(config)
@@ -301,11 +301,11 @@ def _alias_credential(authority, result):
     endpoint, read from THIS owner's config.yaml: the file a restarted owner re-reads, never the
     process-global alias cache another served profile may refill after the switch. A raw
     ``api_key: "${VAR}"`` is the pointer ``VAR``; ``(None, None, None)`` when it declares none."""
-    from pathlib import Path
     from gateway.run import _load_gateway_config
+    from gateway.session_persistence import authority_persistence
     from hermes_cli.config import _env_ref_var_name, read_user_config_raw
     name = result.resolved_via_alias if result.success else ''
-    path = Path(authority.db.db_path).resolve().parent / 'config.yaml'
+    path = authority_persistence(authority).scope.profile_dir / 'config.yaml'
     raw = read_user_config_raw(path) if name else {}
     for section in (('model_aliases',), ('model', 'aliases')):
         model = raw.get('model')  # `model: name` (a scalar) is valid config and declares no aliases
@@ -323,16 +323,19 @@ def _alias_credential(authority, result):
             for part in (*section, written, 'api_key'):
                 value = value.get(part) if isinstance(value, dict) else None
             if not value:
-                raise RuntimeStoreError('model_resolution_failed')
+                raise AuthorityRefusal('model_resolution_failed')
             return None, (*section, written, 'api_key'), value
     return None, None, None
 
 
 def _persisted_selection_context(authority, snapshot, current):
     from agent.usage_anchor import persisted_anchor_tokens
+    from gateway.session_persistence import authority_persistence
     from hermes_cli.model_selection_guards import SelectionContext
     target = snapshot.get('target') or snapshot['receipt']['session_id']
-    tokens = persisted_anchor_tokens(authority.db, target, authority.db.get_messages_as_conversation(target))
+    store = authority_persistence(authority)
+    history = [m.as_openai_message() for m in store.messages.read_conversation(target)]
+    tokens = persisted_anchor_tokens(store, target, history, persistence=store)
     return SelectionContext(context_tokens=tokens, current_model=current.model or None) if tokens else None
 
 

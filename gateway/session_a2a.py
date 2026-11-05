@@ -9,7 +9,8 @@ import logging
 from pathlib import Path
 
 from gateway.session_contract import SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 _forward_identity = ContextVar('a2a_forward_identity', default=None)
@@ -20,7 +21,7 @@ def build_forward_policy(params, config, *, private_secrets):
     from gateway.session_policy import build_policy
     identity = _forward_identity.get()
     if identity is None or set(params) != {'source', 'request_id'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     policy = build_policy(dict(params, source='cli'), config, private_secrets=private_secrets)
     request = json.loads(policy.request_json)
     request.update(source='a2a', a2a_identity=identity)
@@ -47,32 +48,30 @@ def forward_author(policy):
     return {'id': peer, 'name': peer, 'is_bot': True}
 
 
-def storage_source(db, source, session_id, fallback):
-    """Retain the owner's creation label when its LOCAL transport refreshes peer metadata."""
+def storage_source(store, source, session_id, fallback):
+    """Retain the owner's creation label when its LOCAL transport refreshes peer metadata (*store*: a storage
+    interface handle)."""
     from gateway.config import Platform
     if source.platform != Platform.LOCAL:
         return fallback
     if not str(source.chat_id).startswith('local-'):
         # An adopted pre-authority row keeps its historical id as the route (session_local_migration).
-        from hermes_state_local_migration import LEGACY_PREFIX
-        with db._read_ctx() as conn:
-            if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + str(source.chat_id),)).fetchone() is None:
-                return fallback
-    from hermes_state_local import local_receipt
-    receipt = local_receipt(db, source.chat_id)
-    if session_id not in receipt.get('lineage', [receipt['session_id']]):
-        raise RuntimeStoreError('admission_conflict')
+        if not store.bindings.binding_marks(str(source.chat_id)).legacy:
+            return fallback
+    receipt = store.bindings.receipt(source.chat_id)
+    if session_id not in receipt.lineage:
+        raise AuthorityRefusal('admission_conflict')
     # Producer labels (a2a, cron, kanban, bot_room, ``--source tool``, finite ``oneshot`` runs) survive the
     # refresh: pickers filter on them (kanban/tool/oneshot hidden, cron in its own section). Interactive
     # surfaces keep the transport's ``local``, outside the state-owned stale-open sweeps keyed on cli/tui/acp.
-    label = receipt['policy']['source']
+    label = receipt.policy['source']
     # An adopted pre-authority row (main's cli/tui/gui history) keeps the label main wrote: its
     # ``sessions list --source``, ``-c`` and stale-open sweeps key on it, as they did before the upgrade.
     # That is the adopted row's own label, which adoption never rewrites: the policy's creation source
     # folds main's ``desktop`` into ``gui``, so a Desktop chat (a Bot Chat) was re-sourced on its first turn.
-    if 'legacy_session_id' in receipt:
-        root = db.get_session(receipt['legacy_session_id'])
-        return (root or {}).get('source') or label
+    if receipt.legacy_session_id is not None:
+        root = store.sessions.get(receipt.legacy_session_id)
+        return (root.source if root is not None else None) or label
     from gateway.session_policy import STORED_AS_LOCAL
     return fallback if label in STORED_AS_LOCAL else label
 
@@ -80,38 +79,35 @@ def storage_source(db, source, session_id, fallback):
 async def forward(connection, params):
     authority, actor = connection.authority, connection.actor
     if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if not {'session:create', 'session:submit', 'session:read'} <= actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     fields = {'agent', 'tenant', 'peer', 'context_id', 'input_id', 'text'}
     if (set(params) != fields or any(not isinstance(params[k], str) for k in fields)
             or any(not params[k] for k in fields - {'tenant'})
             or any(len(params[k]) > 1024 for k in fields - {'text'})
             or len(params['text']) > 1_048_576):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     identity = [params[k] for k in ('agent', 'tenant', 'peer', 'context_id')]
     key = 'a2a:' + hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
-    from gateway.session_local_recovery import local_identity, restore_local_session
-    from gateway.session_local import stage_local_session
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_local import commit_local_session, stage_local_session
     from gateway.session_runtime_workers import tracked_write
-    from hermes_state_local import commit_local_session, local_receipt
-    from hermes_state_mutation_retirement import first_generation
-    from hermes_state_terminal import identity_key
+    from persistence.authority.bindings import generation_request_id
+    from persistence.authority.runtime import LocalGenerations, PinnedIdentity
     # A context whose session the user deleted continues on its next generation (the deleted id
     # stays retired). An exact retry of an input the deleted session took stays on it and is
     # refused there, never run again.
-    base = key
-    request_id = lambda n: base if n == 0 else f'{base}:{n}'
-    pinned = lambda conn, sid: conn.execute('SELECT 1 FROM state_meta WHERE key=?', (
-        identity_key(actor.subject, sid, params['input_id']),)).fetchone() is not None
-    generation, sid = first_generation(
-        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), pinned=pinned)
-    key = request_id(generation)
+    store = authority_persistence(authority)
+    pick = store.runtime.first_generation(
+        LocalGenerations(profile_id=authority.profile_id, principal_id=actor.subject, base_request_id=key),
+        pinned=PinnedIdentity(principal_id=actor.subject, request_id=params['input_id']))
+    sid, key = pick.session_id, generation_request_id(key, pick.generation)
     authority._require_admission_open()
-    if authority.db.get_session(sid) is not None:
-        receipt = local_receipt(authority.db, sid)
-        if json.loads(receipt['policy']['request_json']).get('a2a_identity') != identity:
-            raise RuntimeStoreError('admission_conflict')
+    if store.sessions.get(sid) is not None:
+        receipt = store.bindings.receipt(sid)
+        if json.loads(receipt.policy['request_json']).get('a2a_identity') != identity:
+            raise AuthorityRefusal('admission_conflict')
         ref = restore_local_session(authority, sid)
     else:
         # Historical `a2a-{agent}-{slug}` titles discarded peer/tenant identity and collapsed
@@ -121,23 +117,23 @@ async def forward(connection, params):
         # slug collides: start this identity's own canonical session and leave the old row be.
         from plugins.platforms.a2a.adapter import _safe_context_slug
         title = f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}'
-        legacy = authority.db.get_session_by_title(title)
+        legacy = store.sessions.get_by_title(title)
         if legacy is not None:
             logger.warning('A2A: pre-authority session %s titled %r has no peer identity; '
-                           'forwarding into a new session instead of adopting it', legacy['id'], title)
+                           'forwarding into a new session instead of adopting it', legacy.session_id, title)
         token = _forward_identity.set(identity)
         try:
             ref = stage_local_session(authority, actor, {'source': 'a2a', 'request_id': key})
         finally:
             _forward_identity.reset(token)
         if isinstance(ref, dict):  # the creation commit runs off the owner loop (N90); a duplicate converges
-            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            await tracked_write(authority, partial(commit_local_session, store, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])
     if ref.session_id not in connection.subscriptions:
         await connection.resume(ref, {})
     receipt = await authority.submit(actor, Submission(params['input_id'], ref, {'text': params['text']}, 'queue'))
     from gateway.session_results import admission_result
-    saved = admission_result(authority.db, receipt.admission_id)
+    saved = admission_result(store, receipt.admission_id)
     return dict(asdict(receipt), session_id=ref.session_id,
                 result=saved['result'] if saved is not None else None)
 

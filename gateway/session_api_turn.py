@@ -10,8 +10,11 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
+from gateway.session_authority import admission_row
+from gateway.session_persistence import authority_persistence
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
+from persistence.core.canonical import canonical_json
+from persistence.core.errors import AuthorityRefusal
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
@@ -26,7 +29,7 @@ _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provid
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
-class AdmissionQueued(RuntimeStoreError):
+class AdmissionQueued(AuthorityRefusal):
     """The owner retired while this API admission was still queued. Unlike a refused request, the
     input is committed: the row stays queued and the next owner runs it exactly once, so a client
     that resends it submits the work twice. ``str()`` is the message every API surface shows."""
@@ -39,10 +42,8 @@ class AdmissionQueued(RuntimeStoreError):
 
 
 def api_settings(authority, ref):
-    with authority.db._read_ctx() as conn:
-        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                             (_SETTINGS_PREFIX + ref.session_id,)).fetchone()
-    return json.loads(saved[0]) if saved else {}
+    saved = authority_persistence(authority).state_meta.get(_SETTINGS_PREFIX + ref.session_id)
+    return json.loads(saved) if saved else {}
 
 
 def check_api_turn(authority, ref, payload):
@@ -51,7 +52,7 @@ def check_api_turn(authority, ref, payload):
         restore_api_session(authority, ref.session_id)
     adapter = authority.runner._adapter_for_source(live.source)
     if adapter is None or getattr(adapter, 'gateway_runner', None) is not authority.runner:
-        raise RuntimeStoreError('runtime_draining')
+        raise AuthorityRefusal('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
         # 'browser_control' is accepted and ignored: admissions persisted while the removed
@@ -63,9 +64,9 @@ def check_api_turn(authority, ref, payload):
                 or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
     check_api_settings(adapter, settings)
     return adapter
@@ -89,19 +90,19 @@ def check_api_settings(adapter, settings):
     # A room policy is only ever issued with the dispatch it was verified for; a policy-only
     # blob (e.g. queued by an older build) would otherwise widen the operator's API config.
     if dispatch is None and settings.get('room_execution_policy') is not None:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
         from gateway.platforms.api_server_room_grants import _local_room_catalog
         from gateway import hosted_rooms
         bound = HostedMemberDispatch.from_mapping(dispatch)
         if bound.target_install_id != hosted_rooms.local_authority_gateway_id():
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         _, catalog = _local_room_catalog(adapter, bound.target_profile, bound.target_install_id)
         current = GatewayRoomCatalog.from_mapping(catalog)
         if (current.catalog_digest != bound.capability_digest
                 or current.execution_policy.as_mapping() != settings.get('room_execution_policy')):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
     return adapter
 
 
@@ -144,12 +145,13 @@ def schedule_orphan(admitted):
 def admit_api_steps(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
     from gateway.session_authorities import require_active_authority
-    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
+    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_store())
+    store = authority_persistence(authority)
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
     if declared_key:
         from gateway.session_api import declared_api_session
-        sid = declared_api_session(authority.db, declared_key) or sid
+        sid = declared_api_session(store, declared_key) or sid
     # Every API door (chat header, runs session_id, /api/sessions/{id}/chat, Responses chain) may
     # name a compression continuation; the binding, FIFO and retry identity live on its root.
     sid = authority.logical_owner(sid)
@@ -161,27 +163,27 @@ def admit_api_steps(adapter, **kwargs):
         alias = settings.get('requested_model')
         configured = adapter._model_routes.get(alias)
         if configured != route:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         settings['route'] = {k: v for k, v in route.items() if k != 'api_key'}
-    payload = json.loads(_json({'text': kwargs['user_message'], 'api_turn_v1': {
+    payload = json.loads(canonical_json({'text': kwargs['user_message'], 'api_turn_v1': {
         'history': None if kwargs.get('history_from_session') else kwargs['conversation_history'], 'settings': settings}}))
     run_owner_scope = kwargs.get('run_owner_scope')
     if run_owner_scope is not None:
         if not _valid_owner_scope(run_owner_scope):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         # This opaque namespace is persisted in the same row/transaction as
         # admission. It is never a bearer credential or execution input.
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
     # Refuse a foreign-surface target before committing any media for it (a refused
     # admission otherwise retains its image bytes under native-inputs/ forever).
-    existing = authority.db.get_session(sid)
-    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
-        raise RuntimeStoreError('permission_denied')
+    existing = store.sessions.get(sid)
+    if existing is not None and existing.source not in ('api_server', 'bot_room'):
+        raise AuthorityRefusal('permission_denied')
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         author = parse_turn_author(kwargs['turn_author'])
         if author is None:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     if kwargs.get('resume_unanswered_turn'):
         # The session-chat door's one policy-gated re-run (#115325): its failed attempt left this text as
@@ -203,7 +205,7 @@ def admit_api_steps(adapter, **kwargs):
         # Retained bytes belong to an accepted admission. A refused request (or an exact retry of a
         # retired one, whose references were erased) owns nothing, so its bytes are collected unless
         # another admission holds them.
-        release = partial(release_unheld_media, authority.db, payload['api_turn_v1']['media'])
+        release = partial(release_unheld_media, store, payload['api_turn_v1']['media'])
         try:
             admitted = yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
         except Exception:
@@ -215,47 +217,25 @@ def admit_api_steps(adapter, **kwargs):
 
 
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
-    from hermes_state_terminal import retry_terminal_admission
-    row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
+    from persistence.authority.admissions import ApiTargetClaim
+    store = authority_persistence(authority)
+    row = store.admissions.retired_replay(epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
-        return authority, SessionRef(authority.profile_id, sid), row
+        return authority, SessionRef(authority.profile_id, sid), admission_row(row)
     ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
                                     caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
     check_api_turn(authority, ref, payload)
-    row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
-                        session_id=sid, request_id=request_id, payload=payload,
-                        _authorize_write=authority._admission_gate(partial(
-                            _admit_target, sid, request_id, payload['api_turn_v1']['settings'],
-                            client_key=bool(kwargs.get('request_id')))))
-    return authority, ref, row
-
-
-def _admit_target(session_id, request_id, settings, conn, *, client_key=True):
-    """Inside the admission's own off-loop transaction: one target per request id, and the
-    session's settings for its later payload-less (internal) turns, committed with the admitted
-    turn rather than by the drain on the owner loop (N50)."""
-    _one_target(session_id, request_id, conn, client_key=client_key)
-    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                 (_SETTINGS_PREFIX + session_id, _json(settings)))
-
-
-def _one_target(session_id, request_id, conn, *, client_key=True):
-    """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
-    target too, so the same key aimed at another session would otherwise run the work again.
-    A deleted session's admission is gone from the ledger but its tombstone still spends the key
-    (a target that already holds the key replays before this guard runs). Only a client key can
-    name a tombstone: a server-minted id (key-less turn, run id) is fresh, so it skips that scan."""
-    if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
-                    'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
-        raise RuntimeStoreError('admission_conflict')
-    if not client_key:
-        return
-    from hermes_state_terminal import terminal_api_admissions
-    if any(row['target_session_id'] != session_id for row in terminal_api_admissions(conn, request_id)):
-        raise RuntimeStoreError('admission_conflict')
+    # In the admission's own off-loop transaction: one target per request id (an Idempotency-Key; a
+    # deleted session's tombstone still spends a client key), and the session's settings for its later
+    # payload-less (internal) turns, committed with the admitted turn rather than by the drain (N50).
+    target = ApiTargetClaim(settings=payload['api_turn_v1']['settings'], client_key=bool(kwargs.get('request_id')))
+    row, _created = yield lambda: store.admissions.admit(
+        epoch=authority.epoch, principal_id='api', session_id=sid, request_id=request_id, payload=payload,
+        gate=authority.gate_refusal(), api_target=target)
+    return authority, ref, admission_row(row)
 
 
 def owns_api_run(adapter, run_id, owner_scope):
@@ -265,7 +245,7 @@ def owns_api_run(adapter, run_id, owner_scope):
     from gateway.platforms.api_server_authority_runs import run_admission
     try:
         owned = run_admission(adapter, run_id)
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         # Duplicate admissions for one run are an unanswered ownership question.
         return False
     if owned is None:
@@ -289,26 +269,24 @@ def recover_api_turns(adapter):
 
 
 def recover_authority_api_turns(adapter, authority):
-    from hermes_state_runtime import list_session_admissions
     from gateway.session_ingress_media import collect_unheld_api_images
     import logging
-    collect_unheld_api_images(authority.db)
+    store = authority_persistence(authority)
+    collect_unheld_api_images(store)
     from gateway.session_api_media import compact_settled_api_payloads
-    compact_settled_api_payloads(authority.db)
-    with authority.db._read_ctx() as conn:
-        targets = [row[0] for row in conn.execute(
-            "SELECT DISTINCT target_session_id FROM session_admissions WHERE principal_id='api' AND status='queued'")]
+    compact_settled_api_payloads(store)
+    targets = sorted(store.admissions.pending_targets(statuses=frozenset({'queued'}), principal_id='api'))
     for sid in targets:
         try:
             ref = restore_api_session(authority, sid)
-            pending = list_session_admissions(authority.db, session_id=sid)
-            if any(row['status'] == 'unknown' for row in pending):
+            pending = store.admissions.list(session_id=sid)
+            if any(row.status == 'unknown' for row in pending):
                 continue
             for row in pending:
-                if row['status'] == 'queued':
-                    check_api_turn(authority, ref, row['payload'])
+                if row.status == 'queued':
+                    check_api_turn(authority, ref, row.payload)
             authority._schedule(ref)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
 
 
@@ -339,13 +317,14 @@ async def run_api_turn(adapter, *, approval_notify_callback=None, approval_sessi
 
 async def observe_api_turn(admitted, **kwargs):
     authority, ref, row = admitted
-    from hermes_state_runtime import get_session_admission
+    store = authority_persistence(authority)
     # The admission-time snapshot is stale once a drain already running ahead claims and settles
     # (or a stop cancels) the row; a waiter registered after that is never resolved. The current
     # row decides, read with no suspension before the waiter is registered.
-    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)['status']
+    current = store.admissions.get(admission_id=row['admission_id'])
+    status = row['status'] if current is None else current.status
     if status == 'unknown':
-        raise RuntimeStoreError('unknown_execution')
+        raise AuthorityRefusal('unknown_execution')
     if status == 'terminal':
         result, usage = _settled_api_result(authority, row['admission_id'])
         callback = kwargs.get('stream_delta_callback')
@@ -367,11 +346,11 @@ async def observe_api_turn(admitted, **kwargs):
         authority._publish_pending(ref)
         authority._schedule(ref)
         await asyncio.shield(waiter)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         # Retirement releases every observer with runtime_draining, the same reason a refused
         # request gets. This one's input is admitted: say so while the row is still queued.
-        current = get_session_admission(authority.db, admission_id=row['admission_id']) or {}
-        if exc.reason == 'runtime_draining' and current.get('status') == 'queued':
+        current = store.admissions.get(admission_id=row['admission_id'])
+        if exc.reason == 'runtime_draining' and current is not None and current.status == 'queued':
             raise AdmissionQueued() from exc
         raise
     finally:
@@ -384,13 +363,13 @@ async def observe_api_turn(admitted, **kwargs):
 
 
 def _settled_api_result(authority, admission_id):
-    saved = admission_result(authority.db, admission_id)
+    store = authority_persistence(authority)
+    saved = admission_result(store, admission_id)
     if saved is None:
-        from hermes_state_runtime import get_session_admission
-        current = get_session_admission(authority.db, admission_id=admission_id)
-        if current['outcome'] == 'cancelled':
+        current = store.admissions.get(admission_id=admission_id)
+        if current.outcome == 'cancelled':
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
-        raise RuntimeStoreError('unknown_execution')
+        raise AuthorityRefusal('unknown_execution')
     return saved['result'], saved['usage']
 
 
@@ -407,7 +386,6 @@ def observe_api_controls(admitted, sink):
     source ``GET /v1/runs/{id}`` reports). Subscribing and snapshotting in ONE stream-lock hold
     is the consistent cut: prompts are registered and answered under that lock, so each one is
     either in the snapshot or arrives live (never both), and one already answered is absent."""
-    from hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
     from gateway.session_retirement import restore_retired
     restore_retired(authority, ref.session_id)  # idle between its bind and this admission's commit
@@ -425,7 +403,7 @@ def observe_api_controls(admitted, sink):
             sink(params['type'], params.get('payload') or {})
     with events.lock:
         events.observers.add(observer)
-        current = get_session_admission(authority.db, admission_id=row['admission_id']) or row
+        current = admission_row(authority_persistence(authority).admissions.get(admission_id=row['admission_id'])) or row
         if current['status'] == 'started':
             for prompt in live.controls.snapshot(ref.session_id, current['generation']):
                 sink(prompt['kind'] + '.request', prompt)
@@ -484,7 +462,7 @@ def wire_api_observers(agent, owner, want_interim):
         with authority.sessions[session_id].event_stream.lock:
             try:
                 authority.check_approval_generation(session_id, generation)
-            except RuntimeStoreError:
+            except AuthorityRefusal:
                 return False
             return _notify_observers(authority, session_id, key, *args, **kwargs)
 
@@ -525,7 +503,7 @@ def publish_api_tool_progress(authority, session_id, generation, *args, **kwargs
     with authority.sessions[session_id].event_stream.lock:
         try:
             authority.check_approval_generation(session_id, generation)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             return
         _notify_observers(authority, session_id, 'tool_progress_callback', *args, **kwargs)
 
@@ -537,7 +515,7 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
     with live.event_stream.lock:
         try:
             authority.check_approval_generation(session_id, generation)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             return
         if event_type == 'tool.start':
             _notify_observers(authority, session_id, 'tool_start_callback', call_id, tool_name, args or {})

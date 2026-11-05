@@ -966,7 +966,10 @@ def _resume_lazy(ctx: _Resume) -> dict:
         history = ctx.child_history(repair=True)
     except Exception as e:
         return _err(ctx.rid, 5000, resume_failed_message(e))
-    record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
+    with _profile_build_scope(ctx.profile_home):
+        overrides = _stored_session_runtime_overrides(ctx.found)
+    record = ctx.record(source, cwd, history, overrides or None,
+                        lazy=True, todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # A child mid-run emits no session events — liveness comes from the relay registry.

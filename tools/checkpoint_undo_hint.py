@@ -82,6 +82,26 @@ def _checkpoint_rows(mgr, cwd: str) -> list[tuple[str, float]]:
     return rows
 
 
+def _span_intact(cwd: str, rows: list[tuple[str, float]], oldest: int, floor: int) -> bool:
+    """True when no checkpoint taken at or after ``floor`` can have been pruned. Pruning only ever drops a
+    project's OLDEST snapshots, so a retained checkpoint older than the span proves the span whole;
+    otherwise the project's prune ledger must show every drop predates the span. A project an older
+    build registered has no ledger: unprovable, so no number."""
+    import json
+
+    from tools import checkpoint_manager as cm
+
+    if any(when < floor for _sha, when in rows[oldest + 1:]):
+        return True
+    abs_dir = str(cm._normalize_path(cwd))
+    try:
+        meta = json.loads(cm._project_meta_path(cm._store_path(), cm._project_hash(abs_dir)).read_text(
+            encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and bool(meta.get("prune_ledger")) and int(meta.get("pruned_through") or 0) < floor
+
+
 def _changed_files(cwd: str, commit: str) -> Optional[list[str]]:
     """Paths changed in ``cwd`` since ``commit`` (``_safe_restore_plan``'s name-only diff), None on failure."""
     from tools import checkpoint_manager as cm
@@ -105,8 +125,8 @@ def undo_rollback_hint(mgr, cwd: str, since, *, task_id: Optional[str] = "defaul
 
     Picks the OLDEST checkpoint taken during that span (the snapshot before its first write), so the
     restore covers every undone turn. Checkpoint times have whole-second precision: one in the same
-    second as ``since`` may belong to the turn before, and when the span reaches the oldest retained
-    checkpoint of a full list an older one of the span may have been pruned. Both drop the number.
+    second as ``since`` may belong to the turn before; and pruning (count or size cap) may have dropped an
+    older checkpoint of the span (``_span_intact``). Both drop the number: a wrong one is worse than none.
     None: checkpoints off or refused here, no timestamp, no checkpoint in the span, or nothing changed.
     ``task_id=None``: the caller already applied ``unsupported_backend_reason`` under its own scope.
     """
@@ -121,7 +141,8 @@ def undo_rollback_hint(mgr, cwd: str, since, *, task_id: Optional[str] = "defaul
         if not in_span:
             return None
         oldest = in_span[-1]
-        unsure = rows[oldest][1] == floor or (oldest == len(rows) - 1 and len(rows) >= mgr.max_snapshots)
+        unsure = (rows[oldest][1] == floor or (oldest == len(rows) - 1 and len(rows) >= mgr.max_snapshots)
+                  or not _span_intact(cwd, rows, oldest, floor))
         files = _changed_files(cwd, rows[oldest][0])
     except Exception as exc:  # health: allow BLE001 -- an advisory line must never fail the /undo it follows
         logger.debug("undo rollback hint skipped: %s", exc)

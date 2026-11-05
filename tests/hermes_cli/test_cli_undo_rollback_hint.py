@@ -70,3 +70,21 @@ def test_undo_with_checkpoints_off_prints_no_rollback_line(setup, capsys):
     out = capsys.readouterr().out
     assert "Undid 2 turns" in out
     assert "/rollback" not in out
+
+
+def test_undo_gives_no_number_once_pruning_dropped_an_undone_checkpoint(setup, capsys):
+    """The size cap drops the oldest snapshot even below max_snapshots: the span's first checkpoint is gone,
+    so the newest one would restore only part of the undone edits. No number then."""
+    from tools import checkpoint_manager as cm
+    from tools.checkpoint_pruning import Pruner
+
+    cli, db, project = setup
+    _run_two_writing_turns(cli, db, project, enabled=True)
+    pruner = Pruner(cm._run_git, cm._store_path(), str(project), cm._GIT_TIMEOUT, lambda _p: 2, cm._REFS_PREFIX)
+    assert pruner.drop_one_round(1)
+
+    cli._cmd_undo("/undo 2")
+
+    out = capsys.readouterr().out
+    assert "/rollback" in out and "notes.md" in out
+    assert "/rollback 1" not in out and "/rollback 2" not in out

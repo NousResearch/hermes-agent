@@ -96,7 +96,7 @@ it does not acquire or mint remote credentials.
 `tests/hermes_cli/test_gateway_chat_native.py` exercises native tmux/PTY classic
 fresh input, detach, persisted-ID resume and one-shot through the ordinary daemon
 with a loopback model, isolated HOME/HERMES_HOME and caller cwd. Constructor
-instrumentation records no client AIAgent, SessionDB or GatewayRunner. The test
+instrumentation records no client AIAgent, writable session store or GatewayRunner. The test
 also denies an invalid approval choice, then reconnects and consents before a real
 terminal effect on an owned fixture. Stale-control/active-Stop native coverage and
 native clarify interaction remain separate acceptance work.

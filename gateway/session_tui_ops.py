@@ -297,31 +297,37 @@ async def undo_files(connection, ref, params):
     policy = policy_for_source(authority.runner, live.source)
     if policy is None:
         raise RuntimeStoreError('permission_denied')
-    if authority._handle(ref).execution_state != 'idle':
-        raise RuntimeStoreError('session_busy')
     from gateway.session_ancillary import physical_target
     sessions = {ref.session_id, physical_target(authority, ref)}
     from gateway.run import _checkpoint_agent_kwargs
     kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
     terminal = json.loads(policy.terminal_json)
+    # Held across the scan and restore: a turn claims under this lock, so none can start (and write
+    # files the revert would then sweep up) between the idle check and the last restored file.
+    async with live.mutation_lock:
+        if authority._handle(ref).execution_state != 'idle':
+            raise RuntimeStoreError('session_busy')
+        return await asyncio.to_thread(_undo_files_in_thread, authority, ref, target, sessions, kwargs, terminal,
+                                       policy.cwd)
 
-    def run() -> dict:
-        from tools.checkpoint_manager import CheckpointManager
-        from tools.checkpoint_turns import summarize, undo_row_files
-        mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
-            key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
-        if not mgr.enabled:
-            return {'enabled': False}
-        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-        token = set_terminal_scope(terminal)
-        try:
-            if mgr.unsupported_backend_reason(physical_target(authority, ref)):
-                return {'enabled': False}  # a container session's files are not on this host
-        finally:
-            reset_terminal_scope(token)
-        result = undo_row_files(mgr, authority.db, target, sessions)
-        return {'enabled': True, **result, 'lines': summarize(result, policy.cwd)}
-    return await asyncio.to_thread(run)
+
+def _undo_files_in_thread(authority, ref, target, sessions, kwargs, terminal, cwd) -> dict:
+    from gateway.session_ancillary import physical_target
+    from tools.checkpoint_manager import CheckpointManager
+    from tools.checkpoint_turns import summarize, undo_row_files
+    mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
+        key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
+    if not mgr.enabled:
+        return {'enabled': False}
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    token = set_terminal_scope(terminal)
+    try:
+        if mgr.unsupported_backend_reason(physical_target(authority, ref)):
+            return {'enabled': False}  # a container session's files are not on this host
+    finally:
+        reset_terminal_scope(token)
+    result = undo_row_files(mgr, authority.db, target, sessions)
+    return {'enabled': True, **result, 'lines': summarize(result, cwd)}
 
 
 def _session_diff(mgr, cwd, refusal):

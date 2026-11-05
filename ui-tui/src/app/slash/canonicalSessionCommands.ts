@@ -173,10 +173,7 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx, turn
       }
 
       ctx.transcript.setHistoryItems(prev =>
-        Array.from({ length: intent === 'retry' ? 1 : turns }).reduce<typeof prev>(
-          items => ctx.transcript.trimLastExchange(items),
-          prev
-        )
+        trimExchanges(prev, intent === 'retry' ? 1 : turns, ctx.transcript.trimLastExchange)
       )
 
       if (intent === 'undo') {
@@ -203,6 +200,24 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx, turn
         ctx.transcript.sys(busy)
       }
     })
+}
+
+/** Drop up to `turns` trailing exchanges; stops once a trim removes nothing, so an `/undo N` far
+ * past the transcript's length costs one pass per exchange actually shown, never N. */
+export function trimExchanges<T>(items: T[], turns: number, trim: (items: T[]) => T[]): T[] {
+  let current = items
+
+  for (let i = 0; i < turns; i++) {
+    const next = trim(current)
+
+    if (next.length === current.length) {
+      break
+    }
+
+    current = next
+  }
+
+  return current
 }
 
 /** `/undo`'s file half: the owner puts back the files the undone turns wrote (hand edits kept) and

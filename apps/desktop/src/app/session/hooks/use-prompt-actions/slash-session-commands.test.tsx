@@ -157,6 +157,52 @@ describe('/undo on a canonical session', () => {
     expect(renderedText(handle)).toContain(copy.undidOther('2'))
   })
 
+  it('puts back the files the undone turn wrote and says which, through the owner', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        return { rewound_count: 2, target_message: { content: 'second question', id: 14 } }
+      }
+
+      if (method === 'rollback.undo_files') {
+        return { enabled: true, lines: ['↶ Reverted 1 file(s) the undone turn wrote: app.py'] }
+      }
+    })
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(callsOf(requestGateway, 'rollback.undo_files')).toEqual([
+      { session_id: RUNTIME_SESSION_ID, target_message_id: 14 }
+    ])
+    expect(renderedText(handle)).toContain('Reverted 1 file(s) the undone turn wrote: app.py')
+  })
+
+  it('keeps the conversation undo when the owner has no file half', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        return { rewound_count: 2, target_message: { content: 'second question', id: 14 } }
+      }
+
+      if (method === 'rollback.undo_files') {
+        throw new JsonRpcGatewayError('method not found', { code: -32601 })
+      }
+    })
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain(copy.undidOther('2'))
+    expect($composerDraft.get()).toBe('second question')
+  })
+
   it('/undo N targets the Nth newest user turn, skipping compaction carriers', async () => {
     const requestGateway = gateway(method => {
       if (method === 'session.resume') {

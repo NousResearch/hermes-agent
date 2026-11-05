@@ -23,6 +23,7 @@ Hermes Agent automatically snapshots your project before **destructive operation
 - Another conversation's writes are never touched, and a turn that wrote nothing changes no file.
 - A pre-undo snapshot is taken first, so `/rollback` can undo the undo.
 - `/retry` never touches files. With checkpoints off, `/undo` rewinds the conversation only, as before.
+- `/undo` reverts what Hermes' file tools (`write_file`, `patch`) wrote. A file changed only by a terminal command (`sed -i`, `>`) is not tracked per turn; `/rollback` restores those from the checkpoint taken before the command.
 
 ### Turning checkpoints off
 

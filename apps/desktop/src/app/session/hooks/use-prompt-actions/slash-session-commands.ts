@@ -166,7 +166,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     out: SlashOutput,
     turnsBack: number,
     intent: 'retry' | 'undo'
-  ): Promise<undefined | { count: number; content: unknown }> {
+  ): Promise<undefined | { count: number; content: unknown; rowId?: number }> {
     const { render, sessionId, storedSessionId } = out
     const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
 
@@ -207,7 +207,26 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       )
     }
 
-    return { count, content: receipt?.target_message?.content }
+    return { count, content: receipt?.target_message?.content, rowId }
+  }
+
+  // /undo's file half: the owner puts back the files the undone turns wrote (hand edits kept) and
+  // names them. Nothing is shown with checkpoints off, no file writes, or an owner without the verb.
+  async function revertUndoneFiles(sessionId: string, rowId: number | undefined): Promise<string[]> {
+    if (rowId === undefined) {
+      return []
+    }
+
+    try {
+      const result = await requestGateway<{ lines?: unknown }>('rollback.undo_files', {
+        session_id: sessionId,
+        target_message_id: rowId
+      })
+
+      return Array.isArray(result?.lines) ? result.lines.filter((line): line is string => typeof line === 'string') : []
+    } catch {
+      return [] // the conversation undo already committed; an older owner has no file half
+    }
   }
 
   // Derive the Nth newest user turn from the owner's snapshot and rewind it. Resolves undefined after
@@ -298,7 +317,9 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
           setComposerDraft(text)
         }
 
-        out.render(rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count)))
+        const files = await revertUndoneFiles(out.sessionId, rewound.rowId)
+        const undid = rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count))
+        out.render([undid, ...files].join('\n'))
       } catch (err) {
         out.render(rewindErrorText(err, 'undo'))
       }

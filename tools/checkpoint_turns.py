@@ -8,10 +8,14 @@ that exact without guessing from timestamps:
   keyed by the turn's user-message timestamp (the same value its transcript row stores) and session;
 * the agent-write ledger: each file's last Hermes-written hash, now also tagged with that turn.
 
-Reverting turn T restores, per project, every ledger file written by T or a later turn of the same
-conversation to the earliest mark at or after T. A file whose content changed since Hermes wrote it
-(a hand edit) is kept, the same rule as the safe ``/rollback``. A file absent from that tree is only
-deleted when the tree could have held it (not excluded, not oversize, not inside a nested repo).
+Reverting turn T restores every ledger file written by T or a later turn of the same conversation
+to the mark of the FIRST undone turn that wrote that file (so work another writer added between two
+undone turns is not erased). A file whose content changed since Hermes wrote it (a hand edit) is
+kept, the same rule as the safe ``/rollback``. A file absent from that tree is only deleted when the
+tree could have held it (not excluded, not oversize then or now, not inside a nested repo).
+
+Only Hermes' file tools (``write_file``/``patch``) feed the ledger; files a terminal command changed
+are left to ``/rollback``, which restores whole checkpoints.
 """
 from __future__ import annotations
 
@@ -41,15 +45,20 @@ def _load_marks(store: Path, dir_hash: str) -> list[dict]:
     return [m for m in data if isinstance(m, dict)] if isinstance(data, list) else []
 
 
-def record_turn_mark(store: Path, working_dir: str, tree: str, turn: dict) -> None:
+def record_turn_mark(store: Path, working_dir: str, tree: str, turn: dict,
+                     excluded: Iterable[str] = ()) -> None:
     """Remember ``tree`` as ``working_dir``'s state when ``turn`` (``turn_ts``, ``session``) first
-    touched it. Caller holds the store lock. Best effort: a lost mark only makes that turn's files
-    unrevertible by ``/undo`` (``/rollback`` still has the checkpoint)."""
+    touched it; ``excluded``: paths that existed then but the size cap kept out of ``tree`` (undo
+    must never read their absence as "Hermes created it"). Caller holds the store lock. Best effort:
+    a lost mark only makes that turn's files unrevertible by ``/undo`` (``/rollback`` still has the
+    checkpoint)."""
     from tools.checkpoint_manager import _project_hash
     dir_hash = _project_hash(working_dir)
     marks = _load_marks(store, dir_hash)
-    marks.append({"turn_ts": turn["turn_ts"], "session": turn.get("session") or "", "tree": tree,
-                  "ts": time.time()})
+    mark = {"turn_ts": turn["turn_ts"], "session": turn.get("session") or "", "tree": tree, "ts": time.time()}
+    if excluded := sorted(set(excluded)):
+        mark["excluded"] = excluded
+    marks.append(mark)
     path = _marks_path(store, dir_hash)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,14 +69,17 @@ def record_turn_mark(store: Path, working_dir: str, tree: str, turn: dict) -> No
         logger.debug("Could not record turn mark for %s", working_dir, exc_info=True)
 
 
-def _in_scope(entry: dict, since: float, sessions: set[str]) -> bool:
+def _in_scope(entry: dict, since: float, sessions: set[str], until: Optional[float] = None) -> bool:
     turn_ts = entry.get("turn_ts")
-    return isinstance(turn_ts, (int, float)) and turn_ts >= since and entry.get("session") in sessions
+    return (isinstance(turn_ts, (int, float)) and turn_ts >= since and (until is None or turn_ts <= until)
+            and entry.get("session") in sessions)
 
 
-def revert_turns(mgr, since: float, sessions: Iterable[str]) -> dict:
+def revert_turns(mgr, since: float, sessions: Iterable[str], until: Optional[float] = None) -> dict:
     """Restore the files Hermes wrote in turns starting at or after ``since`` (a user-message
     timestamp) of the conversation ``sessions`` (its session ids, compression lineage included).
+    ``until``: the newest undone turn's timestamp, so a turn another client started after the
+    rewind (its writes are newer) is never reverted with it.
 
     Returns ``{"reverted": [abs paths], "skipped_user_edits": [...], "not_captured": [...],
     "errors": [...]}``; every list is empty when the turns wrote nothing (or checkpoints are off).
@@ -80,13 +92,14 @@ def revert_turns(mgr, since: float, sessions: Iterable[str]) -> dict:
         return out  # no conversation named: never revert another conversation's writes
     try:
         with store_lock(_resolve_checkpoint_base()):
-            _revert_locked(mgr, float(since), sessions, out)
+            _revert_locked(mgr, (float(since), until), sessions, out)
     except (PruneError, OSError) as exc:
         out["errors"].append(str(exc))
     return out
 
 
-def _revert_locked(mgr, since: float, sessions: set[str], out: dict) -> None:
+def _revert_locked(mgr, window: tuple[float, Optional[float]], sessions: set[str], out: dict) -> None:
+    since, until = window
     from tools.checkpoint_manager import _list_projects, _load_ledger, _store_path
     store = _store_path()
     if not (store / "HEAD").exists():
@@ -96,23 +109,36 @@ def _revert_locked(mgr, since: float, sessions: set[str], out: dict) -> None:
     for ledger_path in ledgers:
         dir_hash = ledger_path.stem
         ledger = _load_ledger(store, dir_hash)
-        files = sorted(p for p, e in ledger.items() if isinstance(e, dict) and _in_scope(e, since, sessions))
+        files = sorted(p for p, e in ledger.items() if isinstance(e, dict) and _in_scope(e, since, sessions, until))
         if not files:
             continue
-        marks = [m for m in _load_marks(store, dir_hash) if _in_scope(m, since, sessions)]
+        marks = [m for m in _load_marks(store, dir_hash) if _in_scope(m, since, sessions, until)]
         workdir = workdirs.get(dir_hash)
         if not marks or not workdir or not Path(workdir).is_dir():
             out["not_captured"].extend(files)  # no snapshot of this project before the turn
             continue
-        pre_tree = min(marks, key=lambda m: m.get("ts", 0))["tree"]
-        _revert_project(mgr, store, workdir, dir_hash, pre_tree, files, ledger, out, since)
+        baselines = {f: _baseline_mark(marks, _first_write_ts(ledger[f], window, sessions)) for f in files}
+        _revert_project(mgr, store, workdir, dir_hash, baselines, ledger, out, since)
 
 
-def _revert_project(mgr, store: Path, workdir: str, dir_hash: str, pre_tree: str,
-                    files: list[str], ledger: dict, out: dict, since: float) -> None:
-    from tools.checkpoint_manager import _hash_file, _run_git, _save_ledger
-    restore, delete = [], []
-    for abs_path in files:
+def _first_write_ts(entry: dict, window: tuple[float, Optional[float]], sessions: set[str]) -> float:
+    """The earliest undone turn that wrote this file: its latest write or an older one in history."""
+    writes = [entry, *(h for h in entry.get("history", []) if isinstance(h, dict))]
+    return min(w["turn_ts"] for w in writes if _in_scope(w, window[0], sessions, window[1]))
+
+
+def _baseline_mark(marks: list[dict], first_ts: float) -> dict:
+    """That turn's own mark (the tree before it touched the project), else the latest earlier one."""
+    earlier = [m for m in marks if m["turn_ts"] <= first_ts] or marks
+    return max(earlier, key=lambda m: (m["turn_ts"], -m.get("ts", 0)))
+
+
+def _revert_project(mgr, store: Path, workdir: str, dir_hash: str, baselines: dict[str, dict],
+                    ledger: dict, out: dict, since: float) -> None:
+    from tools.checkpoint_manager import _hash_file, _ref_name, _run_git, _save_ledger
+    restore: dict[str, list[str]] = {}  # baseline tree -> paths to check out of it
+    delete = []
+    for abs_path, mark in baselines.items():
         path = Path(abs_path)
         try:
             rel = path.relative_to(workdir).as_posix()
@@ -123,11 +149,12 @@ def _revert_project(mgr, store: Path, workdir: str, dir_hash: str, pre_tree: str
         if current is not None and current != ledger[abs_path].get("sha256"):
             out["skipped_user_edits"].append(abs_path)  # changed since Hermes wrote it: keep
             continue
-        in_tree, _, _ = _run_git(["cat-file", "-e", f"{pre_tree}:{rel}"], store, workdir,
+        tree = mark["tree"]
+        in_tree, _, _ = _run_git(["cat-file", "-e", f"{tree}:{rel}"], store, workdir,
                                  allowed_returncodes={1, 128})
         if in_tree:
-            restore.append(rel)
-        elif _could_be_captured(mgr, store, workdir, pre_tree, rel, path):
+            restore.setdefault(tree, []).append(rel)
+        elif rel not in mark.get("excluded", ()) and _could_be_captured(mgr, store, workdir, tree, rel, path):
             delete.append(rel)  # Hermes created it in the undone turns
         else:
             out["not_captured"].append(abs_path)
@@ -135,16 +162,18 @@ def _revert_project(mgr, store: Path, workdir: str, dir_hash: str, pre_tree: str
         return
     # "Undo the undo": /rollback lists this snapshot like any other.
     mgr._take(workdir, "pre-undo snapshot", prune=False)
-    if restore:
+    restored = []
+    for tree, rels in restore.items():
         # A scratch index: the project's own index tracks its ref tip, not this older tree.
         scratch = store / "indexes" / f"{dir_hash}.undo"
         try:
-            ok, _, err = _run_git(["checkout", pre_tree, "--", *restore], store, workdir, index_file=scratch)
+            ok, _, err = _run_git(["checkout", tree, "--", *rels], store, workdir, index_file=scratch)
         finally:
             scratch.unlink(missing_ok=True)
-        if not ok:
+        if ok:
+            restored.extend(rels)
+        else:
             out["errors"].append(err or "checkout failed")
-            restore = []
     deleted = []
     for rel in delete:
         try:
@@ -152,11 +181,13 @@ def _revert_project(mgr, store: Path, workdir: str, dir_hash: str, pre_tree: str
             deleted.append(rel)
         except OSError as exc:
             out["errors"].append(f"{rel}: {exc}")
-    done = [str(Path(workdir) / rel) for rel in (*restore, *deleted)]
+    done = [str(Path(workdir) / rel) for rel in (*restored, *deleted)]
     out["reverted"].extend(done)
     for abs_path in done:
         _rewind_ledger_entry(ledger, abs_path, since)
     _save_ledger(store, dir_hash, ledger)
+    # The pre-undo snapshot skipped pruning so the restore could not lose its tree; budgets now.
+    mgr._prune(store, workdir, _ref_name(dir_hash))
 
 
 def _rewind_ledger_entry(ledger: dict, abs_path: str, since: float) -> None:
@@ -203,13 +234,13 @@ def _empty() -> dict:
     return {"reverted": [], "skipped_user_edits": [], "not_captured": [], "errors": []}
 
 
-def undo_turn_files(mgr, since, db, *session_ids: Optional[str]) -> dict:
+def undo_turn_files(mgr, since, db, *session_ids: Optional[str], until: Optional[float] = None) -> dict:
     """``/undo``'s file half for an in-process surface: revert what the conversation's turns from
     the rewound user row's stored timestamp ``since`` onward wrote (``begin_turn`` keyed them by
     it). Empty when checkpoints are off, ``since`` is unknown, or the turns wrote nothing."""
     if mgr is None or not getattr(mgr, "enabled", False) or not isinstance(since, (int, float)):
         return _empty()
-    return revert_turns(mgr, float(since), undo_session_ids(db, *session_ids))
+    return revert_turns(mgr, float(since), undo_session_ids(db, *session_ids), until)
 
 
 def undo_row_files(mgr, db, row_id: Optional[int], sessions: Iterable[str]) -> dict:
@@ -218,10 +249,35 @@ def undo_row_files(mgr, db, row_id: Optional[int], sessions: Iterable[str]) -> d
     conversation's turn."""
     if mgr is None or not getattr(mgr, "enabled", False) or db is None or not isinstance(row_id, int):
         return _empty()
-    row = db._read_one("SELECT timestamp, session_id FROM messages WHERE id = ? AND role = 'user'", (row_id,))
-    if row is None or row["session_id"] not in undo_session_ids(db, *sessions):
+    row = db._read_one("SELECT timestamp, session_id, message_uid FROM messages WHERE id = ? AND role = 'user'",
+                       (row_id,))
+    lineage = undo_session_ids(db, *sessions)
+    if row is None or row["session_id"] not in lineage:
         return _empty()
-    return undo_turn_files(mgr, row["timestamp"], db, row["session_id"])
+    since = _turn_started_at(db, row, lineage)
+    return undo_turn_files(mgr, since, db, row["session_id"], until=_newest_undone_turn(db, since, lineage))
+
+
+def _turn_started_at(db, row, lineage: set[str]) -> float:
+    """The timestamp the turn's writes are keyed by. A compaction restatement replaces the in-flight
+    request with a row stamped at compaction time but keeps its ``message_uid``, so the earliest row
+    of the conversation carrying that uid is the one the turn began with."""
+    uid = row["message_uid"]
+    if not uid:
+        return row["timestamp"]
+    marks = ",".join("?" * len(lineage))
+    first = db._read_one(f"SELECT MIN(timestamp) AS ts FROM messages WHERE message_uid = ? AND role = 'user' "
+                         f"AND session_id IN ({marks})", (uid, *sorted(lineage)))
+    return min(row["timestamp"], first["ts"]) if first is not None and first["ts"] is not None else row["timestamp"]
+
+
+def _newest_undone_turn(db, since: float, lineage: set[str]) -> Optional[float]:
+    """The newest user turn the rewind soft-deleted (rows go ``active = 0``): the upper bound of the
+    revert. None when there is none to read (then nothing bounds it, as for an in-process undo)."""
+    marks = ",".join("?" * len(lineage))
+    row = db._read_one(f"SELECT MAX(timestamp) AS ts FROM messages WHERE role = 'user' AND active = 0 "
+                       f"AND timestamp >= ? AND session_id IN ({marks})", (since, *sorted(lineage)))
+    return row["ts"] if row is not None and row["ts"] is not None else None
 
 
 def summarize(result: dict, cwd: Optional[str] = None, limit: int = 5) -> list[str]:

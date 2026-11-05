@@ -291,6 +291,36 @@ def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
         )
 
 
+def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
+    """Drop paths the store's excludes now cover from an index re-seeded from an older checkpoint.
+
+    ``add -A`` honours ``info/exclude`` only for paths it is not already tracking, so a directory
+    excluded after it was first captured (browser profiles) otherwise stays in every snapshot."""
+    ok, out, _ = _run_git(["ls-files", "--cached", "--ignored", "-z", f"--exclude-from={store / 'info' / 'exclude'}"],
+                          store, working_dir, index_file=index_file)
+    paths = [p for p in out.split("\x00") if p] if ok else []
+    for i in range(0, len(paths), 200):
+        _run_git(["rm", "--cached", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
+                 store, working_dir, index_file=index_file)
+
+
+# Earlier turns' last writes kept per file: the newest writer's entry plus one per older turn,
+# bounded like the turn marks /undo can still reach.
+_LEDGER_TURN_HISTORY = 50
+
+
+def _turn_write_history(previous: Optional[dict], turn: dict) -> list[dict]:
+    """The ``history`` for a file's new ledger entry: one entry per EARLIER turn that wrote it, so
+    repeated writes in one turn never evict an older turn's (undoing to it keeps the file revertible)."""
+    if not isinstance(previous, dict) or previous.get("turn_ts") is None:
+        return []
+    history = [h for h in previous.get("history", []) if isinstance(h, dict)]
+    same_turn = (previous.get("turn_ts"), previous.get("session")) == (turn["turn_ts"], turn.get("session") or "")
+    if not same_turn:
+        history.append({k: previous.get(k) for k in ("sha256", "turn_ts", "session")})
+    return history[-_LEDGER_TURN_HISTORY:]
+
+
 def _ledger_path(store: Path, dir_hash: str) -> Path:
     return store / _LEDGERS_DIRNAME / f"{dir_hash}.json"
 
@@ -941,11 +971,7 @@ class CheckpointManager:
                 entry = {"sha256": digest, "ts": time.time()}
                 if self._turn is not None:  # the newest writing turn: /undo of it or any earlier one reverts this
                     entry.update(self._turn)
-                    # Earlier Hermes writes, so an /undo that lands on one keeps the file revertible.
-                    previous = ledger.get(str(path))
-                    if isinstance(previous, dict) and previous.get("turn_ts") is not None:
-                        older = [*previous.get("history", []), {k: previous.get(k) for k in ("sha256", "turn_ts", "session")}]
-                        entry["history"] = older[-10:]
+                    entry["history"] = _turn_write_history(ledger.get(str(path)), self._turn)
                 ledger[str(path)] = entry
                 _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
@@ -972,7 +998,8 @@ class CheckpointManager:
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
-        # Stage the current tree so the name-only diff sees new files too.
+        # Stage the current tree so the name-only diff sees new files too. Oversize files are staged
+        # on purpose: the plan must see them to keep (skipped_oversize) or revert them.
         _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
@@ -1155,9 +1182,8 @@ class CheckpointManager:
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
-        # Stage current state into the per-project index to compare.
-        _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        # Stage current state into the per-project index to compare (never opening oversize files).
+        self._stage_with_oversize_preflight(store, abs_dir, index_file)
 
         # A checkpoint taken before the store was excluded may still contain it; never
         # report the store as a change against such a checkpoint.
@@ -1571,6 +1597,7 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
         _unstage_store(store, working_dir, index_file)
+        _unstage_excluded(store, working_dir, index_file)
 
         if self.max_file_size_mb > 0:
             if not self._drop_oversize_from_index(store, working_dir, index_file):
@@ -1596,7 +1623,7 @@ class CheckpointManager:
             )
             if ok_diff:
                 logger.debug("Checkpoint skipped: no changes in %s", working_dir)
-                self._mark_turn(store, working_dir, mark, ref_commit + "^{tree}")
+                self._mark_turn(store, working_dir, mark, ref_commit + "^{tree}", index_file)
                 return False
         else:
             # No ref yet — skip only if the index is empty.
@@ -1608,7 +1635,7 @@ class CheckpointManager:
             if ok_ls and not ls_out.strip():
                 logger.debug("Checkpoint skipped: empty tree in %s", working_dir)
                 from tools.checkpoint_turns import EMPTY_TREE
-                self._mark_turn(store, working_dir, mark, EMPTY_TREE)
+                self._mark_turn(store, working_dir, mark, EMPTY_TREE, index_file)
                 return False
 
         # Write tree from per-project index.
@@ -1658,7 +1685,7 @@ class CheckpointManager:
             return False
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
-        self._mark_turn(store, working_dir, mark, tree_sha)
+        self._mark_turn(store, working_dir, mark, tree_sha, index_file)
 
         # Count and size budgets share one failure boundary.
         if prune:
@@ -1666,14 +1693,18 @@ class CheckpointManager:
 
         return True
 
-    def _mark_turn(self, store: Path, working_dir: str, mark: Optional[dict], tree: str) -> None:
+    def _mark_turn(self, store: Path, working_dir: str, mark: Optional[dict], tree: str,
+                   index_file: Path) -> None:
         if mark is None:
             return
         if not tree.startswith(_EMPTY_TREE_PREFIX):
             tree = _git_out(["rev-parse", "--verify", tree], store, working_dir) or ""
         if tree:
             from tools.checkpoint_turns import record_turn_mark
-            record_turn_mark(store, working_dir, tree, mark)
+            # Files that exist now but the size cap keeps out of the tree: their absence from it
+            # must never read as "the turn created them".
+            excluded = self._oversize_paths_for_staging(store, working_dir, index_file) if self.max_file_size_mb > 0 else []
+            record_turn_mark(store, working_dir, tree, mark, excluded or ())
             self._marked_dirs.add(str(_normalize_path(working_dir)))
 
     def _exceeds_size_cap(self, path: Path) -> bool:

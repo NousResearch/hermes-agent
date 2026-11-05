@@ -1,0 +1,28 @@
+name: ghl-command
+repo: https://github.com/PXMichael/GHL-Command
+sha: 2ec1a130691068fc4a9d47b0b56d435b89f9ba34
+description: "GoHighLevel lives inside Hermes. Create contacts, move deals, send email and SMS, trigger workflows from chat. Live in 90 seconds, no browser clicks."
+maintainer: PXMichael
+tier: community
+category: tools
+platforms: []
+title: GHL Command
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - ghl_list_contacts
+    - ghl_search_contacts
+    - ghl_create_contact
+    - ghl_update_contact
+    - ghl_delete_contact
+    - ghl_send_sms
+    - ghl_send_email
+    - ghl_list_pipelines
+    - ghl_search_opportunities
+    - ghl_move_opportunity
+    - ghl_list_workflows
+    - ghl_enroll_workflow
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GHL_API_KEY

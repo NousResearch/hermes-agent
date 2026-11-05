@@ -78,6 +78,10 @@ class FakeTerminal {
     return { dispose() {} };
   }
 
+  onBell() {
+    return { dispose() {} };
+  }
+
   onResize() {
     return { dispose() {} };
   }

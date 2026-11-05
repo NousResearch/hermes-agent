@@ -8,6 +8,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..authority.admissions import AdmissionRepository
+from ..authority.bindings import SessionBindingRepository
+from ..authority.coordination import CoordinationRepository
+from ..authority.runtime import SessionRuntimeRepository
 from ..conversation.lineage import LineageRepository
 from ..conversation.messages import MessageRepository
 from ..conversation.search import SessionSearch
@@ -37,6 +41,10 @@ class PersistenceStore(Protocol):
     search: SessionSearch
     usage: UsageRepository
     usage_analytics: UsageAnalytics
+    admissions: AdmissionRepository
+    runtime: SessionRuntimeRepository
+    bindings: SessionBindingRepository
+    coordination: CoordinationRepository
 
 
 @runtime_checkable

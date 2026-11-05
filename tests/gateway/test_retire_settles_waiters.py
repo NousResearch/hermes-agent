@@ -6,7 +6,8 @@ import asyncio
 import pytest
 
 from gateway import run_runtime
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_profile_retire_stops_turns import ACTOR, REF, _Agent, _authority
 from gateway.session_contract import Submission
 from tests.waiting import async_wait_until
@@ -28,7 +29,7 @@ async def test_successful_retirement_fails_pending_waiters_and_keeps_rows_queued
             # its API/webhook/Bot observer deliberately keeps waiting, and no drain is left to
             # release it when retirement refuses the next claim.
             authority.sessions['t'] = type(authority.sessions['s'])(authority.sessions['s'].source, 'route-t')
-            db.create_session('t', source='test')
+            seed_session(authority.persistence, 't', 'test')
             monkeypatch.setattr(authority, '_schedule', lambda ref: None)
             follower = await authority.submit(ACTOR, Submission(
                 request_id='follower', ref=REF.__class__('owned', 't'), payload={'text': 'b'}, intent='queue'))
@@ -38,11 +39,11 @@ async def test_successful_retirement_fails_pending_waiters_and_keeps_rows_queued
             assert await run_runtime._retire_profile_authority(authority) is True
 
             assert waiter.done(), 'observer left pending after retirement'
-            with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+            with pytest.raises(AuthorityRefusal, match='runtime_draining'):
                 waiter.result()
             assert not authority.waiters and not authority.native_waiters
-            rows = {r['request_id']: r for r in list_session_admissions(db, session_id='t', pending_only=False)}
-            assert rows['follower']['status'] == 'queued'  # durable: the next owner runs it
+            rows = {r.request_id: r for r in authority.persistence.admissions.list(session_id='t', pending_only=False)}
+            assert rows['follower'].status == 'queued'  # durable: the next owner runs it
     finally:
         agent.release.set()
         await async_wait_until(lambda: all(task.done() for task in run_runtime._authority_tasks(authority)),

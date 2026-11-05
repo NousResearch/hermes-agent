@@ -18,6 +18,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.fixtures.storage_holder import raw_holder, retired_route_key, retired_session_key
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 _KEY = 'route-fence-key'
@@ -33,6 +35,7 @@ async def _served(tmp_path, monkeypatch):
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session_contract import SessionActor
+    from persistence_assembly import close_stores_under, store_location
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -43,19 +46,21 @@ async def _served(tmp_path, monkeypatch):
         await initialize_gateway_runtime(runner)
         launch, home = runner.session_authority, homes[1][1]
         alpha = runner.session_authorities.for_home(home)
-        assert runner.session_store._routing_db.db_path == launch.db.db_path != alpha.db.db_path
+        launch_db, alpha_db = launch.persistence, alpha.persistence
+        assert (store_location(runner.session_store._routing_persistence.scope) == store_location(launch_db.scope)
+                != store_location(alpha_db.scope))
         actor = SessionActor('owner', alpha.profile_id, frozenset(
             {'session:create', 'session:read', 'session:control', 'session:operator'}), 'socket')
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        adapter._api_key, adapter.gateway_runner, adapter._session_db = _KEY, runner, launch.db
+        adapter._api_key, adapter.gateway_runner, adapter._session_db = _KEY, runner, launch.persistence
         yield SimpleNamespace(runner=runner, launch=launch, alpha=alpha, home=home, actor=actor,
-                              store=runner.session_store, adapter=adapter)
+                              store=runner.session_store, adapter=adapter, launch_db=launch_db, alpha_db=alpha_db)
     finally:
         if adapter is not None:
             adapter._response_store.close()
             adapter._run_idempotency_store.close()
         for a in list(getattr(runner, 'session_authorities', None) or []):
-            a.db.close()
+            close_stores_under(a.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)
 
@@ -69,7 +74,7 @@ async def _delete(served, ref):
 
 async def _prune(served, ref):
     from gateway.session_prune import _apply
-    served.alpha.db.end_session(ref.session_id, 'test')
+    served.alpha_db.sessions.end(ref.session_id, 'test')
     await _apply(served.alpha, {'older_than_days': None}, None)  # the owner-run `hermes sessions prune`
 
 
@@ -80,32 +85,38 @@ def _entry(key, sid):
 
 
 def _durable(store):
-    return store._routing_db.load_gateway_routing_entries(scope=store._routing_scope())
+    return store._routing_persistence.routing.load_routing_entries(routing_scope=store._routing_scope())
 
 
 def _age_retirements(*dbs, days=8):
     """Move every retirement marker and routing fence *days* into the past: the wall clock passing
     the horizon, with no sweep run anywhere."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, ROUTE_FENCE_PREFIX
     for db in dbs:
-        db._execute_write(lambda conn: conn.execute(
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE state_meta SET value=json_set(value, '$.retired_at', json_extract(value, '$.retired_at') - ?) "
             "WHERE (key GLOB ? OR key GLOB ?) AND json_valid(value)",
-            (days * 86400, RETIRED_PREFIX + '*', ROUTE_FENCE_PREFIX + '*')))
+            (days * 86400, retired_session_key() + '*', retired_route_key() + '*')))
 
 
 def _past_the_horizon(*dbs):
     """The wall clock passes the horizon (every fence aged), then each store sweeps its tombstones."""
-    from hermes_state_mutation_retirement import prune_retired_tombstones
+    from tests.fixtures.storage_holder import reclaim_tombstones
     _age_retirements(*dbs)
     for db in dbs:
-        db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+        reclaim_tombstones(db)
 
 
 def _conflict(db, sid):
-    from hermes_state_mutation_retirement import create_conflict
-    with db._read_ctx() as conn:
-        return create_conflict(conn, sid)
+    from tests.fixtures.storage_holder import create_conflict
+    return create_conflict(db, sid)
+
+
+def _delete_row(db, sid):
+    """Delete *sid* in *db* as the store's delete door does."""
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
+    removed = db.sessions.delete(sid, media_root=str(native_inputs_root()))
+    after_sessions_removed(db, db.scope.profile_dir, removed, reason='delete', primary=sid)
 
 
 async def _create(served, sid):
@@ -136,29 +147,29 @@ async def test_a_secondary_retirement_leaves_the_id_free_in_the_launch_profile(t
                 stale = store._snapshot_routing_locked()  # a worker's snapshot, saved late
             await retire(served, ref)
             store._persist_routing_data(*stale)
-        assert served.alpha.db.get_session(sid) is None
+        assert served.alpha_db.sessions.get(sid) is None
         assert own not in _durable(store) and launch_keyed not in _durable(store), \
             'a stale whole-index save restored the deleted route'
 
         # The launch profile never had this session: its own create and bind see no deletion.
-        assert _conflict(served.launch.db, sid) is None
+        assert _conflict(served.launch_db, sid) is None
         status, text = await _create(served, sid)
         assert status == 201, text
         bind_api_session(served.launch, sid)  # the X-Hermes-Session-Id chat's bind
-        fence = 'gateway.retired_route.v1.alpha:' + sid  # alpha's (profile, id) fence in the shared index
-        assert served.launch.db.get_meta(fence) is not None
+        fence = retired_route_key('alpha:' + sid)  # alpha's (profile, id) fence in the shared index
+        assert served.launch_db.state_meta.get(fence) is not None
         # The secondary itself still refuses its own retired id within the horizon.
-        assert _conflict(served.alpha.db, sid) == ('session_deleted', 'Session was deleted; its id cannot be reused')
+        assert _conflict(served.alpha_db, sid) == ('session_deleted', 'Session was deleted; its id cannot be reused')
 
-        _past_the_horizon(served.alpha.db, served.launch.db)
+        _past_the_horizon(served.alpha_db, served.launch_db)
         if retire is _delete:  # a user delete stays final in alpha, and so does its routing fence
-            assert _conflict(served.alpha.db, sid) is not None
-            assert served.launch.db.get_meta(fence) is not None
-            store._routing_db.save_gateway_routing_entry(own, json.dumps(stale[0][own]), scope=store._routing_scope())
+            assert _conflict(served.alpha_db, sid) is not None
+            assert served.launch_db.state_meta.get(fence) is not None
+            store._routing_persistence.routing.upsert_routing_entry(own, json.dumps(stale[0][own]), routing_scope=store._routing_scope())
             assert own not in _durable(store), 'a late per-entry save restored the deleted route'
         else:  # a prune is not a delete: alpha may reuse the id, and the shared fence ages out with it
-            assert _conflict(served.alpha.db, sid) is None
-            assert served.launch.db.get_meta(fence) is None
+            assert _conflict(served.alpha_db, sid) is None
+            assert served.launch_db.state_meta.get(fence) is None
 
 
 @pytest.mark.asyncio
@@ -167,18 +178,18 @@ async def test_a_launch_delete_fences_only_the_launch_profiles_routes(tmp_path, 
     index, not ``alpha``'s route to alpha's own ``user-42``."""
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
-        for db in (served.launch.db, served.alpha.db):
-            db.create_session('user-42', source='cli')
+        for db in (served.launch_db, served.alpha_db):
+            seed_session(db, 'user-42', 'cli')
         launch_key, alpha_key = 'agent:main:telegram:1', 'agent:alpha:telegram:1'
         store._entries[launch_key] = _entry(launch_key, 'user-42')
         store._entries[alpha_key] = _entry(alpha_key, 'user-42')
         with store._lock:
             stale = store._snapshot_routing_locked()
-        served.launch.db.delete_session('user-42')
+        _delete_row(served.launch_db, 'user-42')
         store._persist_routing_data(*stale)
         assert launch_key not in _durable(store), "a stale save restored the launch profile's deleted route"
         assert alpha_key in _durable(store), "alpha's route to its own session was refused"
-        assert _conflict(served.alpha.db, 'user-42') == ('session_exists', 'Session already exists')
+        assert _conflict(served.alpha_db, 'user-42') == ('session_exists', 'Session already exists')
 
 
 @pytest.mark.asyncio
@@ -188,11 +199,10 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
     launch delete. Read through the new code it keeps both meanings: it still refuses every route to
     the id (a sessions.json mirror from before the delete must not bring one back), and the launch
     profile keeps refusing the id as deleted."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
-        served.launch.db.set_meta(RETIRED_PREFIX + 'gone', json.dumps({'retired_at': time.time() - 30 * 86400}))
-        _past_the_horizon(served.launch.db)
+        served.launch_db.state_meta.set(retired_session_key('gone'), json.dumps({'retired_at': time.time() - 30 * 86400}))
+        _past_the_horizon(served.launch_db)
         key = 'agent:alpha:telegram:9'
         store._entries[key] = _entry(key, 'gone')
         with store._lock:
@@ -203,7 +213,7 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
         with store._lock:
             store._import_legacy_sessions_json(True)
         assert key not in store._entries, 'the sessions.json mirror restored a fenced route'
-        assert _conflict(served.launch.db, 'gone') == ('session_deleted', 'Session was deleted; its id cannot be reused')
+        assert _conflict(served.launch_db, 'gone') == ('session_deleted', 'Session was deleted; its id cannot be reused')
 
 
 def _mirror(store):
@@ -246,11 +256,11 @@ async def test_a_delayed_snapshot_cannot_restore_a_pruned_route_once_its_fence_a
         store._persist_routing_data(*stale)
         assert key not in _durable(store)
         assert key not in _mirror(store), 'the sessions.json mirror kept the pruned route'
-        _past_the_horizon(served.alpha.db, served.launch.db)
+        _past_the_horizon(served.alpha_db, served.launch_db)
         _restart(store)
         assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'
 
-        served.alpha.db.create_session(sid, source='telegram')
+        seed_session(served.alpha_db, sid, 'telegram')
         store._entries[key] = _entry(key, sid)
         with store._lock:
             store._save()
@@ -264,14 +274,19 @@ async def test_a_pruned_id_routes_again_after_the_owner_alone_sweeps_past_the_ho
     """Only the owner's own housekeeping runs (the launch profile's auto-prune is off by default):
     once the horizon passes, the shared fence of alpha's prune no longer refuses the route of a
     session alpha recreates with that id, though nothing swept the launch database."""
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
         key, sid, _stale = await _pruned_alpha_route(served, tmp_path)
-        _age_retirements(served.alpha.db, served.launch.db)
-        served.alpha.db.prune_sessions(older_than_days=90)  # alpha's auto-prune pass: its own db only
-        assert _conflict(served.alpha.db, sid) is None
+        _age_retirements(served.alpha_db, served.launch_db)
+        # alpha's auto-prune pass: its own db only
+        alpha = served.alpha_db
+        outcome = alpha.maintenance.prune_sessions(older_than_days=90, media_root=str(native_inputs_root()))
+        after_sessions_removed(alpha, alpha.scope.profile_dir, outcome.deleted_ids, reason='prune')
+        assert _conflict(served.alpha_db, sid) is None
 
-        served.alpha.db.create_session(sid, source='telegram')
+        seed_session(served.alpha_db, sid, 'telegram')
         store._entries[key] = _entry(key, sid)
         with store._lock:
             store._save()
@@ -294,16 +309,16 @@ async def test_the_owners_next_prune_reclaims_its_expired_shared_fences(tmp_path
             kept = create_local_session(served.alpha, served.actor, {
                 'request_id': 'k', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
             await _delete(served, kept)
-        _age_retirements(served.alpha.db, served.launch.db)
+        _age_retirements(served.alpha_db, served.launch_db)
         with _profile_runtime_scope(served.home, {}):
             later = create_local_session(served.alpha, served.actor, {
                 'request_id': 'l', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
             await _prune(served, later)
-        fence = 'gateway.retired_route.v1.{}:{}'.format
-        assert served.launch.db.get_meta(fence('alpha', sid)) is None, 'an expired shared fence was never reclaimed'
-        assert served.launch.db.get_meta(fence('main', sid)) is None
-        assert served.launch.db.get_meta(fence('alpha', later.session_id)) is not None
-        assert served.launch.db.get_meta(fence('alpha', kept.session_id)) is not None, "a delete's fence aged out"
+        fence = (retired_route_key() + '{}:{}').format
+        assert served.launch_db.state_meta.get(fence('alpha', sid)) is None, 'an expired shared fence was never reclaimed'
+        assert served.launch_db.state_meta.get(fence('main', sid)) is None
+        assert served.launch_db.state_meta.get(fence('alpha', later.session_id)) is not None
+        assert served.launch_db.state_meta.get(fence('alpha', kept.session_id)) is not None, "a delete's fence aged out"
 
 
 @pytest.mark.asyncio
@@ -325,17 +340,17 @@ async def test_a_secondary_delete_fence_outlives_the_horizon_while_a_prune_fence
             with store._lock:
                 stale = store._snapshot_routing_locked()
             await _delete(served, ref)
-        _age_retirements(served.alpha.db, served.launch.db)
+        _age_retirements(served.alpha_db, served.launch_db)
         for key in keys:
-            store._routing_db.save_gateway_routing_entry(key, json.dumps(stale[0][key]), scope=store._routing_scope())
+            store._routing_persistence.routing.upsert_routing_entry(key, json.dumps(stale[0][key]), routing_scope=store._routing_scope())
             assert key not in _durable(store), f'an aged delete fence let a per-entry save restore {key}'
         store._save_sessions_json({key: stale[0][key] for key in keys})  # a mirror written before the delete
         _restart(store)
         for key in keys:
             assert key not in store._entries, f'an aged delete fence let the sessions.json import restore {key}'
 
-        store._routing_db.save_gateway_routing_entry(
-            pruned_key, json.dumps(_entry(pruned_key, pruned).to_dict()), scope=store._routing_scope())
+        store._routing_persistence.routing.upsert_routing_entry(
+            pruned_key, json.dumps(_entry(pruned_key, pruned).to_dict()), routing_scope=store._routing_scope())
         assert pruned_key in _durable(store), 'a prune fence aged the same way still fenced its route'
 
 
@@ -355,7 +370,7 @@ async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mi
         _restart(store)
         assert key not in store._entries
         assert key not in _mirror(store), 'the start kept the pruned route in the mirror'
-        _past_the_horizon(served.alpha.db, served.launch.db)
+        _past_the_horizon(served.alpha_db, served.launch_db)
         _restart(store)
         assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'
 
@@ -394,7 +409,7 @@ async def test_a_pruned_route_stays_out_of_the_mirror_and_a_reused_id_keeps_one_
         if not mirror:
             _restart(store)
             assert key not in store._entries, 'a start inside the horizon restored the pruned route'
-        _age_retirements(served.alpha.db, served.launch.db)  # a quiet week: no full save, no restart
+        _age_retirements(served.alpha_db, served.launch_db)  # a quiet week: no full save, no restart
         _restart(store)
         assert key not in store._entries, 'the first start past the horizon restored the pruned route'
         assert key not in _mirror(store)
@@ -420,12 +435,11 @@ async def test_a_malformed_retirement_value_fences_its_route_without_aborting_a_
     """No writer stores a marker or fence that isn't JSON, but reading one must not raise
     ``malformed JSON``: it fences its route (a fence as a permanent one, a marker as an unscoped
     one), and the rest of a whole-index save, a per-entry save and the sessions.json import go on."""
-    from hermes_state_mutation_retirement import (
-        RETIRED_PREFIX, ROUTE_FENCE_PREFIX, _reclaim_expired, expiring_retirements, retire_routes)
+    from tests.fixtures.storage_holder import expiring_retirements, reclaim_expired, retire_routes
     async with _served(tmp_path, monkeypatch) as served:
-        store, launch = served.store, served.launch.db
-        launch.set_meta(ROUTE_FENCE_PREFIX + 'alpha:bad-fence', '{not json')
-        launch.set_meta(RETIRED_PREFIX + 'bad-marker', '{not json')
+        store, launch = served.store, served.launch_db
+        launch.state_meta.set(retired_route_key('alpha:bad-fence'), '{not json')
+        launch.state_meta.set(retired_session_key('bad-marker'), '{not json')
         routes = {'agent:alpha:telegram:1': 'bad-fence', 'agent:alpha:telegram:2': 'bad-marker',
                   'agent:alpha:telegram:3': 'fine'}
         for key, sid in routes.items():
@@ -434,21 +448,21 @@ async def test_a_malformed_retirement_value_fences_its_route_without_aborting_a_
             store._save()
         assert set(_durable(store)) == {'agent:alpha:telegram:3'}, 'a malformed value aborted the whole-index save'
         for key in ('agent:alpha:telegram:1', 'agent:alpha:telegram:2'):
-            store._routing_db.save_gateway_routing_entry(
-                key, json.dumps(_entry(key, routes[key]).to_dict()), scope=store._routing_scope())
+            store._routing_persistence.routing.upsert_routing_entry(
+                key, json.dumps(_entry(key, routes[key]).to_dict()), routing_scope=store._routing_scope())
             assert key not in _durable(store), f'a malformed value let a per-entry save restore {key}'
 
-        store._routing_db._execute_write(lambda conn: conn.execute('DELETE FROM gateway_routing'))
+        raw_holder(store._routing_persistence)._execute_write(lambda conn: conn.execute('DELETE FROM gateway_routing'))
         store._save_sessions_json({key: _entry(key, sid).to_dict() for key, sid in routes.items()})
         _restart(store)
         assert set(store._entries) == {'agent:alpha:telegram:3'}, 'a malformed value aborted the import'
 
         # The lane's other reads of these values: listing, reclaiming and rewriting a marker.
         assert expiring_retirements(launch, ['bad-marker']) == set()
-        launch._execute_write(lambda conn: _reclaim_expired(conn, ROUTE_FENCE_PREFIX, time.time()))
-        assert launch.get_meta(ROUTE_FENCE_PREFIX + 'alpha:bad-fence') == '{not json'
-        launch._execute_write(lambda conn: retire_routes(conn, ['bad-marker']))  # a launch delete over it
-        assert 'own' not in json.loads(launch.get_meta(RETIRED_PREFIX + 'bad-marker')), 'it became launch-only'
+        reclaim_expired(launch, retired_route_key(), time.time())
+        assert launch.state_meta.get(retired_route_key('alpha:bad-fence')) == '{not json'
+        retire_routes(launch, ['bad-marker'])  # a launch delete over it
+        assert 'own' not in json.loads(launch.state_meta.get(retired_session_key('bad-marker'))), 'it became launch-only'
 
 
 @pytest.mark.asyncio
@@ -458,24 +472,23 @@ async def test_deleting_the_launch_session_keeps_an_earlier_releases_shared_fenc
     fence. Deleting the launch session after the upgrade rewrites that marker. It must stay
     unscoped, or alpha's deleted route comes back through a late per-entry save or the
     sessions.json import on the next start."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store, key = served.store, 'agent:alpha:telegram:42'
-        served.launch.db.create_session('user-42', source='cli')
+        seed_session(served.launch_db, 'user-42', 'cli')
         old = json.dumps({'retired_at': time.time() - 86400})  # an earlier release's marker
-        served.launch.db.set_meta(RETIRED_PREFIX + 'user-42', old)
-        served.alpha.db.set_meta(RETIRED_PREFIX + 'user-42', old)
+        served.launch_db.state_meta.set(retired_session_key('user-42'), old)
+        served.alpha_db.state_meta.set(retired_session_key('user-42'), old)
         stale = _entry(key, 'user-42').to_dict()  # alpha's route, from a snapshot taken before its delete
 
-        served.launch.db.delete_session('user-42')
-        assert served.launch.db.get_session('user-42') is None
-        store._routing_db.save_gateway_routing_entry(key, json.dumps(stale), scope=store._routing_scope())
+        _delete_row(served.launch_db, 'user-42')
+        assert served.launch_db.sessions.get('user-42') is None
+        store._routing_persistence.routing.upsert_routing_entry(key, json.dumps(stale), routing_scope=store._routing_scope())
         assert key not in _durable(store), "a per-entry save restored alpha's deleted route"
         store._save_sessions_json({key: stale})
         _restart(store)
         assert key not in store._entries, "the sessions.json import restored alpha's deleted route"
-        _past_the_horizon(served.launch.db)
-        assert served.launch.db.get_meta(RETIRED_PREFIX + 'user-42') is not None, 'the delete shortened the marker'
+        _past_the_horizon(served.launch_db)
+        assert served.launch_db.state_meta.get(retired_session_key('user-42')) is not None, 'the delete shortened the marker'
 
 
 @pytest.mark.asyncio
@@ -484,18 +497,17 @@ async def test_deleting_the_launch_session_writes_a_launch_only_marker(tmp_path,
     """A launch delete with no earlier marker, or over an earlier release's sweep marker (only the
     launch profile's own sweep wrote one: an earlier release fenced a secondary's id permanently),
     writes the launch profile's own marker. Alpha's route to its own ``user-42`` still saves."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store, key = served.store, 'agent:alpha:telegram:42'
-        for db in (served.launch.db, served.alpha.db):
-            db.create_session('user-42', source='cli')
+        for db in (served.launch_db, served.alpha_db):
+            seed_session(db, 'user-42', 'cli')
         if earlier is not None:
-            served.launch.db.set_meta(RETIRED_PREFIX + 'user-42', json.dumps({'retired_at': time.time(), **earlier}))
-        served.launch.db.delete_session('user-42')
-        marker = json.loads(served.launch.db.get_meta(RETIRED_PREFIX + 'user-42'))
+            served.launch_db.state_meta.set(retired_session_key('user-42'), json.dumps({'retired_at': time.time(), **earlier}))
+        _delete_row(served.launch_db, 'user-42')
+        marker = json.loads(served.launch_db.state_meta.get(retired_session_key('user-42')))
         assert marker.get('own') is True and 'expires' not in marker, marker
         entry = _entry(key, 'user-42').to_dict()
-        store._routing_db.save_gateway_routing_entry(key, json.dumps(entry), scope=store._routing_scope())
+        store._routing_persistence.routing.upsert_routing_entry(key, json.dumps(entry), routing_scope=store._routing_scope())
         assert key in _durable(store), "the launch delete fenced alpha's route"
         store._save_sessions_json({key: entry})
         _restart(store)

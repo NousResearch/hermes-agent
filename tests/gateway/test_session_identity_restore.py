@@ -19,6 +19,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.profile_routing import parse_profile_routes
 from gateway.session import SessionEntry, SessionStore
 from gateway.session_identity import identity_of, resolve_identity
+from tests.fixtures.storage_read import session_row
 
 
 class _Stub(BasePlatformAdapter):
@@ -97,7 +98,7 @@ def test_restored_lane_delivers_through_the_bot_that_received_it_never_the_defau
     entry = store.get_or_create_session(routed)
     assert entry.session_key.startswith("agent:ops:") and entry.transport_profile == "team_b"
     assert entry.to_dict()["transport_profile"] == "team_b"
-    row = store._db_for_key(entry.session_key).get_session(entry.session_id)
+    row = session_row(store._persistence_for_key(entry.session_key), entry.session_id)
     assert row["transport_profile"] == "team_b" and row["profile_name"] == "ops"
 
     fresh, source, restored = _restart(mux, entry)
@@ -146,7 +147,7 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     entry = store.get_or_create_session(source)
     assert entry.session_key == "agent:main:telegram:dm:4040"
     assert entry.transport_profile is None and "transport_profile" not in entry.to_dict()
-    assert store._db_for_key(entry.session_key).get_session(entry.session_id)["transport_profile"] is None
+    assert session_row(store._persistence_for_key(entry.session_key), entry.session_id)["transport_profile"] is None
     fresh = _runner(home, multiplex=False)
     restored = fresh.runner._restored_source(SessionEntry.from_dict(entry.to_dict()))
     assert identity_of(restored) is None

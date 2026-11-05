@@ -33,7 +33,10 @@ _PROBE = textwrap.dedent("""
 
         home = sys.argv[1]
         tickets = TicketStore("owner", [home])
-        authority = types.SimpleNamespace(db=types.SimpleNamespace(db_path=home + "/state.db"), profile_id=home)
+        from pathlib import Path
+        from persistence_assembly import open_persistence, profile_scope
+        authority = types.SimpleNamespace(db=types.SimpleNamespace(db_path=home + "/state.db"), profile_id=home,
+                                          persistence=open_persistence(profile_scope(home=Path(home))))
         runner = types.SimpleNamespace(_draining=False, session_runtime_descriptor={"state": "ready"},
                                        session_authority=authority, session_ticket_store=tickets)
         out = {}

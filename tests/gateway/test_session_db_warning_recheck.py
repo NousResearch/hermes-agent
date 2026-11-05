@@ -7,8 +7,7 @@ import threading
 import pytest
 
 import gateway.run as gateway_run
-import hermes_state
-import hermes_state_registry
+import persistence_assembly
 from gateway.run import _SESSION_DB_UNPINNED
 from gateway.session_db_recovery import RecoverableHandleCache
 
@@ -35,14 +34,13 @@ def _runner_with_startup_failure(monkeypatch, clock: _Clock, *, heals: bool):
     runner._session_db_handle_cache = cache
     calls: list[str] = []
 
-    def acquire(db_path=None):
+    def open_persistence(*args, **kwargs):
         calls.append("open")
         if len(calls) == 1 or not heals:  # the priming open always fails: that is the startup lock
             raise RuntimeError("database is locked")
         return object()
 
-    monkeypatch.setattr(hermes_state_registry, "acquire", acquire)
-    monkeypatch.setattr(hermes_state, "AsyncSessionDB", lambda db: ("async", db))
+    monkeypatch.setattr(persistence_assembly, "open_persistence", open_persistence)
     monkeypatch.setattr(runner, "session_store", None, raising=False)
     # Record the startup failure the way __init__ does (one failed open in the cache).
     with pytest.raises(RuntimeError):

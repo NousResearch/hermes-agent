@@ -10,7 +10,7 @@ the same authenticated source object.
 
 This test reproduces the refusal on a real multiplexed authority and asserts the fix makes
 the re-dispatched turn's envelope prepare with its provenance resolved. Without the fix the
-re-dispatch raises RuntimeStoreError('invalid_params').
+re-dispatch raises AuthorityRefusal('invalid_params').
 """
 import weakref
 from pathlib import Path
@@ -27,7 +27,8 @@ from gateway.session_envelope import prepare_native
 from gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import close_stores_under
 
 
 class _FakeAdapter:
@@ -43,9 +44,6 @@ def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(
-        hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     for name in names:
         home = root / 'profiles' / name
@@ -97,7 +95,7 @@ async def test_retry_redispatch_admits_natively_under_session_authority(
                 seen.append(('prepared',
                              payload['native_text_v1'].get('provenance') is not None,
                              prov is not None))
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 seen.append(('refused', exc.reason, prov is not None))
             return 'spy-ok'
 
@@ -115,6 +113,6 @@ async def test_retry_redispatch_admits_natively_under_session_authority(
         assert seen[0][2] is True, 'capture_provenance returned None inside rebind'
     finally:
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

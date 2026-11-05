@@ -13,7 +13,9 @@ from gateway.session_controls import AuthorityConnection
 from gateway.session_local import create_local_session
 from hermes_cli.gateway_client import GatewayClientError
 from hermes_cli.gateway_mutations import slash_mutation
-import hermes_state_runtime as rt
+from tests.fixtures.storage_read import conversation, session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_slash_mutation_parses_compress_through_the_shared_parser():
@@ -34,22 +36,22 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    db = store.persistence
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     summaries = []
     monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
     monkeypatch.setattr(ContextCompressor, 'compress', lambda self, messages, **kw: summaries.append(kw) or messages)
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='preview', source='cli', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
     for i in range(4):
-        db.append_message(ref.session_id, 'user', f'question {i}')
-        db.append_message(ref.session_id, 'assistant', f'answer {i}')
-    before = db.get_session(ref.session_id)
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': f'question {i}'})
+        seed_messages(db, ref.session_id, {'role': 'assistant', 'content': f'answer {i}'})
+    before = session_row(db, ref.session_id)
     watermark = authority.sessions[ref.session_id].event_stream.watermark()
     try:
         for raw in ('--preview', 'here 2 --preview'):
@@ -60,10 +62,10 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
             assert reply.get('result', {}).get('status') == 'preview', reply
             assert reply['result']['lines'][0].startswith('Preview'), reply
         assert summaries == [], 'a preview reached the summarizer'
-        after = db.get_session(ref.session_id)
+        after = session_row(db, ref.session_id)
         assert (after['runtime_revision'], after['runtime_generation']) == (before['runtime_revision'], before['runtime_generation'])
-        assert len(db.get_messages(ref.session_id)) == 8
-        assert not db.list_meta_prefix('gateway.mutation.v1.'), 'a preview left a mutation receipt'
+        assert len(transcript_rows(db, ref.session_id)) == 8
+        assert not db.state_meta.list_prefix('gateway.mutation.v1.'), 'a preview left a mutation receipt'
         assert authority.sessions[ref.session_id].event_stream.since(*watermark)['events'] == []
         refused = await owner.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'aggressive', 'expected_revision': before['runtime_revision'],
@@ -86,8 +88,8 @@ async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    db = store.persistence
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     hooked, summarized = [], []
 
     class Memory:
@@ -105,14 +107,14 @@ async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: live_agent,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='hook', source='cli', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
     for i in range(4):
-        db.append_message(ref.session_id, 'user', f'question {i}')
-        db.append_message(ref.session_id, 'assistant', f'answer {i}')
-    before = db.get_session(ref.session_id)
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': f'question {i}'})
+        seed_messages(db, ref.session_id, {'role': 'assistant', 'content': f'answer {i}'})
+    before = session_row(db, ref.session_id)
     try:
         await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'compress', 'expected_revision': before['runtime_revision'],
@@ -138,8 +140,8 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    db = store.persistence
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     summarizing, release = threading.Event(), threading.Event()
 
     def compress(self, messages, **kw):
@@ -151,15 +153,15 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='busy', source='cli', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
     for i in range(4):
-        db.append_message(ref.session_id, 'user', f'question {i}')
-        db.append_message(ref.session_id, 'assistant', f'answer {i}')
-    before = db.get_session(ref.session_id)
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': f'question {i}'})
+        seed_messages(db, ref.session_id, {'role': 'assistant', 'content': f'answer {i}'})
+    before = session_row(db, ref.session_id)
     try:
         compressing = asyncio.create_task(owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'compress', 'expected_revision': before['runtime_revision'],
@@ -194,20 +196,20 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    db = store.persistence
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
     monkeypatch.setattr(ContextCompressor, 'compress', lambda self, messages, **kw: messages)
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='short', source='tui', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
-    db.append_message(ref.session_id, 'user', 'hi')
-    db.append_message(ref.session_id, 'assistant', 'hello')
-    before = db.get_session(ref.session_id)
+    seed_messages(db, ref.session_id, {'role': 'user', 'content': 'hi'})
+    seed_messages(db, ref.session_id, {'role': 'assistant', 'content': 'hello'})
+    before = session_row(db, ref.session_id)
     try:
         reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'noop', 'expected_revision': before['runtime_revision'],
@@ -216,9 +218,9 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
         assert result.get('status') == 'noop', reply
         assert result['summary']['headline'] == 'No changes from compression: 2 messages', result
         assert result['summary']['noop'] is True and result['summary']['token_line'].endswith('(unchanged)')
-        after = db.get_session(ref.session_id)
+        after = session_row(db, ref.session_id)
         assert (after['runtime_revision'], after['runtime_generation']) == (before['runtime_revision'], before['runtime_generation'])
-        assert not db.list_meta_prefix('gateway.mutation.v1.'), 'a no-op left a mutation receipt'
+        assert not db.state_meta.list_prefix('gateway.mutation.v1.'), 'a no-op left a mutation receipt'
     finally:
         await owner.close()
 
@@ -237,27 +239,27 @@ async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prom
 
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    db = store.persistence
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
     monkeypatch.setattr(ContextCompressor, 'compress', lambda self, messages, **kw: messages)
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
     owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
     ref = create_local_session(authority, owner.actor, dict(request_id='cold', source='tui', cwd=str(tmp_path),
                                                               model='frozen', toolsets=[]))
-    db.append_message(ref.session_id, 'user', 'hi')
-    db.append_message(ref.session_id, 'assistant', 'hello')
+    seed_messages(db, ref.session_id, {'role': 'user', 'content': 'hi'})
+    seed_messages(db, ref.session_id, {'role': 'assistant', 'content': 'hello'})
     prompt = 'You are Hermes. ' * 400
     tools = [{'type': 'function', 'function': {'name': 'read_file', 'description': 'Read a file. ' * 50,
                                                'parameters': {'type': 'object', 'properties': {}}}}]
-    db.update_system_prompt(ref.session_id, prompt)
-    db.update_session_tool_names(ref.session_id, {'version': 'v', 'tools': tools})
-    messages = db.get_messages_as_conversation(ref.session_id)
+    db.sessions.update_system_prompt(ref.session_id, prompt)
+    db.sessions.update_tool_pin(ref.session_id, {'version': 'v', 'tools': tools})
+    messages = conversation(db, ref.session_id)
     expected = estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)
-    before = db.get_session(ref.session_id)
+    before = session_row(db, ref.session_id)
     try:
         reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'noop', 'expected_revision': before['runtime_revision'],

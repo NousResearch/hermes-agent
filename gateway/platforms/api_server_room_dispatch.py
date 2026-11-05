@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import hmac
-import time
 from typing import Any
 
 try:
@@ -20,7 +19,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
     conflicting title under another session id fails closed rather than merging."""
-    db = await self._ensure_session_db_async()
+    db = await self._ensure_store_async()
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
@@ -32,34 +31,16 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     authority = active_authority(self.gateway_runner)
     if authority is not None:
         from gateway.session_api import bind_api_steps, hosted_member_session, run_steps_off_loop
-        if db is not authority.db:
+        if db is not authority.persistence:
             raise RuntimeError('profile_mismatch')
         # A member session the user deleted stays deleted: the room moves to its next generation.
         identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
-        session_id = (await asyncio.to_thread(hosted_member_session, authority.db, identity))[1]
+        session_id = (await asyncio.to_thread(hosted_member_session, authority.persistence, identity))[1]
         # The binding transaction runs off the owner loop, in admission order (as API admission does).
         return (await run_steps_off_loop(authority, bind_api_steps(
             authority, session_id, hosted_dispatch=dispatch.as_mapping()))).session_id
 
-    def atomic(conn):
-        row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()
-        if row is not None:
-            if row["title"] != title or row["source"] != "bot_room":
-                raise RuntimeError("room session identity conflicts with existing data")
-            return session_id
-        clean_title = db.sanitize_title(title)
-        conflict = conn.execute(
-            "SELECT id FROM sessions WHERE title=? AND id!=?", (clean_title, session_id)).fetchone()
-        if conflict:
-            raise RuntimeError(
-                "Another group already uses this room title on the target gateway. "
-                "Rename or migrate that group before retrying.")
-        conn.execute(
-            "INSERT INTO sessions(id, source, title, hidden, started_at) VALUES(?, 'bot_room', ?, 1, ?)",
-            (session_id, clean_title, time.time()))
-        return session_id
-
-    return await asyncio.to_thread(db._execute_write, atomic)
+    return await self._store_beside(db).aio.hosted_rooms.ensure_room_member_session(session_id=session_id, title=title)
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> web.Response:

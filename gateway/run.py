@@ -114,12 +114,6 @@ _HYGIENE_COOLDOWN_MAX_SECONDS = 3600.0
 _HYGIENE_TURNHOLD_RETRY_SECONDS = 60.0
 
 
-def _gateway_session_db_inner(gateway):
-    """The raw SessionDB behind ``gateway._session_db`` (unwrapping the async facade), or None."""
-    session_db = getattr(gateway, "_session_db", None)
-    return getattr(session_db, "_db", session_db)
-
-
 def _hygiene_cooldown_for_failure(gateway, session_key: str, base_cooldown_seconds: float) -> float:
     """Bump the hygiene failure streak and return the escalated cooldown (x1/x3/x9 over base, clamped).
 
@@ -139,10 +133,10 @@ def _hygiene_cooldown_for_failure(gateway, session_key: str, base_cooldown_secon
         state = gateway._session_state(session_key).persistent
     except Exception as exc:
         logger.debug("hygiene failure streak update failed: %s", exc)
-    increment = getattr(_gateway_session_db_inner(gateway), "increment_hygiene_failure_streak", None)
-    if callable(increment):
+    store = getattr(gateway, "persistence", None)
+    if store is not None:
         try:
-            streak = max(1, int(increment(session_key)))
+            streak = max(1, int(store.coordination.increment_hygiene_failure_streak(session_key=session_key)))
             if state is not None:
                 state.hygiene_failure_streak = streak
         except Exception as exc:
@@ -168,10 +162,10 @@ def _reset_hygiene_failure_streak(gateway, session_key: str) -> None:
             state.persistent.hygiene_failure_streak = 0
     except Exception as exc:
         logger.debug("hygiene failure streak reset failed: %s", exc)
-    reset = getattr(_gateway_session_db_inner(gateway), "reset_hygiene_failure_streak", None)
-    if callable(reset):
+    store = getattr(gateway, "persistence", None)
+    if store is not None:
         try:
-            reset(session_key)
+            store.coordination.reset_hygiene_failure_streak(session_key=session_key)
         except Exception as exc:
             logger.debug("hygiene failure streak persistent reset failed: %s", exc)
 
@@ -303,15 +297,14 @@ def _record_hygiene_cooldown(
 
     ``error`` must be forwarded: the recorder writes compression_failure_error UNCONDITIONALLY (NULL clobber).
 
-    Uses the same ``compression_failure_cooldown_until`` column and ``record_compression_failure_cooldown``
-    method that the in-conversation compression path (``agent/context_compressor.py``) already uses, so the
-    cooldown survives gateway restarts (#74136).
+    Records the same compression-failure cooldown the in-conversation compression path
+    (``agent/context_compressor.py``) records, so the cooldown survives gateway restarts (#74136).
     """
-    recorder = getattr(_gateway_session_db_inner(gateway), "record_compression_failure_cooldown", None)
-    if recorder is None:
+    store = getattr(gateway, "persistence", None)
+    if store is None:
         return
     try:
-        recorder(session_id, time.time() + cooldown_seconds, error)
+        store.messages.record_compression_cooldown(session_id, time.time() + cooldown_seconds, error)
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
@@ -1751,12 +1744,12 @@ async def _reclaim_stale(runner: object) -> None:
     """Fail handoffs left in ``running`` by a gateway that died mid-dispatch (once per store at startup).
     ``running`` is only set for one in-process dispatch, so a leftover row belongs to a dead process and
     blocks ``request_handoff`` for that session forever. Defensive: a raising reclaim aborts startup."""
-    reclaim = getattr(getattr(runner, "_session_db", None), "reclaim_stale_running_handoffs", None)
-    if not callable(reclaim):
+    store = getattr(runner, "persistence", None)
+    if store is None:
         return
     try:
-        ids = await reclaim(
-            "gateway stopped mid-handoff; state reclaimed at startup. Re-run /handoff to try again.")
+        ids = await store.aio.coordination.reclaim_stale_running_handoffs(
+            error="gateway stopped mid-handoff; state reclaimed at startup. Re-run /handoff to try again.")
     except Exception:
         logger.debug("Stale-handoff reclaim raised", exc_info=True)
         return
@@ -3469,26 +3462,25 @@ class GatewayRunner(
         self._init_registries_and_clocks()
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
-        """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
-        ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction
+        """Storage interface handle for the active profile scope, resolved per access (not in ``__init__``)
+        since the scope follows the context-local HERMES_HOME; one handle cached per path. Construction
         failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
 
-        Same per-path cache as ``SessionStore._open_session_db_for_active_scope`` (#88532): ``SessionDB()``
-        resolves ``_default_db_path()`` at call time through the context-local HERMES_HOME override
-        installed by ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` —
-        is what lets /resume, /title, /history and session search on a multiplexed gateway read the *serving
-        profile's* store rather than the root one.
-        One ``AsyncSessionDB`` is cached per resolved path, so the wrapper identity is stable per profile
-        (callers compare and stash it) and two profiles never share a handle. A construction failure enters
-        bounded backoff; one caller retries after the deadline while concurrent callers continue to see the
-        unavailable fallback. ``raise_on_error=True`` (construction-time priming) propagates the failure
-        after recording that recoverable state so ``__init__`` can record ``_session_db_init_error`` for the
-        #88235 broadcast.
+        Same per-path cache as ``SessionStore._open_persistence_for_active_scope`` (#88532): the scope
+        resolves at call time through the context-local HERMES_HOME override installed by
+        ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` — is what lets
+        /resume, /title, /history and session search on a multiplexed gateway read the *serving profile's*
+        store rather than the root one.
+        One handle is cached per resolved path, so its identity is stable per profile (callers compare and
+        stash it) and two profiles never share a handle. A construction failure enters bounded backoff; one
+        caller retries after the deadline while concurrent callers continue to see the unavailable fallback.
+        ``raise_on_error=True`` (construction-time priming) propagates the failure after recording that
+        recoverable state so ``__init__`` can record ``_session_db_init_error`` for the #88235 broadcast.
         """
-        from hermes_state import AsyncSessionDB, _default_db_path
-        from hermes_state_registry import acquire
         from gateway.session_db_recovery import RecoverableHandleCache
-        path = Path(_default_db_path())
+        from persistence_assembly import open_persistence, profile_scope, store_location
+        scope = profile_scope()
+        path = store_location(scope)
         cache = getattr(self, "_session_db_handle_cache", None)
         if cache is None:
             # Test runners built with object.__new__ skip __init__.
@@ -3497,29 +3489,21 @@ class GatewayRunner(
             self._session_db_handle_cache = cache
 
         def _open():
-            # Borrow the SessionStore's handle (same path) so state.db doesn't get two writers/pools.
-            # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
-            # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
-            # connections and two read pools against one state.db — the fd budget doubled for nothing, and
-            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper goes stale only
-            # when the registry tears its generation down (profile unserve/delete); both caches then drop
-            # the dead handle and reopen through the registry. While the store's own open is failing there
-            # is nothing to borrow, so nothing is cached here either.
+            # The session store's handle for the scope, so both read one store (the store closes it); while
+            # the store's own handle cannot open, nothing is opened here either. A runner without a store
+            # opens its own (one writer per path, #98573).
             store = getattr(self, "session_store", None)
-            borrowed = getattr(store, "_db", None) if store is not None else None
-            if borrowed is not None:
-                wrapper = AsyncSessionDB(borrowed)
-                # close_all_session_db_handles() must not close what the store owns (its sweep runs first).
-                wrapper.__dict__["_hermes_borrowed_handle"] = True
-                return wrapper
             if store is not None:
-                # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
-                raise RuntimeError("SessionStore SQLite handle unavailable")
+                if (persistence := store._scoped_persistence()) is None:
+                    raise RuntimeError("SessionStore SQLite handle unavailable")
+                return persistence
             try:
-                return AsyncSessionDB(acquire())
+                handle = open_persistence(scope, eager=True)
             except Exception as exc:
                 logger.warning("SQLite session store not available: %s", exc)
                 raise
+            self.__dict__.setdefault("_session_db_owned", []).append(handle)
+            return handle
 
         def _recovered() -> None:
             self._session_db_init_error = None
@@ -3529,7 +3513,7 @@ class GatewayRunner(
 
     @property
     def _session_db(self) -> Any:
-        """The AsyncSessionDB for the active profile scope, or a pinned override (assigning
+        """The storage interface handle for the active profile scope, or a pinned override (assigning
         ``runner._session_db`` pins it for every later read — tests install fakes/None this way)."""
         if self._session_db_pinned is not _SESSION_DB_UNPINNED:
             return self._session_db_pinned
@@ -3540,26 +3524,22 @@ class GatewayRunner(
         self._session_db_pinned = value
 
     def close_all_session_db_handles(self) -> None:
-        """Close every per-profile AsyncSessionDB this runner opened.
+        """Close every per-profile storage interface handle this runner opened.
 
-        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Wrappers
+        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Handles
         BORROWED from ``session_store`` are skipped: the store's sweep (runs first) closes them.
 
         See #98573.
         """
-        def _close(db) -> None:
-            if getattr(db, "__dict__", {}).get("_hermes_borrowed_handle"):
+        owned = self.__dict__.get("_session_db_owned", [])
+
+        def _close(handle) -> None:
+            if not any(handle is mine for mine in owned):
                 return
-            inner = getattr(db, "_db", db)
-            if inner is None or not hasattr(inner, "close"):
-                return
-            # Shared instances no-op on close() (the registry owns the lifecycle). Release the refcount
-            # instead (#90837).
-            from hermes_state_registry import release_or_close
             try:
-                release_or_close(inner)
+                handle.close()
             except Exception as exc:
-                logger.debug("SessionDB close error during handle sweep: %s", exc)
+                logger.debug("Storage handle close error during handle sweep: %s", exc)
 
         self._session_db_handle_cache.close_all(_close)
 
@@ -4392,51 +4372,55 @@ def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
 
 def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
-    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
-    SessionDB — SQLite connections are thread-bound.
+    by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own handle
+    on the profile's store and closes it when done.
 
-    Profile-scoped by its caller: ``acquire()``, ``get_hermes_home()`` and ``load_config()`` all
+    Profile-scoped by its caller: ``profile_scope()``, ``get_hermes_home()`` and ``load_config()`` all
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
     the LAUNCH profile's retention settings and a multiplexed secondary was never archived, pruned
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
     gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
-    from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
         return
-    _adb = acquire()
+    from gateway.session_ingress_media import native_inputs_root
+    from persistence_assembly import open_persistence, open_store_admin, profile_scope
+    from session_retention import run_auto_archive, run_auto_prune_and_vacuum
+    scope = profile_scope()
+    store = open_persistence(scope, eager=True)
     try:
         if _sess_cfg.get("auto_archive", False):
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+            run_auto_archive(
+                store, idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
         if _sess_cfg.get("auto_prune", False):
-            _adb.maybe_auto_prune_and_vacuum(
+            run_auto_prune_and_vacuum(
+                store, open_store_admin(scope, read_only=False), store_home=scope.profile_dir,
+                media_root=str(native_inputs_root()),
                 retention_days=int(_sess_cfg.get("retention_days", 90)),
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
                 sessions_dir=_profile_sessions_dir(launch))
     finally:
-        release_or_close(_adb)
+        store.close()
 
 
 def _housekeeping_deferred_fts_retry() -> None:
-    """A SessionDB opened while another process held the rebuild lock fails closed onto the LIKE fallback
-    and the gateway stays up for days. Non-blocking, rate-limited inside SessionDB; no-op when not stale."""
-    # Retry here, on the existing tick, against the shared instances this process already holds:
-    # non-blocking admission, no new thread, rate-limited inside SessionDB. No-op when nothing is stale (one
-    # attribute read per instance). See #100108.
-    from hermes_state_registry import borrow_live_shared_session_dbs
-    with borrow_live_shared_session_dbs() as _session_dbs:
-        for _sdb in _session_dbs:
-            _retry = getattr(_sdb, "retry_deferred_fts_recovery", None)
-            if callable(_retry) and _retry():
+    """A store opened while another process held the rebuild lock fails closed onto the LIKE fallback
+    and the gateway stays up for days. Non-blocking, rate-limited inside the store; no-op when not stale."""
+    # Retry here, on the existing tick, against the stores this process already holds open:
+    # non-blocking admission, no new thread, rate-limited inside the store. No-op when nothing is stale (one
+    # attribute read per store). See #100108.
+    from persistence_assembly import live_stores, store_location
+    with live_stores() as stores:
+        for store in stores:
+            if store.search.retry_deferred_search_recovery():
                 logger.info(
                     "Deferred state.db FTS rebuild completed in-process for %s; full-text search restored.",
-                    getattr(_sdb, "db_path", "state.db"))
+                    store_location(store.scope))
 
 
 def _housekeeping_memory_trim() -> None:

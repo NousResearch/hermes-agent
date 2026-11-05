@@ -623,11 +623,12 @@ class GatewayAgentCacheMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
-        if self._session_db is None or not session_id or not _cache_lock or _cache is None:
+        store = self.persistence
+        if store is None or not session_id or not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = await self._session_db.get_session(session_id)
-            _live = _sess_row.get("message_count", 0) if _sess_row else None
+            _sess_row = await store.aio.sessions.get(session_id)
+            _live = _sess_row.message_count if _sess_row else None
         except Exception:
             return
         if _live is None:

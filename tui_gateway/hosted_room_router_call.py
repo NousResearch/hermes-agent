@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -80,12 +82,48 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
     return picked
 
 
-class RouterCalls:
-    """At most one in-flight router call per (room, message); ``record`` runs once it answers."""
+_CLAIMS_DDL = """CREATE TABLE IF NOT EXISTS hosted_room_router_claims (
+    room_id TEXT NOT NULL, discussion_event_id TEXT NOT NULL, owner TEXT NOT NULL, expires_at REAL NOT NULL,
+    PRIMARY KEY(room_id, discussion_event_id))"""
+# A claim outlives any router call (``auxiliary.group_router.timeout``, 20 s by default); one left by a
+# crashed worker expires and the next preparation asks again.
+CLAIM_TTL_SECONDS = 120.0
 
-    def __init__(self) -> None:
+
+class RouterCalls:
+    """At most one in-flight router call per (room, message) across every worker sharing the room
+    store: the paid call starts only after this instance wins a claim row in that store, and
+    ``record`` runs once it answers."""
+
+    def __init__(self, db_path: Path, *, clock: Callable[[], float] = time.time) -> None:
+        self._db_path = Path(db_path)
+        self._clock = clock
+        self._owner = uuid.uuid4().hex
         self._lock = threading.Lock()
         self._inflight: set[tuple[str, str]] = set()
+
+    def _transaction(self):
+        from hermes_cli.sqlite_util import open_db, transaction
+
+        conn = open_db(self._db_path, db_label="shared-state.db (room router claims)", busy_timeout_ms=10_000)
+        conn.execute(_CLAIMS_DDL)
+        return transaction(conn, immediate=True)
+
+    def _claim(self, key: tuple[str, str]) -> bool:
+        """Take the shared claim for ``key`` unless another worker holds an unexpired one."""
+        now = self._clock()
+        with self._transaction() as conn:
+            row = conn.execute(
+                """INSERT INTO hosted_room_router_claims(room_id, discussion_event_id, owner, expires_at)
+                   VALUES (?, ?, ?, ?) ON CONFLICT(room_id, discussion_event_id) DO UPDATE SET
+                   owner=excluded.owner, expires_at=excluded.expires_at WHERE expires_at<=?
+                   RETURNING owner""", (*key, self._owner, now + CLAIM_TTL_SECONDS, now)).fetchone()
+        return row is not None and row[0] == self._owner
+
+    def _release(self, key: tuple[str, str]) -> None:
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM hosted_room_router_claims WHERE room_id=? AND discussion_event_id=? AND owner=?",
+                         (*key, self._owner))
 
     def start(self, key: tuple[str, str], call: Callable[[], tuple[str, ...] | None],
               record: Callable[[tuple[str, ...] | None], None]) -> bool:
@@ -93,6 +131,16 @@ class RouterCalls:
             if key in self._inflight:
                 return False
             self._inflight.add(key)
+        try:
+            claimed = self._claim(key)
+        except BaseException:
+            with self._lock:
+                self._inflight.discard(key)
+            raise
+        if not claimed:
+            with self._lock:
+                self._inflight.discard(key)
+            return False
 
         def run() -> None:
             try:
@@ -100,6 +148,10 @@ class RouterCalls:
             except Exception:  # health: allow BLE001 -- a lost answer is re-asked on the next preparation
                 logger.warning("hosted room %s: recording the router answer failed", key[0], exc_info=True)
             finally:
+                try:
+                    self._release(key)
+                except Exception:  # health: allow BLE001 -- an unreleased claim only expires (CLAIM_TTL_SECONDS)
+                    logger.warning("hosted room %s: releasing the router claim failed", key[0], exc_info=True)
                 with self._lock:
                     self._inflight.discard(key)
         # The owner's profile scope is bound explicitly inside ask_router (_profile_runtime_scope).

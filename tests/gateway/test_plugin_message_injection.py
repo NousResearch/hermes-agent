@@ -462,7 +462,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     admission into the session's FIFO; it never runs on the in-process adapter lane, and a
     refused admission is reported as not routed instead of falling back to that lane."""
     import gateway.session_authorities as authorities
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     adapter = SimpleNamespace(handle_message=AsyncMock())
     entry = _entry()
@@ -478,7 +478,7 @@ async def test_under_a_session_authority_injection_enters_the_durable_fifo(monke
     assert event.metadata == {"gateway_session_key": entry.session_key, "gateway_session_id": entry.session_id}
     assert event.text == "check the deployment" and "notify-plugin" in identity
 
-    authority.admit_automation.side_effect = RuntimeStoreError("not_found")
+    authority.admit_automation.side_effect = AuthorityRefusal("not_found")
     assert await runner._dispatch_plugin_message_injection(
         session_key=entry.session_key, content="again", plugin_id="notify-plugin") is False
     adapter.handle_message.assert_not_awaited()

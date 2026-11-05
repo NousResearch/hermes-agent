@@ -30,7 +30,7 @@ def _regex_rules(repo: Path) -> list[tuple[str, re.Pattern[str], re.Pattern[str]
             continue
         pat = by_id[rule.pattern_id]
         path_re = re.compile(pat["path_regex"]) if pat.get("path_regex") else None
-        out.append((rule.id, re.compile(pat["pattern_regex"]), path_re))
+        out.append((rule.id, re.compile(pat["pattern_regex"], re.M), path_re))
     return out
 
 
@@ -170,17 +170,24 @@ class Measurer:
         self._regex(fm, scopes, text, tree)
 
     def _regex(self, fm: FileMeasure, scopes, text: str, tree: ast.Module) -> None:
-        code_lines: list[str] | None = None
+        code: str | None = None
         for rule_id, pattern, path_re in self.regex_rules:
             if not rule_applies(RULES_BY_ID[rule_id], fm.path):
                 continue
             if path_re and not path_re.search(fm.path):
                 continue
-            if code_lines is None:
-                code_lines = _executable_lines(text, tree)
-            for index, line in enumerate(code_lines, start=1):
-                if pattern.search(line):
-                    fm.add_hit(rule_id, scopes.scope(index), index)
+            if code is None:
+                code = "\n".join(_executable_lines(text, tree))
+            # Whole-text match, anchored on the line where it starts (as the advisory
+            # check_profile_scope_patterns.scan_text does): a call wrapped over two lines is
+            # still the operation.
+            starts, line, pos = set(), 1, 0
+            for match in pattern.finditer(code):  # count forward: one pass over the text
+                line += code.count("\n", pos, match.start())
+                pos = match.start()
+                starts.add(line)
+            for index in sorted(starts):
+                fm.add_hit(rule_id, scopes.scope(index), index)
 
     @staticmethod
     def _typescript(fm: FileMeasure, data: dict | None) -> None:

@@ -954,17 +954,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 # Safety refusal: erase the whole refused turn (user row + any tool rounds + the
                 # refusal) from the durable transcript so a fresh session load isn't re-sent the
                 # blocked content and locked. state.history is already the clean pre-refusal history.
-                # An OWNING agent flushed the refused turn incrementally and save_session skipped the
-                # replace, so it is still durable — rewind it. A non-owning agent's save_session ran
-                # replace_messages(clean history), which already erased it; rewinding again would
-                # drop a prior accepted turn.
-                if result.get("failure_reason") == "content_policy_blocked" and getattr(
-                    state.agent, "_session_db_created", False
-                ):
+                # Rewind ONLY when the OWNING agent flushed incrementally AND save_session skipped
+                # replace_messages — i.e. session.py's exact condition `_session_db is db and
+                # _session_db_created`. A non-owning agent's replace_messages(clean history) already
+                # erased the refused turn; a second rewind would drop a prior accepted turn.
+                _adb = getattr(state.agent, "_session_db", None)
+                if (result.get("failure_reason") == "content_policy_blocked"
+                        and _adb is not None and _adb is self.session_manager._get_db()
+                        and getattr(state.agent, "_session_db_created", False)):
                     from hermes_state_rewind import erase_refused_turn_from_transcript
                     erase_refused_turn_from_transcript(
-                        getattr(state.agent, "_session_db", None),
-                        getattr(state.agent, "session_id", session_id))
+                        _adb, getattr(state.agent, "session_id", session_id))
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)

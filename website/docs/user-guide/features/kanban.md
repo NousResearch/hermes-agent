@@ -510,6 +510,30 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
+Dispatcher-owned workers remain task-scoped for destructive lifecycle operations. When
+that worker's bound profile is **Argos**, `kanban_create` additionally requires the
+worker's own Argos card on the pinned board, permits only `hefesto` or `atena` as
+assignees, and forces a fresh `scratch` workspace without project inheritance.
+It rejects cross-board/cross-tenant creation and model, provider, skills, session,
+contract, goal, and runtime overrides; calls directly to the handler have the
+same validation. Other worker profiles and interactive Kanban profiles retain
+normal creation options. Argos can read known card IDs, link dependencies,
+comment, attach files and complete/block its own card, but cannot list the board
+or unblock work. Kratos (outside a dispatched worker) retains board-wide
+supervision. For Argos, `kanban_attach_url` accepts only public HTTP(S) URLs
+without userinfo or query strings; each redirect is checked, and direct TCP
+connections are checked again after DNS resolution. The 25 MB streaming cap
+still applies. No generic web/browser or shell access is granted by Kanban.
+
+A selected direct handoff uses `kanban_create(assignee="argos", triage=false)`.
+`kanban.orchestrator_profile=argos` is **not** this handoff: the gateway's
+`auto_decompose` auxiliary LLM operates on triage cards globally and assigns
+Argos the root only after fan-out. Do not change the global setting to route
+selected requests. Argos' idempotency keys are scoped to its own card and
+prevent sequential retries from duplicating work, but the underlying DB lookup
+is pre-transaction with a non-unique index: concurrent creates are **not**
+guaranteed unique. Kratos must supervise and reconcile duplicates.
+
 The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
 
 ### Why tools instead of shelling to `hermes kanban`

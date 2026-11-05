@@ -934,7 +934,7 @@ DM the bot can run it. Operators of shared gateways must set it.
 
 The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
 executor** (`_login_executor`), never the shared 10-thread gateway pool — the token poll can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the session store's
 close/checkpoint. One attempt per process, stamped with the identity that started it: the same
 identity's second `/login` cancels the first (the loser ends with the cancelled copy pushed into its
 own chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside

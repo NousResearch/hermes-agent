@@ -19,7 +19,7 @@ message write or search into an unbounded full-transcript rebuild.
 
 ## Live behavior when FTS is corrupt
 
-If an FTS write or search reports the corruption error class, `SessionDB`:
+If an FTS write or search reports the corruption error class, the SQLite store:
 
 1. records the durable `fts_stale` marker;
 2. removes the FTS sync triggers in the same transaction;
@@ -27,7 +27,7 @@ If an FTS write or search reports the corruption error class, `SessionDB`:
 4. serves searches from canonical rows through the `LIKE` fallback.
 
 The failing live operation never runs `FTS5('rebuild')`. Existing recovery
-ownership remains unchanged: a later `SessionDB` open may rebuild under the
+ownership remains unchanged: a later open of the store may rebuild under the
 cross-process admission lock and foreign-holder guard. If that guarded rebuild
 cannot run, FTS remains detached, canonical writes stay available, and
 `hermes doctor` reports the explicit repair command.
@@ -36,8 +36,8 @@ cannot run, FTS remains detached, canonical writes stay available, and
 
 If a live write reports bare `SQLITE_CORRUPT` / `SQLITE_NOTADB` (`database
 disk image is malformed`, `file is not a database`) with no FTS provenance,
-the damage is in a canonical B-tree, the schema, or the freelist. `SessionDB`
-then quarantines that handle (`StateDbCorruptError`):
+the damage is in a canonical B-tree, the schema, or the freelist. The store
+then quarantines that handle (`StoreQuarantined`; `StateDbCorruptError` inside the SQLite backend):
 
 1. the failing write propagates the typed error and nothing is retried;
 2. later writes on the handle fail immediately without touching the file;

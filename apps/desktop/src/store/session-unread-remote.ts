@@ -1,6 +1,6 @@
 /**
  * Persisted unread flag sync (backend read-state watermark via
- * PATCH /api/sessions/{id} → SessionDB.set_session_read).
+ * PATCH /api/sessions/{id} → the store's sessions.set_read).
  *
  * The sidebar's dot is fed by TWO sources (see session-dot-state.ts): the
  * runtime "turn finished in background" marker ($unreadFinishedSessionIds,

@@ -2,6 +2,8 @@
 
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,6 +18,9 @@ from agent.prompt_builder import (
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
+    _agents_md_directory_chain,
+    _agents_md_candidates,
+    _hermes_md_candidates,
     _cursorrules_candidates,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
@@ -41,6 +46,31 @@ def _drain_truncation_warnings():
     drain_truncation_warnings()
     yield
     drain_truncation_warnings()
+
+
+def _make_git_dir(root: Path) -> None:
+    """Give *root* a ``.git`` directory laid out the way ``git init`` writes one.
+
+    A bare ``mkdir .git`` is a *phantom*: the repository test shared by prompt assembly,
+    the coding posture and the web files API (``agent.git_root``) rejects any ``.git``
+    without ``HEAD`` + ``objects``, because an empty one left behind by tooling used to
+    hijack the root for every project below it. Fixtures that mean "this is a repo" must
+    therefore look like one. Filesystem-only, so these tests stay runnable without git;
+    ``_git_init`` covers the cases that need git's real on-disk layout.
+    """
+    dot_git = root / ".git"
+    (dot_git / "objects").mkdir(parents=True, exist_ok=True)
+    (dot_git / "refs").mkdir(parents=True, exist_ok=True)
+    (dot_git / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+
+def _git_init(root: Path) -> None:
+    """A real ``git init`` repo (callers must skip when ``git`` is unavailable)."""
+    subprocess.run(
+        ["git", "init", "-q", str(root)],
+        check=True,
+        env={**os.environ, "HOME": str(root)},
+    )
 
 
 # =========================================================================
@@ -374,7 +404,7 @@ class TestBuildContextFilesPrompt:
     def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):
         # git-root AGENTS.md + intermediate + cwd are all merged, root first
         # and cwd last so deeper guidance takes precedence.
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         (tmp_path / "AGENTS.md").write_text("Root: use Ruff.")
         pkg = tmp_path / "packages"
         pkg.mkdir()
@@ -396,7 +426,7 @@ class TestBuildContextFilesPrompt:
 
     def test_agents_md_chain_skips_gaps(self, tmp_path):
         # Intermediate dirs without AGENTS.md contribute nothing.
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         (tmp_path / "AGENTS.md").write_text("Root rules.")
         deep = tmp_path / "a" / "b" / "c"
         deep.mkdir(parents=True)
@@ -405,7 +435,7 @@ class TestBuildContextFilesPrompt:
         assert result.count("## ") == 1
 
     def test_agents_md_chain_dedupes_identical_content(self, tmp_path):
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         (tmp_path / "AGENTS.md").write_text("Same rules everywhere.")
         sub = tmp_path / "sub"
         sub.mkdir()
@@ -529,18 +559,31 @@ class TestFindHermesMd:
         """A parent the process cannot stat (#8751) must not raise out of prompt construction."""
         project = tmp_path / "locked" / "proj"
         project.mkdir(parents=True)
+        locked_git = tmp_path / "locked" / ".git"
         real_exists = Path.exists
+        real_is_dir = Path.is_dir
+        real_is_file = Path.is_file
 
-        def _exists(self):
-            if self.parent == tmp_path / "locked" and self.name == ".git":
-                raise PermissionError(13, "Permission denied", str(self))
-            return real_exists(self)
+        def _raise(self):
+            raise PermissionError(13, "Permission denied", str(self))
 
-        monkeypatch.setattr(Path, "exists", _exists)
+        def _patch(original):
+            # The repository test probes `.git` with is_dir()/is_file(); patching only
+            # `exists` would leave this test vacuous against the shared predicate.
+            def _probe(self):
+                if self == locked_git:
+                    return _raise(self)
+                return original(self)
+
+            return _probe
+
+        monkeypatch.setattr(Path, "exists", _patch(real_exists))
+        monkeypatch.setattr(Path, "is_dir", _patch(real_is_dir))
+        monkeypatch.setattr(Path, "is_file", _patch(real_is_file))
         assert _find_git_root(project) is None
 
     def test_walks_to_git_root(self, tmp_path):
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         (tmp_path / ".hermes.md").write_text("root rules")
         sub = tmp_path / "a" / "b"
         sub.mkdir(parents=True)
@@ -587,14 +630,65 @@ class TestFindHermesMd:
 
 class TestFindGitRoot:
     def test_finds_git_dir(self, tmp_path):
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         assert _find_git_root(tmp_path) == tmp_path
 
     def test_finds_from_subdirectory(self, tmp_path):
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         sub = tmp_path / "src" / "lib"
         sub.mkdir(parents=True)
         assert _find_git_root(sub) == tmp_path
+
+
+class TestFindGitRootValidation:
+    """A ``.git`` that merely *exists* is not a repo the resolver may stop at.
+
+    ``$HOME`` on this host carries an empty ``.git`` (0 entries; ``git -C $HOME rev-parse``
+    says "not a git repository"). Under the old existence test ``_find_git_root`` answered
+    ``$HOME`` for every non-git project below it, so ``_agents_md_directory_chain`` built a
+    home-rooted chain and a home-level ``AGENTS.md`` / ``~/.hermes.md`` were injected as
+    project context for all of them.
+    """
+
+    def test_phantom_git_in_home_does_not_become_the_root(self, tmp_path):
+        home = tmp_path / "home"
+        (home / ".git").mkdir(parents=True)  # empty: a phantom, not a repo
+        (home / "AGENTS.md").write_text("HOME-LEVEL RULES: must not be injected.")
+        (home / ".hermes.md").write_text("HOME-LEVEL HERMES MD: must not be injected.")
+        project = home / ".hermes" / "cache" / "scratch" / "proj"
+        project.mkdir(parents=True)
+
+        assert _find_git_root(project) != home
+        # The chain is cwd-only: it must not climb to the phantom home.
+        assert _agents_md_directory_chain(project) == [project.resolve()]
+        assert _hermes_md_candidates(project) == []
+        assert _agents_md_candidates(project) == []
+
+    def test_partial_git_is_not_a_root(self, tmp_path):
+        # `objects/` + `refs/` but no HEAD: a half-built `.git`, not a repository.
+        partial = tmp_path / "partial"
+        (partial / ".git" / "objects").mkdir(parents=True)
+        (partial / ".git" / "refs").mkdir()
+        project = partial / "src"
+        project.mkdir()
+        assert _find_git_root(project) is None
+        assert _agents_md_directory_chain(project) == [project.resolve()]
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_real_repo_yields_full_git_root_to_cwd_chain(self, tmp_path):
+        # Over-tightening guard: a genuine repo (git's own layout) must keep resolving to
+        # the full root → cwd chain, with the root AGENTS.md still injected.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init(repo)
+        (repo / "AGENTS.md").write_text("Root: use Ruff.")
+        deep = repo / "packages" / "webapp"
+        deep.mkdir(parents=True)
+
+        assert _find_git_root(deep) == repo
+        assert _agents_md_directory_chain(deep) == [repo, repo / "packages", deep]
+        result = build_context_files_prompt(cwd=str(deep), skip_soul=True)
+        assert "Root: use Ruff." in result
 
 
 
@@ -1012,7 +1106,7 @@ class TestBuildSkillsSystemPromptConditional:
 
 class TestContextFileReadTimeout:
     def test_slow_hermes_md_is_skipped_and_agents_md_still_loads(self, tmp_path, monkeypatch, caplog):
-        (tmp_path / ".git").mkdir()
+        _make_git_dir(tmp_path)
         (tmp_path / ".hermes.md").write_text("Hermes project rules.")
         (tmp_path / "AGENTS.md").write_text("Agent fallback rules.")
         # Patch the module object build_context_files_prompt actually closes

@@ -19,6 +19,7 @@ from hermes_constants import (
     get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
+from agent.git_root import is_valid_git_root as _is_valid_git_root
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -111,10 +112,17 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
-    """Nearest ancestor (or *start* itself) containing ``.git``, else None."""
+    """Nearest ancestor (or *start* itself) that is a real git repository root, else None.
+
+    The repository test is shared with the coding posture and the web files API
+    (:mod:`agent.git_root`): a ``.git`` entry that merely *exists* is not a repo, so a
+    phantom ``.git`` left at ``$HOME`` no longer makes the home directory the root of
+    every non-git project below it. `is_valid_git_root` fails closed and never raises, so
+    a parent the process may not stat (locked-down /home on shared hosts) is "no .git
+    here", not a crash (#8751).
+    """
     current = start.resolve()
-    # A parent the process may not stat (locked-down /home on shared hosts) is "no .git here", not a crash.
-    return next((p for p in (current, *current.parents) if _exists_or_denied(p / ".git")), None)
+    return next((p for p in (current, *current.parents) if _is_valid_git_root(p)), None)
 
 
 def _exists_or_denied(path: Path) -> bool:

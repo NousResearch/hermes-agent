@@ -1,5 +1,7 @@
 import base64
 import os
+import shutil
+import subprocess
 import urllib.parse
 import json
 from contextlib import nullcontext
@@ -1391,3 +1393,79 @@ def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
     assert web_server_files._agent_fs_path("note.txt", cwd=str(tmp_path)) == target.resolve()
     assert web_server_files._agent_container_path("//server/share/x") is None
     assert web_server_files._agent_container_path("C:/data/x") is None
+
+
+# ── git-root resolution for the files API (F10) ─────────────────────────────
+#
+# `_fs_find_git_root` backs GET /api/fs/git-root ("what repo is this file in?"). It used
+# to accept any ancestor holding a `.git` entry, so a *phantom* `.git` — an empty
+# directory tooling leaves behind, e.g. the 0-entry `$HOME/.git` on this host — made the
+# home directory the reported root for every file under it. It now shares the validated
+# repository test in `agent.git_root` with prompt assembly and the coding posture; the
+# 50-level bound and the filesystem-root guard stay local to the route.
+
+def _git_init(root: Path) -> None:
+    subprocess.run(
+        ["git", "init", "-q", str(root)],
+        check=True,
+        env={**os.environ, "HOME": str(root)},
+    )
+
+
+class TestFsFindGitRoot:
+    def test_phantom_git_in_home_is_not_reported(self, tmp_path):
+        home = tmp_path / "home"
+        (home / ".git").mkdir(parents=True)  # empty: not a repository
+        target = home / "project" / "src" / "main.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("print('hi')\n", encoding="utf-8")
+
+        root = file_routes._fs_find_git_root(target.parent)
+
+        assert root != str(home)
+        assert root is None
+
+    def test_partial_git_is_not_reported(self, tmp_path):
+        partial = tmp_path / "partial"
+        (partial / ".git" / "objects").mkdir(parents=True)
+        (partial / ".git" / "refs").mkdir()
+        (partial / "src").mkdir()
+        assert file_routes._fs_find_git_root(partial / "src") is None
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_real_repo_root_is_still_reported(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init(repo)
+        nested = repo / "a" / "b"
+        nested.mkdir(parents=True)
+
+        assert file_routes._fs_find_git_root(nested) == str(repo)
+        assert file_routes._fs_find_git_root(repo) == str(repo)
+
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_fifty_level_bound_is_preserved(self, tmp_path):
+        # A repo more than 50 levels up must not be reached: the route's own bound is
+        # part of its contract (a terminated filesystem walk), not the shared predicate.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init(repo)
+        deep = repo
+        for _ in range(55):
+            deep = deep / "d"
+        deep.mkdir(parents=True)
+
+        assert file_routes._fs_find_git_root(deep) is None
+
+    def test_all_three_resolvers_share_one_predicate(self):
+        # ONE copy of the rule: the coding posture, prompt assembly and this route must
+        # resolve the repository test to the same function object, not to three
+        # independently-maintained copies (F9 fixed one of three and left two loose).
+        from agent import coding_context, prompt_builder
+
+        assert (
+            coding_context._is_valid_git_root
+            is prompt_builder._is_valid_git_root
+            is file_routes._is_valid_git_root
+        )
+        assert coding_context._is_valid_git_root.__module__ == "agent.git_root"

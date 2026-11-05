@@ -90,6 +90,28 @@ async def test_failed_sibling_in_a_coalesced_group_wakes_the_parent(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_crashed_batch_with_no_child_results_wakes_the_parent(tmp_path, monkeypatch):
+    """A runner that raises finalizes the unit as ``status=error`` with ``results=[]`` (``_batch_crash``):
+    no child reports a failure, the unit itself does."""
+    from tools.async_delegation import _batch_crash
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        evt = {"type": "async_delegation", "is_batch": True, "session_key": route, "delegation_id": "deleg_crash",
+               "goals": ["RESULT_deleg_crash goal"], "status": "error", "dispatched_at": 1700000000.0,
+               "completed_at": 1700000060.0, **_batch_crash("RuntimeError: batch runner crashed", 1.0)}
+        delegation._persist_dispatch(evt)
+        delegation._persist_completion(evt, _batch_crash("RuntimeError: batch runner crashed", 1.0))
+        assert await runner._deliver_async_delegation_group([dict(evt, parent_session_id=target)]) is True
+        seen = _turns(runner, authority, target, "deleg_crash")
+        await authority._drain(ref)
+        assert len(seen) == 1 and "did not complete successfully" in seen[0][0]
+        assert _notes(authority, target, "deleg_crash") == []
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_early_task_failure_notice_stays_a_note(tmp_path, monkeypatch):
     """The per-task notice is an interim diagnostic; the batch's final result is the one that wakes."""
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)

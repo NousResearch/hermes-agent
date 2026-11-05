@@ -385,3 +385,66 @@ def register(ctx):
     finally:
         manager.unload()
         manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("held_in", ["register", "host_start"])
+def test_late_failure_of_an_abandoned_load_leaves_the_reloaded_plugin_alone(tmp_path, monkeypatch, held_in):
+    # A hosted load abandoned at its deadline (inside register(), or still waiting for the host to start)
+    # can fail after a reload of the same plugin succeeded. Host state is keyed by plugin, not by load,
+    # so that late failure must not unload the live load.
+    from hermes_cli import plugin_host, plugins_loader
+    from tests.waiting import wait_until
+    from tools.registry import registry
+
+    state = tmp_path / "state"
+    state.mkdir()
+    # The abandoned load's register() is the first to run when it is held inside register(), the second
+    # when it is held before the host start returns (the reload reaches the host first).
+    failing_attempt = 1 if held_in == "register" else 2
+    body = f'''
+import json, time
+from pathlib import Path
+STATE = Path({str(state)!r})
+def register(ctx):
+    attempt = len(list(STATE.glob("attempt-*"))) + 1
+    (STATE / f"attempt-{{attempt}}").write_text("x")
+    if attempt == {failing_attempt}:
+        while not (STATE / "go").exists():
+            time.sleep(0.05)
+        raise RuntimeError("abandoned load failed late")
+    ctx.register_tool(name="lateprobe_ping", toolset="lateprobe", schema={{"name": "lateprobe_ping",
+        "description": "d", "parameters": {{"type": "object", "properties": {{}}}}}},
+        handler=lambda args, **kw: json.dumps({{"pong": True}}))
+'''
+    home = _home_with_plugins(tmp_path, monkeypatch, {"lateprobe": body})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["lateprobe"], "isolation": "host", "load_timeout_seconds": 2}}), encoding="utf-8")
+    manager = PluginManager()
+    manager._plugin_host().ensure_started()  # outside any load deadline: a slow host start can't time out the reload
+    if held_in == "host_start":
+        start, callers = plugin_host.PluginHost.ensure_started, []
+
+        def slow_first_start(self):
+            channel = start(self)
+            callers.append(self)
+            if len(callers) == 1:
+                wait_until(lambda: (state / "go").exists(), timeout=30, what="the test to release the host start")
+            return channel
+
+        monkeypatch.setattr(plugin_host.PluginHost, "ensure_started", slow_first_start)
+    manager.discover_and_load()
+    try:
+        assert "timed out" in str(manager._plugins["lateprobe"].error)
+        manager.discover_and_load(force=True)
+        assert manager._plugins["lateprobe"].enabled
+        (state / "go").write_text("go")
+        loader = f"{plugins_loader._LOADER_THREAD_PREFIX}lateprobe"
+        wait_until(lambda: not any(t.is_alive() and t.name == loader for t in plugins_loader._ABANDONED_LOADERS),
+                   timeout=15, what="the abandoned first load to finish")
+        assert len(list(state.glob("attempt-*"))) == 2
+        assert json.loads(registry.dispatch("lateprobe_ping", {}, scope=manager.scope_key)) == {"pong": True}
+    finally:
+        (state / "go").write_text("go")
+        manager.unload()
+        manager._plugin_host().shutdown()

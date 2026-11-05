@@ -311,11 +311,11 @@ __all__ = [
 
 
 class UndoRollbackHint(Result):
-    """``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,
-    so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;
-    ``text`` is the rendered line in the backend's language."""
+    """``/undo``'s pointer at ``/rollback``: ``ref`` is the short checkpoint hash ``/rollback`` takes (null: no
+    provable checkpoint, so the line says to list them); ``files`` are the first changed paths, ``more`` the
+    rest's count; ``text`` is the rendered line in the backend's language."""
 
-    number: int | None = None
+    ref: str | None = None
     files: list[str] = Field(default_factory=list)
     more: int = 0
     text: str

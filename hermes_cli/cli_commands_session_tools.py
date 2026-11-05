@@ -106,9 +106,9 @@ class CLICommandsSessionToolsMixin:
 
     # ---- /rollback chat undo --------------------------------------------------------------
     @staticmethod
-    def _checkpoint_epoch(cwd, commit):
-        from tools.checkpoint_undo_hint import checkpoint_epoch
-        return checkpoint_epoch(cwd, commit)
+    def _checkpoint_taken_at(cwd, commit):
+        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        return checkpoint_taken_at(cwd, commit)
 
     def _rollback_chat_turn(self, taken) -> None:
         """Main's whole-tree ``/rollback`` also undoes the newest chat turn, but only one that made or followed

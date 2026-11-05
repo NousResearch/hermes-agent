@@ -3985,6 +3985,6 @@ shared:
   # /undo's pointer at the /rollback command that restores the undone turns' files
   # (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ Lêers wat in die ongedane beurte verander is: {files}. Om hulle te herstel: /rollback {number}"
+    restore: "↶ Lêers wat in die ongedane beurte verander is: {files}. Om hulle te herstel: /rollback {ref}"
     list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
     more: "+{count} meer"

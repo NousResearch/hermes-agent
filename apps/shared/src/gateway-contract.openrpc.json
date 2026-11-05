@@ -45991,19 +45991,19 @@
       },
       "UndoRollbackHint": {
         "additionalProperties": false,
-        "description": "``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number,\nso the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count;\n``text`` is the rendered line in the backend's language.",
+        "description": "``/undo``'s pointer at ``/rollback``: ``ref`` is the short checkpoint hash ``/rollback`` takes (null: no\nprovable checkpoint, so the line says to list them); ``files`` are the first changed paths, ``more`` the\nrest's count; ``text`` is the rendered line in the backend's language.",
         "properties": {
-          "number": {
+          "ref": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Number"
+            "title": "Ref"
           },
           "files": {
             "items": {

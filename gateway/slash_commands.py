@@ -758,15 +758,12 @@ class GatewaySlashCommandsMixin(
         if not checkpoints:
             return t("gateway.rollback.none_found", cwd=cwd)
 
-        # Restore by number or hash
+        # Restore by number or hash (/undo prints a hash, which can be all digits)
+        from tools.checkpoint_refs import resolve_checkpoint_ref
         try:
-            idx = int(arg) - 1
+            target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:
-            target_hash = arg
-        else:
-            if not 0 <= idx < len(checkpoints):
-                return t("gateway.rollback.invalid_number", max=len(checkpoints))
-            target_hash = checkpoints[idx]["hash"]
+            return t("gateway.rollback.invalid_number", max=len(checkpoints))
         result = mgr.restore(cwd, target_hash, safe=not restore_all)
         if not result["success"]:
             return t("gateway.rollback.restore_failed", error=result["error"])

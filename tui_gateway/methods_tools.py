@@ -1152,7 +1152,7 @@ def _(rid, params: dict, session) -> dict:
             return {"success": False, "error": reason}
         # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
         commit = _resolve_checkpoint_hash(mgr, cwd, target)
-        taken = _tools_mod("tools.checkpoint_undo_hint").checkpoint_epoch(cwd, commit)
+        taken = _tools_mod("tools.checkpoint_undo_hint").checkpoint_taken_at(cwd, commit)
         result = mgr.restore(cwd, commit, file_path=file_path or None,
                              safe=not file_path and params.get("all") is not True)
         if result.get("success") and not file_path:

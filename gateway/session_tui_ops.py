@@ -290,8 +290,8 @@ async def rollback(connection, ref, params, *, kind):
         if refusal:
             return {'success': False, 'error': refusal}
         # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
-        from tools.checkpoint_undo_hint import checkpoint_epoch
-        taken.append(checkpoint_epoch(cwd, target))
+        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        taken.append(checkpoint_taken_at(cwd, target))
         return mgr.restore(cwd, target, file_path=file_path or None,
                            safe=not file_path and not params.get('all'))
     taken = []

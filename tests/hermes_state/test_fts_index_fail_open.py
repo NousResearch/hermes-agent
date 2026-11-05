@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_state import SessionDB, StateDbCorruptError
+from persistence.sqlite import _holder, _schema
 from hermes_state_health import mark_storage_corrupt, reset_storage_state
 from run_agent import AIAgent
 
@@ -119,7 +120,7 @@ def test_escaped_fts_only_error_is_index_scoped_not_quarantined(tmp_path, monkey
     try:
         _seed(db)
         _stomp_fts_shadow(db_path)
-        monkeypatch.setattr(db, "_enter_fts_fail_open", lambda exc, **_: False)
+        monkeypatch.setattr(_holder, "_enter_fts_fail_open", lambda holder, exc, **_: False)
         agent = _flush_agent(db, "s1")
 
         ok = agent._flush_messages_to_session_db(
@@ -137,7 +138,7 @@ def test_escaped_fts_only_error_is_index_scoped_not_quarantined(tmp_path, monkey
         db.close()
 
 
-def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path):
+def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path, monkeypatch):
     """Gateway + TUI hit the same corrupt index: one detaches while the other waits. A sibling
     that takes the write lock between this writer's corruption error and its detach, and holds
     it past the writer connection's 1 s busy timeout, must be waited out on the write budget —
@@ -157,7 +158,7 @@ def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path):
             raw.execute("COMMIT")
             raw.close()
 
-        real_check = db._is_fts_write_corruption_error
+        real_check = _holder._is_fts_write_corruption_error
         holder = []
 
         def check_then_contend(exc):
@@ -169,7 +170,9 @@ def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path):
                 threading.Timer(1.6, release.set).start()
             return hit
 
-        db._is_fts_write_corruption_error = check_then_contend
+        # The write path and its fail-open step each check through their own binding.
+        monkeypatch.setattr(_holder, "_is_fts_write_corruption_error", check_then_contend)
+        monkeypatch.setattr(_schema, "_is_fts_write_corruption_error", check_then_contend)
         db.append_message("s1", "user", "lands after the sibling lets go")
         if not holder:
             pytest.skip("this SQLite build defers FTS shadow corruption past the insert trigger")
@@ -182,7 +185,7 @@ def test_detach_waits_out_a_sibling_holding_the_write_lock(tmp_path):
         db.close()
 
 
-def test_quarantine_while_detach_waits_commits_nothing(tmp_path):
+def test_quarantine_while_detach_waits_commits_nothing(tmp_path, monkeypatch):
     """The detach may now wait up to the write budget for the lock. A sibling that quarantines
     this file meanwhile (structural corruption latched process-wide) must stop it: the retry
     drops no triggers, commits no stale breadcrumb, and the corrupt error surfaces."""
@@ -201,7 +204,7 @@ def test_quarantine_while_detach_waits_commits_nothing(tmp_path):
             raw.execute("COMMIT")
             raw.close()
 
-        real_check, real_sleep = db._is_fts_write_corruption_error, db._sleep_before_write_retry
+        real_check, real_sleep = _holder._is_fts_write_corruption_error, db._sleep_before_write_retry
         holder = []
 
         def check_then_contend(exc):
@@ -217,7 +220,9 @@ def test_quarantine_while_detach_waits_commits_nothing(tmp_path):
             release.set()
             return real_sleep(deadline, patience_s)
 
-        db._is_fts_write_corruption_error = check_then_contend
+        # The write path and its fail-open step each check through their own binding.
+        monkeypatch.setattr(_holder, "_is_fts_write_corruption_error", check_then_contend)
+        monkeypatch.setattr(_schema, "_is_fts_write_corruption_error", check_then_contend)
         db._sleep_before_write_retry = quarantine_then_sleep
         with pytest.raises(StateDbCorruptError):
             db.append_message("s1", "user", "must not land on a quarantined file")

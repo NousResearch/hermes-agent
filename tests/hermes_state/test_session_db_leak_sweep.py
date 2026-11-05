@@ -36,7 +36,7 @@ _leaked: list[SessionDB] = []
 def test_constructed_sessiondb_is_registered(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
-        assert db in hermes_state_guard._test_instance_registry
+        assert db._holder in hermes_state_guard._test_instance_registry
     finally:
         db.close()
     # close() must fully release the writer connection…

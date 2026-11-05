@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_wal
+import sqlite_support
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -1187,7 +1187,7 @@ class TestSharedBoardPaths:
 
 
 # ---------------------------------------------------------------------------
-# NFS / network-filesystem fallback (see hermes_state_wal.apply_wal_with_fallback)
+# NFS / network-filesystem fallback (see sqlite_support.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
 
 def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
@@ -1217,16 +1217,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     # These tests exercise the WAL-attempt path; assume a fixed SQLite so the
     # WAL-reset vulnerability gate doesn't short-circuit before the pragma.
-    import hermes_state_wal as _hermes_state_wal
     monkeypatch.setattr(
-        _hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
+        sqlite_support, "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
-    _hermes_state_wal._wal_fallback_warned_paths.clear()
+    sqlite_support._wal_fallback_warned_paths.clear()
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
-    hermes_state_wal._wal_fallback_warned_paths.clear()
+    sqlite_support._wal_fallback_warned_paths.clear()
 
     real_connect = _sqlite3.connect
 
@@ -1277,10 +1276,10 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     kb._INITIALIZED_PATHS.clear()
-    hermes_state_wal._wal_fallback_warned_paths.clear()
+    sqlite_support._wal_fallback_warned_paths.clear()
     # Assume a fixed SQLite so the WAL-reset gate doesn't short-circuit.
     monkeypatch.setattr(
-        hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
+        sqlite_support, "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
 

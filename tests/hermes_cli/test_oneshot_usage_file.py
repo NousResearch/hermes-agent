@@ -59,23 +59,27 @@ class TestAuxiliaryLedger:
 
     def test_aux_usage_is_a_separate_breakdown_and_main_keys_unchanged(self, tmp_path):
         from hermes_cli.oneshot import _auxiliary_usage, _attach_auxiliary_usage
-        from hermes_state import SessionDB
+        from persistence.conversation.usage import TokenCounts
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB(tmp_path / "state.db")
+        handle = open_persistence(profile_scope(home=tmp_path))
         try:
-            db.create_session("root", "cli", model="main")
+            seed_session(handle, "root", "cli", model="main")
             # Rows from an earlier run of a resumed session must not count toward this run.
-            db.record_auxiliary_usage("root", "vision", model="v", input_tokens=500, output_tokens=5,
-                                      estimated_cost_usd=0.5)
-            before = _auxiliary_usage(db, "root")
+            handle.usage.record_auxiliary_usage("root", "vision", model="v",
+                                                tokens=TokenCounts(input_tokens=500, output_tokens=5),
+                                                estimated_cost_usd=0.5)
+            before = _auxiliary_usage(handle, "root", persistence=handle)
             # This run: aux billed to the id the turn started with; compression mints a child id.
-            db.record_auxiliary_usage("root", "title_generation", model="t", input_tokens=40, output_tokens=8,
-                                      estimated_cost_usd=0.001)
-            db.create_session("child", "cli", model="main", parent_session_id="root")
+            handle.usage.record_auxiliary_usage("root", "title_generation", model="t",
+                                                tokens=TokenCounts(input_tokens=40, output_tokens=8),
+                                                estimated_cost_usd=0.001)
+            seed_session(handle, "child", "cli", model="main", parent_session_id="root")
             result = _result(session_id="child")
-            _attach_auxiliary_usage(result, db, before)
+            _attach_auxiliary_usage(result, handle, before, persistence=handle)
         finally:
-            db.close()
+            handle.close()
 
         path = tmp_path / "usage.json"
         _write_usage_file(str(path), result)
@@ -96,21 +100,24 @@ class TestAuxiliaryLedger:
 
         from agent import title_generator
         from hermes_cli.oneshot import _attach_auxiliary_usage
-        from hermes_state import SessionDB
+        from persistence.conversation.usage import TokenCounts
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB(tmp_path / "state.db")
+        handle = open_persistence(profile_scope(home=tmp_path))
         try:
-            db.create_session("s", "cli", model="main")
+            seed_session(handle, "s", "cli", model="main")
 
             def late_row():
                 time.sleep(0.2)
-                db.record_auxiliary_usage("s", "title_generation", model="t", input_tokens=7, output_tokens=1)
+                handle.usage.record_auxiliary_usage("s", "title_generation", model="t",
+                                                    tokens=TokenCounts(input_tokens=7, output_tokens=1))
 
             thread = threading.Thread(target=late_row, name="auto-title")
             title_generator._UPGRADE_THREADS.add(thread)
             thread.start()
             result = _result(session_id="s")
-            _attach_auxiliary_usage(result, db, {})
+            _attach_auxiliary_usage(result, handle, {}, persistence=handle)
         finally:
-            db.close()
+            handle.close()
         assert result["auxiliary_usage"]["title_generation"]["api_calls"] == 1

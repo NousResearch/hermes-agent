@@ -9,7 +9,7 @@ the platform-side message id — so nothing downstream can ask "did this
 Discord message already reach the transcript?" and the recovery pass has no
 authority to dedup against.
 
-``SessionDB`` already carries a ``platform_message_id`` column, a partial
+The store already carries a ``platform_message_id`` column, a partial
 unique index over ``(session_id, platform_message_id)``, and a
 ``has_platform_message_id`` lookup — the storage and the query exist.  What is
 missing is the WRITE on the normal agent-persisted turn path: the id is only
@@ -21,17 +21,18 @@ from __future__ import annotations
 
 import types
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
-def _make_db(tmp_path) -> SessionDB:
-    return SessionDB(db_path=tmp_path / "state.db")
+def _make_db(tmp_path):
+    return storage_handle(tmp_path)
 
 class _MinimalAgent:
     """The narrow slice of AIAgent that ``_apply_persist_user_message_override``
     and ``_flush_messages_to_session_db`` read."""
 
-    def __init__(self, db: SessionDB, session_id: str):
-        self._session_db = db
+    def __init__(self, db, session_id: str):
+        self._session_db = self.persistence = db
         self._session_db_created = True
         self.session_id = session_id
         self._last_flushed_db_idx = 0
@@ -77,7 +78,7 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
     from run_agent import AIAgent
 
     db = _make_db(tmp_path)
-    session_id = db.create_session("sess-drain-window", "gateway")
+    session_id = seed_session(db, "sess-drain-window", "gateway")
 
     agent = _MinimalAgent(db, session_id)
     agent._persist_user_message_idx = 0
@@ -90,7 +91,7 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
         agent, messages, conversation_history=None
     )
 
-    assert db.has_platform_message_id(session_id, "discord-4242"), (
+    assert db.messages.has_platform_message_id(session_id, "discord-4242"), (
         "the interrupted turn is in the transcript but carries no "
         "platform_message_id, so restart drain-window recovery cannot tell it "
         "already ran and will re-dispatch it"
@@ -106,7 +107,7 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     from run_agent import AIAgent
 
     db = _make_db(tmp_path)
-    session_id = db.create_session("sess-override", "gateway")
+    session_id = seed_session(db, "sess-override", "gateway")
 
     agent = _MinimalAgent(db, session_id)
     agent._persist_user_message_idx = 0
@@ -120,7 +121,7 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
         agent, messages, conversation_history=None
     )
 
-    assert db.has_platform_message_id(session_id, "discord-7777")
+    assert db.messages.has_platform_message_id(session_id, "discord-7777")
 
 def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     """Construct a minimal build_turn_context call.

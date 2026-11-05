@@ -17,6 +17,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
     from hermes_cli.kanban_db_connect import connect
     from gateway.session_contract import SessionActor
     from gateway.session_kanban import run_task
+    from persistence_assembly import profile_scope
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -44,8 +45,8 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
 
     async def resume(ref, params):
         calls.append('resume')
-    db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
-    authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
+    store = SimpleNamespace(scope=profile_scope(home=tmp_path), sessions=SimpleNamespace(get=lambda sid: None))
+    authority = SimpleNamespace(profile_id=str(tmp_path), persistence=store, submit=submit)
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task_id, run_id=task.current_run_id, claim_lock=task.claim_lock)

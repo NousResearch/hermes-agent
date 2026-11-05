@@ -12,6 +12,8 @@ from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
 from gateway.run_runtime import initialize_gateway_runtime
 from gateway.runtime_ownership import process_ownership
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
@@ -19,8 +21,6 @@ def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     for name in names:
         home = root / 'profiles' / name
@@ -30,10 +30,10 @@ def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
     return root, homes
 
 
-def _seed_child(db, parent, text):
-    db.create_session('child', source='subagent', parent_session_id=parent,
-                      model_config={'_delegate_from': parent, '_subagent_id': 'sa-0-scoped'})
-    db.append_message('child', role='user', content=text)
+def _seed_child(store, parent, text):
+    seed_session(store, 'child', 'subagent', parent_session_id=parent,
+                 model_config={'_delegate_from': parent, '_subagent_id': 'sa-0-scoped'})
+    seed_messages(store, 'child', {'role': 'user', 'content': text})
 
 
 @pytest.mark.asyncio
@@ -43,6 +43,7 @@ async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_sco
     from gateway.session_authorities import owner_scope
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
+    from gateway.session_persistence import authority_persistence
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {
@@ -72,10 +73,10 @@ async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_sco
             ref = create_local_session(secondary, connection.actor, dict(
                 request_id='desktop', source='tui', cwd=str(tmp_path), model='default-a', toolsets=[]))
         target = physical_target(secondary, ref)
-        _seed_child(secondary.db, target, 'BETA_CHILD')
+        _seed_child(authority_persistence(secondary), target, 'BETA_CHILD')
         # The launch profile's store holds a same-id decoy under the same parent id.
-        primary.db.create_session(target, source='tui')
-        _seed_child(primary.db, target, 'PRIMARY_DECOY')
+        seed_session(authority_persistence(primary), target, 'tui')
+        _seed_child(authority_persistence(primary), target, 'PRIMARY_DECOY')
         environ = dict(os.environ)
         response = await connection.dispatch({'id': 1, 'method': 'session.transcript', 'params': {
             'session_id': ref.session_id, 'subagent_id': 'sa-0-scoped'}})
@@ -88,6 +89,6 @@ async def test_secondary_profile_child_transcript_reads_its_own_store_in_its_sco
         if connection is not None:
             await connection.close()
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

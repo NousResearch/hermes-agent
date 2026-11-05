@@ -18,6 +18,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -708,7 +709,9 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         await asyncio.sleep(0.3)
         if ctx._run_still_current():
-            await st.adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
+            # On this turn's own message, as its refresh: the chat's latest may be a newer one.
+            await st.adapter.send_typing(ctx.source.chat_id, metadata=typing_metadata_for_turn(
+                st.adapter, ctx.source.chat_id, ctx.event_message_id, ctx._progress_metadata))
 
     async def _progress_send_or_edit(self, st, msg) -> bool:
         """Deliver this tick's bubble. Returns False on a transient edit failure (retry next tick).
@@ -866,7 +869,7 @@ class GatewayTurnProgressMixin:
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
         if local_viewer_turn(self):
             from gateway import local_viewer_events
-            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result))
+            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))
         self._publish_execution("tool.complete", payload)
         if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.

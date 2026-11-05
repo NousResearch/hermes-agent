@@ -47,6 +47,7 @@ test('a legacy (non-canonical) dial strips canonical-only identity keys the serv
   await new Promise<void>(resolve => server.once('listening', resolve))
   const sent: any[] = []
   server.on('connection', (socket: any) => {
+    socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
       sent.push(frame)
@@ -80,6 +81,7 @@ test('a legacy dial branches from a message with the serve contract\'s count, ne
   await new Promise<void>(resolve => server.once('listening', resolve))
   const allowed = new Set(['session_id', 'name', 'count', 'idempotency_key'])
   server.on('connection', (socket: any) => {
+    socket.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
       const unknown = Object.keys(frame.params).filter(key => !allowed.has(key))

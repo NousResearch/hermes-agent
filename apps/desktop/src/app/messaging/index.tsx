@@ -32,6 +32,7 @@ import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icon
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
@@ -49,6 +50,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
 import { PlatformAvatar } from './platform-icon'
+import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
@@ -744,31 +746,8 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const effectiveValues = Object.fromEntries(
-    platform.env_vars.map(field => [field.key, edits[field.key] || field.value || field.default_value || ''])
-  )
-
-  const isVisible = (field: MessagingEnvVarInfo) => {
-    const condition = field.visible_when
-
-    return !condition || condition.values.includes(effectiveValues[condition.key] || '')
-  }
-
-  const choiceFields = platform.env_vars.filter(field => (field.options?.length ?? 0) > 0 && isVisible(field))
-
-  const requiredFields = platform.env_vars.filter(field => field.required && isVisible(field))
-
-  const optionalFields = platform.env_vars.filter(
-    field => !field.required && !field.options?.length && isVisible(field) && !fieldCopy(field, m).advanced
-  )
-
-  const advancedFields = platform.env_vars.filter(
-    field => !field.required && !field.options?.length && isVisible(field) && fieldCopy(field, m).advanced
-  )
-
-  const hiddenCount = advancedFields.length
+  const connectionId = useStore($activeConnectionId)
+  const viaRelay = Boolean(platform.relay_exclusive)
 
   return (
     <>
@@ -777,9 +756,13 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {viaRelay ? (
+              <SetupPill active>{m.relayLink.title}</SetupPill>
+            ) : (
+              <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            )}
             {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {!platform.configured && !viaRelay && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the
                 platform's whole story; only add the hint when it is not. */}
             {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
@@ -794,17 +777,6 @@ function PlatformDetail({
       </header>
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
-
-      {choiceFields.map(field => (
-        <MessagingField
-          edits={edits}
-          field={field}
-          key={field.key}
-          onClear={onClear}
-          onEdit={onEdit}
-          saving={saving}
-        />
-      ))}
 
       {/* Pending pairing requests. Rendered only when someone is actually
           waiting — an empty-state card here would be permanent chrome on a
@@ -865,6 +837,94 @@ function PlatformDetail({
           </div>
         </section>
       )}
+
+      {platform.relay_fronted && (
+        <section>
+          <RelayLinkSetup
+            // A new backend or profile is a new flow: no code, poll or account list carries over.
+            key={`${connectionId ?? 'local'}:${scopeProfile ?? ''}:${platform.id}`}
+            platform={platform}
+            scopeProfile={scopeProfile}
+          />
+        </section>
+      )}
+
+      {/* Not carried by the shared bot yet switched off at every start: say so instead of a toggle
+          that reverts (#141175). */}
+      {platform.disabled_by_relay && !platform.relay_exclusive && (
+        <p className="text-xs text-muted-foreground">{m.relayLink.managedNote(platform.name)}</p>
+      )}
+
+      {/* Under an exclusive relay a direct bot is switched off at every start: the shared-bot link
+          above is the whole setup, so the credential sections would only lead nowhere (#141546). */}
+      {!platform.relay_exclusive && (
+        <DirectSetupSections
+          edits={edits}
+          onClear={onClear}
+          onEdit={onEdit}
+          onTelegramApplied={onTelegramApplied}
+          platform={platform}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+}
+
+function DirectSetupSections({
+  edits,
+  onClear,
+  onEdit,
+  onTelegramApplied,
+  platform,
+  saving,
+  scopeProfile
+}: {
+  edits: Record<string, string>
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  platform: MessagingPlatformInfo
+  saving: string | null
+  scopeProfile: string | undefined
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const effectiveValues = Object.fromEntries(
+    platform.env_vars.map(field => [field.key, edits[field.key] || field.value || field.default_value || ''])
+  )
+
+  const isVisible = (field: MessagingEnvVarInfo) => {
+    const condition = field.visible_when
+
+    return !condition || condition.values.includes(effectiveValues[condition.key] || '')
+  }
+
+  const choiceFields = platform.env_vars.filter(field => (field.options?.length ?? 0) > 0 && isVisible(field))
+  const requiredFields = platform.env_vars.filter(field => field.required && isVisible(field))
+  const optionalFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && !fieldCopy(field, m).advanced
+  )
+  const advancedFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && fieldCopy(field, m).advanced
+  )
+  const hiddenCount = advancedFields.length
+
+  return (
+    <>
+      {choiceFields.map(field => (
+        <MessagingField
+          edits={edits}
+          field={field}
+          key={field.key}
+          onClear={onClear}
+          onEdit={onEdit}
+          saving={saving}
+        />
+      ))}
 
       {platform.id === 'telegram' && (
         <section>
@@ -994,17 +1054,22 @@ function PlatformActionBar({
   const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
 
+  // Under an exclusive relay the direct adapter never runs; the link panel is the whole setup.
+  if (platform.relay_exclusive) {
+    return null
+  }
+
   return (
     <>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
         <Switch
           aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
           checked={platform.enabled}
-          disabled={saving === `enabled:${platform.id}`}
+          disabled={platform.disabled_by_relay || saving === `enabled:${platform.id}`}
           onCheckedChange={onToggle}
           size="xs"
         />
-        {platform.enabled ? m.enabled : m.disabled}
+        {platform.disabled_by_relay ? m.relayLink.managed : platform.enabled ? m.enabled : m.disabled}
       </label>
 
       <div className="ml-auto flex items-center gap-2">

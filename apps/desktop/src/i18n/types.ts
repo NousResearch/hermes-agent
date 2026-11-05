@@ -636,8 +636,6 @@ export interface Translations extends NoticeTranslations {
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
@@ -1898,6 +1896,10 @@ export interface Translations extends NoticeTranslations {
     edit: string
     archive: string
     skillArchivedTitle: string
+    lock: string
+    locked: string
+    lockHint: string
+    unlockedHint: string
     skillArchivedMessage: string
     tabPlugins: string
     plugins: PluginUpdateTranslations &
@@ -2339,6 +2341,32 @@ export interface Translations extends NoticeTranslations {
     restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
+    relayLink: {
+      title: string
+      badge: string
+      intro: (platform: string) => string
+      link: (platform: string) => string
+      linkAnother: (platform: string) => string
+      linkedAccounts: string
+      unlink: string
+      unlinkFailed: string
+      stepOpen: (platform: string) => string
+      stepSend: string
+      open: (platform: string) => string
+      copy: string
+      copied: string
+      copyFailed: (command: string) => string
+      waiting: string
+      linked: (platform: string) => string
+      expired: string
+      refused: (platform: string) => string
+      qrAlt: (platform: string) => string
+      managed: string
+      managedNote: (platform: string) => string
+      managedIntro: string
+      openPortal: string
+      noNewAccount: (platform: string) => string
+    }
     telegramQr: {
       title: string
       subtitle: string
@@ -2464,9 +2492,6 @@ export interface Translations extends NoticeTranslations {
       deleteOn: (gateway: string) => string
       /** At-rest local default pill: device, not Home, and the click's consequence. */
       localDevice: string
-      switchDeviceTitle: string
-      switchDeviceDesc: string
-      switchDeviceConfirm: string
       installDeviceTitle: string
       installDeviceDesc: string
       installDeviceConfirm: string
@@ -3530,6 +3555,8 @@ export interface Translations extends NoticeTranslations {
       sendsOnRoute: (level: string) => string
       updateFailed: string
       fastFailed: string
+      daybreak: string
+      daybreakFailed: string
     }
     gatewayMenu: {
       gateway: string

@@ -36,8 +36,8 @@ DEFAULT_CONFIG = {
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
-    # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
-    "runtime": {"nofile_soft_limit": 4096},
+    # Server-process fd soft limit (clamped to the hard limit) + glibc arena cap; 0/false/null = off.
+    "runtime": {"nofile_soft_limit": 4096, "malloc_arena_max": 4},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
@@ -143,9 +143,9 @@ DEFAULT_CONFIG = {
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
         "fast_auto_seconds": 60,
-        # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
-        # or low | medium | high. Responses-family transports only; chat_completions never sends it.
+        # Responses-only `text.verbosity` (never chat_completions): "" = not sent, or low | medium | high.
         "text_verbosity": "",
+        "daybreak": False,  # opt-in; only catalog-listed Codex models (agent/codex_service_tiers.py)
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
@@ -744,13 +744,11 @@ DEFAULT_CONFIG = {
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
-        # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout:
-        # seconds a streamed call goes without a substantive chunk before it fails fast into
-        # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
-        # budget) — raising "timeout" alone does not widen this window. See #108104.
+        # web_extract, session_search, skills_hub: no aux LLM any more, leftover blocks are ignored.
+        # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call
+        # goes without a substantive chunk before it fails fast into retry/fallback; None = built-in
+        # 60s default. Independent of "timeout" (the overall request budget). See #108104.
         "compression": _aux(120, no_progress_timeout=None),
-        "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
@@ -862,9 +860,9 @@ DEFAULT_CONFIG = {
         # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
         # terminal/tmux stack stamps stale prompt chrome into scrollback.
         "cli_rebuild_scrollback_on_redraw": False,
-        # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
-        "persist_prompts": True,
+        "persist_prompts": True,  # one-line scrollback summary of resolved approval/clarify prompts
         "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        "inline_images": "auto",  # CLI/TUI transcript images (attachments, tool results): auto|kitty|iterm|unicode|off
         # Append a one-line advisory to the final response when a write_file/patch failed this turn
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
@@ -2918,12 +2916,10 @@ OPTIONAL_ENV_VARS = OptionalEnvVars({
     # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
     # tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
     # via tools/env_passthrough.py.
-    "NOTION_API_KEY": _skill("Notion integration token (used by the `notion` skill)",
+    "NOTION_API_KEY": _skill("Notion integration token (used by the Teams meeting pipeline's Notion sink)",
         "Notion API key", "https://www.notion.so/my-integrations"),
     "LINEAR_API_KEY": _skill("Linear personal API key (used by the `linear` skill)",
         "Linear API key", "https://linear.app/settings/account/security"),
-    "AIRTABLE_API_KEY": _skill("Airtable personal access token (used by the `airtable` skill)",
-        "Airtable API key", "https://airtable.com/create/tokens"),
     "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
         "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
     # ── Honcho ──

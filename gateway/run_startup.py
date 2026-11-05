@@ -27,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
@@ -157,7 +158,7 @@ class GatewayStartupMixin:
                 source = getattr(event, "source", None)
                 adapter = self._intake_adapter_for(source)
                 if adapter is None:
-                    logger.debug(
+                    logger.warning(
                         "Dropping startup-restore queued message: adapter unavailable for %s",
                         getattr(getattr(source, "platform", None), "value", None),
                     )
@@ -659,6 +660,7 @@ class GatewayStartupMixin:
             _resume_state = self._session_state(entry.session_key)
             _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
+            note_running_chat_owner(self, entry.session_key, source)  # this loop runs in the launch scope
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
@@ -1125,6 +1127,26 @@ class GatewayStartupMixin:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
         GatewayStartupMixin._register_launch_profile_config_hooks()
 
+    def _start_relay_provision_retry(self) -> None:
+        """Keep provisioning in the background when the boot attempt left the relay without
+        credentials; cancelled with ``_background_tasks`` at shutdown. Never raises."""
+        try:
+            from gateway.relay import relay_provision_pending, retry_self_provision
+            if relay_provision_pending():
+                self._retain_background_task(asyncio.create_task(
+                    retry_self_provision(self._on_relay_provisioned), name="relay-provision-retry"))
+        except Exception:
+            logger.warning("relay self-provision retry could not start", exc_info=True)
+
+    def _on_relay_provisioned(self) -> None:
+        """Credentials arrived after boot: the reconnect watcher builds every relay adapter from
+        the live env, so pull its queued retry forward instead of waiting out the backoff.
+        ``retry_now`` keeps it forward if a pass that began without them is still dialing."""
+        info = getattr(self, "_failed_platforms", {}).get(Platform.RELAY)
+        if info is not None:
+            info["next_retry"] = 0.0
+            info["retry_now"] = True
+
     @staticmethod
     def _register_launch_profile_config_hooks() -> None:
         """The launch profile's ``hooks:`` block, registered under ITS runtime scope when multiplexing.
@@ -1187,6 +1209,7 @@ class GatewayStartupMixin:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
+        self._start_relay_provision_retry()
         # Plugins that load later (force re-discovery, install/enable nudge) re-wire live adapters (#87770).
         with _log_suppressed(logging.WARNING, "plugin re-wire subscription failed", exc_info=True):
             from hermes_cli.plugins import get_plugin_manager
@@ -1239,7 +1262,6 @@ class GatewayStartupMixin:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
         from gateway.run import _platform_has_bot_credential
-        from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
@@ -1277,12 +1299,7 @@ class GatewayStartupMixin:
                 # Only a platform that can heal on its own is queued for the reconnect watcher; either way
                 # flag it so the unserved enabled platform is visible.
                 heals = self._adapter_may_heal(platform, platform_config)
-                self._update_platform_runtime_status(
-                    platform.value, platform_state="retrying" if heals else "fatal",
-                    error_code="adapter_unavailable",
-                    error_message=_adapter_unavailable_message(platform, retrying=heals),
-                    needs_attention=True,
-                )
+                self._mark_adapter_unavailable(platform.value, platform, retrying=heals, needs_attention=True)
                 if heals:
                     self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
                 continue
@@ -1850,6 +1867,9 @@ class GatewayStartupMixin:
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
             scope_id=scope_id,
         )
+        # The handoff turn answers through the queuing profile's own bot; naming it keeps the
+        # turn's authorization home and the saved receiving bot on that profile, not a primary guess.
+        self._canonicalize(dest_source, transport_profile=profile_name)
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,

@@ -46,6 +46,8 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
+from plugins.platforms.slack.adapter_config_readers import (
+    _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -986,27 +988,6 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         isinstance(connection_error_type, type)
         and isinstance(e, connection_error_type)
         and not is_permanent_tls_error)
-
-
-def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
-    """Method factory: ``self._extra_or_env_flag(key, env_var, strip=strip)``."""
-
-    def getter(self) -> bool:
-        return self._extra_or_env_flag(key, env_var, strip=strip)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
-
-
-def _extra_or_env_channel_set_getter(
-    key: str, env_var: str, *, coerce_scalar: bool = False) -> Callable[..., set]:
-    """Method factory: ``self._extra_or_env_channel_set(key, env_var, coerce_scalar=...)``."""
-
-    def getter(self) -> set:
-        return self._extra_or_env_channel_set(key, env_var, coerce_scalar=coerce_scalar)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
 
 
 class SlackAdapter(BasePlatformAdapter):
@@ -4066,7 +4047,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._trim_mentioned_threads()
 
     async def _bot_authored_thread_root(
-        self, channel_id: str, thread_ts: str, team_id: str = "") -> bool:
+        self, channel_id: str, thread_ts: str, team_id: str = "", chat_type: str = "") -> bool:
         """True when this bot authored the thread root — catches roots posted via direct
         chat.postMessage (not in _bot_message_ts) and survives restarts. Cache first, then a
         TTL-bounded fetch on a miss.
@@ -4091,8 +4072,8 @@ class SlackAdapter(BasePlatformAdapter):
                     return bool(
                         cached_entry.parent_user_id and cached_entry.parent_user_id == bot_uid)
             if attempt == 0:
-                await self._fetch_thread_context(
-                    channel_id=channel_id, thread_ts=thread_ts, current_ts="", team_id=team_id)
+                await self._fetch_thread_context(channel_id=channel_id, thread_ts=thread_ts,
+                                                 current_ts="", team_id=team_id, chat_type=chat_type)
         return False
 
     async def _should_wake_on_unmentioned_message(
@@ -4122,7 +4103,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_type=chat_type):
             return True
         if is_thread_reply and await self._bot_authored_thread_root(
-            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id):
+            channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id, chat_type=chat_type):
             return True
         # Thread PARENT @-mentioned the bot before this process (restart): a bare "run" is for us.
         # 5th check (#24848): the thread PARENT @-mentioned the bot, but the mention event predates this
@@ -4364,7 +4345,7 @@ class SlackAdapter(BasePlatformAdapter):
             nonlocal channel_context
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id, thread_ts=event_thread_ts, current_ts=ts, team_id=team_id,
-                **kw)
+                chat_type="dm" if is_dm else "group", **kw)
             if thread_context:
                 channel_context = thread_context
 
@@ -4676,6 +4657,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
+                channel_thread_followup=is_thread_reply and not is_dm,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
@@ -5799,10 +5781,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str, team_id: str = "", limit: int = 30,
-        after_ts: str = "", force_refresh: bool = False) -> str:
+        after_ts: str = "", force_refresh: bool = False, chat_type: str = "") -> str:
         """Prior thread messages as formatted context ("" on failure/empty). Cold-start only
         (session history holds them afterwards); ``after_ts`` = session watermark returns only
         unseen messages; ``force_refresh`` bypasses the _THREAD_CACHE_TTL cache (Tier 3 API).
+        ``chat_type`` is the inbound message's (``dm`` for IM/MPIM, else ``group``; a missing one
+        is inferred from the id) so senders are tagged against the allowlist that message uses.
 
         mentioned mid-thread for the first time, or when an explicit @mention on an active thread requests a
         context refresh (#23918).
@@ -5811,8 +5795,8 @@ class SlackAdapter(BasePlatformAdapter):
         now = time.monotonic()
         cached = None if force_refresh else self._thread_context_cache.get(cache_key)
         _fmt = functools.partial(
-            self._format_thread_context, thread_ts=thread_ts, current_ts=current_ts,
-            team_id=team_id, channel_id=channel_id)
+            self._format_thread_context, thread_ts=thread_ts, current_ts=current_ts, team_id=team_id,
+            channel_id=channel_id, chat_type=chat_type or ("dm" if channel_id.startswith("D") else "group"))
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
             if not after_ts:
                 return cached.content
@@ -5887,7 +5871,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _format_thread_context(
         self, messages: list[dict[str, Any]], *, thread_ts: str, current_ts: str, team_id: str,
-        channel_id: str, after_ts: str = "") -> tuple[str, str]:
+        channel_id: str, after_ts: str = "", chat_type: str = "group") -> tuple[str, str]:
         """Format Slack replies into an injected thread-context block.
         With ``after_ts``, only messages strictly newer than the watermark are included (delta
         refresh); parent text is still captured. Returns ``(content, parent_text)``.
@@ -5921,7 +5905,8 @@ class SlackAdapter(BasePlatformAdapter):
             if reactions:
                 msg_text = f"{msg_text} {reactions}"
             context_parts.append(
-                await self._thread_context_line(msg, msg_text, is_parent, team_id, channel_id))
+                await self._thread_context_line(
+                    msg, msg_text, is_parent, team_id, channel_id, chat_type=chat_type, thread_ts=thread_ts))
         content = ""
         if context_parts:
             has_unverified = any("[unverified] " in part for part in context_parts)
@@ -5940,12 +5925,15 @@ class SlackAdapter(BasePlatformAdapter):
         return content, parent_text
 
     async def _thread_context_line(
-        self, msg: dict, msg_text: str, is_parent: bool, team_id: str, channel_id: str) -> str:
+        self, msg: dict, msg_text: str, is_parent: bool, team_id: str, channel_id: str, *,
+        chat_type: str = "group", thread_ts: str = "") -> str:
         """One ``[prefix][trust] name: text`` context line. Own prior replies are kept as
         ``[assistant]`` (no name lookup) so the agent can reconstruct its turns on cold start.
         Non-allowlisted humans are tagged ``[unverified]`` so the LLM treats them as background,
-        not instructions (bots bypass the check). Name and text are attacker-controlled — an
-        embedded newline could forge a "## SYSTEM" heading — so both collapse to one inert line."""
+        not instructions (bots bypass the check). Senders are checked with the inbound message's
+        ``chat_type`` + ``thread_id``: ``"thread"`` reads as a DM in authz, which skipped
+        ``group_allow_from``. Name and text are attacker-controlled — an embedded newline could
+        forge a "## SYSTEM" heading — so both collapse to one inert line."""
         # Local import: don't force gateway.session at module load.
         from gateway.session import neutralize_untrusted_inline_text
         is_bot = self._event_declares_bot_sender(msg)
@@ -5964,7 +5952,7 @@ class SlackAdapter(BasePlatformAdapter):
         trust_tag = ""
         if not is_bot and msg_user:
             is_authorized = self._is_sender_authorized(
-                msg_user, chat_type="thread", chat_id=channel_id)
+                msg_user, chat_type=chat_type, chat_id=channel_id, thread_id=thread_ts or None)
             if is_authorized is False:
                 trust_tag = "[unverified] "
         name = await self._resolve_user_name(display_user, chat_id=channel_id, team_id=team_id)
@@ -6386,7 +6374,10 @@ class SlackAdapter(BasePlatformAdapter):
     # Opt-in flags (``config.extra[key]`` else ``SLACK_*`` env). strict_mention: every thread
     # message needs an explicit @-mention (no auto-triggers); ignore_other_user_mentions: silent
     # when the *leading* token @-mentions someone else; thread_require_mention: thread replies
-    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored.
+    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored;
+    # thread_followup_silence: a bare silence marker may stand on unaddressed channel-thread replies.
+    _slack_thread_followup_silence = _extra_or_env_flag_getter(
+        "thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE")
     _slack_strict_mention = _extra_or_env_flag_getter("strict_mention", "SLACK_STRICT_MENTION")
     _slack_ignore_other_user_mentions = _extra_or_env_flag_getter(
         "ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS")
@@ -6407,17 +6398,20 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, channel_thread_followup: bool = False) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
         stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
         free-response channel admitted as the start of its own session (a new top-level thread).
         A plain follow-up in a conversation the bot is part of (a thread, or a flat
         ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
-        gateway keeps its visible fallback (#110952)."""
+        gateway keeps its visible fallback (#110952). With ``thread_followup_silence`` on, an
+        unaddressed reply in a non-DM Slack thread (``channel_thread_followup``) is False instead."""
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
         if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+            return False
+        if channel_thread_followup and self._slack_thread_followup_silence():
             return False
         return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
 
@@ -6901,6 +6895,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),

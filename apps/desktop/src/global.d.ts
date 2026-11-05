@@ -288,6 +288,10 @@ declare global {
         // Remembers last use without interrupting a live workspace switch or
         // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
+        // Main keeps each connection's last-used profile so it boots a remote primary on it:
+        // one-time import of this window's earlier record, then one change at a time.
+        importConnections?: (record: Record<string, string>) => Promise<void>
+        rememberConnection?: (connectionId: string, profile: string) => Promise<void>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -406,6 +410,9 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      /** Bounded functional stream deadlines; does not enable hidden-window painting. */
+      scheduleStreamWorkWake?: (token: string, delayMs: number | null) => void
+      onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -445,6 +452,10 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
+      /** Wake only this window's preview guest while an automation script is pending. */
+      beginPreviewGuestActivity?: (webContentsId: number) => Promise<number>
+      endPreviewGuestActivity?: (token: number) => Promise<void>
+      executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load
@@ -630,7 +641,9 @@ declare global {
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
         start: (options?: {
           cols?: number
+          connectionId?: null | string
           cwd?: string
+          profile?: string
           rows?: number
           restoreKey?: string
           resumeOnly?: boolean
@@ -810,9 +823,14 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
+  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  connectionId?: null | string
   cwd: string
   id: string
   shell: string
+  /** No shell was started: the tab's gateway was removed (`missing`) or has
+   *  no shell transport (`no-shell`). */
+  unavailable?: 'missing' | 'no-shell'
   /** Server-owned process and replay; do not restore renderer scrollback. */
   persistent?: boolean
 }
@@ -1133,6 +1151,8 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+  /** Speech output still consumes the frame-published transcript while streaming. */
+  voiceActive?: boolean
 }
 
 export interface HermesWindowState {

@@ -364,14 +364,17 @@ class HomeChannel:
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
 
-def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
-    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
+def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False, release_primary_home: bool = False) -> None:
+    """Persist a logical home without falsely enabling a Relay-fronted adapter; *release_primary_home*
+    clears ``gateway.home`` in the same save, so a failed write leaves neither change behind."""
     from hermes_cli.config import load_config, save_config
     config = load_config()
     platform_config = _dict_slot(_dict_slot(config, "platforms"), home.platform.value)
     if enabled_if_new:
         platform_config.setdefault("enabled", True)
     platform_config["home_channel"] = home.to_dict()
+    if release_primary_home:
+        _dict_slot(config, "gateway")["home"] = None
     save_config(config)
 
 

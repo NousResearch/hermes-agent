@@ -26,6 +26,23 @@ class _Telegram:
         return SimpleNamespace(success=True, message_id="1")
 
 
+@pytest.mark.asyncio
+async def test_a_failing_bot_chat_notice_is_logged_not_raised(monkeypatch):
+    """A Bot Chat home send goes through the same error guard as a messaging one, so one failing home
+    cannot abort a notice pass over the others."""
+    from pathlib import Path
+    from gateway import bot_chat_home
+
+    async def broken(home, text):
+        raise RuntimeError("authority gone")
+
+    monkeypatch.setattr(bot_chat_home, "post_note", broken)
+    platform, _cfg, home, transport = bot_chat_home.home_entry(GatewayConfig(home="bot-chat"), Path("/nowhere"))
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    assert await runner._send_home_channel_message(platform, home, transport, "online", "%s %s %s") is False
+
+
 def _bot_chat_home_config(chat_id):
     config = GatewayConfig()
     config.home = "bot-chat"

@@ -55,6 +55,7 @@ async def desktop(tmp_path, monkeypatch):
     config.multiplex_profiles = True
     config._runtime_profile_homes = (("default", home),)
     runner = GatewayRunner(config)
+    runner._note_served_profiles(config._runtime_profile_homes)
     process_ownership.reserve([home])
     await initialize_gateway_runtime(runner)
     authority = runner.session_authorities.for_home(home)
@@ -120,6 +121,31 @@ async def test_a_messaging_sethome_takes_the_home_back(desktop):
     assert _gateway_section(desktop.home).get("home") is None
     assert desktop.runner.config.home is None
     assert desktop.runner.config.get_home_channel(Platform.TELEGRAM).chat_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_taking_the_home_back_is_one_save(desktop, monkeypatch):
+    """The channel and the cleared ``gateway.home`` land together: a failure after the first write
+    must not leave the channel saved while the Bot Chat stays home."""
+    import hermes_cli.config as cli_config
+    from gateway.platforms.base import MessageEvent
+
+    await _slash(desktop, "/sethome")
+    real_save, saves = cli_config.save_config, []
+
+    def save_once(config, *args, **kwargs):
+        saves.append(1)
+        if len(saves) > 1:
+            raise OSError("disk full")
+        return real_save(config, *args, **kwargs)
+
+    monkeypatch.setattr(cli_config, "save_config", save_once)
+    await desktop.runner._handle_set_home_command(MessageEvent(text="/sethome", source=desktop.telegram))
+
+    on_disk = yaml.safe_load((desktop.home / "config.yaml").read_text(encoding="utf-8"))
+    assert (on_disk.get("gateway") or {}).get("home") is None
+    assert on_disk["platforms"]["telegram"]["home_channel"]["chat_id"] == "42"
+    assert desktop.runner.config.home is None
 
 
 def _context(home=None):

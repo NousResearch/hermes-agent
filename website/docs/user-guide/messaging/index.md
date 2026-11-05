@@ -907,8 +907,10 @@ While it is set:
   notices follow `display.platforms.tui.suppress_warning_notifications`, like other Bot Chat warnings.
   The shutdown ping is the exception: the app already shows the gateway going away, and the online
   note follows a planned restart.
-- The platform home channels no longer receive any of this. An explicit `deliver=telegram` and a job
-  created in a Telegram chat still go to Telegram.
+- The platform home channels no longer receive origin-less results or these notices. `all` still
+  includes every messaging home channel alongside the Bot Chat; use `deliver=bot-chat` for a job that
+  should reach the Bot Chat only. An explicit `deliver=telegram` and a job created in a Telegram chat
+  still go to Telegram.
 
 Each profile has its own setting and its own Bot Chat. Running `/sethome` in a messaging chat makes that
 chat the home again and clears `gateway.home`.

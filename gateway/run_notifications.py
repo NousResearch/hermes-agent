@@ -522,9 +522,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
         from gateway.bot_chat_home import BotChatHomeTransport
         from gateway.run import _non_conversational_metadata
-        if isinstance(transport, BotChatHomeTransport):
-            return await transport.send(message)
         try:
+            if isinstance(transport, BotChatHomeTransport):
+                return await transport.send(message)
             metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=transport.adapter)
             if transport.is_relay:
                 metadata = dict(metadata or {})

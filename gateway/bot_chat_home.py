@@ -95,17 +95,22 @@ async def _admit_note(authority, text: str) -> bool:
 
 def scoped_config(runner):
     """The active profile scope's live ``GatewayConfig`` on *runner* (the launch profile's by default)."""
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, get_routing_process_hermes_home
     home = get_hermes_home().resolve()
+    if home == get_routing_process_hermes_home().resolve():
+        return getattr(runner, "config", None)
+    configs = getattr(runner, "_profile_configs", None) or {}
     for profile, served in (getattr(runner, "_served_profile_homes", None) or {}).items():
         if Path(served).resolve() == home:
-            return (getattr(runner, "_profile_configs", None) or {}).get(profile)
-    return getattr(runner, "config", None)
+            return configs.get(profile)
+    return None
 
 
-def set_home(runner, value) -> None:
-    """Persist ``gateway.home`` for the active profile and apply it to the running gateway."""
-    persist_primary_home(value)
+def set_home(runner, value, *, persist=True) -> None:
+    """Persist ``gateway.home`` for the active profile (unless already saved) and apply it to the
+    running gateway."""
+    if persist:
+        persist_primary_home(value)
     config = scoped_config(runner)
     if config is not None:
         config.home = value

@@ -672,10 +672,11 @@ class GatewaySlashCommandsMixin(
             platform=source.platform, chat_id=str(chat_id), name=chat_name, thread_id=thread_id,
             user_id=str(source.user_id) if getattr(source, "user_id", None) else None,
             scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None)
+        releasing = bot_chat_is_home(scoped_config(self))
         # config.yaml is canonical because it can persist the authenticated logical-target
         # provenance required by Relay after a restart.
         try:
-            persist_home_channel(home, enabled_if_new=not via_relay)
+            persist_home_channel(home, enabled_if_new=not via_relay, release_primary_home=releasing)
         except Exception as e:
             return t("gateway.set_home.save_failed", error=e)
         # Preserve legacy home env vars for existing cron/setup consumers.
@@ -690,13 +691,9 @@ class GatewaySlashCommandsMixin(
         platform_config = self.config.platforms.setdefault(source.platform, PlatformConfig(enabled=not via_relay))
         platform_config.home_channel = home
         reply = t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
-        if bot_chat_is_home(scoped_config(self)):
-            try:
-                set_home(self, None)
-            except Exception:
-                logger.warning("Home channel saved but gateway.home was not cleared", exc_info=True)
-            else:
-                reply += "\n" + t("gateway.set_home.bot_chat_released")
+        if releasing:
+            set_home(self, None, persist=False)
+            reply += "\n" + t("gateway.set_home.bot_chat_released")
         return reply
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:

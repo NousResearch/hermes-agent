@@ -187,3 +187,27 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     [payload] = messaging._platform_payloads(alpha, [entry])
     assert payload["gateway_running"] is True
     assert payload["state"] == "retrying", payload
+
+
+def test_served_profile_mirrors_the_default_relay(served_root):
+    """Relay is process-level shared ingress: the default's one adapter serves every profile, and
+    the multiplexer stamps no ``<profile>:relay`` entry when it does. The served profile must read
+    the default's live relay state, not fall through to ``pending_restart`` ("Restart needed"
+    forever for a channel that is answering)."""
+    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    from hermes_cli.web_routers import messaging
+    record = json.loads((served_root / "gateway_state.json").read_text(encoding="utf-8"))
+    record["platforms"]["relay"] = {"state": "connected"}
+    (served_root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
+    alpha = served_root / "profiles" / "alpha"
+    live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
+    plats = profile_platforms_from_multiplexer(live.runtime, "alpha")
+    assert plats["relay"]["state"] == "connected"
+    assert plats["relay"]["mirrored_from"] == "default"
+    assert plats["relay"]["ingress_url"] is None  # no per-profile URL: the connector routes it
+
+    entry = {"id": "relay", "name": "Relay", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    [payload] = messaging._platform_payloads(alpha, [entry])
+    assert payload["state"] == "connected", payload
+    assert payload["error_code"] is None, payload

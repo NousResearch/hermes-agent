@@ -1330,19 +1330,19 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
-    """Entries for the api_server/webhook mirrors a served ``profile`` gets from the DEFAULT's
-    listener. The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
+    """Entries a served ``profile`` mirrors from the DEFAULT (api_server/webhook listeners, and the
+    Relay adapter). The multiplexer never builds those adapters for a secondary (``gateway.run_adapters``
     skips them: ``SHARED_LISTENER_MIRROR_PLATFORMS``), so the record has no ``<profile>:api_server``
     entry and every reader fell through to ``pending_restart`` — "Restart needed" forever while
     ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
     state, plus the ``/p/<profile>`` URL the client must actually call.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+    from gateway.config import SERVED_PROFILE_MIRROR_PLATFORMS, SHARED_LISTENER_MIRROR_PATHS
     plats = (runtime or {}).get("platforms")
     if not profile or profile == "default" or not isinstance(plats, dict):
         return {}
     mirrored: dict[str, Any] = {}
-    for name in sorted(SHARED_LISTENER_MIRROR_PLATFORMS):
+    for name in sorted(SERVED_PROFILE_MIRROR_PLATFORMS):
         entry = plats.get(name)
         if not isinstance(entry, dict) or entry.get("state") not in {"connected", "connecting", "retrying"}:
             continue

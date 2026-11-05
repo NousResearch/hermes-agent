@@ -1997,6 +1997,7 @@ export function useSessionActions({
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
         const resumeStartedAt = Date.now() / 1000
+        const statesAtResumeStart = new Map(sessionStateByRuntimeIdRef.current)
 
         const resumePromise = singleFlightSessionResume(
           storedSessionId,
@@ -2260,14 +2261,6 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
-        // Preserve the turn-elapsed timer across cold resume: the gateway
-        // reports when the in-flight turn started so the desktop can restore
-        // the clock instead of resetting it to 0:00.
-        const resumedTurnStartedAt =
-          typeof resumed.turn_started_at === 'number' && resumed.turn_started_at > 0
-            ? resumed.turn_started_at * 1000
-            : null
-
         const pendingClarifyProjection = pendingClarify
           ? restorePendingClarifyToolCall(messagesForView, pendingClarifyToolPayload(pendingClarify))
           : null
@@ -2321,7 +2314,7 @@ export function useSessionActions({
               Boolean(pendingConnection) ||
               (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
-            ...recoveredTurnFields(inFlightRecovery, resumedRunning, resumedTurnStartedAt),
+            ...recoveredTurnFields(inFlightRecovery, resumed, resumedRunning, state, statesAtResumeStart),
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {

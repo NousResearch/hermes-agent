@@ -3,23 +3,240 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
+import subprocess
+import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_cli.proxy.adapters.base import LocalAdapterResponse, UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
+from hermes_cli.proxy.cli import cmd_proxy_start
 
 
 # ---------------------------------------------------------------------------
 # Adapter registry
 # ---------------------------------------------------------------------------
+
+
+def test_adapter_registry_includes_openai_codex():
+    assert "openai-codex" in ADAPTERS
+
+
+def test_adapter_registry_imports_without_openai_sdk():
+    script = """
+import importlib.abc
+import sys
+
+class _BlockOpenAI(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "openai" or fullname.startswith("openai."):
+            raise ModuleNotFoundError("blocked for test", name=fullname)
+        return None
+
+sys.meta_path.insert(0, _BlockOpenAI())
+import hermes_cli.proxy.adapters
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_openai_codex_adapter_translates_nonstreaming_chat_completion(monkeypatch):
+    captured = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "id": "chatcmpl-codex",
+                "object": "chat.completion",
+                "model": kwargs["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "remembered"},
+                             "finish_reason": "stop"}],
+            }
+
+    fake_client = MagicMock()
+    fake_client.chat.completions = _Completions()
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (fake_client, model),
+    )
+
+    result = OpenAICodexAdapter().handle_local_request(
+        "/chat/completions",
+        json.dumps({
+            "model": "gpt-5.6-luna",
+            "messages": [{"role": "user", "content": "Extract one fact"}],
+            "temperature": 0,
+            "max_tokens": 200,
+        }).encode(),
+    )
+
+    assert result is not None
+    assert result.status == 200
+    assert json.loads(result.body)["choices"][0]["message"]["content"] == "remembered"
+    assert captured == {
+        "model": "gpt-5.6-luna",
+        "messages": [{"role": "user", "content": "Extract one fact"}],
+        "temperature": 0,
+        "max_tokens": 200,
+    }
+
+
+def test_openai_codex_adapter_serializes_auxiliary_namespace_response():
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            index=0,
+            message=SimpleNamespace(role="assistant", content="remembered", tool_calls=None),
+            finish_reason="stop",
+        )],
+        model="gpt-5.6-luna",
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+    )
+
+    payload = json.loads(OpenAICodexAdapter._response_bytes(response))
+
+    assert payload["choices"][0]["message"]["content"] == "remembered"
+    assert payload["usage"] == {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+
+
+def test_openai_codex_adapter_lists_luna_for_openai_clients():
+    result = OpenAICodexAdapter().handle_local_request("/models", b"")
+
+    assert result is not None
+    assert result.status == 200
+    payload = json.loads(result.body)
+    assert payload["object"] == "list"
+    assert "gpt-5.6-luna" in {item["id"] for item in payload["data"]}
+
+
+def test_openai_codex_adapter_does_not_expose_credential_errors(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (_ for _ in ()).throw(RuntimeError("secret bearer value")),
+    )
+
+    result = OpenAICodexAdapter().handle_local_request(
+        "/chat/completions",
+        json.dumps({"model": "gpt-5.6-luna", "messages": []}).encode(),
+    )
+
+    assert result is not None
+    assert result.status == 502
+    assert "secret bearer value" not in result.body.decode()
+
+
+def test_openai_codex_adapter_sanitizes_missing_openai_sdk(monkeypatch):
+    real_import = builtins.__import__
+
+    def _block_openai(name, *args, **kwargs):
+        if name == "openai" or name.startswith("openai."):
+            raise ModuleNotFoundError("blocked for test", name=name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _block_openai)
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (_ for _ in ()).throw(AssertionError("must not resolve without SDK")),
+    )
+
+    result = OpenAICodexAdapter().handle_local_request(
+        "/chat/completions",
+        json.dumps({"model": "gpt-5.6-luna", "messages": []}).encode(),
+    )
+
+    assert result is not None
+    assert result.status == 502
+    assert json.loads(result.body)["error"]["code"] == "codex_inference_failed"
+
+
+def test_openai_codex_adapter_does_not_sanitize_unrelated_import_errors(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (_ for _ in ()).throw(
+            ModuleNotFoundError("unrelated dependency missing", name="unrelated_dependency")
+        ),
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="unrelated dependency missing"):
+        OpenAICodexAdapter().handle_local_request(
+            "/chat/completions",
+            json.dumps({"model": "gpt-5.6-luna", "messages": []}).encode(),
+        )
+
+
+def test_openai_codex_adapter_does_not_swallow_programming_errors(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (_ for _ in ()).throw(AssertionError("programming defect")),
+    )
+
+    with pytest.raises(AssertionError, match="programming defect"):
+        OpenAICodexAdapter().handle_local_request(
+            "/chat/completions",
+            json.dumps({"model": "gpt-5.6-luna", "messages": []}).encode(),
+        )
+
+
+def test_openai_codex_adapter_pool_load_does_not_swallow_programming_errors(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.load_pool",
+        lambda provider: (_ for _ in ()).throw(AssertionError("programming defect")),
+    )
+
+    with pytest.raises(AssertionError, match="programming defect"):
+        OpenAICodexAdapter().is_authenticated()
+
+
+def test_openai_codex_adapter_rejects_streaming_requests(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.proxy.adapters.openai_codex.resolve_provider_client",
+        lambda provider, model: (_ for _ in ()).throw(AssertionError("must reject before inference")),
+    )
+    result = OpenAICodexAdapter().handle_local_request(
+        "/chat/completions",
+        json.dumps({"model": "gpt-5.6-luna", "messages": [], "stream": True}).encode(),
+    )
+
+    assert result is not None
+    assert result.status == 400
+    assert json.loads(result.body)["error"]["code"] == "streaming_not_supported"
+
+
+def test_proxy_cli_requires_named_downstream_key_for_codex(monkeypatch, capsys):
+    adapter = MagicMock()
+    adapter.is_authenticated.return_value = True
+    adapter.requires_downstream_auth = True
+    adapter.display_name = "OpenAI Codex OAuth"
+    monkeypatch.setattr("hermes_cli.proxy.cli.get_adapter", lambda provider: adapter)
+    monkeypatch.delenv("CODEX_PROXY_CLIENT_KEY", raising=False)
+
+    result = cmd_proxy_start(SimpleNamespace(
+        provider="openai-codex",
+        host="127.0.0.1",
+        port=8646,
+        auth_key_env="CODEX_PROXY_CLIENT_KEY",
+    ))
+
+    assert result == 2
+    assert "CODEX_PROXY_CLIENT_KEY" in capsys.readouterr().err
 
 
 
@@ -246,7 +463,7 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web
 
-from hermes_cli.proxy.server import create_app
+from hermes_cli.proxy.server import create_app, run_server
 
 
 class FakeAdapter(UpstreamAdapter):
@@ -351,6 +568,107 @@ def _build_retrying_fake_upstream(captured: dict[str, Any]) -> web.Application:
     app = web.Application()
     app.router.add_route("*", "/v1/chat/completions", maybe_unauthorized)
     return app
+
+
+def test_server_uses_adapter_local_translation_before_upstream_credentials():
+    class _LocalAdapter(FakeAdapter):
+        def handle_local_request(self, rel_path, body):
+            payload = json.loads(body)
+            return LocalAdapterResponse(
+                status=200,
+                body=json.dumps({"translated": payload["model"], "path": rel_path}).encode(),
+            )
+
+    async def scenario():
+        adapter = _LocalAdapter("https://must-not-be-called.invalid/v1", raise_on_credential=True)
+        runner, base = await _start_runner(create_app(adapter))
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base}/v1/chat/completions",
+                    json={"model": "gpt-5.6-luna", "messages": []},
+                ) as response:
+                    assert response.status == 200
+                    assert await response.json() == {
+                        "translated": "gpt-5.6-luna",
+                        "path": "/chat/completions",
+                    }
+            assert adapter.calls == 0
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(scenario())
+
+
+def test_server_does_not_convert_local_adapter_programming_errors():
+    class _BuggyLocalAdapter(FakeAdapter):
+        def handle_local_request(self, rel_path, body):
+            raise AssertionError("programming defect")
+
+    async def scenario():
+        adapter = _BuggyLocalAdapter("https://must-not-be-called.invalid/v1")
+        runner, base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{base}/v1/chat/completions", json={}) as response:
+                    assert response.status == 500
+                    assert "adapter_translation_failed" not in await response.text()
+            assert adapter.calls == 0
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(scenario())
+
+
+def test_openai_codex_proxy_refuses_non_loopback_bind():
+    async def scenario():
+        with pytest.raises(ValueError, match="loopback"):
+            await run_server(
+                OpenAICodexAdapter(),
+                host="0.0.0.0",
+                port=0,
+                shutdown_event=asyncio.Event(),
+            )
+
+    asyncio.run(scenario())
+
+
+def test_openai_codex_proxy_requires_downstream_bearer_before_inference():
+    class _AuthCodexAdapter(OpenAICodexAdapter):
+        def handle_local_request(self, rel_path, body):
+            return LocalAdapterResponse(status=200, body=b'{"ok":true}')
+
+    async def scenario():
+        adapter = _AuthCodexAdapter()
+        runner, base = await _start_runner(
+            create_app(adapter, inbound_bearer="local-client-secret")
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/health") as response:
+                    assert response.status == 401
+                async with session.get(
+                    f"{base}/health",
+                    headers={"Authorization": "Bearer local-client-secret"},
+                ) as response:
+                    assert response.status == 200
+                for headers in ({}, {"Authorization": "Bearer wrong"}):
+                    async with session.post(
+                        f"{base}/v1/chat/completions", json={}, headers=headers
+                    ) as response:
+                        assert response.status == 401
+                async with session.post(
+                    f"{base}/v1/chat/completions",
+                    json={},
+                    headers={"Authorization": "Bearer local-client-secret"},
+                ) as response:
+                    assert response.status == 200
+                    assert await response.json() == {"ok": True}
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(scenario())
 
 
 

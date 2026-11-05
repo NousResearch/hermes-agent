@@ -49,15 +49,39 @@ class TerminalEnvironmentProvider(ProviderBase):
       ``computer_use`` and the browser then follow the terminal into this backend, as they do for
       docker/ssh, instead of refusing.
 
+    * ``serves_hosted_scopes`` — the backend runs a hosted tenant's agent: every tool of a hosted scope
+      (terminal, code execution, background processes, file tools) runs in its environment, and a
+      hosted scope refuses any backend without it (built-ins included). See below.
+
     ``default_cwd`` home resolution and ``exec_prefix`` need the environment object itself, so they
     work for in-process plugins only; under ``plugins.isolation: host`` the environment reaches Hermes
     as an opaque placeholder and Bot Desktop placement refuses a ``supports_streams`` backend.
+
+    **Hosted scopes** (``tools/environments/sandbox_scope.py``). With a hosted
+    :class:`hermes_scope.Scope` bound, the sandbox is the agent's: its identity is
+    ``SandboxIdentity(scope.tenant, scope.agent)`` and nothing else, so one agent has one sandbox
+    whatever task or session a tool call carries. :meth:`create_environment` then also receives
+    ``scope=`` (the bound scope) and ``sandbox=`` (the identity), and ``task_id`` is the identity's
+    key. The environment it returns is wrapped by core in ``ScopedEnvironment``, which refuses any call
+    made under another agent's scope (or under none) before it reaches the backend, and passes the
+    bound scope as ``scope=`` to ``execute``, ``fetch_file``, ``fetch_realpath`` and the long-lived
+    process methods, which a hosted environment implements:
+
+    * ``start_process(name, argv, *, child_env=None, scope)`` → ``ProcessStream`` with stdin and stdout
+      open as byte pipes; ``attach_process(name, *, scope)`` → the running process's stream, or
+      ``None``; ``stop_process(name, *, scope)`` → whether one was stopped. ``name`` is unique per
+      sandbox. Suspending the sandbox once such a process is idle-stopped, and network isolation
+      between sandboxes, are the backend's.
+
+    Credentials reach a hosted sandbox as broker references (``CredentialRef``), never values from
+    the secret store; no broker exists yet, so core passes none.
     """
 
     is_remote: bool = True
     is_container: bool = True
     session_isolated_when_nonpersistent: bool = False
     supports_streams: bool = False
+    serves_hosted_scopes: bool = False
 
     @property
     def description(self) -> str:
@@ -119,4 +143,6 @@ class TerminalEnvironmentProvider(ProviderBase):
     ):
         """Create an execution environment (``BaseEnvironment`` duck type). MUST accept ``**kwargs`` and ignore
         unknown keys so the factory can evolve without breaking older plugins. ``task_id`` keys reuse/persistence;
-        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`."""
+        ``container_config`` carries ``container_cpu/memory/disk/persistent`` when :attr:`is_container`.
+        Inside a hosted scope (only for :attr:`serves_hosted_scopes`) it also receives ``scope`` and
+        ``sandbox``; the sandbox to create or resume is ``sandbox`` alone."""

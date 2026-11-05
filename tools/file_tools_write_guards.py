@@ -577,7 +577,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return (
             f"{filepath} was modified since you last read it (external edit or "
             "concurrent agent). Re-read the file before writing.")
-    if not resolved or _has_full_write_baseline(resolved, task_id):
+    from tools.environments.sandbox_scope import hosted_scope
+    if not resolved or hosted_scope() is not None or _has_full_write_baseline(resolved, task_id):
+        # A hosted agent's path names its sandbox, where no host baseline can exist (as for any
+        # remote backend, whose files the host-side existence check below never finds).
         return None
     try:
         exists = Path(resolved).exists()

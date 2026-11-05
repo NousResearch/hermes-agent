@@ -55,12 +55,15 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         from tools.terminal_tool import (
             _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
 
+        from tools.environments.sandbox_scope import hosted_scope
         try:
             container_key = _resolve_container_task_id(task_id)
         except Exception:
             container_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(container_key)
+            if env is None and hosted_scope() is None:  # a raw task id may name another agent's sandbox
+                env = _active_environments.get(task_id)
         if env is not None:
             name = env.__class__.__name__.lower()
             hint = next((h for h in _ENV_CLASS_NAME_HINTS if h in name), None)
@@ -73,6 +76,9 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
 
 
 def _uses_container_paths(task_id: str = "default") -> bool:
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return True  # a hosted agent's paths name its sandbox: never anchored or dereferenced on this host
     env_type = _terminal_env_type_for_task(task_id)
     try:
         from tools.terminal_tool import _is_container_backend

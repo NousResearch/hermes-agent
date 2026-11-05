@@ -12,7 +12,6 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
 from gateway.session_ingress_context import native_callback
 from hermes_constants import get_hermes_home
-from hermes_state_runtime import list_session_admissions
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -76,18 +75,17 @@ async def test_same_millisecond_irc_lines_get_separate_admissions(monkeypatch, t
         rows = [
             row
             for session_id in authority.sessions
-            for row in list_session_admissions(
-                authority.db,
+            for row in authority.persistence.admissions.list(
                 session_id=session_id,
                 pending_only=False,
             )
         ]
-        assert [row["payload"]["text"] for row in rows] == list(texts)
-        assert len({row["request_id"] for row in rows}) == len(texts)
+        assert [row.payload["text"] for row in rows] == list(texts)
+        assert len({row.request_id for row in rows}) == len(texts)
         assert len({receipt.admission_id for receipt in receipts}) == len(texts)
         # Retrying the already captured event still resolves to its original admission.
         with native_callback(runner, received[0], home):
             retried = await authority.admit_native(received[0])
         assert retried.admission_id == receipts[0].admission_id
     finally:
-        authority.db.close()
+        runner.session_store.close_all_db_handles()

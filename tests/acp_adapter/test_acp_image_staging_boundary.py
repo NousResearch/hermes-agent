@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -22,7 +22,7 @@ def test_hardlink_in_staging_to_outside_file_is_refused(tmp_path, monkeypatch):
     (staging / "own.png").write_bytes(PNG)
     assert admit_attachments([{"path": str(staging / "own.png"), "mime": "image/png"}])  # control
     os.link(secret, staging / "planted.png")
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         admit_attachments([{"path": str(staging / "planted.png"), "mime": "image/png"}])
 
 

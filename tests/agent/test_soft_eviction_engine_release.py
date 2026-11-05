@@ -18,6 +18,7 @@ one out plays the deferred shutdown exactly once.
 
 import threading
 from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 # Warm the module AIAgent.__init__ imports lazily: agent_init binds ContextCompressor through a
@@ -121,7 +122,8 @@ def test_soft_release_first_still_shuts_down_exactly_once():
     engine = _OrderingEngine()
     agent = _bare_agent(context_compressor=engine, _context_engine_owned=True)
     agent.release_clients()
-    assert engine.calls == ["shutdown"]
+    # round-2 item 1: the soft release takes over the session-end delivery.
+    assert engine.calls == ["on_session_end", "shutdown"]
     agent.shutdown_memory_provider([])
     assert engine.calls.count("shutdown") == 1
 
@@ -177,7 +179,7 @@ def test_pending_release_fires_at_turn_end_exactly_once():
     with engine_request(agent):
         agent.release_clients()
         assert engine.calls == []
-    assert engine.calls == ["shutdown"]
+    assert engine.calls == ["on_session_end", "shutdown"]
     assert getattr(agent, "_engine_inflight", 0) == 0
     assert getattr(agent, "_engine_release_pending", False) is False
     # The engine is down: a later eviction (or a replayed finally) must never re-shut it.
@@ -195,10 +197,10 @@ def test_parent_eviction_keeps_inflight_child_engine_alive():
     parent._active_children = [child]
     begin_engine_request(child)
     parent.release_clients()
-    assert parent_engine.calls == ["shutdown"]
+    assert parent_engine.calls == ["on_session_end", "shutdown"]
     assert child_engine.calls == []
     end_engine_request(child)
-    assert child_engine.calls == ["shutdown"]
+    assert child_engine.calls == ["on_session_end", "shutdown"]
 
 
 def test_fork_request_end_closes_engine_once():
@@ -217,7 +219,7 @@ def test_fork_request_end_closes_engine_once():
         assert engine.calls == []
         assert getattr(fork, "_engine_inflight", 0) == 1
         assert getattr(fork, "_engine_release_pending", False) is True
-    assert engine.calls == ["shutdown"]
+    assert engine.calls == ["on_session_end", "shutdown"]
     assert engine.calls.count("shutdown") == 1
 
 
@@ -262,7 +264,7 @@ def test_fork_join_window_defers_parent_soft_eviction(monkeypatch):
     br._run_review_fork(parent, [], "prompt", None, None, st)
 
     assert seen["inflight"] >= 1, "join-window begin missing: the request opened with a zero count"
-    assert engine.calls == ["shutdown"], (
+    assert engine.calls == ["on_session_end", "shutdown"], (
         "the join-window eviction must defer, then close once at the fork's own end")
 
 
@@ -325,7 +327,7 @@ def test_compress_mutation_defers_soft_release(monkeypatch):
     assert result["messages"], "the committed mutation must carry the compressed history"
     assert seen["inflight"] == 1, "the compress mutation region must hold an engine request"
     assert seen["calls_during_compress"] == [], "eviction inside compress must not shut the engine down"
-    assert engine.calls == ["shutdown"], "the last user (compress exit) plays the pending release once"
+    assert engine.calls == ["on_session_end", "shutdown"], "the last user (compress exit) plays the pending release once"
     assert getattr(resident, "_engine_inflight", 0) == 0
 
     # Cold session (no resident agent): nothing to count, the immediate soft release is unchanged.
@@ -333,4 +335,110 @@ def test_compress_mutation_defers_soft_release(monkeypatch):
     cold = _bare_agent(context_compressor=cold_engine, _context_engine_owned=True)
     with nullcontext():
         cold.release_clients()
-    assert cold_engine.calls == ["shutdown"]
+    assert cold_engine.calls == ["on_session_end", "shutdown"]
+
+
+class _RecordingEngine(_OrderingEngine):
+    """Also records what each on_session_end carried, for the round-2 delivery pins."""
+
+    def __init__(self):
+        super().__init__()
+        self.session_end_args = []
+
+    def on_session_end(self, session_id, messages):
+        self.session_end_args.append((str(session_id), len(messages or [])))
+        super().on_session_end(session_id, messages)
+
+
+def test_soft_released_cli_agent_still_gets_session_end_with_transcript():
+    # Round 2 item 1 (the maintainer's probe, made a test): a CLI session runs some turns, the
+    # user /model-switches — _retire_agent soft-releases the IDLE agent, so nothing is in flight
+    # and the soft release owns the shutdown — and the process-exit finalizer then skips the
+    # notify via the soft_release claim. Before this fix the engine got shutdown() with no
+    # on_session_end AT ALL: an LCM-style store saves the last reply only at session end, so the
+    # session's tail was silently dropped. The soft release now delivers the end, with the live
+    # transcript, under its own claim and before shutdown(); the finalizer stays skipped.
+    from hermes_cli.cli_agent_setup_mixin import _retire_agent
+    from hermes_cli.cli_shutdown import _shutdown_agent_memory_provider
+
+    engine = _RecordingEngine()
+    agent = _bare_agent(
+        context_compressor=engine, _context_engine_owned=True,
+        _session_messages=[{"role": "user", "content": "hi"},
+                           {"role": "assistant", "content": "yo"}])
+    cli = SimpleNamespace(agent=agent)
+
+    _retire_agent(cli)  # the REAL retire site: cli.agent = None after release_clients()
+    assert cli.agent is None
+    assert engine.calls == ["on_session_end", "shutdown"], (
+        "the soft-released engine must receive on_session_end BEFORE shutdown, never nothing")
+    assert engine.session_end_args == [("sid", 2)], (
+        "the delivered session end must carry this session's live transcript, not an empty list")
+
+    _shutdown_agent_memory_provider(agent)  # the REAL CLI exit finalizer
+    assert engine.calls.count("on_session_end") == 1 and engine.calls.count("shutdown") == 1, (
+        "the skipped finalizer must neither re-notify (claim soft_release) nor re-shut (once-flag)")
+
+
+def test_hard_finalizer_takes_the_engine_claim_under_the_lock():
+    # Round 2 item 2: the hard finalizer must TAKE the claim, not read it bare. A bare read can
+    # see None one heartbeat before a racing release_clients() claims "soft_release" and shuts
+    # the engine, landing on_session_end after the engine already stopped ingesting (the
+    # reviewer's gateway-stop interleave). Observable state, no timing needed: with no prior
+    # claim, the finalizer must leave the claim held as "session_end".
+    engine = _OrderingEngine()
+    agent = _bare_agent(context_compressor=engine, _context_engine_owned=True, _session_messages=[])
+    agent.shutdown_memory_provider([])
+    assert engine.calls == ["on_session_end", "shutdown"]
+    assert getattr(agent, "_context_engine_teardown_claim", None) == "session_end", (
+        "shutdown_memory_and_context read the claim instead of taking it via "
+        "claim_engine_session_end() under the lock")
+
+
+def test_real_turn_facade_wraps_the_turn_in_an_engine_request(monkeypatch):
+    # Round 2 test gap: every other pin opens its requests BY HAND, so replacing
+    # `with engine_request(self):` at agent/turn_facade.py with `if True:` left them all green —
+    # findings 1+2 were unpinned for actual turns. Drive the REAL facade run_conversation with
+    # only the inner conversation loop stubbed: the stub snapshots the count mid-turn and fires
+    # the eviction the memory-manager thread would fire; the facade's own finally must play it.
+    import agent.background_review as br
+    import agent.conversation_loop as loop_mod
+    import agent.relay_cwd as cwd_mod
+    import agent.relay_runtime as rr
+    import agent.turn_facade_lease as lease_mod
+    from hermes_cli.observability import relay_shared_metrics as rsm
+
+    engine = _OrderingEngine()
+    agent = _bare_agent(context_compressor=engine, _context_engine_owned=True, _session_messages=[])
+    seen = {}
+
+    def _stub_loop(*args, **kwargs):
+        seen["inflight"] = int(getattr(agent, "_engine_inflight", 0))
+        agent.release_clients()  # the eviction shape, mid-turn
+        seen["mid"] = list(engine.calls)
+        return {"final_response": "ok", "messages": [], "api_calls": 1, "completed": True}
+
+    monkeypatch.setattr(loop_mod, "run_conversation", _stub_loop)
+    monkeypatch.setattr(br, "cancel_background_review_for_live_turn", lambda *a, **k: None)
+    monkeypatch.setattr(
+        lease_mod, "admit_durable_turn_lease",
+        lambda *a, **k: SimpleNamespace(early_result=None, lease=None, conversation_history=[]))
+    monkeypatch.setattr(cwd_mod, "resolve_relay_scope_cwds", lambda *a, **k: (None, None))
+    monkeypatch.setattr(rr.SESSION_COORDINATOR, "acquire_conversation", lambda *a, **k: None)
+    monkeypatch.setattr(rr.SESSION_COORDINATOR, "begin_turn",
+                        lambda *a, **k: SimpleNamespace(relay_enabled=False))
+    monkeypatch.setattr(rr.SESSION_COORDINATOR, "finish_logical_calls", lambda *a, **k: None)
+    monkeypatch.setattr(rr.SESSION_COORDINATOR, "end_turn", lambda *a, **k: None)
+    monkeypatch.setattr(rr.SESSION_COORDINATOR, "release_conversation", lambda *a, **k: None)
+    monkeypatch.setattr(rsm, "start_task_run", lambda *a, **k: None)
+    monkeypatch.setattr(rsm, "finish_task_run", lambda *a, **k: None)
+
+    result = agent.run_conversation("hello")
+
+    assert result["completed"] is True
+    assert seen["inflight"] >= 1, (
+        "the facade ran the turn with no engine request: the with-statement is the pin")
+    assert seen["mid"] == [], "a mid-turn eviction must stay pending while the facade holds the turn"
+    assert engine.calls == ["on_session_end", "shutdown"], (
+        "the facade's finally must play the deferred release exactly once")
+    assert getattr(agent, "_engine_inflight", 0) == 0

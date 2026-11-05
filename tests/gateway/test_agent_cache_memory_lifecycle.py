@@ -321,13 +321,16 @@ class TestAgentCacheMemoryLifecycle:
             assert getattr(agent, "_context_engine_teardown_claim", None) is None, (
                 "claim stayed held although the cleanup job never started")
             agent.release_clients()  # the soft-release entry evictions/_retire_agent share
-            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
+            # round-2 item 1: taking over the teardown also means taking over the delivery.
+            assert [e for e in events if e.startswith("engine:")] == [
+                "engine:on_session_end", "engine:shutdown"], (
                 "soft release did not take over the teardown after the returned claim")
             # And the hard teardown that follows (gateway shutdown tail shape: close() on the same
             # agent object) must NOT re-enter the engine: with the soft release owning the teardown,
             # on_session_end after shutdown() is exactly the finding-3 half-kill.
             agent.close()
-            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
+            assert [e for e in events if e.startswith("engine:")] == [
+                "engine:on_session_end", "engine:shutdown"], (
                 "hard cleanup called into the engine AFTER the soft release had shut it down")
         finally:
             ex = getattr(runner, "_housekeeping_executor", None)  # bypassed above: may never exist
@@ -362,8 +365,9 @@ class TestAgentCacheMemoryLifecycle:
             assert seen["inflight"] >= 1, "compression ran with no in-flight engine count"
             assert "engine:shutdown" not in seen["events_mid"], (
                 "soft eviction shut the engine down while the compression was still running")
-            assert [e for e in events if e.startswith("engine:")] == ["engine:shutdown"], (
-                "the compression's own end must play out the deferred shutdown exactly once")
+            assert [e for e in events if e.startswith("engine:")] == [
+                "engine:on_session_end", "engine:shutdown"], (
+                "the compression's own end must play out the deferred delivery+shutdown once")
         finally:
             agent.close()
 

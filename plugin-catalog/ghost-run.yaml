@@ -1,18 +1,19 @@
 name: ghost-run
 title: Ghost Run
 repo: https://github.com/tnvolman/ghost-run
-sha: 03e1d54cc55b8c158e51907defe847eaf3e46c49
+sha: 4caa80c1a355bd376c19b344a6f01ca11f7ade9a
 version: "0.1.0"
 description: >-
   Dry-run mode for Hermes Agent. With /ghost on, file writes, patches, deletes and
   terminal commands are redirected into a throwaway copy of the working folder, and
   network-touching tools and commands are blocked. Review the diff in a Desktop pane
-  (or a local web view via hermes ghost ui), then apply selected paths or discard.
-  Commands: /ghost on|off|status; hermes ghost diff|apply|discard|ui. Disclosure —
-  copies the working folder into a temp sandbox and runs the agent's terminal commands
-  inside it; writes session state to ~/.hermes/ghost-run/; "apply" writes the chosen
-  changes back to the real folder; hermes ghost ui serves a local-only page on
-  127.0.0.1:8765. No third-party network calls, no credentials, no telemetry.
+  (or a local web view via hermes ghost ui), then optionally run one configured Verify
+  command in the ghost (Pass/Fail banner; Apply stays human), then apply selected paths
+  or discard. Commands: /ghost on|off|status|verify; hermes ghost diff|apply|discard|ui|verify.
+  Disclosure — copies the working folder into a temp sandbox and runs the agent's
+  terminal commands inside it; writes session state to ~/.hermes/ghost-run/; "apply"
+  writes the chosen changes back to the real folder; hermes ghost ui serves a local-only
+  page on 127.0.0.1:8765. No third-party network calls, no credentials, no telemetry.
 maintainer: tnvolman
 tier: community
 category: tools

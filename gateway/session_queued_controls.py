@@ -14,10 +14,10 @@ import asyncio
 from dataclasses import asdict
 from functools import partial
 
-from hermes_state_runtime import (
-    STEERING, RuntimeStoreError, check_replaced_input, find_session_admission, get_session_admission,
-    replacement_binding, retire_replaced_input, revert_steer_input, steer_replayed, steer_session_input,
-)
+from gateway.session_persistence import authority_persistence
+from persistence.authority.admissions import QueuedReplacement, steer_replayed
+from persistence.authority.vocabulary import STEERING
+from persistence.core.errors import AuthorityRefusal
 
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
 # native envelopes and automation rows are whole turns: neither verb may drop what they carry.
@@ -41,11 +41,10 @@ def _interactive(authority, session_id):
     counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
     sources = authority.launch_sources
     if session_id not in sources:
-        with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+        found = authority_persistence(authority).sessions.list_row(session_id)
         if found is None:
             return False
-        sources[session_id] = found[0]
+        sources[session_id] = found.source
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 
@@ -65,18 +64,20 @@ def pending_rows(authority, ref):
     """The pending rows a viewer is shown, plus each queued admission in transfer to the running
     claim: listed ``started`` and ``steering``, because it may still go back to its queue place, and a
     client must not retire an admission it no longer sees. The caller holds the stream lock."""
+    from gateway.session_authority import admission_row
     rows = {row['admission_id']: row for row in authority._pending_rows(ref)}
     entry = authority.steer_transfers.get(ref.session_id)
     for admission_id in entry[1] if entry is not None else ():
-        row = get_session_admission(authority.db, admission_id=admission_id)
-        if row is not None and row['status'] == 'terminal' and row['outcome'] == STEERING:
-            rows[admission_id] = row
+        row = authority_persistence(authority).admissions.get(admission_id=admission_id)
+        if row is not None and row.status == 'terminal' and row.outcome == STEERING:
+            rows[admission_id] = admission_row(row)
     return sorted(rows.values(), key=lambda row: row['seq'])
 
 
 async def _queued(connection, ref, admission_id):
+    from gateway.session_authority import admission_row
     receipt = await connection.authority.receipt(connection.actor, ref, admission_id)
-    return receipt, get_session_admission(connection.authority.db, admission_id=admission_id)
+    return receipt, admission_row(authority_persistence(connection.authority).admissions.get(admission_id=admission_id))
 
 
 def steer_transfers(authority, session_id, generation):
@@ -146,27 +147,29 @@ async def steer_queued(connection, ref, params):
                     _deliver(authority, ref.session_id, row['generation'], agent, admission_id, row['payload']['text'])
         return asdict(receipt)  # an exact retry replays the committed transfer
     if receipt.status != 'queued':
-        raise RuntimeStoreError('admission_started')
+        raise AuthorityRefusal('admission_started')
     if 'steer' not in queued_controls(authority, row):
-        raise RuntimeStoreError('unsupported_control')
+        raise AuthorityRefusal('unsupported_control')
     handle = authority._handle(ref)
     if handle.execution_state != 'running':
-        raise RuntimeStoreError('session_idle')
+        raise AuthorityRefusal('session_idle')
     generation, text, live = handle.execution_generation, row['payload']['text'], authority.sessions[ref.session_id]
     session_id = ref.session_id
     with live.event_stream.lock:
         agent = _receiving_agent(authority, session_id, generation)
         if agent is None:
             # Refused before the row is touched: it stays queued and runs in FIFO order.
-            raise RuntimeStoreError('steer_unavailable', field='admission_id',
-                                    detail='the running turn has no agent to take a steer yet')
+            raise AuthorityRefusal('steer_unavailable', field='admission_id',
+                                   detail='the running turn has no agent to take a steer yet')
         _register(authority, session_id, generation, admission_id)
+    from gateway.session_authority import admission_row
     from gateway.session_runtime_workers import tracked_write
+    admissions = authority_persistence(authority).admissions
     try:
         # The storage wait runs with no lock held; the registration above is the claim's fence.
         committed, fresh = await tracked_write(authority, partial(
-            steer_session_input, authority.db, epoch=authority.epoch, admission_id=admission_id, generation=generation))
-    except RuntimeStoreError:
+            admissions.steer, epoch=authority.epoch, admission_id=admission_id, generation=generation))
+    except AuthorityRefusal:
         # A definite refusal: nothing committed. Any other failure may follow a commit, so the fence
         # stays and the claim's settlement decides the row (a no-op when nothing committed).
         with live.event_stream.lock:
@@ -177,16 +180,16 @@ async def steer_queued(connection, ref, params):
             delivered = _deliver(authority, session_id, generation, agent, admission_id, text)
         if not delivered:
             # The claim ended first: the text reached nobody, so the admission is queued again.
-            await tracked_write(authority, partial(revert_steer_input, authority.db, epoch=authority.epoch,
+            await tracked_write(authority, partial(admissions.revert_steer, epoch=authority.epoch,
                                                    admission_id=admission_id, generation=generation))
             with live.event_stream.lock:
                 _unregister(authority, session_id, generation, admission_id)
             authority._publish_pending(ref)
             authority._schedule(ref)
-            raise RuntimeStoreError('steer_unavailable', field='admission_id',
-                                    detail='the running turn ended before the steer reached it')
+            raise AuthorityRefusal('steer_unavailable', field='admission_id',
+                                   detail='the running turn ended before the steer reached it')
         authority._publish_pending(ref)  # the card leaves the queue: its text is in the running turn
-    return asdict(authority._receipt(committed))
+    return asdict(authority._receipt(admission_row(committed)))
 
 
 def publish_transfers(authority, ref, generation):
@@ -199,10 +202,10 @@ def publish_transfers(authority, ref, generation):
     with live.event_stream.lock:
         authority.steer_transfers.pop(ref.session_id, None)
     for admission_id in entry[1]:
-        row = get_session_admission(authority.db, admission_id=admission_id)
-        if row is not None and row['status'] == 'terminal' and row['outcome'] in ('steered', 'interrupted'):
+        row = authority_persistence(authority).admissions.get(admission_id=admission_id)
+        if row is not None and row.status == 'terminal' and row.outcome in ('steered', 'interrupted'):
             authority._settle_cancelled(ref, admission_id,
-                                        outcome='steered' if row['outcome'] == 'steered' else 'cancelled')
+                                        outcome='steered' if row.outcome == 'steered' else 'cancelled')
     authority._publish_pending(ref)  # an undelivered transfer is queued again
 
 
@@ -214,27 +217,26 @@ async def replace_queued(connection, ref, params):
     authority, actor, old_id = connection.authority, connection.actor, params['admission_id']
     request = connection.submission(ref, {key: value for key, value in params.items() if key != 'admission_id'})
     receipt, row = await _queued(connection, ref, old_id)
-    replacement = await asyncio.to_thread(find_session_admission, authority.db, principal_id=actor.subject,
+    store = authority_persistence(authority)
+    replacement = await asyncio.to_thread(store.admissions.find, principal_id=actor.subject,
                                           session_id=ref.session_id, request_id=request.request_id)
     if replacement is None:
         if receipt.status != 'queued':
-            raise RuntimeStoreError('admission_started')
+            raise AuthorityRefusal('admission_started')
         if 'replace' not in queued_controls(authority, row):
-            raise RuntimeStoreError('unsupported_control')
+            raise AuthorityRefusal('unsupported_control')
         authority.cancel_obligations.add(old_id)  # owed from before the write, like prompt.cancel
     elif (receipt.status, receipt.outcome) != ('terminal', 'cancelled'):
-        raise RuntimeStoreError('admission_conflict')  # that request id names other work
-    binding = replacement_binding(actor.subject, ref.session_id, request.request_id)
+        raise AuthorityRefusal('admission_conflict')  # that request id names other work
     try:
         admitted = await authority.submit(actor, request, queue_while_restarting=connection._operator is True,
-                                          _authorize_write=partial(retire_replaced_input, admission_id=old_id, binding=binding),
-                                          _replay_guard=partial(check_replaced_input, admission_id=old_id, binding=binding))
+                                          replaces=QueuedReplacement(old_id))
     finally:
-        old = get_session_admission(authority.db, admission_id=old_id)
-        if old_id in authority.cancel_obligations and (old['status'], old['outcome']) == ('terminal', 'cancelled'):
+        old = store.admissions.get(admission_id=old_id)
+        if old_id in authority.cancel_obligations and (old.status, old.outcome) == ('terminal', 'cancelled'):
             authority._settle_cancelled(ref, old_id)
-        elif old['status'] == 'queued':
+        elif old.status == 'queued':
             authority.cancel_obligations.discard(old_id)  # refused: nothing committed
     from gateway.session_ingress_media import release_admission_media
-    await asyncio.to_thread(release_admission_media, authority.db, old_id)
+    await asyncio.to_thread(release_admission_media, store, old_id)
     return asdict(admitted)

@@ -75,14 +75,15 @@ class GatewaySessionAgentMixin:
     def _current_message_count(self):
         """Cross-process write guard input: the session's current DB message_count (or None)."""
         ctx = self._ctx
-        if self._runner._session_db is None or not ctx.session_id:
+        store = getattr(self._runner, "persistence", None)
+        if store is None or not ctx.session_id:
             return None
         count = None
         with suppress(Exception):
             # run_sync is off-loop (executor); sync DB is fine.
-            row = self._runner._session_db._db.get_session(ctx.session_id)
+            row = store.sessions.get(ctx.session_id)
             if row:
-                count = row.get("message_count", 0)
+                count = row.message_count
         return count
 
     def _pop_cached_agent_for_eviction(self):
@@ -173,8 +174,7 @@ class GatewaySessionAgentMixin:
             session_id=ctx.session_id, platform=platform_key,
             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
-            gateway_session_key=ctx.session_key,
-            session_db=getattr(runner._session_db, "_db", runner._session_db),
+            gateway_session_key=ctx.session_key, persistence=getattr(runner, "persistence", None),
             # Reload from disk — do not reuse the startup snapshot.
             # See #60955.
             fallback_model=None if api_runtime_locked() else self._runner._refresh_fallback_model(),

@@ -85,15 +85,11 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     for pre-migration databases.
     """
     try:
-        from hermes_state_registry import acquire, release_or_close
-        db = acquire()
-        try:
-            finder = getattr(db, "find_session_by_origin", None)
-            session_id = finder(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id) if callable(finder) else None
-            if session_id:
-                return str(session_id)
-        finally:
-            release_or_close(db)
+        from persistence_assembly import open_persistence, profile_scope
+        with open_persistence(profile_scope()) as store:
+            session_id = store.routing.session_for_origin(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id)
+        if session_id:
+            return str(session_id)
     except Exception as e:
         logger.debug("Mirror state.db session lookup failed: %s", e)
 
@@ -132,10 +128,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
     exception reaches it — swallowing it here made every failed write look mirrored (#10130).
     """
-    from hermes_state_registry import acquire, release_or_close
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = acquire()
-    try:
-        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
-    finally:
-        release_or_close(db)
+    with open_persistence(profile_scope()) as store:
+        store.messages.append(session_id, NewMessage(role=message.get("role", "assistant"), content=message.get("content")))

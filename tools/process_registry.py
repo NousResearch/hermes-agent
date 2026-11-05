@@ -308,6 +308,9 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+_SUPERVISED_VERDICT_CACHE: Optional[tuple[tuple[int, str, str], bool]] = None
+
+
 def _is_supervised_gateway_process() -> bool:
     """Whether this process is the live, supervised Hermes gateway itself.
     Supervisor markers and ``_HERMES_GATEWAY`` are inherited by every descendant (and
@@ -315,17 +318,42 @@ def _is_supervised_gateway_process() -> bool:
     gateway PID file — scopes are for the gateway, not terminal children or CLIs.
     Reads the launch marker (``HERMES_SUPERVISED_CHILD`` included), not the restart-route
     probe: a Windows Scheduled-Task gateway sets only that marker, and the self-kill guards
-    gated here must protect it too (#113667)."""
+    gated here must protect it too (#113667).
+
+    The verdict is invariant for one process with one environment, and the probe behind it
+    does real filesystem + kernel-process work: on macOS a single ``open()`` inside that
+    chain can wedge indefinitely, and the terminal guard calls this on EVERY command, so
+    each abandoned guard thread parked in the same open() (#board-497, 20 leaked threads in
+    one gateway). Cache the verdict — keyed on pid + the two marker variables, so a test or
+    a re-exec that changes them still re-probes — and never cache a probe that raised: a
+    failed probe must be retried, not frozen into "not supervised"."""
+    global _SUPERVISED_VERDICT_CACHE
     if os.environ.get("_HERMES_GATEWAY") != "1":
         return False
+    key = (
+        os.getpid(),
+        os.environ.get("_HERMES_GATEWAY", ""),
+        os.environ.get("HERMES_SUPERVISED_CHILD", ""),
+    )
+    cached = _SUPERVISED_VERDICT_CACHE
+    if cached is not None and cached[0] == key:
+        return cached[1]
     try:
         from gateway.restart import is_supervised_gateway_launch
         from gateway.status import get_running_pid
 
-        return is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
+        verdict = is_supervised_gateway_launch() and get_running_pid(cleanup_stale=False) == os.getpid()
     except Exception as exc:
         logger.debug("Could not verify supervised gateway process identity: %s", exc)
         return False
+    _SUPERVISED_VERDICT_CACHE = (key, verdict)
+    return verdict
+
+
+def _reset_supervised_gateway_verdict_cache() -> None:
+    """Drop the cached identity verdict (tests, and any caller that re-probes on purpose)."""
+    global _SUPERVISED_VERDICT_CACHE
+    _SUPERVISED_VERDICT_CACHE = None
 
 
 def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:

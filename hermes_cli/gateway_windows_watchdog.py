@@ -495,23 +495,31 @@ def _unlock(handle) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+class StopIntentNotRecorded(RuntimeError):
+    """Neither stop-intent channel took the write, so no sweep ran: a watchdog that had read its
+    token before this stop would restart a gateway swept now, behind the operator's back."""
+
+
 def operator_stop(home: Path, sweep: Callable[[], Any], *, lock_timeout: float = STOP_LOCK_TIMEOUT_S) -> bool:
     """``hermes gateway stop``'s half of the protocol: persist the stop intent FIRST, then sweep
     inside the spawn section. A watchdog start either had not reached its final check when the token
     moved (it then starts nothing) or completed its whole section — gateway started AND visible —
-    before this sweep looked. The sweep always runs: a section that cannot be taken (a wedged holder,
-    an unopenable lock) never skips the operator's stop.
+    before this sweep looked. A section that cannot be taken (a wedged holder) never skips the
+    operator's stop once its intent is recorded.
 
     The intent is recorded on two channels: the stop marker (``forget_owed_restart``, a replace a
     reader can block) and, before the sweep, a stamp written through this section's own lock handle
     (``_stamp_stop``, no replace). Either one moves ``read_stop_token``, so a watchdog that waited
-    for this section starts nothing. Returns True only when the section was held AND the intent was
-    recorded; False tells the caller the watchdog may not have seen this stop."""
+    for this section starts nothing. When neither takes the write the stop fails closed: it raises
+    ``StopIntentNotRecorded`` before sweeping, leaving the gateway as it was rather than stopped in a
+    way the watchdog would undo. Returns whether the section was held (False: a watchdog start may
+    have been running beside this sweep)."""
     persisted = forget_owed_restart(home)
     with _spawn_section(home, timeout=lock_timeout) as (held, handle):
-        stamped = handle is not None and _stamp_stop(handle)
+        if not (handle is not None and _stamp_stop(handle)) and not persisted:
+            raise StopIntentNotRecorded("the stop intent could not be recorded for the gateway hang watchdog")
         sweep()
-    return held and (persisted or stamped)
+    return held
 
 
 def announce_outage(home: Path, outage: dict[str, Any]) -> Any:

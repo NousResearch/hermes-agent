@@ -639,12 +639,32 @@ class RestartGatewayTest(_Home):
         self.assertEqual(result, (False, watchdog.REASON_OPERATOR_STOPPED))
         spawn.assert_not_called()
 
-    def test_operator_stop_reports_a_stop_it_could_not_record_anywhere(self):
+    def test_a_stop_recorded_nowhere_refuses_before_its_sweep(self):
+        """CORP-836 re-review: with both intent channels failing, a sweep would leave a waiting
+        watchdog holding its old token, free to restart the gateway the operator just stopped. The
+        stop must fail before it sweeps, never complete and report success."""
         sweep = mock.Mock()
         with mock.patch.object(watchdog, "forget_owed_restart", return_value=False), \
-                mock.patch.object(watchdog, "_stamp_stop", return_value=False):
-            self.assertFalse(watchdog.operator_stop(self.home, sweep))
-        sweep.assert_called_once()  # the operator's stop itself always runs
+                mock.patch.object(watchdog, "_stamp_stop", return_value=False), \
+                self.assertRaises(watchdog.StopIntentNotRecorded):
+            watchdog.operator_stop(self.home, sweep)
+        sweep.assert_not_called()  # the gateway is left running, never stopped behind the watchdog's back
+
+    def test_a_stop_with_an_unopenable_section_and_no_marker_refuses_before_its_sweep(self):
+        sweep = mock.Mock()
+        with mock.patch.object(watchdog, "forget_owed_restart", return_value=False), \
+                mock.patch.object(watchdog, "_open_lock_file", side_effect=PermissionError(5, "Access is denied")), \
+                self.assertRaises(watchdog.StopIntentNotRecorded):
+            watchdog.operator_stop(self.home, sweep)
+        sweep.assert_not_called()
+
+    def test_a_stop_recorded_on_one_channel_still_sweeps(self):
+        for marker, stamp in ((True, False), (False, True)):
+            sweep = mock.Mock()
+            with mock.patch.object(watchdog, "forget_owed_restart", return_value=marker), \
+                    mock.patch.object(watchdog, "_stamp_stop", return_value=stamp):
+                self.assertTrue(watchdog.operator_stop(self.home, sweep))
+            sweep.assert_called_once()
 
     def test_a_failing_notice_never_blocks_the_restart_and_logs_no_detail(self):
         secret = "xoxb-SECRET-TOKEN-1234567890"
@@ -1018,6 +1038,18 @@ class GatewayServiceIntegrationTest(_TaskEnv):
         with mock.patch("builtins.print"):
             gateway_windows.uninstall()
         self.assertNotIn("Hermes_Watchdog_alice", self.schtasks.registered)
+
+    def test_gateway_stop_exits_nonzero_without_sweeping_when_its_intent_cannot_be_recorded(self):
+        sweep = mock.Mock()
+        with mock.patch.object(gateway_windows, "_clear_start_attestation"), \
+                mock.patch.object(gateway_windows, "_stop_sweep", sweep), \
+                mock.patch.object(watchdog, "forget_owed_restart", return_value=False), \
+                mock.patch.object(watchdog, "_stamp_stop", return_value=False), \
+                mock.patch("builtins.print"), \
+                self.assertRaises(SystemExit) as exited:
+            gateway_windows.stop()
+        self.assertNotEqual(exited.exception.code, 0)
+        sweep.assert_not_called()
 
     def test_profile_delete_cleanup_removes_the_watchdog_without_elevating(self):
         from hermes_cli import profiles_service_cleanup

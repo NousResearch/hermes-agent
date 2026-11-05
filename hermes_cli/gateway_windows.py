@@ -1845,7 +1845,14 @@ def stop() -> None:
     # The hang watchdog must never bring it back: the stop intent is persisted first, then the sweep
     # runs inside the watchdog's spawn section, so a start in flight is either never made or swept.
     from hermes_cli import gateway_windows_watchdog
-    if not gateway_windows_watchdog.operator_stop(_hermes_home(), _stop_sweep):
+    try:
+        synchronised = gateway_windows_watchdog.operator_stop(_hermes_home(), _stop_sweep)
+    except gateway_windows_watchdog.StopIntentNotRecorded:
+        # Fail closed: a gateway stopped without a recorded intent would be restarted by the watchdog.
+        print("✗ Gateway not stopped: could not record the stop for the gateway hang watchdog "
+              f"({_hermes_home() / 'state'} is not writable). Fix that and run the stop again.")
+        sys.exit(1)
+    if not synchronised:
         print("⚠ Could not synchronise with the gateway hang watchdog; stopped every gateway visible now")
 
 

@@ -3149,344 +3149,6 @@ export interface WakeFeedResult {
   reason?: string | null
   fed: boolean
 }
-export interface SystemBatteryParams {
-  profile?: string | null
-}
-export interface SystemBatteryResult {
-  available: boolean
-  percent?: number | null
-  plugged?: boolean | null
-  category?: BatteryCategory
-}
-/** ``agent/battery.py::battery_category`` colour bucket. */
-export type BatteryCategory = 'good' | 'warn' | 'bad' | 'critical' | 'dim'
-export interface ProcessStopParams {
-  session_id?: string | null
-  profile?: string | null
-}
-export interface ProcessStopResult {
-  killed: number
-  delegations?: number
-}
-export interface AgentsListParams {
-  profile?: string | null
-}
-export interface AgentsListResult {
-  processes?: AgentProcessRow[]
-}
-export interface AgentProcessRow {
-  session_id: string
-  command: string
-  status: string
-  uptime: number
-}
-export interface ProcessListParams {
-  session_id: string
-  profile?: string | null
-}
-export interface ProcessListResult {
-  processes?: ProcessEntry[]
-}
-/** ``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``. */
-export interface ProcessEntry {
-  session_id: string
-  command?: string
-  cwd?: string | null
-  pid?: number | null
-  owner_task_id?: string | null
-  started_at?: string | null
-  uptime_seconds?: number | null
-  status?: string
-  output_preview?: string
-  output_tail?: string | null
-  session_scoped?: boolean | null
-  watch_patterns?: string[] | null
-  watch_hit?: boolean | null
-  notify_on_complete?: boolean | null
-  exit_code?: number | null
-  exited_at?: number | null
-  started_epoch?: number | null
-  completion_reason?: string | null
-  detached?: boolean | null
-  [key: string]: unknown
-}
-export interface ProcessKillParams {
-  session_id: string
-  process_id: string
-  profile?: string | null
-}
-/** ``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses. */
-export interface ProcessKillResult {
-  status: ProcessKillStatus
-  session_id?: string | null
-  command?: string | null
-  exit_code?: number | null
-  completion_reason?: string | null
-  termination_source?: string | null
-  output?: string | null
-  error?: string | null
-  [key: string]: unknown
-}
-export type ProcessKillStatus = 'killed' | 'already_exited' | 'not_found' | 'error'
-export interface ShellExecParams {
-  command: string
-  profile?: string | null
-}
-export interface ShellExecResult {
-  stdout: string
-  stderr: string
-  code: number
-}
-export interface CliExecParams {
-  argv: string[]
-  timeout?: number | null
-  profile?: string | null
-}
-export interface CliExecResult {
-  blocked: boolean
-  code: number
-  output: string
-  hint?: string | null
-}
-export interface CommandsCatalogParams {
-  session_id?: string | null
-  profile?: string | null
-}
-export interface CommandsCatalogResult {
-  pairs?: string[][]
-  sub?: Record<string, string[]>
-  canon?: Record<string, string>
-  commands?: Record<string, CommandCatalogMeta>
-  categories?: CommandCategory[]
-  skills?: Record<string, SkillCatalogEntry>
-  skill_count?: number
-  warning?: string
-  plugin_discovery_error?: string
-  plugin_commands?: Record<string, string>
-}
-export interface CommandCatalogMeta {
-  argument_mode?: ArgumentMode | null
-  desktop?: string | null
-  desktop_subcommands?: string[] | null
-}
-export type ArgumentMode = 'options' | 'text' | 'mixed'
-export interface CommandCategory {
-  name: string
-  pairs?: string[][]
-}
-export interface SkillCatalogEntry {
-  usage?: number
-  origin?: string
-}
-export interface CommandResolveParams {
-  name?: string | null
-  profile?: string | null
-}
-export interface CommandResolveResult {
-  canonical: string
-  description: string
-  category: string
-}
-export interface CommandDispatchParams {
-  name: string
-  arg?: string | null
-  session_id?: string | null
-  profile?: string | null
-}
-/** One structured directive: ``exec``/``plugin`` carry ``output``; ``alias`` a ``target``; ``send``/``prefill``/``skill`` a ``message`` (UIs render ``display``, never ``message``). */
-export interface CommandDispatchResult {
-  type: DispatchType
-  output?: string | null
-  target?: string | null
-  message?: string | null
-  notice?: string | null
-  display?: string | null
-  name?: string | null
-  status?: string | null
-}
-/** ``apps/shared/src/slash.ts::parseCommandDispatch`` branches on this. */
-export type DispatchType = 'exec' | 'alias' | 'plugin' | 'send' | 'skill' | 'prefill'
-export interface SlashExecParams {
-  session_id: string
-  command: string
-  profile?: string | null
-}
-/** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. */
-export interface SlashExecResult {
-  output?: string | null
-  warning?: string | null
-  type?: DispatchType | null
-  target?: string | null
-  message?: string | null
-  notice?: string | null
-  display?: string | null
-  name?: string | null
-  status?: string | null
-}
-export interface InsightsGetParams {
-  days?: number | null
-  profile?: string | null
-}
-export interface InsightsGetResult {
-  days: number
-  sessions: number
-  messages: number
-}
-export interface ConfigShowParams {
-  profile?: string | null
-}
-export interface ConfigShowResult {
-  sections?: ConfigSection[]
-  [key: string]: unknown
-}
-export interface ConfigSection {
-  title: string
-  rows?: string[][]
-}
-export interface RollbackListParams {
-  session_id: string
-  profile?: string | null
-  undo_since?: number | null
-}
-export interface RollbackListResult {
-  enabled: boolean
-  checkpoints?: RollbackCheckpoint[]
-  undo_hint?: UndoRollbackHint | null
-}
-export interface RollbackCheckpoint {
-  hash?: string
-  timestamp?: string
-  message?: string
-}
-/** ``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number, so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count; ``text`` is the rendered line in the backend's language. */
-export interface UndoRollbackHint {
-  number?: number | null
-  files?: string[]
-  more?: number
-  text: string
-}
-export interface RollbackRestoreParams {
-  session_id: string
-  hash: string
-  file_path?: string | null
-  profile?: string | null
-  all?: boolean | null
-}
-/** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
-export interface RollbackRestoreResult {
-  success: boolean
-  restored_to?: string | null
-  reason?: string | null
-  directory?: string | null
-  file?: string | null
-  restored_files?: string[] | null
-  skipped_user_edits?: string[] | null
-  skipped_oversize?: string[] | null
-  failed_deletes?: string[] | null
-  history_removed?: number | null
-  error?: string | null
-  debug?: unknown | null
-  [key: string]: unknown
-}
-export interface RollbackDiffParams {
-  session_id: string
-  hash: string
-  profile?: string | null
-}
-export interface RollbackDiffResult {
-  stat?: string
-  diff?: string
-  rendered?: string | null
-}
-export interface CronManageParams {
-  action?: CronAction
-  name?: string | null
-  include_disabled?: boolean | string | null
-  schedule?: string | null
-  prompt?: string | null
-  repeat?: number | string | null
-  continuity?: boolean | string | null
-  deliver?: string | null
-  profile?: string | null
-}
-export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
-/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
-export interface CronManageResult {
-  success?: boolean | null
-  error?: string | null
-  count?: number | null
-  jobs?: CronJobRow[] | null
-  scoped?: string | null
-  gateway_running?: boolean | null
-  warning?: string | null
-  job_id?: string | null
-  name?: string | null
-  skill?: string | null
-  skills?: string[] | null
-  schedule?: string | null
-  repeat?: number | string | null
-  deliver?: string | null
-  next_run_at?: string | null
-  job?: CronJobRow | null
-  message?: string | null
-  guidance?: unknown | null
-  removed_job?: CronRemovedJob | null
-  [key: string]: unknown
-}
-/** ``tools/cronjob_job_args.py::_format_job``. */
-export interface CronJobRow {
-  job_id: string
-  name?: string
-  skill?: string | null
-  skills?: string[]
-  prompt_preview?: string
-  model?: string | null
-  provider?: string | null
-  base_url?: string | null
-  schedule?: string
-  repeat?: number | string | null
-  deliver?: string | null
-  next_run_at?: string | null
-  last_run_at?: string | null
-  last_status?: string | null
-  last_delivery_error?: string | null
-  last_delivery_unverified?: string[] | null
-  last_fire_error?: string | null
-  last_error?: string | null
-  enabled?: boolean
-  state?: string | null
-  paused_at?: string | null
-  paused_reason?: string | null
-  workdir?: string | null
-  script?: string | null
-  reasoning_effort?: string | null
-  monitor_script?: string | null
-  monitor_url?: string | null
-  monitor_state?: unknown | null
-  no_agent?: boolean | null
-  enabled_toolsets?: string[] | null
-  continuity?: boolean | null
-  context_from?: string[] | null
-  attach_to_session?: boolean | null
-  [key: string]: unknown
-}
-export interface CronRemovedJob {
-  id: string
-  name?: string
-  schedule?: string | null
-}
-export interface BrowserManageParams {
-  action?: BrowserAction
-  url?: string | null
-  session_id?: string | null
-  profile?: string | null
-}
-export type BrowserAction = 'status' | 'connect' | 'disconnect'
-export interface BrowserManageResult {
-  connected: boolean
-  url?: string | null
-  messages?: string[] | null
-}
 export interface SessionCreateParams {
   profile?: string | null
   cols?: number | null
@@ -3865,6 +3527,13 @@ export interface SessionUndoResult {
   removed: number
   undo_hint?: UndoRollbackHint | null
 }
+/** ``/undo``'s pointer at ``/rollback``: ``number`` is what ``/rollback`` takes (null: no safe number, so the line says to list them); ``files`` are the first changed paths, ``more`` the rest's count; ``text`` is the rendered line in the backend's language. */
+export interface UndoRollbackHint {
+  number?: number | null
+  files?: string[]
+  more?: number
+  text: string
+}
 export interface SessionSaveParams {
   session_id: string
   profile?: string | null
@@ -4101,6 +3770,337 @@ export interface LlmOneshotParams {
 }
 export interface LlmOneshotResult {
   text: string
+}
+export interface SystemBatteryParams {
+  profile?: string | null
+}
+export interface SystemBatteryResult {
+  available: boolean
+  percent?: number | null
+  plugged?: boolean | null
+  category?: BatteryCategory
+}
+/** ``agent/battery.py::battery_category`` colour bucket. */
+export type BatteryCategory = 'good' | 'warn' | 'bad' | 'critical' | 'dim'
+export interface ProcessStopParams {
+  session_id?: string | null
+  profile?: string | null
+}
+export interface ProcessStopResult {
+  killed: number
+  delegations?: number
+}
+export interface AgentsListParams {
+  profile?: string | null
+}
+export interface AgentsListResult {
+  processes?: AgentProcessRow[]
+}
+export interface AgentProcessRow {
+  session_id: string
+  command: string
+  status: string
+  uptime: number
+}
+export interface ProcessListParams {
+  session_id: string
+  profile?: string | null
+}
+export interface ProcessListResult {
+  processes?: ProcessEntry[]
+}
+/** ``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``. */
+export interface ProcessEntry {
+  session_id: string
+  command?: string
+  cwd?: string | null
+  pid?: number | null
+  owner_task_id?: string | null
+  started_at?: string | null
+  uptime_seconds?: number | null
+  status?: string
+  output_preview?: string
+  output_tail?: string | null
+  session_scoped?: boolean | null
+  watch_patterns?: string[] | null
+  watch_hit?: boolean | null
+  notify_on_complete?: boolean | null
+  exit_code?: number | null
+  exited_at?: number | null
+  started_epoch?: number | null
+  completion_reason?: string | null
+  detached?: boolean | null
+  [key: string]: unknown
+}
+export interface ProcessKillParams {
+  session_id: string
+  process_id: string
+  profile?: string | null
+}
+/** ``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses. */
+export interface ProcessKillResult {
+  status: ProcessKillStatus
+  session_id?: string | null
+  command?: string | null
+  exit_code?: number | null
+  completion_reason?: string | null
+  termination_source?: string | null
+  output?: string | null
+  error?: string | null
+  [key: string]: unknown
+}
+export type ProcessKillStatus = 'killed' | 'already_exited' | 'not_found' | 'error'
+export interface ShellExecParams {
+  command: string
+  profile?: string | null
+}
+export interface ShellExecResult {
+  stdout: string
+  stderr: string
+  code: number
+}
+export interface CliExecParams {
+  argv: string[]
+  timeout?: number | null
+  profile?: string | null
+}
+export interface CliExecResult {
+  blocked: boolean
+  code: number
+  output: string
+  hint?: string | null
+}
+export interface CommandsCatalogParams {
+  session_id?: string | null
+  profile?: string | null
+}
+export interface CommandsCatalogResult {
+  pairs?: string[][]
+  sub?: Record<string, string[]>
+  canon?: Record<string, string>
+  commands?: Record<string, CommandCatalogMeta>
+  categories?: CommandCategory[]
+  skills?: Record<string, SkillCatalogEntry>
+  skill_count?: number
+  warning?: string
+  plugin_discovery_error?: string
+  plugin_commands?: Record<string, string>
+}
+export interface CommandCatalogMeta {
+  argument_mode?: ArgumentMode | null
+  desktop?: string | null
+  desktop_subcommands?: string[] | null
+}
+export type ArgumentMode = 'options' | 'text' | 'mixed'
+export interface CommandCategory {
+  name: string
+  pairs?: string[][]
+}
+export interface SkillCatalogEntry {
+  usage?: number
+  origin?: string
+}
+export interface CommandResolveParams {
+  name?: string | null
+  profile?: string | null
+}
+export interface CommandResolveResult {
+  canonical: string
+  description: string
+  category: string
+}
+export interface CommandDispatchParams {
+  name: string
+  arg?: string | null
+  session_id?: string | null
+  profile?: string | null
+}
+/** One structured directive: ``exec``/``plugin`` carry ``output``; ``alias`` a ``target``; ``send``/``prefill``/``skill`` a ``message`` (UIs render ``display``, never ``message``). */
+export interface CommandDispatchResult {
+  type: DispatchType
+  output?: string | null
+  target?: string | null
+  message?: string | null
+  notice?: string | null
+  display?: string | null
+  name?: string | null
+  status?: string | null
+}
+/** ``apps/shared/src/slash.ts::parseCommandDispatch`` branches on this. */
+export type DispatchType = 'exec' | 'alias' | 'plugin' | 'send' | 'skill' | 'prefill'
+export interface SlashExecParams {
+  session_id: string
+  command: string
+  profile?: string | null
+}
+/** Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to ``command.dispatch`` — that method's directive fields with ``type`` set. */
+export interface SlashExecResult {
+  output?: string | null
+  warning?: string | null
+  type?: DispatchType | null
+  target?: string | null
+  message?: string | null
+  notice?: string | null
+  display?: string | null
+  name?: string | null
+  status?: string | null
+}
+export interface InsightsGetParams {
+  days?: number | null
+  profile?: string | null
+}
+export interface InsightsGetResult {
+  days: number
+  sessions: number
+  messages: number
+}
+export interface ConfigShowParams {
+  profile?: string | null
+}
+export interface ConfigShowResult {
+  sections?: ConfigSection[]
+  [key: string]: unknown
+}
+export interface ConfigSection {
+  title: string
+  rows?: string[][]
+}
+export interface RollbackListParams {
+  session_id: string
+  profile?: string | null
+  undo_since?: number | null
+}
+export interface RollbackListResult {
+  enabled: boolean
+  checkpoints?: RollbackCheckpoint[]
+  undo_hint?: UndoRollbackHint | null
+}
+export interface RollbackCheckpoint {
+  hash?: string
+  timestamp?: string
+  message?: string
+}
+export interface RollbackRestoreParams {
+  session_id: string
+  hash: string
+  file_path?: string | null
+  profile?: string | null
+  all?: boolean | null
+}
+/** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
+export interface RollbackRestoreResult {
+  success: boolean
+  restored_to?: string | null
+  reason?: string | null
+  directory?: string | null
+  file?: string | null
+  restored_files?: string[] | null
+  skipped_user_edits?: string[] | null
+  skipped_oversize?: string[] | null
+  failed_deletes?: string[] | null
+  history_removed?: number | null
+  error?: string | null
+  debug?: unknown | null
+  [key: string]: unknown
+}
+export interface RollbackDiffParams {
+  session_id: string
+  hash: string
+  profile?: string | null
+}
+export interface RollbackDiffResult {
+  stat?: string
+  diff?: string
+  rendered?: string | null
+}
+export interface CronManageParams {
+  action?: CronAction
+  name?: string | null
+  include_disabled?: boolean | string | null
+  schedule?: string | null
+  prompt?: string | null
+  repeat?: number | string | null
+  continuity?: boolean | string | null
+  deliver?: string | null
+  profile?: string | null
+}
+export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
+/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
+export interface CronManageResult {
+  success?: boolean | null
+  error?: string | null
+  count?: number | null
+  jobs?: CronJobRow[] | null
+  scoped?: string | null
+  gateway_running?: boolean | null
+  warning?: string | null
+  job_id?: string | null
+  name?: string | null
+  skill?: string | null
+  skills?: string[] | null
+  schedule?: string | null
+  repeat?: number | string | null
+  deliver?: string | null
+  next_run_at?: string | null
+  job?: CronJobRow | null
+  message?: string | null
+  guidance?: unknown | null
+  removed_job?: CronRemovedJob | null
+  [key: string]: unknown
+}
+/** ``tools/cronjob_job_args.py::_format_job``. */
+export interface CronJobRow {
+  job_id: string
+  name?: string
+  skill?: string | null
+  skills?: string[]
+  prompt_preview?: string
+  model?: string | null
+  provider?: string | null
+  base_url?: string | null
+  schedule?: string
+  repeat?: number | string | null
+  deliver?: string | null
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_status?: string | null
+  last_delivery_error?: string | null
+  last_delivery_unverified?: string[] | null
+  last_fire_error?: string | null
+  last_error?: string | null
+  enabled?: boolean
+  state?: string | null
+  paused_at?: string | null
+  paused_reason?: string | null
+  workdir?: string | null
+  script?: string | null
+  reasoning_effort?: string | null
+  monitor_script?: string | null
+  monitor_url?: string | null
+  monitor_state?: unknown | null
+  no_agent?: boolean | null
+  enabled_toolsets?: string[] | null
+  continuity?: boolean | null
+  context_from?: string[] | null
+  attach_to_session?: boolean | null
+  [key: string]: unknown
+}
+export interface CronRemovedJob {
+  id: string
+  name?: string
+  schedule?: string | null
+}
+export interface BrowserManageParams {
+  action?: BrowserAction
+  url?: string | null
+  session_id?: string | null
+  profile?: string | null
+}
+export type BrowserAction = 'status' | 'connect' | 'disconnect'
+export interface BrowserManageResult {
+  connected: boolean
+  url?: string | null
+  messages?: string[] | null
 }
 /** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
 export interface _SessionScoped {

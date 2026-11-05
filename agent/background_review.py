@@ -378,6 +378,14 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    # Without a grounding rule the reviewer saved trait guesses and one-off requests as standing
+    # facts. Store-neutral on purpose: scoped to USER.md only, the same guess moved to MEMORY.md.
+    "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
+    "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
+    "tools used, and never turn a one-off request into a standing preference (in either store) "
+    "unless the user marked it general ('always', 'from now on', 'remember') or stated a standing "
+    "like/dislike ('I hate X', 'stop doing Y'). If unsure, leave it "
+    "out — a wrong fact misleads every future session.\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (
@@ -472,7 +480,9 @@ _SKILL_REVIEW_PROMPT = (
     "new learning, PATCH that one first (re-load it with skill_view during this review — see "
     "Read-before-write below). It is the skill that was in play, so it's the right one to extend — "
     "whoever wrote it: hand-written, installed, bundled, and pinned skills are all yours to "
-    "improve.\n"
+    "improve. The one exception is a skill the user LOCKED (`hermes curator lock`): skill_manage "
+    "refuses it — do not retry and do not recreate it under another name; put the suggested "
+    "change in your summary instead.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). If no loaded skill fits but "
     "an existing class-level skill does, patch it. Add a subsection, a pitfall, or broaden a "
     "trigger.\n"
@@ -1059,6 +1069,18 @@ def _bg_review_auto_deny(command, description, **kwargs):
     return "deny"
 
 
+def _bg_review_skip_secret(var_name, prompt, metadata=None):
+    """Non-interactive secret capture: a skill the review opens never asks the user for a key.
+
+    The review thread inherits the turn's ContextVars, including the session owner's turn-scoped
+    secret prompt, so without this a ``skill_view`` of a skill with a missing required env var would
+    pop the masked "enter value" panel on the user's screen after the turn already finished.
+    """
+    logger.info("Background review skipped the secret prompt for %s", var_name)
+    return {"success": True, "reason": "background_review", "stored_as": var_name, "validated": False,
+            "skipped": True, "message": "Secret setup was skipped."}
+
+
 def _set_thread_approval_callback(callback: Any) -> None:
     from tools.terminal_tool import set_approval_callback
 
@@ -1271,7 +1293,8 @@ def _run_review_in_thread(
         # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
-        with thread_scoped_silence():
+        from tools.skills_tool import bind_turn_secret_capture
+        with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.

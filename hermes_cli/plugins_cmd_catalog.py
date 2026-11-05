@@ -626,7 +626,7 @@ class RepinConsentRequired(Exception):
     def __init__(self, name: str, sha: str, delta: dict[str, list[str]]):
         self.name, self.sha, self.delta = name, sha, delta
         super().__init__(
-            f"Updating '{name}' to {sha[:8]} adds {'; '.join(surface_delta_lines(delta))}. Confirm to continue.")
+            f"Updating '{name}'{f' to {sha[:8]}' if sha else ''} adds {'; '.join(surface_delta_lines(delta))}. Confirm to continue.")
 
 
 def repin_catalog_plugin(

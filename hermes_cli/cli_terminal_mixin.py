@@ -57,6 +57,12 @@ def _run_on_app_loop(app, fn) -> None:
     fn()
 
 
+def _tmux_passthrough(seq: str) -> str:
+    """*seq* in tmux's DCS passthrough wrapper: tmux forwards it to the outer terminal only with
+    ``allow-passthrough on`` and swallows it otherwise."""
+    return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+
+
 def _write_terminal_sequence(app, seq: str) -> None:
     """Write a raw escape *seq* via the app output (write_raw > write) or stdout."""
     output = getattr(app, "output", None) if app else None
@@ -595,7 +601,7 @@ class CLITerminalMixin:
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
         seq = f"\x1b]52;c;{payload}\x07"
         if os.environ.get("TMUX"):
-            seq = "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+            seq = _tmux_passthrough(seq)
         elif os.environ.get("STY"):
             seq = "\x1bP" + seq + "\x1b\\"
         _write_terminal_sequence(getattr(self, "_app", None), seq)

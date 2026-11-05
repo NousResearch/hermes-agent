@@ -19,6 +19,7 @@ import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
 import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
+import { dePluginUpdateAll } from './de_plugin_update_all'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
@@ -717,7 +718,7 @@ export const deOverrides = {
       advancedOutput: 'Ausgabelimits',
       advancedDelegation: 'Subagenten',
       advancedDesktop: 'Desktop & Start',
-      gatewayConnection: 'Dieses Fenster',
+      gatewayConnection: 'Primäres Gateway',
       gatewayDevices: 'Gespeicherte Verbindungen',
       gatewayManagedUpdates: 'Remote-Updates',
       gatewayManagedUpdatesUnavailable:
@@ -1618,7 +1619,7 @@ export const deOverrides = {
       intro:
         'Verwalten Sie dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
       stagedNote:
-        'Wechseln Sie Gateways über Sessions. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway; Arbeit auf anderen Gateways läuft weiter.',
+        'Jedes Gateway bleibt verbunden. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway, und Sessions kann alle gleichzeitig anzeigen.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Gateway zurückkehren',
       launchModeDesc: 'Wenn deaktiviert, öffnet Sessions auf dem primären Gateway.',
       searchPlaceholder: 'Gateways durchsuchen…',
@@ -2457,6 +2458,11 @@ export const deOverrides = {
     changesApplyNewSessions: 'Änderungen gelten für neue Sessions.',
     skillUpdated: 'Skill aktualisiert',
     edit: 'Bearbeiten',
+    lock: 'Sperren',
+    locked: 'Gesperrt',
+    lockHint:
+      'Der Agent kann diesen Skill nicht ändern, solange er gesperrt ist. Du kannst ihn weiterhin selbst bearbeiten.',
+    unlockedHint: 'Sperren, damit der Agent diesen Skill nicht ändert. Du kannst ihn weiterhin selbst bearbeiten.',
     archive: 'Archivieren',
     skillArchivedTitle: 'Skill archiviert',
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
@@ -2514,6 +2520,7 @@ export const deOverrides = {
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
       ...dePluginUpdate,
+      ...dePluginUpdateAll,
       ...dePluginPreviewAccess,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
@@ -2979,6 +2986,32 @@ export const deOverrides = {
       'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Kein Bot-Token nötig',
+      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      link: (platform: string) => `${platform} verknüpfen`,
+      linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
+      linkedAccounts: 'Verknüpfte Konten',
+      unlink: 'Trennen',
+      unlinkFailed: 'Konto konnte nicht getrennt werden',
+      stepOpen: (platform: string) => `1. Scanne den Code mit dem Handy oder öffne den Bot in ${platform}.`,
+      stepSend: '2. Sende dem Bot diese Nachricht von dem Konto, das du verknüpfen willst:',
+      open: (platform: string) => `${platform} öffnen`,
+      copy: 'Nachricht kopieren',
+      copied: 'Kopiert',
+      copyFailed: (command: string) => `Kopieren fehlgeschlagen. Tippe stattdessen ${command}.`,
+      waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
+      linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
+      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
+      managed: 'Von Team Gateway verwaltet',
+      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
+      managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
+      openPortal: 'Konten im Nous Portal verknüpfen',
+      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+    },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
       subtitle:
@@ -3232,15 +3265,11 @@ export const deOverrides = {
       gateway: gateway => `Profile auf ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
+      switchTo: (name, gateway) => `${name} auf ${gateway} öffnen`,
       deleteOn: gateway => ` auf ${gateway}`,
       localDevice:
         'Dieses Gerät (lokales Backend — installiert Hermes, falls es fehlt, sonst öffnet es eine neue Sitzung)',
-      switchDeviceTitle: 'Zu diesem Gerät wechseln?',
-      switchDeviceDesc:
-        'Das öffnet eine neue Sitzung auf diesem Computer. Das aktuelle Gespräch bleibt auf dem anderen Gateway.',
-      switchDeviceConfirm: 'Wechseln',
-      installDeviceTitle: 'Zu diesem Gerät wechseln?',
+      installDeviceTitle: 'Hermes auf diesem Gerät installieren?',
       installDeviceDesc:
         'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
       installDeviceConfirm: 'Lokal installieren',
@@ -3687,7 +3716,6 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
-      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',
@@ -4503,7 +4531,9 @@ export const deOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
       updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
+      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4614,6 +4644,15 @@ export const deOverrides = {
           system_prompt: 'System-Prompt',
           tool_definitions: 'Tool-Definitionen'
         },
+        compact: {
+          action: 'Unterhaltung verdichten',
+          busyHint: 'Beende oder stoppe zuerst die laufende Antwort',
+          confirm: 'Verdichten',
+          hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
+          question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
+          questionNamed: title => `„${title}“ zu einer Zusammenfassung verdichten?`,
+          working: 'Verdichte …'
+        },
         empty: 'Noch keine Kontext-Daten',
         loading: 'Aufschlüsselung wird geladen…',
         percentFull: percent => `${percent}% voll`,
@@ -4676,6 +4715,14 @@ export const deOverrides = {
     terminalNew: 'Neues Terminal',
     terminalCloseOthers: 'Andere schließen',
     terminalCloseAll: 'Alle schließen',
+    terminalNewOn: 'Neues Terminal auf…',
+    terminalGatewayRemoved: 'Entfernter Gateway',
+    terminalGatewayRemovedBody:
+      'Der Gateway, auf dem dieses Terminal lief, wurde entfernt; es kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalGatewayNoShellBody:
+      'Dieser Gateway bietet keinen Shell-Zugang; dieses Terminal kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalDisconnectedBody:
+      'Terminal getrennt. Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.',
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {
@@ -5142,6 +5189,10 @@ export const deOverrides = {
       authorized: server => `${server} autorisiert`,
       failed: server => `Einrichtung für ${server} fehlgeschlagen`,
       toolCount: count => (count === 1 ? '1 Tool' : `${count} Tools`),
+      launchCommand: target => `Führt aus: ${target}`,
+      launchRemote: target => `Verbindet mit: ${target}`,
+      launchEnv: keys => `Umgebung: ${keys}`,
+      launchCwd: dir => `Arbeitsverzeichnis: ${dir}`,
       envRequired: 'Füllen Sie zuerst die erforderlichen Anmeldedaten aus',
       sendFailed: 'MCP-Einrichtungsantwort konnte nicht gesendet werden',
       reloadFailed:

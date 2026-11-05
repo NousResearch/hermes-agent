@@ -119,7 +119,7 @@ def _route_store(monkeypatch, mutate):
 def gateway(tmp_path, monkeypatch):
     """A gateway owner over a temp state.db that the importer's ``session.mutate`` calls reach."""
     from gateway.session_authority import SessionAuthority
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_mutations import mutate_session
     from hermes_state import SessionDB
     from hermes_state_runtime import begin_runtime_epoch
@@ -127,7 +127,7 @@ def gateway(tmp_path, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
                                  db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
-    actor = Principal("owner", "p", frozenset({"session:read", "session:control", "session:create"}), "cli")
+    actor = SessionActor("owner", "p", frozenset({"session:read", "session:control", "session:create"}), "cli")
     calls = _route_store(monkeypatch, lambda params: asyncio.run(
         mutate_session(authority, actor, SessionRef("p", params["session_id"]), params)))
     yield SimpleNamespace(db=db, calls=calls)

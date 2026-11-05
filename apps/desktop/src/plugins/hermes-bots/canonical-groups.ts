@@ -20,11 +20,26 @@ export interface CanonicalRoomMember {
   target?: Record<string, unknown>
 }
 
+export interface CanonicalRoomContext {
+  purpose: string
+  notes: string
+  /** Absent on runtimes without lead routing (they behave as `everyone`); `auto` lets a model call pick. */
+  routing?: 'auto' | 'everyone' | 'lead'
+  lead_member_id?: string
+}
+
+/** The backend's cap on shared notes (UTF-8 bytes after trimming; `validate_context`). */
+export const MAX_ROOM_NOTES_BYTES = 4096
+
+export const roomNotesBytes = (notes: string) => new TextEncoder().encode(notes.trim()).length
+
 export interface CanonicalRoom {
   room_id: string
   name: string
   members: CanonicalRoomMember[]
   disbanded_at?: number | null
+  /** Seconds; the last change to the room (`groups.list` orders by it). */
+  updated_at?: number
 }
 
 export interface CanonicalPendingAction {
@@ -39,16 +54,6 @@ function requireRoute(route: CanonicalGroupRoute): void {
   if (!route.connectionId?.trim() || !route.profile?.trim()) {
     throw new Error('Canonical groups require an explicit connection and profile')
   }
-}
-
-export function captureCanonicalGroupRoute(): CanonicalGroupRoute {
-  const connectionId = host.state.connectionId.get()
-
-  if (connectionId === null) {throw new Error('Canonical groups require an explicit connection')}
-  const route = { connectionId, profile: host.state.profile.get() }
-  requireRoute(route)
-
-  return route
 }
 
 export async function canonicalGroupRequest<T>(
@@ -75,6 +80,12 @@ export async function discoverCanonicalGroups(
   route: CanonicalGroupRoute
 ): Promise<{ driver: boolean; rooms: CanonicalRoom[] }> {
   const capabilities = await canonicalGroupRequest<{ driver: boolean }>(route, 'groups.capabilities')
+
+  return { driver: capabilities.driver === true, rooms: await listCanonicalRooms(route) }
+}
+
+/** Every live room on `route`, all pages. */
+export async function listCanonicalRooms(route: CanonicalGroupRoute): Promise<CanonicalRoom[]> {
   const rooms: CanonicalRoom[] = []
   let offset = 0
 
@@ -94,7 +105,7 @@ export async function discoverCanonicalGroups(
     offset = page.next_offset
   }
 
-  return { driver: capabilities.driver === true, rooms }
+  return rooms
 }
 
 export async function createCanonicalGroup(

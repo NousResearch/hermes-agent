@@ -189,7 +189,7 @@ _LONG_HANDLERS = frozenset({
     "subscription.resume", "subscription.upgrade", "usage.bars", "session.usage", "billing.step_up",
     "browser.manage", "cli.exec", "complete.path", "complete.slash", "llm.oneshot", "model.options",
     "pet.cells", "pet.gallery", "pet.generate", "pet.hatch", "pet.info", "pet.select", "pet.thumb",
-    "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
+    "image.render", "learning.frames", "plugins.manage", "plugins.catalog.lookup", "reload.mcp", "mcp.servers.test",
     "mcp.servers.oauth.start",
     "process.list", "profiles.configure", "profiles.create", "profiles.describe", "profiles.get_asset",
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
@@ -198,7 +198,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
-    "onboarding.start", "onboarding.state",
+    "onboarding.start", "onboarding.state", "subagent.roster",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -658,9 +658,8 @@ def _approval_request_payload(data: dict | None) -> dict:
             if payload.get("allow_permanent") is not False:
                 choices.append("always")
         payload["choices"] = choices + ["deny"]
-    if "command" in payload:
-        from gateway.run import _redact_approval_command
-        payload["command"] = _redact_approval_command(payload.get("command"))
+    from gateway.run import _redact_approval_command  # description too: consent prompts carry MCP/vault text
+    payload.update({k: _redact_approval_command(payload[k]) for k in ("command", "description") if k in payload})
     return payload
 
 

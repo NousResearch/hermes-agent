@@ -103,6 +103,31 @@ def unclaimed_pending_slot(job, now):
     return slot
 
 
+def refresh_pending_slots(job_ids) -> int:
+    """Re-stamp ``at`` on this process's still-unclaimed ``pending_slot`` stamps for *job_ids*.
+
+    A job queued in this process's pool (behind a long run at ``max_parallel_jobs: 1``) has no
+    fire claim yet; once its stamp ages past the lease another process's scan would restore the
+    slot and run it, and this process's worker would run it again later. A sync tick that waits
+    outside the tick lock keeps its queued stamps fresh with this. Returns stamps refreshed."""
+    from cron.jobs import _hermes_now, _jobs_lock, _machine_id, load_jobs, save_jobs
+
+    ids = {str(i) for i in job_ids}
+    if not ids:
+        return 0
+    me, now, refreshed = _machine_id(), _hermes_now().isoformat(), 0
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            pending = job.get("pending_slot")
+            if str(job.get("id")) in ids and isinstance(pending, dict) and pending.get("by") == me:
+                pending["at"] = now
+                refreshed += 1
+        if refreshed:
+            save_jobs(jobs)
+    return refreshed
+
+
 def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
     from cron.jobs import _current_cron_store

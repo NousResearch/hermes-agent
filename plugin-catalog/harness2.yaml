@@ -1,0 +1,45 @@
+name: harness2
+repo: https://github.com/shrinedogg/harness2-hermes
+sha: 45d62e1edf774a1d1d95d60e3bccd9f372e0c404
+version: "1.0.0"
+description: >-
+  The Harness^2 self-improvement loop for Hermes profiles: refines the agent's
+  own execution harness (system prompt + config overlay + skills) for a class of
+  work with a contrastive Propose-Probe-Compose cycle over isolated,
+  wall-clock-budgeted one-shot probe sessions, then banks evidence-backed
+  lessons in a per-profile improvement library that future tasks read before
+  editing. The deterministic machinery (profile materialization, probe runs,
+  structural gate, library) is tools; the judgment stages run in the host
+  session under bundled skills that point at the verbatim stage prompts from
+  arXiv:2610.14224. Disclosure - spawns `hermes profile create --clone` and
+  one-shot `hermes -p harness2-<task>-<probe> chat` subprocesses; each probe
+  is a full agent session billed to the configured model, wall-clock capped
+  (default 900 s, plugin setting). Creates and refreshes probe profiles named
+  harness2-* (config is the active profile's deep-merged with the harness
+  overlay, .env inherited, approvals pinned to mode: smart,
+  redact_secrets: true). Reads/writes only its own plugin data directory and
+  the probe profile directories; the installed plugin tree is never written
+  to. No telemetry and no third-party network calls of its own; probes
+  inherit the profile's full tool access (including web) like any profile.
+maintainer: shrinedogg
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/shrinedogg/harness2-hermes#readme
+image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/45d62e1edf774a1d1d95d60e3bccd9f372e0c404/docs/shots/loop.png
+screenshots:
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/45d62e1edf774a1d1d95d60e3bccd9f372e0c404/docs/shots/loop.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/45d62e1edf774a1d1d95d60e3bccd9f372e0c404/docs/shots/library.png
+capabilities:
+  provides_tools:
+  - harness2_init
+  - harness2_probe
+  - harness2_seed
+  - harness2_check
+  - harness2_adopt
+  - harness2_library
+  - harness2_status
+  - harness2_gc
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

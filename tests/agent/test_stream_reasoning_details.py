@@ -11,8 +11,11 @@ from openai.types.chat import ChatCompletion
 from agent.chat_completion_helpers import build_assistant_message, interruptible_streaming_api_call
 from agent.chat_completion_helpers_relay import RelayChatAccumulator
 from agent.transports.chat_completions import ChatCompletionsTransport
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.parametrize("collector", ["main", "relay"])
@@ -85,12 +88,11 @@ def test_stream_reasoning_details_survive_replay(tmp_path, collector, delivery):
         assert normalized.reasoning_details == (details or None)
         message = build_assistant_message(agent, normalized, normalized.finish_reason)
         assert message.get("reasoning_details") == (details or None)
-        db_path = tmp_path / "replay.db"
-        with SessionDB(db_path=db_path) as db:
-            db.create_session("reasoning-proof", source="cli")
-            db.append_messages_batch("reasoning-proof", [message])
-        with SessionDB(db_path=db_path) as db:
-            replay = db.get_messages_as_conversation("reasoning-proof")
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            seed_session(db, "reasoning-proof", "cli")
+            db.messages.append_batch("reasoning-proof", [NewMessage.from_live(message)])
+        with open_persistence(profile_scope(home=tmp_path)) as db:
+            replay = conversation(db, "reasoning-proof")
             assert replay[0].get("reasoning_details") == (details or None)
     finally:
         server.shutdown()

@@ -16,6 +16,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import store_location
+from tests.fixtures.storage_read import conversation
 from tools.budget_config import BudgetConfig
 from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
@@ -34,9 +37,9 @@ def _tool_defs(*names):
 
 @pytest.fixture()
 def agent_and_db(tmp_path):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     with (
         patch("model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -48,7 +51,7 @@ def agent_and_db(tmp_path):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
             quiet_mode=True, skip_context_files=True, skip_memory=True,
-            session_db=db, session_id=f"sess-{uuid.uuid4().hex[:8]}",
+            persistence=db, session_id=f"sess-{uuid.uuid4().hex[:8]}",
         )
     agent.client = MagicMock()
     yield agent, db
@@ -94,7 +97,7 @@ def test_replayed_history_carries_the_budget_stub_that_was_sent(agent_and_db, ca
     assert spilled, "the fixture must make the turn budget spill at least one result"
 
     # The gateway's live-replay read (gateway/session_transcript.load_transcript).
-    replay = db.get_messages_as_conversation(agent.session_id, repair_alternation=True)
+    replay = conversation(db, agent.session_id, ConversationRequest(repair_alternation=True))
     replayed = {m["tool_call_id"]: m["content"] for m in replay if m.get("role") == "tool"}
     assert replayed == live
 
@@ -104,7 +107,7 @@ def test_spilled_full_body_stays_searchable_and_next_flush_appends_once(agent_an
     calls = [_tc("web_search", '{"query":"a"}', "q-large-1"), _tc("web_search", '{"query":"b"}', "q-large-2")]
     messages = _run_batch(agent, calls)
 
-    with contextlib.closing(sqlite3.connect(db.db_path)) as conn:
+    with contextlib.closing(sqlite3.connect(store_location(db.scope))) as conn:
         full_bodies = conn.execute(
             "SELECT active FROM messages WHERE session_id = ? AND role = 'tool' AND instr(content, ?) > 0 "
             "ORDER BY id", (agent.session_id, _LARGE)).fetchall()
@@ -113,27 +116,27 @@ def test_spilled_full_body_stays_searchable_and_next_flush_appends_once(agent_an
 
     messages.append({"role": "assistant", "content": "done"})
     assert agent._flush_messages_to_session_db(messages) is True
-    replay = db.get_messages_as_conversation(agent.session_id, repair_alternation=True)
+    replay = conversation(db, agent.session_id, ConversationRequest(repair_alternation=True))
     assert [m["role"] for m in replay] == ["user", "assistant", "tool", "tool", "assistant"]
 
 
 
 def test_a_process_that_lost_the_turn_lease_leaves_the_rows_alone(agent_and_db):
     agent, db = agent_and_db
-    assert db.try_acquire_session_turn_lease(agent.session_id, "process-a", ttl_seconds=60)
+    assert db.coordination.try_acquire_turn_lease(session_id=agent.session_id, holder="process-a", ttl_seconds=60)
     agent._active_session_turn_lease_holder = "process-a"
-    rewrite = db.rewrite_pruned_rows
+    rewrite = db.messages.rewrite_pruned_rows
 
     def taken_over_first(*args, **kwargs):
         # Another process takes the turn after A flushed the full rows and before A's rewrite commits.
-        db.release_session_turn_lease(agent.session_id, "process-a")
-        assert db.try_acquire_session_turn_lease(agent.session_id, "process-b", ttl_seconds=60)
+        db.coordination.release_turn_lease(session_id=agent.session_id, holder="process-a")
+        assert db.coordination.try_acquire_turn_lease(session_id=agent.session_id, holder="process-b", ttl_seconds=60)
         return rewrite(*args, **kwargs)
 
-    db.rewrite_pruned_rows = taken_over_first
+    db.messages.rewrite_pruned_rows = taken_over_first
     calls = [_tc("web_search", '{"query":"a"}', "l-large-1"), _tc("web_search", '{"query":"b"}', "l-large-2")]
     _run_batch(agent, calls)
 
-    stored = [m["content"] for m in db.get_messages_as_conversation(agent.session_id) if m.get("role") == "tool"]
+    stored = [m["content"] for m in conversation(db, agent.session_id) if m.get("role") == "tool"]
     assert stored and all(_LARGE in body and PERSISTED_OUTPUT_TAG not in body for body in stored), (
         "a rewrite under another process's lease must not land")

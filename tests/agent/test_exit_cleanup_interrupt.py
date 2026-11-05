@@ -6,24 +6,30 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 @pytest.mark.asyncio
 async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, monkeypatch):
     """Exercise owner execution and release its borrowed store despite Ctrl+C."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from persistence_assembly import Persistence
 
     home = tmp_path / "owner"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HOME", str(tmp_path))
     (home / "config.yaml").write_text("model:\n  default: test/model\n  provider: custom\n")
-    db = acquire(home / "state.db")
+    store = storage_handle(home)
     ref = SessionRef(str(home), "cron-cleanup-session")
-    db.create_session(ref.session_id, source="cron")
+    seed_session(store, ref.session_id, "cron")
+    holder = raw_holder(store)
     authority = SimpleNamespace(
-        db=db, sessions={ref.session_id: SimpleNamespace(
+        persistence=store, sessions={ref.session_id: SimpleNamespace(
             source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
     job = {"id": "test-job-1", "name": "test cleanup", "prompt": "hello",
            "schedule": "0 9 * * *", "model": "test/model"}
@@ -43,8 +49,8 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
     try:
         with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime), \
              patch("run_agent.AIAgent") as agent_class, \
-             patch.object(db, "end_session", side_effect=KeyboardInterrupt) as end_session, \
-             patch.object(db, "close", wraps=db.close) as close:
+             patch.object(type(authority.persistence.sessions), "end", side_effect=KeyboardInterrupt) as end_session, \
+             patch.object(Persistence, "close", autospec=True, side_effect=Persistence.close) as close:
             agent = agent_class.return_value
             agent.session_id = ref.session_id
             agent.run_conversation.side_effect = fail_turn
@@ -55,16 +61,16 @@ async def test_keyboard_interrupt_in_end_session_does_not_skip_close(tmp_path, m
             # The owner tuple carries the scheduler's execution id (the admission's request id), the
             # id the cron/executions ledger knows; never the admission id (df12cce832c).
             assert reached == [(authority, ref.session_id, job["id"], row["request_id"])]
-            assert agent_class.call_args.kwargs["session_db"] is db
+            assert raw_holder(agent_class.call_args.kwargs["session_db"]) is holder
             end_session.assert_called_once_with(ref.session_id, "cron_incomplete_no_output")
-            close.assert_called_once()
+            close.assert_called_once_with(agent_class.call_args.kwargs["session_db"])
             agent.close.assert_called_once()
             assert current_execution() is previous
             assert not authority._cron_cancellations
             result = authority.pending_results[row["admission_id"]]["result"]["cron_result"]
             assert result[0] is False and result[3] == "RuntimeError: boom"
             # Cron released its borrow, not the owner's live SQLite connection.
-            saved = db.get_session(ref.session_id)
+            saved = session_row(store, ref.session_id)
             assert saved is not None and saved["title"].startswith(job["name"])
     finally:
-        assert release(db)
+        assert raw_holder(store) is holder

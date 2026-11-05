@@ -308,6 +308,8 @@ class HostedRoomRuntime:
         # before anything else can fail: the worker then watches that run to its end, even when the
         # status read below fails.
         self._transport_for(binding, task)
+        # Admission replay can outlast the lease; recheck ownership before reopening this attempt.
+        lease = self._ensure_lease(binding)
         reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
         try:
             inspection = self._inspect_recovery_session(binding, reopened)

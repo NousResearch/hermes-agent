@@ -81,6 +81,53 @@ def test_compress_only_engine_resolves_safe():
     assert engine_compacts_outside_compress(None)[0] is False
 
 
+def _hosted(engine, home):
+    """The proxy the plugin host builds for ``engine`` under ``plugins.isolation: host``, from the
+    real object description and without a host process: attribute reads that would cross to the
+    host are answered by the local object instead."""
+    import itertools
+    import threading
+    from types import SimpleNamespace
+
+    from agent.context_engine import ContextEngine
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugin_host_child import HostRuntime
+
+    runtime = HostRuntime.__new__(HostRuntime)
+    runtime.refs, runtime.owners = {}, {}
+    runtime._ids, runtime._lock = itertools.count(1), threading.Lock()
+    ref = runtime._describe_object("engine-plugin", engine)
+    host = PluginHost(SimpleNamespace(home_path=home, _plugins={}))
+    host.obj_getattr = lambda slot, name, returns=None: getattr(engine, name)
+    return host._object_proxy(ref, ContextEngine)
+
+
+def test_hosted_engine_is_refused_for_being_hosted_not_for_a_hook_it_lacks(tmp_path):
+    """Under ``plugins.isolation: host`` every public callable is a method proxy, inherited ABC
+    defaults included, so hook inference cannot run. The verdict stays unsafe; the reason must
+    say so instead of naming an override the engine does not have. A declaration read through
+    the proxy still wins."""
+    from agent.context_engine import ContextEngine, engine_compacts_outside_compress
+    from hermes_cli.plugin_host import is_hosted_object
+
+    compress_only, _turn_complete = _engine_stubs()
+    hosted = _hosted(compress_only(), tmp_path)
+    assert isinstance(hosted, ContextEngine) and is_hosted_object(hosted)
+    assert engine_compacts_outside_compress(compress_only())[0] is False
+
+    unsafe, reason = engine_compacts_outside_compress(hosted)
+    assert unsafe is True
+    assert "plugin host" in reason
+    assert "overrides on_turn_complete" not in reason
+
+    class _DeclaredObserver(compress_only):
+        compacts_outside_compress = False
+
+    assert engine_compacts_outside_compress(_hosted(_DeclaredObserver(), tmp_path)) == (
+        False, "the engine declares compress() as its only lossy authority",
+    )
+
+
 def test_non_context_engine_object_is_refused():
     """The directory loader has no isinstance gate, so a foreign object is refused rather
     than hook-inferred."""

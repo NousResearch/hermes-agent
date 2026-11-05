@@ -271,7 +271,11 @@ is unsafe: overriding `on_turn_complete()`, or not inheriting from
 `ContextEngine` at all (the directory loader installs whatever `register(ctx)`
 collected). `prune_tool_results_only()` (the host gates its call site),
 `select_context()` (request-only) and `on_session_end()` (session boundary,
-return value discarded) do not count.
+return value discarded) do not count. An engine loaded under
+`plugins.isolation: host` must declare: the host holds a proxy whose method
+table lists every public callable, inherited defaults included, so it cannot
+see which hooks the engine overrides, and an undeclared hosted engine is
+refused with that reason.
 
 ### With the gate armed
 

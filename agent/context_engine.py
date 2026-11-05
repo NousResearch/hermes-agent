@@ -283,6 +283,16 @@ def engine_compacts_outside_compress(engine: Any) -> tuple[bool, str]:
             "the installed engine does not inherit from ContextEngine, so its compaction "
             "authority cannot be determined"
         )
+    # Under plugins.isolation: host the engine is a proxy whose method table mirrors every public
+    # callable of the plugin object, inherited ABC defaults included, so the identity check below
+    # cannot tell an override from a default. Refused all the same; the reason names the way out.
+    from hermes_cli.plugin_host import is_hosted_object
+
+    if is_hosted_object(engine):
+        return True, (
+            "the engine runs in the plugin host (plugins.isolation: host), where the hooks it "
+            "overrides cannot be seen, and does not declare compacts_outside_compress"
+        )
     for hook_name in _UNINTERCEPTABLE_COMPACTION_HOOKS:
         if getattr(getattr(engine, hook_name, None), "__func__", None) is not getattr(ContextEngine, hook_name):
             return True, f"the engine overrides {hook_name}() without declaring compacts_outside_compress"

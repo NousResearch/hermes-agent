@@ -85,6 +85,46 @@ def _rpc(server, method, params):
     return server.handle_request({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
 
 
+def test_a_viewer_opened_from_a_browser_tab_signs_out_with_that_tab(monkeypatch, tmp_path):
+    """The viewer ticket carries the credential digest the asking browser socket was admitted with,
+    so /api/display/ws closes the viewer when that browser signs out; a native client's carries none."""
+    import asyncio
+
+    from hermes_cli import browser_credential, web_server, web_session_sockets
+    from tools.bot_desktop import runtime
+    from tui_gateway import server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "a" * 43)
+    signed_in = browser_credential.generation_of("a" * 43)
+
+    class _Socket:
+        async def close(self, code=1000, reason=""):
+            pass
+
+    class _Peer:
+        def __init__(self, ws=None):
+            self.ws = ws
+
+        def write(self, obj):
+            return True
+
+    tab = _Peer(_Socket())
+
+    async def admit():  # sockets are tracked from the server's loop
+        web_session_sockets.track(tab.ws, signed_in)
+
+    asyncio.run(admit())
+
+    def ticket(peer):
+        observed = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, peer)
+        return ws_tickets.consume_ticket(observed["result"]["ticket"])
+
+    assert ticket(tab)["admitted_with"] == signed_in
+    assert "admitted_with" not in ticket(_Peer())
+    assert "admitted_with" not in ticket(_Peer(_Socket()))  # a socket sign-out does not cover
+
+
 def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monkeypatch, tmp_path):
     """A client cannot choose its viewer id (it would impersonate the holder and co-drive or release
     their lease), and no snapshot or broadcast carries the raw holder id — only a hash the holder
@@ -191,6 +231,40 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
     assert stolen["error"]["data"]["code"] == "viewer_mismatch"
     assert _fresh_lease.get().holder == _fresh_lease.HUMAN
     assert rpc(mine, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+
+
+def test_a_takeover_counts_as_use_of_an_idle_screen(monkeypatch, tmp_path, _fresh_lease):
+    """The idle stop times out a human lease nothing has used for four windows. A takeover landing on a long
+    idle screen, before its viewer's first frame stamps activity, must not read as an abandoned lease."""
+    import os
+    import time
+
+    from tui_gateway import server
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    activity = tmp_path / "activity"
+    activity.touch()
+    old = time.time() - 3600
+    os.utime(activity, (old, old))
+
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    # The new lease is visible from the moment it is written (the screen's own idle check reads the file);
+    # by then the stamp must already be there. The listener runs right after the write.
+    seen_idle = []
+    off = _fresh_lease.on_change(lambda _key, held: seen_idle.append(time.time() - activity.stat().st_mtime))
+    try:
+        peer = _Peer()
+        minted = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "display.observe", "params": {}}, peer)["result"]["viewer_id"]
+        resp = server.dispatch({"jsonrpc": "2.0", "id": 2, "method": "display.lease.acquire", "params": {"viewer_id": minted}}, peer)
+    finally:
+        off()
+    assert resp["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert seen_idle and seen_idle[0] < 60, f"the new lease was visible against a stale stamp: {seen_idle}"
 
 
 def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):

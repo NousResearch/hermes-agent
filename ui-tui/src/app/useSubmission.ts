@@ -14,6 +14,7 @@ import type { Msg } from '../types.js'
 
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
+import { stagePastes } from './pasteStore.js'
 import { findSlashCommand } from './slash/registry.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -402,6 +403,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return shellExec(full.slice(1).trim())
       }
 
+      // The user row shows each chip and expands it from these payloads.
+      stagePastes(full, submission.text, submissionTokens)
+
       const live = getUiState()
 
       // No session yet (boot, or the socket is down): the input joins the local queue and the
@@ -537,6 +541,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       lastEmptyAt.current = 0
+      // An expanded paste goes out as a chip again: the transcript shows the
+      // chip, the model gets the text as edited.
+      value = composerActions.collapsePaste(value)
 
       if (value.endsWith('\\')) {
         composerActions.setInputBuf(prev => [...prev, value.slice(0, -1)])

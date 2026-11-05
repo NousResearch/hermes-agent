@@ -210,10 +210,15 @@ def _blank_slate_minimal_toolsets(config: dict):
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS
+        from toolsets import TOOLSETS, resolve_toolset
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
+        # Tools reachable through a checklist row. A plain TOOLSETS entry fully inside one of these (e.g.
+        # `search` = web_search ⊂ `web`) has no row of its own, so disabling it would silently strip those
+        # tools after the user re-enables the superset, with no UI to undo it (#134593).
+        # resolve_toolset returns [] for unknown names and guards cycles, so it needs no try/except.
+        configurable_tool_sets = [set(resolve_toolset(ck)) for ck, _, _ in CONFIGURABLE_TOOLSETS]
         # Plain TOOLSETS entries catch recovered toolsets like ``kanban``. Skip "hermes-*" platform
         # composites, "includes" groupings, and posture toolsets (session-level picks by
         # agent/coding_context.py — disabling them would subtract terminal/read_file).
@@ -223,6 +228,10 @@ def _blank_slate_minimal_toolsets(config: dict):
             # selections made by agent/coding_context.py — not permanent user-facing disables. Adding them
             # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
             # Blank Slate surface (#57315).
+            if k not in all_keys:
+                tools = set(resolve_toolset(k))
+                if tools and any(tools <= cts for cts in configurable_tool_sets):
+                    continue  # subset of a checklist toolset — the superset's entry already covers it (#134593)
             all_keys.add(k)
         disabled = sorted(all_keys - keep)
         if disabled:

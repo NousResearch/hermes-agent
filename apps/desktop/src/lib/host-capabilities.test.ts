@@ -21,10 +21,18 @@ function reset() {
 
 // Every way the renderer meets its host: before and after the bridge writes the marker.
 const HOST_STATES: { browser: boolean; name: string; setup: () => void }[] = [
-  { browser: true, name: 'browser marker', setup: () => (document.documentElement.dataset.hermesDesktopHost = 'browser') },
+  {
+    browser: true,
+    name: 'browser marker',
+    setup: () => (document.documentElement.dataset.hermesDesktopHost = 'browser')
+  },
   { browser: true, name: 'gated host before the marker', setup: () => (win.__HERMES_AUTH_REQUIRED__ = true) },
   { browser: true, name: 'Webapp surface before the marker', setup: () => (win.__HERMES_UI_SURFACE__ = 'webapp') },
-  { browser: false, name: 'electron marker', setup: () => (document.documentElement.dataset.hermesDesktopHost = 'electron') },
+  {
+    browser: false,
+    name: 'electron marker',
+    setup: () => (document.documentElement.dataset.hermesDesktopHost = 'electron')
+  },
   {
     browser: false,
     name: 'Electron preload with a stale Webapp global',
@@ -81,7 +89,7 @@ const CALL_SITES: [site: string, old: (browser: boolean) => boolean, now: () => 
   ['store/profile.ts:1031', b => b, () => hostHas('tabStartupProfile')],
   ['store/session.ts:1877', b => b, () => hostHas('originScopedPrefs')],
   ['store/translucency.ts:73', b => !b, () => hostHas('windowMaterial')],
-  ['store/translucency.ts:84', b => !b, () => hostHas('windowMaterial')],
+  ['store/translucency.ts:84', b => !b, () => hostHas('windowMaterial')]
 ]
 
 afterEach(reset)

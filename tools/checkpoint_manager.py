@@ -20,6 +20,7 @@ Storage layout (single shared store, git objects deduplicated across projects)
             indexes/<hash16>            — per-project git index
             projects/<hash16>.json      — {workdir, created_at, last_touch}
             info/exclude                — default excludes (shared)
+            excludes/<hash16>           — user's core.excludesFile + info/exclude
         .last_prune                     — auto-prune idempotency marker
         legacy-<timestamp>/             — archived pre-v2 per-project shadow
                                           repos (auto-migrated on first init)
@@ -61,6 +62,7 @@ from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
+from tools.checkpoint_excludes import staging_config_args
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int, rmtree_readonly
@@ -874,7 +876,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git([*staging_config_args(store, dir_hash, abs_dir), "add", "-A"], store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
             ["diff", "--name-only", "-z", commit_hash, "--cached"],
@@ -1055,7 +1057,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
+        _run_git([*staging_config_args(store, dir_hash, abs_dir), "add", "-A"], store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
         ok_stat, stat_out, _ = _run_git(
@@ -1466,7 +1468,7 @@ class CheckpointManager:
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            [*staging_config_args(store, dir_hash, working_dir), "add", "-A"], store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:

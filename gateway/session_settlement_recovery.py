@@ -1,33 +1,19 @@
 """Fence an unsettled claim in a live owner without inventing a terminal result."""
 import asyncio
 import logging
-import sqlite3
 
+from gateway.session_persistence import authority_persistence
 from gateway.session_producer_lifecycle import drop_producer_turn
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, get_session_admission, settle_steer_transfers
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
 
 def _mark_unknown(authority, row):
+    # A steer it carried is never replayed: interrupted if delivered, else queued again.
     transfers = _transfers(authority, authority.sessions.get(row['target_session_id']), row)
-
-    def write(conn):
-        _epoch(conn, authority.epoch)
-        current = _admission(conn, row['admission_id'])
-        if current['owner_epoch'] != authority.epoch or current['generation'] != row['generation']:
-            raise RuntimeStoreError('stale_generation')
-        if current['status'] in {'terminal', 'unknown'}:
-            return current['status']
-        if current['status'] != 'started':
-            raise RuntimeStoreError('stale_generation')
-        conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
-        # A steer it carried is never replayed: interrupted if delivered, else queued again.
-        settle_steer_transfers(conn, epoch=authority.epoch, generation=row['generation'],
-                               transfers=transfers, outcome='unknown')
-        conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
-        return 'unknown'
-    return authority.db._execute_write(write)
+    return authority_persistence(authority).admissions.mark_unknown(
+        epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], transfers=transfers)
 
 
 def _transfers(authority, live, row):
@@ -47,7 +33,7 @@ async def recover_failed_settlement(authority, row):
             from gateway.session_runtime_workers import track_mutation
             writer = track_mutation(authority, asyncio.to_thread(_mark_unknown, authority, row))
             return await asyncio.shield(writer)
-        except (OSError, sqlite3.Error):
+        except (OSError, *STORE_FAILURES):
             await asyncio.sleep(1)
 
 
@@ -163,7 +149,7 @@ def _release_media(authority, admission_id):
     """Terminal media cleanup: its own write txn after publication, never under the stream lock."""
     try:
         from gateway.session_ingress_media import release_admission_media
-        release_admission_media(authority.db, admission_id)
+        release_admission_media(authority_persistence(authority), admission_id)
     except Exception:
         logger.exception('Terminal media cleanup failed for admission %s', admission_id)
 
@@ -190,7 +176,7 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     transfers = _transfers(authority, live, row)
     try:
         settlement['settled'], settlement['response'] = finish_result(
-            authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
+            authority_persistence(authority), epoch=authority.epoch, row=row, response=response, outcome=outcome,
             result=captured, prepared=prepared, transfers=transfers)
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
@@ -211,13 +197,13 @@ async def settle_with_retry(authority, live, ref, row, response, outcome, captur
     One locked or full write must not turn a finished answer into an ``unknown`` turn whose result
     lives only in memory. Retrying is exact: a write that committed before reporting failure is
     read back by ``finish_result``, and a failure after the commit (``settled`` set) never retries.
-    A fence refusal (``RuntimeStoreError``) is not transient and is raised at once."""
+    A fence refusal (``AuthorityRefusal``) is not transient and is raised at once."""
     from gateway.session_runtime_workers import track_mutation
     for delay in (*_SETTLE_RETRY_DELAYS_S, None):
         try:
             return await asyncio.shield(track_mutation(authority, asyncio.to_thread(
                 commit_and_publish, authority, live, ref, row, response, outcome, captured, settlement)))
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, *STORE_FAILURES) as exc:
             if delay is None or 'settled' in settlement:
                 raise
             logger.warning('Settlement of admission %s deferred by storage (%r); retrying in %.1fs',
@@ -267,12 +253,13 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                     'result': {'final_response': response, 'failed': outcome == 'failed'}, 'usage': {}})
                 try:
                     status = await recover_failed_settlement(authority, row)
-                except RuntimeStoreError:
+                except AuthorityRefusal:
                     # Ownership moved; this owner may only release its process-local observers.
                     authority._pause(ref, 'unknown_execution')
                     return False
                 # Discard can race the off-loop recovery stamp; its terminal decision wins.
-                current = get_session_admission(authority.db, admission_id=admission_id)
+                from gateway.session_authority import admission_row
+                current = admission_row(authority_persistence(authority).admissions.get(admission_id=admission_id))
                 status = current['status']
                 if status == 'unknown':
                     from gateway.session_ingress import retain_unsettled_delivery
@@ -284,7 +271,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 # then publish the terminal outcome rather than inventing uncertainty.
                 from gateway.session_results import admission_result
                 with live.event_stream.lock:
-                    captured = admission_result(authority.db, admission_id)
+                    captured = admission_result(authority_persistence(authority), admission_id)
                     authority.pending_results.pop(admission_id, None)
                     settled = current
                     if captured is None:
@@ -293,7 +280,7 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                         authority.pending_deliveries.pop(admission_id, None)
                         waiter = authority.waiters.pop(admission_id, None)
                         if waiter is not None and not waiter.done():
-                            waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                            waiter.set_exception(AuthorityRefusal('unknown_execution'))
                         discarded = True
                         return True
                     response = captured['result'].get('final_response') or ''

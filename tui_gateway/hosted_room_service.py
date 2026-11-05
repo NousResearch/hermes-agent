@@ -433,7 +433,7 @@ class HostedRoomService:
             hosted_rooms.hold_room_grant_revoke(
                 self.store, placement=self.placement, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
                 expires_at=room_grant_hard_expiry(grant))
-        except hosted_rooms.OwedRevokesFullError:  # already tombstoned: no live hold to protect
+        except OwedRevokesFullError:  # already tombstoned: no live hold to protect
             self._revoke_unowed(room_id=room_id, member_id=member_id, target_url=target_url,
                                 grant=grant, client=None)
             return
@@ -450,7 +450,7 @@ class HostedRoomService:
             hosted_rooms.owe_room_grant_revoke(
                 self.store, placement=self.placement, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
                 expires_at=room_grant_hard_expiry(grant))
-        except hosted_rooms.OwedRevokesFullError:
+        except OwedRevokesFullError:
             self._revoke_unowed(room_id=room_id, member_id=member_id, target_url=target_url,
                                 grant=grant, client=client)
             return
@@ -470,7 +470,7 @@ class HostedRoomService:
                 message = (f"revoke for member {member_id} of room {room_id} could not be recorded "
                            f"(too many owed revokes) or sent: {exc}")
                 self.runtime._record_error(message)
-                raise hosted_rooms.OwedRevokesFullError(message) from exc
+                raise OwedRevokesFullError(message) from exc
 
     def _keep_revoke_client(self, grant: str, client: Any) -> None:
         if client is not None and not isinstance(client, PeerRunsHTTPClient):
@@ -1025,7 +1025,7 @@ class HostedRoomService:
         # Disband waits for every member's Stop, a member on another gateway included: a deferred
         # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
         if require_acknowledged and (pending or unconfirmed):
-            raise self._stop_pending_refusal(room_id, unconfirmed) or hosted_rooms.RoomStopPendingError(
+            raise self._stop_pending_refusal(room_id, unconfirmed) or RoomStopPendingError(
                 "Group chat work is still stopping; retry deletion after Stop completes.")
         self.runtime.wakeup()
         return len(tasks) - len(unconfirmed)

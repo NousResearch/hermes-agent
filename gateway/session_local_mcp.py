@@ -21,7 +21,8 @@ import logging
 import threading
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +44,14 @@ def validate_servers(servers):
     from pydantic import ValidationError
     kinds = {'stdio': McpServerStdio, 'http': McpServerHttp, 'sse': McpServerSse}
     if not isinstance(servers, list):
-        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'must be a list, got {type(servers).__name__}')
+        raise AuthorityRefusal('invalid_params', field='editor.mcp_servers',
+                               detail=f'must be a list, got {type(servers).__name__}')
     if len(servers) > 16:
-        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'at most 16 servers, got {len(servers)}')
+        raise AuthorityRefusal('invalid_params', field='editor.mcp_servers',
+                               detail=f'at most 16 servers, got {len(servers)}')
     if len(_json(servers)) > 65536:
-        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail='the serialized server list exceeds 65536 bytes')
+        raise AuthorityRefusal('invalid_params', field='editor.mcp_servers',
+                               detail='the serialized server list exceeds 65536 bytes')
     names = set()
     try:
         for spec in servers:
@@ -66,8 +67,8 @@ def validate_servers(servers):
                             for err in exc.errors(include_input=False))
         else:
             why = 'duplicate server' if str(exc) == 'duplicate server' else type(exc).__name__
-        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'unusable server spec: {why}') from exc
+        raise AuthorityRefusal('invalid_params', field='editor.mcp_servers',
+                               detail=f'unusable server spec: {why}') from exc
 
 
 def private_editor_request(request, private):
@@ -76,7 +77,7 @@ def private_editor_request(request, private):
     if not servers:
         return
     if private is None:
-        raise RuntimeStoreError('launch_credentials_unavailable')
+        raise AuthorityRefusal('launch_credentials_unavailable')
     private[PRIVATE_KEY] = json.loads(_json(servers))
     request['editor'] = {**editor, 'mcp_servers': {'fingerprint': fingerprint(servers)}}
 
@@ -86,7 +87,7 @@ def private_mutation_payload(operation, payload):
     stays in owner memory; the receipt digest and every store write see only its fingerprint."""
     if operation == 'editor_mcp':
         if not isinstance(payload, dict) or set(payload) != {'mcp_servers'}:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
     elif operation != 'branch' or not isinstance(payload, dict) or 'mcp_servers' not in payload:
         return payload, None
     servers = payload['mcp_servers']
@@ -195,7 +196,7 @@ def _borrowed(authority, scope, servers, names, cwd, *, partial=False):
                 # A committed editor_mcp swapped the credentials (or a workspace move the cwd): no
                 # execution may still run on the old ones.
                 if held.users:
-                    raise RuntimeStoreError('session_busy')
+                    raise AuthorityRefusal('session_busy')
                 _disconnect(held, scope)
             connected = _connected(scope, names)
             if len(connected) != len(names):
@@ -205,7 +206,7 @@ def _borrowed(authority, scope, servers, names, cwd, *, partial=False):
             held.users += 1
         try:
             if len(connected) != len(names) and not partial:
-                raise RuntimeStoreError('acp_mcp_discovery_failed')
+                raise AuthorityRefusal('acp_mcp_discovery_failed')
             toolsets = {f'mcp-{names[i]}' for i in connected}
             tools = [n for n in registry.get_all_tool_names() if registry.get_toolset_for_tool(n) in toolsets]
             yield {n: registry.get_schema(n) for n in sorted(tools)}, connected
@@ -242,7 +243,7 @@ def rebind_editor_mcp(authority, sid, policy, servers):
         held = _held(authority, scope)
         with held.lock:
             if held.users:
-                raise RuntimeStoreError('session_busy')
+                raise AuthorityRefusal('session_busy')
             # Fresh discovery: a held connection keeps the schemas it was first frozen with.
             _disconnect(held, scope)
         names = _server_names(scope, servers)
@@ -272,7 +273,7 @@ def attach_editor_mcp(authority, policy, servers):
     validate_servers(servers)
     data = json.loads(policy.editor_mcp_json or '{}')
     if not data or not hmac.compare_digest(data['fingerprint'], fingerprint(servers)):
-        raise RuntimeStoreError('acp_mcp_policy_conflict')
+        raise AuthorityRefusal('acp_mcp_policy_conflict')
     borrowed = getattr(authority, '_local_editor_mcp', None)
     if borrowed is None:
         borrowed = authority._local_editor_mcp = {}
@@ -293,7 +294,7 @@ def resume_editor_mcp(authority, ref, editor):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is None:
-        raise RuntimeStoreError('acp_mcp_policy_conflict')
+        raise AuthorityRefusal('acp_mcp_policy_conflict')
     validate_editor(policy.source, editor)
     if servers:
         attach_editor_mcp(authority, policy, servers)
@@ -310,8 +311,7 @@ def retire_editor_mcp(authority, sid):
 def install_editor_mcp(authority, sid, servers):
     """After a committed change: *sid*'s borrowed credentials follow its committed policy (memory only)."""
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
-    policy = restore_policy(local_receipt(authority.db, sid)['policy'])
+    policy = restore_policy(authority_persistence(authority).bindings.receipt(sid).policy)
     data = json.loads(policy.editor_mcp_json or '{}')
     borrowed = getattr(authority, '_local_editor_mcp', None)
     if borrowed is None:
@@ -339,7 +339,7 @@ async def prepare_editor_mcp(authority, live, payload, prepared, *, servers):
     receipt = prepared['snapshot']['receipt']
     old = restore_policy(receipt['policy'])
     if old.source != 'acp':
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     policy, changed = await asyncio.to_thread(rebind_editor_mcp, authority, receipt['session_id'], old, servers)
     names = json.loads(policy.editor_mcp_json or '{}').get('names', {})
     return _rebind(authority, prepared, old, policy, tools_changed=changed,
@@ -411,10 +411,9 @@ async def refreeze_editor_mcp(authority, ref, live):
 
 async def _refreeze(authority, ref):
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     # The committed policy the claim just restored (``restore_local_session``).
-    receipt = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
-    policy = restore_policy(receipt['policy'])
+    receipt = await asyncio.to_thread(authority_persistence(authority).bindings.receipt, ref.session_id)
+    policy = restore_policy(receipt.policy)
     if not policy.editor_mcp_json:
         return
     data = json.loads(policy.editor_mcp_json)
@@ -439,14 +438,14 @@ async def _commit_refreeze(authority, ref, servers):
     """The ``editor_mcp`` change on the owning principal's behalf, through ``session.mutate``'s own
     writer (the drain holds the session's locks, and a schema re-check needs no capability)."""
     from gateway.session_mutations import write_mutation
-    from hermes_state_local import local_receipt
-    owner = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
-    row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+    store = authority_persistence(authority)
+    owner = await asyncio.to_thread(store.bindings.receipt, ref.session_id)
+    row = await asyncio.to_thread(store.sessions.get, ref.session_id)
     payload, servers = private_mutation_payload('editor_mcp', {'mcp_servers': servers})
     params = {'session_id': ref.session_id, 'request_id': 'editor-mcp-refreeze:' + uuid.uuid4().hex,
-              'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+              'expected_revision': row.runtime_revision, 'expected_generation': row.runtime_generation,
               'operation': 'editor_mcp', 'payload': payload}
-    await write_mutation(authority, ref, params, servers, principal_id=owner['principal_id'])
+    await write_mutation(authority, ref, params, servers, principal_id=owner.principal_id)
 
 
 def _child_secret_ref(authority, child, parent, policy):
@@ -467,27 +466,26 @@ async def prepare_branch_editor(authority, ref, servers, gate):
     Discovery starts every server, so *gate* (the branch's prepare-only fences: receipt, revision,
     generation, idle) runs first; an exact retry's durable receipt comes back as ``prepared``."""
     from gateway.session_policy import restore_policy
-    from hermes_state_keys import local_identity
-    from hermes_state_local import local_receipt
+    from persistence.authority.bindings import local_session_id
     try:
-        saved = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
-    except RuntimeStoreError:
+        saved = await asyncio.to_thread(authority_persistence(authority).bindings.receipt, ref.session_id)
+    except AuthorityRefusal:
         return None, None  # not a local session: the branch transaction refuses it
-    parent = restore_policy(saved['policy'])
+    parent = restore_policy(saved.policy)
     if servers is None:
         if not parent.editor_mcp_json:
             return None, None
         servers = getattr(authority, '_local_editor_mcp', {}).get(json.loads(parent.editor_mcp_json)['scope'])
         if servers is None:
-            raise RuntimeStoreError('launch_credentials_unavailable')
+            raise AuthorityRefusal('launch_credentials_unavailable')
         servers = json.loads(_json(servers))
     elif parent.source != 'acp':
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     gated = await gate()
     if 'snapshot' not in gated:
         return gated, servers
     request_id = 'branch:' + uuid.uuid4().hex
-    child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
+    child = local_session_id(saved.profile_id, saved.principal_id, request_id)
     policy, _ = await asyncio.to_thread(rebind_editor_mcp, authority, child, parent, servers)
     # Hashed as the child is stored: a branch starts at Default (hermes_state_mutation_branch._child_policy).
     policy = _child_secret_ref(authority, child, parent, replace(policy, edit_approval_policy='ask'))
@@ -504,9 +502,9 @@ def editor_mcp_scope(authority, policy):
     data = json.loads(policy.editor_mcp_json)
     servers = getattr(authority, '_local_editor_mcp', {}).get(data['scope'])
     if servers is None:
-        raise RuntimeStoreError('launch_credentials_unavailable')
+        raise AuthorityRefusal('launch_credentials_unavailable')
     with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), policy.cwd) as (schemas, _):
         if schemas != data['schemas']:
             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
-            raise RuntimeStoreError('acp_mcp_schema_changed')
+            raise AuthorityRefusal('acp_mcp_schema_changed')
         yield

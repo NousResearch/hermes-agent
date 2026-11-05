@@ -48,14 +48,20 @@ def shown_occurrences(messages):
     return {handoff_occurrence(message) for message in messages if compaction_summary(message) is not None}
 
 
-def page_handoffs(db, rows, segments, earlier=None):
-    """Per row of the stored *rows* (``_rows_to_conversation`` dicts of *segments*, display order): the
+def handoff_rows(store, shown_ids, segments):
+    """``messages.transcript_handoff_rows`` of *shown_ids* as stored row dicts: ``{row id: [row, ...]}``."""
+    return {int(shown): [row.as_wire_row() for row in rows]
+            for shown, rows in store.messages.transcript_handoff_rows(shown_ids, segments).items()}
+
+
+def page_handoffs(store, rows, segments, earlier=None):
+    """Per row of the stored *rows* (conversation dicts of *segments* with row ids, display order): the
     ``compaction`` rows shown just before it, one for each handoff stored on the row or on an earlier copy
     of its message. Each handoff is shown once in the whole transcript, before the first row that holds
     it, wherever the page starts: ``earlier(candidates)`` (stored handoff messages) is the occurrences
     among them a row before *rows* holds."""
     from agent.compaction_display import compaction_summary
-    found = db.transcript_handoff_rows([row['_row_id'] for row in rows if type(row.get('_row_id')) is int], segments)
+    found = handoff_rows(store, [row['_row_id'] for row in rows if type(row.get('_row_id')) is int], segments)
     candidates = [message for messages in found.values() for message in messages]
     seen, out = set(earlier(candidates)) if earlier is not None and candidates else set(), []
     for row in rows:

@@ -101,10 +101,10 @@ def restore_retired(authority, session_id):
         restore_local_session(authority, session_id)
     else:
         from gateway.session_api import restore_api_session
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         try:
             restore_api_session(authority, session_id)
-        except RuntimeStoreError:
+        except AuthorityRefusal:
             return  # no binding: the caller's lookup fails exactly as it did before retirement
     touch_restored(authority, session_id)
 

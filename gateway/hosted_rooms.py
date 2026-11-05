@@ -2,7 +2,11 @@
 
 Owns only hosted-room identity and its append-only event log; delivery, relay leasing and agent turns
 belong to the relay and the hosted-room driver, so the log composes with a durable relay without a second
-transport queue. Callers supply the database path (production handlers use the gateway's root ``state.db``).
+transport queue. Each function validates its arguments, then calls the storage interface's ``hosted_rooms`` or
+``hosted_room_peers`` verb on the caller's store handle; ``placement`` names the file: ``'profile'`` the profile's
+``state.db``, ``'shared'`` the install's root ``shared-state.db``.
+``claim_authority``, ``peer_room_is_reserved`` and ``list_remote_run_receipts`` instead open the room store at
+the ``db_path`` they are given.
 """
 
 from __future__ import annotations
@@ -11,14 +15,21 @@ import hashlib
 import json
 import re
 import sqlite3
-from contextlib import closing
+from dataclasses import fields, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
-    identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
+    identifier, table_columns, table_exists, transaction, utf8_len)
+from persistence.gateway.hosted_rooms import (
+    AuthorityConflictError, AuthoritySupersededError, EventConflictError, HostedOwnerClaim, HostedPlacement,
+    HostedRoomError, RemoteRunIdentity, RemoteRunReceipt, RoomGrantClaims, RoomHistoryExpiredError, RoomLinkRecord,
+    RoomNotFoundError)
+
+if TYPE_CHECKING:
+    from persistence_assembly import Persistence
 
 PROTOCOL_VERSION = 2
 MAX_ROOM_ID_CHARS = 128
@@ -173,63 +184,12 @@ _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 _EVENT_COLUMNS = ("room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at")
 _SELECT_EVENT = f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?"
 _INSERT_EVENT = (f"INSERT INTO hosted_room_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-_ROOM_COLUMNS = (
-    "room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, revision,"
-    " created_at, updated_at, disbanded_at")
-_ROOM_COLUMNS_WITH_BYTES = (
-    "room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, event_bytes,"
-    " revision, created_at, updated_at, disbanded_at")
-_SELECT_ROOM = f"SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=?"
-_SELECT_ROOM_WITH_BYTES = f"SELECT {_ROOM_COLUMNS_WITH_BYTES} FROM hosted_rooms WHERE room_id=?"
 _SUM_EVENT_BYTES = "SELECT COALESCE(SUM(event_bytes), 0) FROM hosted_rooms"
-_INSERT_RETIRED = ("INSERT OR IGNORE INTO hosted_room_retired_ids (room_id, retired_at) VALUES (?, ?)")
 _RETIRE_FROM_ROOMS = (
     "INSERT OR IGNORE INTO hosted_room_retired_ids (room_id, retired_at)"
     " SELECT room_id, disbanded_at FROM hosted_rooms WHERE {where}")
-_LINK_COLUMNS = (
-    "room_id", "member_id", "target_url", "target_profile", "grant", "catalog_json", "cancellation_scope_id",
-    "trace_id", "transport_security", "status", "updated_at")
-_REMOTE_RUN_WHERE = " AND ".join(f"{column}=?" for column in _REMOTE_RUN_IDENTITY_COLUMNS)
-_SELECT_REMOTE_RUN = f"SELECT * FROM hosted_room_remote_runs WHERE {_REMOTE_RUN_WHERE}"
 _LIVE_RESERVATION_WHERE = ("WHERE room_id=? AND target_profile=? AND expires_at>? AND revoked_at IS NULL")
 _SELECT_LIVE_RESERVATION = (f"SELECT 1 FROM hosted_room_peer_reservations {_LIVE_RESERVATION_WHERE} LIMIT 1")
-
-
-class HostedRoomError(ValueError): """Base class for invalid or conflicting hosted-room operations."""
-
-class RoomNotFoundError(HostedRoomError): """Raised when a room does not exist or has been disbanded."""
-
-class RoomHistoryExpiredError(RoomNotFoundError):
-    """Raised when a retired room remains reserved after history compaction."""
-    reason = "room_history_expired"
-
-class RoomConflictError(HostedRoomError): """Raised when an idempotency key is reused for different room state."""
-
-class RoomHeldGrantsPendingError(HostedRoomError):
-    """Retry Disband after revoking grants received since its last sweep."""
-    reason = "room_disbanding_retry"
-
-class RoomStopPendingError(HostedRoomError, RuntimeError):
-    """Expected Stop refusal; retain RuntimeError compatibility for direct service callers."""
-    reason = "room_stop_pending"
-
-class RoomProbeUnavailableError(HostedRoomError):
-    """Raised when a non-blocking ownership probe cannot read the room store."""
-
-class EventConflictError(HostedRoomError): """Raised when an event id is reused with different immutable content."""
-
-class EventCursorConflictError(HostedRoomError):
-    """Raised when new room events invalidate an uncommitted publication plan."""
-
-class EventAttachmentConflictError(EventCursorConflictError):
-    """A publication lost its file commitments; use the same fresh-plan retry."""
-
-class AuthorityConflictError(HostedRoomError):
-    """Raised when a stale room authority attempts to mutate hosted state."""
-    reason = "authority_conflict"
-
-class AuthoritySupersededError(AuthorityConflictError):
-    """Raised when a successful authority claim was later superseded."""
 
 
 # --- validation ---------------------------------------------------------------
@@ -329,6 +289,36 @@ def _validate_actor(value: Any, *, kind: str) -> tuple[dict[str, str], str]:
         if field_value:
             actor[field] = field_value
     return actor, _actor_json(actor)
+
+
+# --- store paths and identity ---------------------------------------------------
+def default_db_path(home: Path | None = None) -> Path:
+    """Return the hosted-room coordination database for the install of ``home`` (the active home by default).
+
+    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
+    ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
+    coordination is the only thing this module owns, and pointing profile
+    gateways at the master session store makes every profile process a
+    long-lived writer on state.db — the recurring multi-writer corruption
+    vector observed across a 6-gateway fleet (state.db WAL/FTS collisions
+    during bot-gateway restart storms, 2026-09-03). Keeping the hosted_room*
+    tables in a dedicated file means profile gateways never open the master
+    session store writable.
+    """
+    if home is None:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+    home = Path(home)
+    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
+
+
+def local_authority_gateway_id() -> str:
+    """Return the stable server-owned identity for hosted-room authority."""
+    from hermes_cli.install_identity import get_install_id
+    install_id = get_install_id()
+    if not install_id:
+        raise HostedRoomError("stable gateway install identity is unavailable")
+    return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
 # --- schema / connections -------------------------------------------------------
@@ -432,33 +422,6 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (_KIND_INDEX,)).fetchone() is not None
 
 
-def default_db_path() -> Path:
-    """Return the hosted-room coordination database for the active install.
-
-    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
-    ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
-    coordination is the only thing this module owns, and pointing profile
-    gateways at the master session store makes every profile process a
-    long-lived writer on state.db — the recurring multi-writer corruption
-    vector observed across a 6-gateway fleet (state.db WAL/FTS collisions
-    during bot-gateway restart storms, 2026-09-03). Keeping the hosted_room*
-    tables in a dedicated file means profile gateways never open the master
-    session store writable.
-    """
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
-
-
-def local_authority_gateway_id() -> str:
-    """Return the stable server-owned identity for hosted-room authority."""
-    from hermes_cli.install_identity import get_install_id
-    install_id = get_install_id()
-    if not install_id:
-        raise HostedRoomError("stable gateway install identity is unavailable")
-    return _actor_id(f"install:{install_id}", "authority_gateway_id")
-
-
 def _store_ready(conn: sqlite3.Connection, db_path: Path) -> bool:
     """The store can serve rooms once its schema is current and the pre-isolation import has run."""
     from gateway.hosted_rooms_legacy_import import settled
@@ -480,19 +443,6 @@ def _connect(db_path: DbPath) -> sqlite3.Connection:
     return connect(
         path, db_label="shared-state.db (hosted_rooms)", ready=partial(_store_ready, db_path=path),
         initialize=partial(_initialize_store, db_path=path), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
-
-
-def _read_connection(db_path: DbPath) -> sqlite3.Connection:
-    """Open the room store without steady-state journal or migration writes."""
-    path = Path(db_path)
-    if not path.is_file():
-        _connect(path).close()
-    conn = open_sqlite(path)
-    if not _store_ready(conn, path):
-        conn.close()
-        _connect(path).close()
-        conn = open_sqlite(path)
-    return conn
 
 
 _transaction = partial(transaction, _connect, immediate=False)
@@ -636,238 +586,109 @@ def _prune_disbanded_rooms_locked(
     return len(room_ids)
 
 
-def prune_disbanded_rooms(db_path: DbPath, *, now: float | None = None) -> int:
+def prune_disbanded_rooms(store: Persistence, *, placement: HostedPlacement, now: float | None = None) -> int:
     """Purge deleted Group Chat payloads while reserving their identities."""
-    with _transaction(db_path, immediate=True) as conn:
-        return _prune_disbanded_rooms_locked(conn, now=_now(now))
+    return store.hosted_rooms.prune_disbanded_rooms(placement=placement, now=_now(now))
 
 
 # --- room links / grants / reservations / remote runs ---------------------------------
-def room_has_peer_obligations(db_path: DbPath, *, room_id: Any, now: float | None = None) -> bool:
+def room_has_peer_obligations(
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, now: float | None = None) -> bool:
     """Whether metadata-only Disband needs a runtime to settle peer access."""
-    room_id = _room_id(room_id)
-    with closing(_read_connection(db_path)) as conn:
-        return conn.execute("""SELECT 1 FROM hosted_room_links WHERE room_id=?
-            UNION ALL SELECT 1 FROM hosted_room_owed_revokes WHERE room_id=? AND expires_at>? LIMIT 1""",
-            (room_id, room_id, _now(now))).fetchone() is not None
+    return store.hosted_room_peers.room_has_peer_obligations(placement=placement, room_id=_room_id(room_id), now=_now(now))
 
 
-def list_room_link_records(db_path: DbPath) -> list[dict[str, Any]]:
+def _typed(record_type: type, record: Mapping[str, Any]) -> Any:
+    """``record_type`` built from the same-named keys of ``record``."""
+    return record_type(**{field.name: record[field.name] for field in fields(record_type)})
+
+
+def list_room_link_records(store: Persistence, *, placement: HostedPlacement) -> list[dict[str, Any]]:
     """Return private RoomLink records without logging or formatting grants."""
-    with _transaction(db_path) as conn:
-        rows = conn.execute("""SELECT room_id, member_id, target_url, target_profile, grant,
-                      catalog_json, cancellation_scope_id, trace_id,
-                      transport_security, status, updated_at
-                 FROM hosted_room_links
-             ORDER BY room_id, member_id""").fetchall()
-    return [dict(row) for row in rows]
+    return [dict(row) for row in store.hosted_room_peers.list_room_link_records(placement=placement)]
 
 
 def upsert_room_link_record(
-    db_path: DbPath, *, record: Mapping[str, Any], max_links: int,
-    expiry: Callable[[str], float] | None = None) -> None:
-    """Atomically insert or replace one private RoomLink record. With ``expiry`` (when a grant dies), a
-    replaced grant that outlives its replacement is kept as a held owed revoke, so the room's end
-    still revokes the scope for as long as that grant could pass."""
-    with _transaction(db_path, immediate=True) as conn:
-        existing = conn.execute(
-            "SELECT target_url, grant FROM hosted_room_links WHERE room_id=? AND member_id=?",
-            (record["room_id"], record["member_id"])).fetchone()
-        if existing is None and int(conn.execute("SELECT COUNT(*) FROM hosted_room_links").fetchone()[0]) >= max_links:
-            raise HostedRoomError("too many stored room links")
-        if (existing is not None and expiry is not None and existing["grant"] != record["grant"]
-                and expiry(str(existing["grant"])) > expiry(str(record["grant"]))):
-            _owe_revoke_locked(
-                conn, room_id=str(record["room_id"]), member_id=str(record["member_id"]),
-                target_url=str(existing["target_url"]), grant=str(existing["grant"]),
-                expires_at=expiry(str(existing["grant"])), now=_now(None), held=True)
-        conn.execute("""INSERT INTO hosted_room_links(
-                   room_id, member_id, target_url, target_profile, grant,
-                   catalog_json, cancellation_scope_id, trace_id,
-                   transport_security, status, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(room_id, member_id) DO UPDATE SET
-                   target_url=excluded.target_url,
-                   target_profile=excluded.target_profile,
-                   grant=excluded.grant,
-                   catalog_json=excluded.catalog_json,
-                   cancellation_scope_id=excluded.cancellation_scope_id,
-                   trace_id=excluded.trace_id,
-                   transport_security=excluded.transport_security,
-                   status=excluded.status,
-                   updated_at=excluded.updated_at""",
-            tuple(record[column] for column in _LINK_COLUMNS))
-        conn.execute("""DELETE FROM hosted_room_owed_revokes
-                WHERE room_id=? AND member_id=? AND grant_digest=? AND held=1""",
-            (record["room_id"], record["member_id"], grant_digest(str(record["grant"]))))
+    store: Persistence, *, placement: HostedPlacement, record: Mapping[str, Any], max_links: int,
+    hold_replaced: bool = False) -> None:
+    """Atomically insert or replace one private RoomLink record. With ``hold_replaced``, a replaced grant that
+    outlives its replacement (by its hard expiry) is kept as a held owed revoke, so the room's end still revokes
+    the scope for as long as that grant could pass."""
+    store.hosted_room_peers.upsert_room_link_record(
+        placement=placement, record=_typed(RoomLinkRecord, record), max_links=max_links, hold_replaced=hold_replaced)
 
 
 def update_room_link_status(
-    db_path: DbPath, *, room_id: str, member_id: str, status: str, now: float | None = None) -> bool:
+    store: Persistence, *, placement: HostedPlacement, room_id: str, member_id: str, status: str,
+    now: float | None = None) -> bool:
     """Persist a non-secret route health classification."""
-    with _transaction(db_path, immediate=True) as conn:
-        return conn.execute(
-            "UPDATE hosted_room_links SET status=?, updated_at=? WHERE room_id=? AND member_id=?",
-            (status, _now(now), room_id, member_id)).rowcount == 1
+    return store.hosted_room_peers.update_room_link_status(
+        placement=placement, room_id=room_id, member_id=member_id, status=status, now=_now(now))
 
 
-def delete_room_link_records(db_path: DbPath, *, room_id: str) -> int:
+def delete_room_link_records(store: Persistence, *, placement: HostedPlacement, room_id: str) -> int:
     """Delete persisted peer routes after their target grants are revoked."""
-    with _transaction(db_path, immediate=True) as conn:
-        return conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,)).rowcount
-
-
-def grant_digest(grant: str) -> str:
-    """The non-secret key an owed revoke is stored and logged under."""
-    return hashlib.sha256(grant.encode("utf-8")).hexdigest()
-
-
-_OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
-        room_id, member_id, grant_digest, target_url, grant, expires_at, next_attempt_at, created_at, held)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(room_id, member_id, grant_digest) DO NOTHING"""
-
-
-# Owed revokes are bounded however many grants a caller hands in: an expiry is read from the grant's
-# unsigned payload, so it is capped at the longest status horizon a member gateway signs; a member
-# keeps at most a few rows; and the table has a ceiling, where expired rows make room first. A grant
-# that finds no room is revoked by the caller at once (``HostedRoomService.owe_grant_revoke``): only
-# the member's gateway can check a grant's signature, so an owed row's unsigned expiry never counts
-# as covering another grant, nor is a row evicted for one. A revoke that never lands is retried, with
-# capped backoff, until its grant expires: the grant passes at its member's gateway until then.
-MAX_OWED_REVOKE_SECONDS = 30 * 24 * 60 * 60
-MAX_OWED_REVOKES_PER_MEMBER = 4
-MAX_OWED_REVOKES = 512
-
-
-class OwedRevokesFullError(HostedRoomError):
-    """No room is left to record an owed revoke, while the grant it names may still pass."""
-
-
-def _owe_revoke_locked(
-    conn: sqlite3.Connection, *, room_id: str, member_id: str, target_url: str, grant: str,
-    expires_at: float, now: float, held: bool = False) -> None:
-    expires_at = min(float(expires_at), now + MAX_OWED_REVOKE_SECONDS)
-    digest = grant_digest(grant)
-    member = (room_id, member_id)
-    if conn.execute("SELECT 1 FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?",
-                    (*member, digest)).fetchone() is not None:
-        return
-    owed = int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=?",
-                            member).fetchone()[0])
-    if owed >= MAX_OWED_REVOKES_PER_MEMBER:
-        if held:
-            raise HostedRoomError("too many held group chat grant revokes")
-        raise OwedRevokesFullError("too many owed revokes for this group chat member")
-    if int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
-        # A grant past its expiry passes nowhere: its row is the one to give up.
-        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (now,))
-        if int(conn.execute("SELECT COUNT(*) FROM hosted_room_owed_revokes").fetchone()[0]) >= MAX_OWED_REVOKES:
-            raise OwedRevokesFullError("too many owed room grant revokes")
-    conn.execute(_OWE_REVOKE, (
-        room_id, member_id, digest, target_url, grant, expires_at, now, now, int(held)))
+    return store.hosted_room_peers.delete_room_link_records(placement=placement, room_id=room_id)
 
 
 def retire_room_link_records(
-    db_path: DbPath, *, room_id: str, expiry: Callable[[str], float] | None = None,
+    store: Persistence, *, placement: HostedPlacement, room_id: str, owe_routes: bool = False,
     now: float | None = None, revoked_digests: set[str] | None = None) -> int:
     """Drop one room's persisted peer routes and release the room's held owed revokes. With
-    ``expiry`` (when a grant dies) each route's grant becomes an owed revoke in the same
+    ``owe_routes`` each route's grant becomes an owed revoke (until its hard expiry) in the same
     transaction; without it the caller already revoked every route and every unexpired held grant
     at its member gateway, so those are forgotten. ``revoked_digests`` limits that cleanup to this
     pass: a held grant received during peer I/O requires another revoke pass. Returns the routes dropped."""
-    timestamp = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        rows = conn.execute(
-            "SELECT member_id, target_url, grant FROM hosted_room_links WHERE room_id=?", (room_id,)).fetchall()
-        for row in rows if expiry is not None else ():
-            grant = str(row["grant"])
-            _owe_revoke_locked(conn, room_id=room_id, member_id=str(row["member_id"]),
-                               target_url=str(row["target_url"]), grant=grant, expires_at=expiry(grant),
-                               now=timestamp)
-        conn.execute("DELETE FROM hosted_room_links WHERE room_id=?", (room_id,))
-        if expiry is None and revoked_digests is not None:
-            conn.executemany("""DELETE FROM hosted_room_owed_revokes
-                    WHERE room_id=? AND held=1 AND grant_digest=?""",
-                ((room_id, digest) for digest in revoked_digests))
-        elif expiry is None:
-            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1", (room_id,))
-        else:
-            conn.execute("UPDATE hosted_room_owed_revokes SET held=0, next_attempt_at=? WHERE room_id=? AND held=1",
-                         (timestamp, room_id))
-    return len(rows)
+    return store.hosted_room_peers.retire_room_link_records(
+        placement=placement, room_id=room_id, owe_routes=owe_routes, now=_now(now),
+        revoked_digests=None if revoked_digests is None else frozenset(revoked_digests))
 
 
 def owe_room_grant_revoke(
-    db_path: DbPath, *, room_id: str, member_id: str, target_url: str, grant: str, expires_at: float,
-    now: float | None = None) -> None:
+    store: Persistence, *, placement: HostedPlacement, room_id: str, member_id: str, target_url: str, grant: str,
+    expires_at: float, now: float | None = None) -> None:
     """Record a revoke owed for a grant the home was handed but never stored as a route."""
-    with _transaction(db_path, immediate=True) as conn:
-        _owe_revoke_locked(conn, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
-                           expires_at=expires_at, now=_now(now))
+    store.hosted_room_peers.owe_room_grant_revoke(
+        placement=placement, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+        expires_at=expires_at, now=_now(now))
 
 
-_DUE_OWED_REVOKES = """SELECT room_id, member_id, grant_digest, target_url, grant, attempts
-    FROM hosted_room_owed_revokes WHERE held=0 AND next_attempt_at<=? AND expires_at>?
-    ORDER BY next_attempt_at, created_at LIMIT ?"""
-
-
-def owes_room_grant_revokes(db_path: DbPath) -> bool:
+def owes_room_grant_revokes(store: Persistence, *, placement: HostedPlacement) -> bool:
     """Whether any owed revoke is recorded (read-only)."""
-    with closing(_read_connection(db_path)) as conn:
-        return conn.execute("SELECT 1 FROM hosted_room_owed_revokes LIMIT 1").fetchone() is not None
+    return store.hosted_room_peers.owes_room_grant_revokes(placement=placement)
 
 
 def hold_room_grant_revoke(
-    db_path: DbPath, *, room_id: str, member_id: str, target_url: str, grant: str, expires_at: float,
-    now: float | None = None) -> None:
+    store: Persistence, *, placement: HostedPlacement, room_id: str, member_id: str, target_url: str, grant: str,
+    expires_at: float, now: float | None = None) -> None:
     """Durably hold a grant until Disband commits; after its tombstone it is already owed."""
-    with _transaction(db_path, immediate=True) as conn:
-        room = _room_row(conn, "SELECT disbanded_at FROM hosted_rooms WHERE room_id=?", (room_id,), room_id)
-        try:
-            _owe_revoke_locked(conn, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
-                               expires_at=expires_at, now=_now(now), held=room["disbanded_at"] is None)
-        except OwedRevokesFullError as exc:
-            if room["disbanded_at"] is None:
-                raise HostedRoomError("too many held group chat grant revokes") from exc
-            raise
+    store.hosted_room_peers.hold_room_grant_revoke(
+        placement=placement, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+        expires_at=expires_at, now=_now(now))
 
 
-def due_room_grant_revokes(db_path: DbPath, *, limit: int, now: float | None = None) -> list[dict[str, Any]]:
+def due_room_grant_revokes(
+    store: Persistence, *, placement: HostedPlacement, limit: int, now: float | None = None) -> list[dict[str, Any]]:
     """Owed revokes due now, oldest first; one whose grant has expired is dropped instead. Read-only
     unless an expired row is there to drop, so an idle worker cycle never takes the write lock."""
-    timestamp = _now(now)
-    with closing(_read_connection(db_path)) as conn:
-        rows = conn.execute(_DUE_OWED_REVOKES, (timestamp, timestamp, int(limit))).fetchall()
-        expired = conn.execute(
-            "SELECT 1 FROM hosted_room_owed_revokes WHERE expires_at<=? LIMIT 1", (timestamp,)).fetchone()
-    if expired is not None:
-        with _transaction(db_path, immediate=True) as conn:
-            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE expires_at<=?", (timestamp,))
-    return [dict(row) for row in rows]
+    return [dict(row) for row in store.hosted_room_peers.due_room_grant_revokes(
+        placement=placement, limit=int(limit), now=_now(now))]
 
 
-def held_room_grant_revokes(db_path: DbPath, *, room_id: str, now: float | None = None) -> list[dict[str, Any]]:
+def held_room_grant_revokes(
+    store: Persistence, *, placement: HostedPlacement, room_id: str, now: float | None = None) -> list[dict[str, Any]]:
     """Retained grants that must be revoked before Disband can forget them."""
-    timestamp = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1 AND expires_at<=?",
-                     (room_id, timestamp))
-        rows = conn.execute(
-            """SELECT target_url, grant FROM hosted_room_owed_revokes
-                WHERE room_id=? AND held=1 AND expires_at>?""", (room_id, timestamp)).fetchall()
-    return [dict(row) for row in rows]
+    return [dict(row) for row in store.hosted_room_peers.held_room_grant_revokes(
+        placement=placement, room_id=room_id, now=_now(now))]
 
 
 def settle_room_grant_revoke(
-    db_path: DbPath, *, room_id: str, member_id: str, grant_digest: str, retry_at: float | None = None) -> None:
+    store: Persistence, *, placement: HostedPlacement, room_id: str, member_id: str, grant_digest: str,
+    retry_at: float | None = None) -> None:
     """Forget an owed revoke once done (``retry_at`` None), else schedule its next attempt."""
-    key = (room_id, member_id, grant_digest)
-    with _transaction(db_path, immediate=True) as conn:
-        if retry_at is None:
-            conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?", key)
-        else:
-            conn.execute("""UPDATE hosted_room_owed_revokes SET attempts=attempts+1, next_attempt_at=?
-                             WHERE room_id=? AND member_id=? AND grant_digest=?""", (float(retry_at), *key))
+    store.hosted_room_peers.settle_room_grant_revoke(
+        placement=placement, room_id=room_id, member_id=member_id, grant_digest=grant_digest,
+        retry_at=None if retry_at is None else float(retry_at))
 
 
 def _claim_values(claims: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, str]:
@@ -884,31 +705,26 @@ def _room_grant_scope_key(claims: Mapping[str, Any]) -> str:
     return hashlib.sha256(compact_json(fields).encode("utf-8")).hexdigest()
 
 
+def _grant_claims(claims: Mapping[str, Any]) -> RoomGrantClaims:
+    """The grant's claim keys as the scope key and the revocation fence read them."""
+    values = _claim_values(claims, (
+        "room_id", "home_install_id", "authority_gateway_id", "member_id", "target_install_id", "target_profile"))
+    return RoomGrantClaims(
+        **values, authority_epoch=int(claims.get("authority_epoch") or 0),
+        issued_at=float(claims.get("issued_at") or 0))
+
+
 def revoke_room_grant_scope(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
+    store: Persistence, *, placement: HostedPlacement, claims: Mapping[str, Any], expires_at: float,
+    now: float | None = None) -> None:
     """Revoke every grant issued at or before now for one exact room scope."""
-    scope_key = _room_grant_scope_key(claims)
+    _room_grant_scope_key(claims)
     timestamp = _now(now)
     expiry = float(expires_at)
     if expiry <= timestamp:
         return
-    with _transaction(db_path, immediate=True) as conn:
-        conn.execute("DELETE FROM hosted_room_revoked_grants WHERE expires_at<=?", (timestamp,))
-        conn.execute("""INSERT INTO hosted_room_revoked_grants(
-                   scope_key, expires_at, revoked_before
-               ) VALUES (?, ?, ?)
-               ON CONFLICT(scope_key) DO UPDATE SET
-                   expires_at=MAX(hosted_room_revoked_grants.expires_at,
-                                  excluded.expires_at),
-                   revoked_before=MAX(hosted_room_revoked_grants.revoked_before,
-                                      excluded.revoked_before)""", (scope_key, expiry, timestamp))
-        conn.execute("""UPDATE hosted_room_peer_reservations SET revoked_at=?, updated_at=? WHERE room_id=?
-                AND member_id=? AND target_profile=? AND authority_gateway_id=?
-                AND authority_epoch=?""",
-            (
-                timestamp, timestamp,
-                *_claim_values(claims, ("room_id", "member_id", "target_profile", "authority_gateway_id")).values(),
-                int(claims.get("authority_epoch") or 0)))
+    store.hosted_room_peers.revoke_room_grant_scope(
+        placement=placement, claims=_grant_claims(claims), expires_at=expiry, now=timestamp)
 
 
 def _reservation_claims(claims: Mapping[str, Any]) -> tuple[str, str, str, str, int]:
@@ -922,47 +738,24 @@ def _reservation_claims(claims: Mapping[str, Any]) -> tuple[str, str, str, str, 
     return values
 
 
-def _reservation_superseded(row: sqlite3.Row, gateway_id: str, epoch: int) -> bool:
-    """A newer epoch, or the same epoch under another gateway, outranks this claim."""
-    row_epoch = int(row["authority_epoch"])
-    return row_epoch > epoch or (row_epoch == epoch and str(row["authority_gateway_id"]) != gateway_id)
+def _reservation_grant(claims: Mapping[str, Any]) -> RoomGrantClaims:
+    """The grant's claims with the reservation key validated."""
+    room_id, member_id, target_profile, gateway_id, epoch = _reservation_claims(claims)
+    return replace(
+        _grant_claims(claims), room_id=room_id, member_id=member_id, target_profile=target_profile,
+        authority_gateway_id=gateway_id, authority_epoch=epoch)
 
 
 def reserve_peer_room(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
+    store: Persistence, *, placement: HostedPlacement, claims: Mapping[str, Any], expires_at: float,
+    now: float | None = None) -> None:
     """Fence direct Desktop prompts before the first peer run is admitted."""
     timestamp = _now(now)
     expiry = float(expires_at)
     if expiry <= timestamp:
         raise HostedRoomError("peer room reservation must expire in the future")
-    values = _reservation_claims(claims)
-    room_id, _, target_profile, gateway_id, epoch = values
-    with _transaction(db_path, immediate=True) as conn:
-        conn.execute("DELETE FROM hosted_room_peer_reservations WHERE expires_at<=?", (timestamp,))
-        authority_rows = conn.execute(
-            f"""SELECT authority_gateway_id, authority_epoch
-                FROM hosted_room_peer_reservations {_LIVE_RESERVATION_WHERE}""", (room_id, target_profile, timestamp)
-        ).fetchall()
-        if any(_reservation_superseded(row, gateway_id, epoch) for row in authority_rows):
-            raise AuthorityConflictError("peer room reservation authority changed")
-        conn.execute("""UPDATE hosted_room_peer_reservations SET revoked_at=?, updated_at=? WHERE room_id=?
-                AND target_profile=? AND authority_epoch<? AND revoked_at IS NULL""",
-            (timestamp, timestamp, room_id, target_profile, epoch))
-        existing = conn.execute("""SELECT authority_gateway_id, authority_epoch FROM hosted_room_peer_reservations
-                WHERE room_id=? AND member_id=? AND target_profile=?""", values[:3]).fetchone()
-        if existing is not None and _reservation_superseded(existing, gateway_id, epoch):
-            raise AuthorityConflictError("peer room reservation authority changed")
-        conn.execute("""INSERT INTO hosted_room_peer_reservations(
-                   room_id, member_id, target_profile, authority_gateway_id,
-                   authority_epoch, expires_at, revoked_at, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-               ON CONFLICT(room_id, member_id, target_profile) DO UPDATE SET
-                   authority_gateway_id=excluded.authority_gateway_id,
-                   authority_epoch=excluded.authority_epoch,
-                   expires_at=MAX(hosted_room_peer_reservations.expires_at,
-                                  excluded.expires_at),
-                   revoked_at=NULL,
-                   updated_at=excluded.updated_at""", (*values, expiry, timestamp, timestamp))
+    store.hosted_room_peers.reserve_peer_room(
+        placement=placement, claims=_reservation_grant(claims), expires_at=expiry, now=timestamp)
 
 
 def _read_one(db_path: DbPath, sql: str, params: tuple[Any, ...]) -> sqlite3.Row | None:
@@ -976,64 +769,37 @@ def peer_room_is_reserved(db_path: DbPath, *, room_id: str, target_profile: str,
     return _read_one(db_path, _SELECT_LIVE_RESERVATION, params) is not None
 
 
-def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+def peer_room_grant_is_current(
+    store: Persistence, *, placement: HostedPlacement, claims: Mapping[str, Any], now: float | None = None) -> bool:
     """Require a grant to match the target's current live reservation."""
     timestamp = _now(now)
-    return _read_one(
-        db_path, """SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
-            AND target_profile=? AND authority_gateway_id=? AND authority_epoch=?
-            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp)) is not None
+    return store.hosted_room_peers.peer_room_grant_is_current(
+        placement=placement, claims=_reservation_grant(claims), now=timestamp)
 
 
-def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+def room_grant_is_revoked(
+    store: Persistence, *, placement: HostedPlacement, claims: Mapping[str, Any], now: float | None = None) -> bool:
     """Return whether a grant predates its exact scope's revocation fence."""
     timestamp = _now(now)
-    scope_key = _room_grant_scope_key(claims)
-    issued_at = float(claims.get("issued_at") or 0)
-    row = _read_one(
-        db_path, """SELECT revoked_before FROM hosted_room_revoked_grants
-            WHERE scope_key=? AND expires_at>?""", (scope_key, timestamp))
-    return row is not None and issued_at <= float(row["revoked_before"])
+    _room_grant_scope_key(claims)
+    return store.hosted_room_peers.room_grant_is_revoked(
+        placement=placement, claims=_grant_claims(claims), now=timestamp)
 
 
-def _remote_run_identity(record: Mapping[str, Any]) -> tuple[Any, ...]:
-    return tuple(record[column] for column in _REMOTE_RUN_IDENTITY_COLUMNS)
-
-
-def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now: float | None = None) -> None:
+def upsert_remote_run_receipt(
+    store: Persistence, *, placement: HostedPlacement, record: Mapping[str, Any], now: float | None = None) -> None:
     """Durably bind one logical peer task attempt to its remote run handle."""
     timestamp = _now(now)
-    identity = _remote_run_identity(record)
-    immutable = (*identity, record["run_id"], record["session_id"])
-    with _transaction(db_path, immediate=True) as conn:
-        existing = conn.execute(_SELECT_REMOTE_RUN, identity).fetchone()
-        if existing is not None:
-            if (*_remote_run_identity(existing), existing["run_id"], existing["session_id"]) != immutable:
-                raise HostedRoomError("remote run receipt conflicts with its logical task")
-            conn.execute(
-                f"UPDATE hosted_room_remote_runs SET updated_at=? WHERE {_REMOTE_RUN_WHERE}", (timestamp, *identity))
-            return
-        conn.execute("""INSERT INTO hosted_room_remote_runs(
-                   room_id, home_install_id, authority_gateway_id,
-                   authority_epoch, member_id, target_install_id,
-                   target_profile, task_id, execution_generation, run_id,
-                   session_id, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (*immutable, timestamp, timestamp))
-        from gateway.hosted_room_work_records import capture_transition_locked
-        capture_transition_locked(conn, record["room_id"])
+    store.hosted_room_peers.upsert_remote_run_receipt(
+        placement=placement, receipt=_typed(RemoteRunReceipt, record), now=timestamp)
 
 
-def drop_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], run_id: str) -> bool:
+def drop_remote_run_receipt(
+    store: Persistence, *, placement: HostedPlacement, record: Mapping[str, Any], run_id: str) -> bool:
     """Forget one attempt's receipt, only while it still names *run_id*: the member gateway
     answered that it holds no such run (its admission was refused after the receipt was saved)."""
-    with _transaction(db_path, immediate=True) as conn:
-        dropped = conn.execute(
-            f"DELETE FROM hosted_room_remote_runs WHERE {_REMOTE_RUN_WHERE} AND run_id=?",
-            (*_remote_run_identity(record), run_id)).rowcount
-        if dropped:
-            from gateway.hosted_room_work_records import capture_transition_locked
-            capture_transition_locked(conn, record["room_id"])
-    return bool(dropped)
+    return store.hosted_room_peers.drop_remote_run_receipt(
+        placement=placement, identity=_typed(RemoteRunIdentity, record), run_id=run_id)
 
 
 def list_remote_run_receipts(
@@ -1050,234 +816,114 @@ def list_remote_run_receipts(
     return [dict(row) for row in rows]
 
 
-def remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any]) -> dict[str, Any] | None:
+def remote_run_receipt(
+    store: Persistence, *, placement: HostedPlacement, record: Mapping[str, Any]) -> dict[str, Any] | None:
     """Return the exact durable remote run handle for one task attempt."""
-    row = _read_one(db_path, _SELECT_REMOTE_RUN, _remote_run_identity(record))
-    return dict(row) if row is not None else None
+    return store.hosted_room_peers.remote_run_receipt(placement=placement, identity=_typed(RemoteRunIdentity, record))
 
 
 # --- rooms and events -------------------------------------------------------------
-def _adopt_legacy_room(
-    conn: sqlite3.Connection, existing: sqlite3.Row, *, room_id: str, members_json: str, authority_gateway_id: str,
-    now: float) -> dict[str, Any]:
-    """Claim a 'legacy'-authority room for a real gateway with a fenced claim event."""
-    target_epoch = int(existing["authority_epoch"]) + 1
-    seq = int(existing["next_seq"])
-    claim_bytes = _insert_event(
-        conn, existing, room_id, seq, "system:authority-adopted", "authority.claimed",
-        _system_actor_json("authority-control"), target_epoch,
-        _claim_payload_json("legacy", authority_gateway_id, target_epoch), now, allow_control=True)
-    _fenced_update(conn, """UPDATE hosted_rooms
-            SET members_json=?, authority_gateway_id=?, authority_epoch=?,
-                next_seq=next_seq+1, revision=revision+1, event_bytes=event_bytes+?, updated_at=?
-            WHERE room_id=? AND authority_gateway_id='legacy' AND authority_epoch=? AND next_seq=?
-            AND disbanded_at IS NULL""",
-        (
-            members_json, authority_gateway_id, target_epoch, claim_bytes, now, room_id,
-            int(existing["authority_epoch"]), seq), AuthorityConflictError("legacy room adoption lost its fence"))
-    existing = _reload(conn, _SELECT_ROOM, (room_id,), "adopted room could not be reloaded")
-    claim_event = _reload(
-        conn, _SELECT_EVENT, (room_id, "system:authority-adopted"), "legacy adoption event could not be reloaded")
-    return {**_room_from_row(existing, idempotent=True), "adopted": True, "claim_event": _event_from_row(claim_event)}
-
-
 def create_room(
-    db_path: DbPath, *, room_id: Any, name: Any, members: Any, authority_gateway_id: Any, now: float | None = None,
-    admit: Callable[[sqlite3.Connection], Any] | None = None,
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, name: Any, members: Any,
+    authority_gateway_id: Any, now: float | None = None, owner: HostedOwnerClaim | None = None,
 ) -> dict[str, Any]:
     """Create a room, or return the identical existing room idempotently.
 
-    ``admit(conn)`` runs first inside the write transaction (after payload validation), so a
-    caller's side effect such as an owner claim commits only together with this create."""
+    With ``owner`` (``placement='profile'`` only), the owner claim runs first inside the write transaction (after
+    payload validation), so the claim commits only together with this create."""
     room_id = _room_id(room_id)
     name = _validate_room_name(name)
-    normalized_members, members_json = _validate_members(members)
+    normalized_members, _ = _validate_members(members)
     authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
     now = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        if admit is not None:
-            admit(conn)
-        if _is_retired(conn, room_id):
-            raise RoomConflictError("room_id belongs to a disbanded room")
-        existing = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
-        if existing is not None:
-            if existing["disbanded_at"] is not None:
-                raise RoomConflictError("room_id belongs to a disbanded room")
-            legacy_adoption = (existing["authority_gateway_id"] == "legacy" and authority_gateway_id != "legacy")
-            members_match = existing["members_json"] == members_json or (
-                legacy_adoption and _legacy_members_match(existing["members_json"], normalized_members))
-            if existing["name"] != name or not members_match:
-                raise RoomConflictError("room_id already exists with different state")
-            if legacy_adoption:
-                return _adopt_legacy_room(
-                    conn, existing, room_id=room_id, members_json=members_json,
-                    authority_gateway_id=authority_gateway_id, now=now)
-            if existing["authority_gateway_id"] != authority_gateway_id:
-                raise RoomConflictError("room_id already belongs to a different authority")
-            return _room_from_row(existing, idempotent=True)
-        active = conn.execute("SELECT COUNT(*) FROM hosted_rooms WHERE disbanded_at IS NULL").fetchone()[0]
-        if int(active) >= MAX_ACTIVE_ROOMS:
-            raise HostedRoomError("This host has too many active Group Chats. Delete one and try again.")
-        conn.execute(
-            f"""INSERT INTO hosted_rooms ({_ROOM_COLUMNS_WITH_BYTES})
-                VALUES (?, ?, ?, ?, 1, 1, 0, 1, ?, ?, NULL)""",
-            (room_id, name, members_json, authority_gateway_id, now, now))
-        row = _reload(
-            conn, """SELECT room_id, name, members_json, authority_gateway_id, authority_epoch, revision,
-                created_at, updated_at FROM hosted_rooms WHERE room_id=?""", (room_id,),
-            "created room could not be reloaded")
-    return {**_room_from_row(row), "members": normalized_members}
+    return store.hosted_rooms.create_room(
+        placement=placement, room_id=room_id, name=name, members=normalized_members,
+        authority_gateway_id=authority_gateway_id, owner=owner, now=now)
 
 
 def list_rooms(
-    db_path: DbPath, *, include_disbanded: bool = False, limit: int = MAX_ROOM_LIST_LIMIT, offset: int = 0
+    store: Persistence, *, placement: HostedPlacement, include_disbanded: bool = False,
+    limit: int = MAX_ROOM_LIST_LIMIT, offset: int = 0
 ) -> list[dict[str, Any]]:
     """Return one bounded read-only page ordered by most recent change."""
     limit = _bounded_limit(limit, MAX_ROOM_LIST_LIMIT)
     offset = _non_negative(offset, "offset")
-    with closing(_read_connection(db_path)) as conn:
-        rows = conn.execute(
-            f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE disbanded_at IS NULL OR ?
-                ORDER BY updated_at DESC, room_id ASC LIMIT ? OFFSET ?""", (int(include_disbanded), limit, offset)
-        ).fetchall()
-    return [_room_from_row(row) for row in rows]
+    return store.hosted_rooms.list_rooms(
+        placement=placement, include_disbanded=include_disbanded, limit=limit, offset=offset)
 
 
-def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now: float | None = None) -> dict[str, Any]:
+def rename_room(
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, event_id: Any, name: Any,
+    now: float | None = None) -> dict[str, Any]:
     """Rename a live room and append its replay event atomically."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     name = _validate_room_name(name)
     now = _now(now)
-    actor_json = _system_actor_json("room-control")
-    payload_json = _payload_json({"name": name})
-    with _transaction(db_path, immediate=True) as conn:
-        room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
-        if room["disbanded_at"] is not None:
-            raise RoomNotFoundError("hosted room not found")
-        existing = _load_event(conn, room_id, event_id)
-        if existing is not None:
-            if existing["kind"] != "room.renamed" or existing["payload_json"] != payload_json:
-                raise EventConflictError("event_id already exists with different immutable content")
-            return {**_room_from_row(room, idempotent=True), "event": _event_from_row(existing, idempotent=True)}
-        seq = int(room["next_seq"])
-        event_bytes = _prepare_event(conn, room, event_id, "room.renamed", actor_json, payload_json)
-        # Rename updates the room row before inserting its event (order is load-bearing).
-        conn.execute("""UPDATE hosted_rooms
-                SET name=?, next_seq=?, event_bytes=event_bytes+?, revision=revision+1, updated_at=?
-                WHERE room_id=?""", (name, seq + 1, event_bytes, now, room_id))
-        conn.execute(_INSERT_EVENT, (
-            room_id, seq, event_id, "room.renamed", actor_json, int(room["authority_epoch"]), payload_json, now))
-        updated = conn.execute(_SELECT_ROOM, (room_id,)).fetchone()
-        return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
+    return store.hosted_rooms.rename_room(placement=placement, room_id=room_id, event_id=event_id, name=name, now=now)
 
 
 def append_event(
-    db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
-    authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, event_id: Any, kind: Any, actor: Any,
+    payload: Any, authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
     expected_latest_seq: int | None = None, control_reserve: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed. ``control_reserve`` lets a
-    bounded gateway notice use the control headroom, so a room whose log is full can still say why.
-    ``payload`` may be a function of the write-locked connection returning the payload, for one derived
-    from current room state: no concurrent append can land between that read and this write."""
+    bounded gateway notice use the control headroom, so a room whose log is full can still say why."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
         _bounded_int(expected_latest_seq, message="expected_latest_seq must be a nonnegative integer")
     kind = _validate_event_kind(kind)
-    normalized_actor, actor_json = _validate_actor(actor, kind=kind)
+    normalized_actor, _ = _validate_actor(actor, kind=kind)
     # Every admitted actor kind is room-scoped, so authority fields are always required.
     authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
     if normalized_actor["kind"] == "gateway" and normalized_actor["id"] != authority_gateway_id:
         raise HostedRoomError("gateway actor.id must match authority_gateway_id")
     authority_epoch = _require_positive_int(authority_epoch, "authority_epoch")
-    resolve = payload if callable(payload) else lambda _conn: payload
+    if not isinstance(payload, dict):
+        raise HostedRoomError("payload must be an object")
+    _payload_json(payload)
     now = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        if not isinstance(resolved := resolve(conn), dict):
-            raise HostedRoomError("payload must be an object")
-        payload_json = _payload_json(resolved)
-        existing = _load_event(conn, room_id, event_id)
-        if existing is not None:
-            if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):
-                raise EventConflictError("event_id already exists with different content")
-            return _event_from_row(existing, idempotent=True)
-        room = _room_row(
-            conn, """SELECT next_seq, event_bytes, authority_gateway_id, authority_epoch
-                FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
-        _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
-        seq = int(room["next_seq"])
-        if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
-            raise EventCursorConflictError("room changed before event publication")
-        if kind in {"message.user", "message.member"}:
-            from gateway.hosted_room_attachments import retain_message_attachments
-            retain_message_attachments(conn, room_id=room_id, event_id=event_id,
-                                       manifest=json.loads(payload_json).get("attachments", []), now=now)
-        event_bytes = _insert_event(
-            conn, room, room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, now,
-            allow_control=kind in _CONTROL_EVENT_KINDS or (control_reserve and normalized_actor["kind"] == "gateway"))
-        _fenced_update(conn, """UPDATE hosted_rooms SET next_seq=?, event_bytes=event_bytes+?, updated_at=?
-                WHERE room_id=? AND next_seq=?""", (seq + 1, event_bytes, now, room_id, seq),
-            RuntimeError("hosted room sequence advance lost its write fence"))
-        row = _reload(
-            conn, f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?", (room_id, seq),
-            "appended event could not be reloaded")
-    return {**_event_from_row(row), "actor": normalized_actor}
+    return store.hosted_rooms.append_event(
+        placement=placement, room_id=room_id, event_id=event_id, kind=kind, actor=normalized_actor, payload=payload,
+        authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
+        expected_latest_seq=expected_latest_seq, now=now,
+        **({'control_reserve': True} if control_reserve else {}))
 
 
-def _probe(path: Path, table: str, query: str, params: tuple[Any, ...], unavailable: str) -> bool:
-    """Non-blocking existence probe: short timeout, no schema creation or migration."""
-    if not path.is_file():
-        return False
-    try:
-        with closing(sqlite3.connect(path, timeout=0.05)) as conn:
-            table_row = conn.execute(
-                f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{table}' LIMIT 1").fetchone()
-            return table_row is not None and conn.execute(query, params).fetchone() is not None
-    except sqlite3.Error as exc:
-        raise RoomProbeUnavailableError(unavailable) from exc
-
-
-def probe_hosted_room(db_path: DbPath, *, room_id: Any) -> bool:
+def probe_hosted_room(store: Persistence, *, placement: HostedPlacement, room_id: Any) -> bool:
     """Check room ownership without creating or migrating the shared store; runs on the synchronous
     prompt-admission path for older Desktop clients, so it fails fast under contention instead of blocking
     the WebSocket reader for SQLite's ten-second timeout."""
-    return _probe(
-        Path(db_path), "hosted_rooms", "SELECT 1 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL LIMIT 1",
-        (_room_id(room_id),), "hosted room ownership is temporarily unavailable")
+    return store.hosted_rooms.probe_hosted_room(placement=placement, room_id=_room_id(room_id))
 
 
 def probe_peer_room_reservation(
-    db_path: DbPath, *, room_id: Any, target_profile: Any, now: float | None = None) -> bool:
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, target_profile: Any,
+    now: float | None = None) -> bool:
     """Check a peer reservation without creating or migrating shared state."""
-    params = (_room_id(room_id), _actor_id(target_profile, "target_profile"), _now(now))
-    return _probe(
-        Path(db_path), "hosted_room_peer_reservations", _SELECT_LIVE_RESERVATION, params,
-        "peer room ownership is temporarily unavailable")
+    room_id, target_profile, now = _room_id(room_id), _actor_id(target_profile, "target_profile"), _now(now)
+    return store.hosted_room_peers.probe_peer_room_reservation(
+        placement=placement, room_id=room_id, target_profile=target_profile, now=now)
 
 
-def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False) -> dict[str, Any]:
+def room_state(
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, include_disbanded: bool = False
+) -> dict[str, Any]:
     """Return durable replay and authority state for one room."""
     room_id = _room_id(room_id)
-    with _transaction(db_path) as conn:
-        row = _room_row(
-            conn,
-            f"""SELECT {_ROOM_COLUMNS} FROM hosted_rooms WHERE room_id=? AND (disbanded_at IS NULL
-                OR ?)""", (room_id, int(include_disbanded)), room_id)
-        claim_row = conn.execute(
-            f"""SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=?
-                AND kind='authority.claimed' AND authority_epoch=? ORDER BY seq DESC LIMIT 1""",
-            (room_id, int(row["authority_epoch"]))).fetchone()
-    return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
+    return store.hosted_rooms.room_state(placement=placement, room_id=room_id, include_disbanded=include_disbanded)
 
 
 def request_room_stop(
-    db_path: DbPath, *, room_id: Any, cancel_id: Any, expected_gateway_id: Any, expected_epoch: Any) -> dict[str, Any]:
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, cancel_id: Any, expected_gateway_id: Any,
+    expected_epoch: Any) -> dict[str, Any]:
     """Append an idempotent fence that supersedes earlier user turns."""
     cancel_id = _validate_identifier(cancel_id, label="cancel_id", max_chars=MAX_EVENT_ID_CHARS)
     return append_event(
-        db_path, room_id=room_id, event_id=f"room-stop:{hashlib.sha256(cancel_id.encode()).hexdigest()[:32]}",
+        store, placement=placement, room_id=room_id,
+        event_id=f"room-stop:{hashlib.sha256(cancel_id.encode()).hexdigest()[:32]}",
         kind="room.stop_requested", actor={"kind": "gateway", "id": expected_gateway_id},
         payload={"cancel_id": cancel_id}, authority_gateway_id=expected_gateway_id, authority_epoch=expected_epoch)
 
@@ -1333,110 +979,27 @@ def claim_authority(
         "claim_event": _event_from_row(existing_event, idempotent=idempotent)}
 
 
-def _disband_replay(conn: sqlite3.Connection, room_id: str, room: sqlite3.Row | None) -> dict[str, Any] | None:
-    """Idempotent replay for a retired or already-disbanded room; None when the room is live."""
-    if room is None:
-        retired = conn.execute("SELECT retired_at FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone()
-        if retired is None:
-            raise RoomNotFoundError("hosted room not found")
-        return {
-            "room_id": room_id, "disbanded_at": float(retired["retired_at"]), "idempotent": True,
-            "history_expired": True}
-    if room["disbanded_at"] is None:
-        return None
-    conn.execute(_INSERT_RETIRED, (room_id, float(room["disbanded_at"])))
-    event = _load_event(conn, room_id, "system:room-disbanded")
-    return {
-        "room_id": room_id, "disbanded_at": float(room["disbanded_at"]), "idempotent": True,
-        **({"event": _event_from_row(event, idempotent=True)} if event is not None else {})}
-
-
 def disband_room(
-    db_path: DbPath, *, room_id: Any, expected_gateway_id: Any, expected_epoch: Any, now: float | None = None
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, expected_gateway_id: Any, expected_epoch: Any,
+    now: float | None = None
 ) -> dict[str, Any]:
     """Tombstone a room id permanently and idempotently."""
     room_id = _room_id(room_id)
     expected_gateway_id = _actor_id(expected_gateway_id, "expected_gateway_id")
     _require_positive_int(expected_epoch, "expected_epoch")
     now = _now(now)
-    with _transaction(db_path, immediate=True) as conn:
-        room = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes, disbanded_at
-                FROM hosted_rooms WHERE room_id=?""", (room_id,)).fetchone()
-        if (replay := _disband_replay(conn, room_id, room)) is not None:
-            return replay
-        _require_authority(room, expected_gateway_id, expected_epoch, "stale hosted room authority")
-        if conn.execute("""SELECT 1 FROM hosted_room_owed_revokes
-                WHERE room_id=? AND held=1 AND expires_at>? LIMIT 1""", (room_id, now)).fetchone():
-            raise RoomHeldGrantsPendingError("Group chat grants still need revoking; retry Disband.")
-        conn.execute("DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND held=1 AND expires_at<=?",
-                     (room_id, now))
-        disband_bytes = _insert_event(
-            conn, room, room_id, int(room["next_seq"]), "system:room-disbanded", "room.disbanded",
-            _system_actor_json("room-control"), int(room["authority_epoch"]), _payload_json({"room_id": room_id}), now,
-            allow_control=True)
-        _fenced_update(conn, """UPDATE hosted_rooms
-                SET disbanded_at=?, updated_at=?, revision=revision+1,
-                    next_seq=next_seq+1, event_bytes=event_bytes+?
-                WHERE room_id=? AND disbanded_at IS NULL AND authority_gateway_id=?
-                AND authority_epoch=?""",
-            (now, now, disband_bytes, room_id, expected_gateway_id, expected_epoch),
-            RoomConflictError("hosted room disband lost its fence"))
-        conn.execute(_INSERT_RETIRED, (room_id, now))
-        from gateway.session_hosted_member_homes import forget_room_member_homes_locked
-        forget_room_member_homes_locked(conn, room_id)
-        event = _reload(
-            conn, _SELECT_EVENT, (room_id, "system:room-disbanded"), "room disband event could not be reloaded")
-        _prune_disbanded_rooms_locked(conn, now=now, max_gateway_event_bytes=MAX_GATEWAY_EVENT_BYTES)
-    return {"room_id": room_id, "disbanded_at": now, "idempotent": False, "event": _event_from_row(event)}
+    return store.hosted_rooms.disband_room(
+        placement=placement, room_id=room_id, expected_gateway_id=expected_gateway_id, expected_epoch=expected_epoch,
+        now=now)
 
 
 def read_events(
-    db_path: DbPath, *, room_id: Any, since_seq: Any = 0, limit: Any = 100, include_disbanded: bool = False
+    store: Persistence, *, placement: HostedPlacement, room_id: Any, since_seq: Any = 0, limit: Any = 100,
+    include_disbanded: bool = False
 ) -> dict[str, Any]:
     """Read a monotonic room-log delta after ``since_seq``."""
     room_id = _room_id(room_id)
     since_seq = _non_negative(since_seq, "since_seq")
     limit = _bounded_limit(limit, MAX_LOG_LIMIT)
-    with _transaction(db_path) as conn:
-        room = _room_row(
-            conn, """SELECT next_seq, authority_gateway_id, authority_epoch FROM hosted_rooms
-                WHERE room_id=? AND (disbanded_at IS NULL OR ?)""", (room_id, int(include_disbanded)), room_id)
-        latest_seq = int(room["next_seq"]) - 1
-        authority = {"gateway_id": str(room["authority_gateway_id"]), "epoch": int(room["authority_epoch"])}
-        if since_seq > latest_seq:
-            raise HostedRoomError("since_seq is ahead of the hosted room log")
-        rows = conn.execute(
-            f"""WITH candidates AS (
-                   SELECT {_EVENT_COLUMNS},
-                          SUM(
-                              LENGTH(CAST(event_id AS BLOB)) +
-                              LENGTH(CAST(kind AS BLOB)) +
-                              LENGTH(CAST(actor_json AS BLOB)) +
-                              LENGTH(CAST(payload_json AS BLOB))
-                          ) OVER (ORDER BY seq ASC) AS cumulative_bytes
-                     FROM hosted_room_events
-                    WHERE room_id=? AND seq>?
-                    ORDER BY seq ASC LIMIT ?
-               )
-               SELECT {_EVENT_COLUMNS}
-                 FROM candidates
-                WHERE cumulative_bytes<=?
-                ORDER BY seq ASC""", (room_id, since_seq, limit, MAX_LOG_PAGE_BYTES)).fetchall()
-    events = [_event_from_row(row) for row in rows]
-    def build_page(page_events: list[dict[str, Any]]) -> dict[str, Any]:
-        cursor = page_events[-1]["seq"] if page_events else since_seq
-        return {"events": page_events, "cursor": cursor, "latest_seq": latest_seq, "has_more": cursor < latest_seq,
-                "authority": authority}
-    def fits(page_events: list[dict[str, Any]]) -> bool:
-        page_json = json.dumps(build_page(page_events), ensure_ascii=False, separators=(",", ":"))
-        return utf8_len(page_json) <= MAX_LOG_PAGE_BYTES
-    if events and not fits(events):
-        # Binary-search the largest prefix whose serialized page fits the budget.
-        low, high = 1, len(events)
-        while low < high:
-            middle = (low + high + 1) // 2
-            low, high = (middle, high) if fits(events[:middle]) else (low, middle - 1)
-        events = events[:low]
-        if not fits(events):
-            raise HostedRoomError("hosted room event exceeds replay page limit")
-    return build_page(events)
+    return store.hosted_rooms.read_events(
+        placement=placement, room_id=room_id, since_seq=since_seq, limit=limit, include_disbanded=include_disbanded)

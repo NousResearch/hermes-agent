@@ -473,11 +473,8 @@ def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[
         return None
     try:
         post = receipt.get("post_update") or {}
-        from hermes_cli.update_receipt import effective_outcome
         return {
-            **{k: receipt.get(k) for k in ("started_at", "finished_at", "action_id")},
-            # A killed run reads interrupted now, before the next update persists it.
-            "outcome": effective_outcome(receipt),
+            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at", "action_id")},
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),

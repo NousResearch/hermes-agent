@@ -158,27 +158,6 @@ describe('hidden backend update progress', () => {
     expect($updateOverlayOpen.get()).toBe(true)
   })
 
-  it('a pressed update whose own run the backend reports interrupted fails at once', async () => {
-    const own = 'b'.repeat(32)
-    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 4, action_id: own })
-    // The dashboard restarted under its run, so it no longer has the process; the receipt says it died.
-    getActionStatusSpy.mockResolvedValue({
-      exit_code: null,
-      lines: [],
-      name: 'hermes-update',
-      pid: null,
-      running: false,
-      receipt: { action_id: own, outcome: 'interrupted', started_at: new Date().toISOString(), finished_at: null }
-    })
-
-    const pressed = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(1500)
-    await pressed
-
-    expect($backendUpdateApply.get().stage).toBe('error')
-    expect($updateOverlayOpen.get()).toBe(true)
-  })
-
   it("does not replace a running client update's progress with a backend failure, and shows it after", async () => {
     const { pressed } = await pressAndHide()
 

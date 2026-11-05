@@ -143,29 +143,6 @@ class TestUpdateStatusReadsReceipt:
 
         assert resp.json()["exit_code"] is None
 
-    @pytest.mark.parametrize("alive,lock_held,shown", [
-        (True, False, "running"),
-        (False, False, "interrupted"),
-        # The parent died while its detached completion child (holding the checkout lock) still runs.
-        (False, True, "running"),
-    ])
-    def test_a_running_receipt_whose_process_is_gone_reads_interrupted(self, client, tmp_path, monkeypatch,
-                                                                       alive, lock_held, shown):
-        """A killed update leaves its receipt ``running`` until the next run reconciles it. The window
-        that pressed Update reads its own run's receipt to learn the run died."""
-        import hermes_cli.update_lock as ul
-        import hermes_cli.update_receipt as ur
-
-        _write_receipt(tmp_path, monkeypatch, outcome="running")
-        self._clear_registries(monkeypatch, tmp_path)
-        monkeypatch.setattr(ur, "_owner_alive", lambda record: alive)
-        monkeypatch.setattr(ul, "checkout_lock_held", lambda install_root=None: lock_held)
-
-        data = client.get("/api/actions/hermes-update/status").json()
-
-        assert data["receipt"]["outcome"] == shown
-        assert data["exit_code"] is None  # no exit code from the receipt alone; the outcome says it died
-
     def test_non_update_actions_untouched(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)
         self._clear_registries(monkeypatch, tmp_path)

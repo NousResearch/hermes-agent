@@ -184,6 +184,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+    CommandDef("tree", "Show this session's family (branches, compression continuations, subagents) "
+               "and switch to any session in it", "Session", args_hint="[--all]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

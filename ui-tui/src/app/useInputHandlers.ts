@@ -578,7 +578,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         overlay.confirm ||
         overlay.connection ||
         overlay.rewind ||
-        overlay.subscription
+        overlay.subscription ||
+        overlay.tree
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 

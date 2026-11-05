@@ -3359,6 +3359,35 @@ export interface SessionListRow {
   source?: string
   _lineage_root_id?: string | null
 }
+/** ``session.family``: the family around ``session_id``, already reduced to what the client draws. */
+export interface SessionFamilyParams {
+  session_id: string
+  profile?: string | null
+  show_compressions?: boolean
+  show_subagents?: boolean
+  folded?: string[]
+}
+export interface SessionFamilyResult {
+  root_id?: string
+  nodes?: SessionFamilyNode[]
+  truncated?: boolean
+}
+/** One row of the family tree, in depth-first pre-order. */
+export interface SessionFamilyNode {
+  session_id: string
+  parent_session_id?: string | null
+  depth?: number
+  title?: string
+  created_at?: number
+  message_count?: number
+  kind?: SessionFamilyKind
+  branch_from?: number | null
+  is_current?: boolean
+  has_children?: boolean
+  folded_segments?: number
+}
+/** What a stored marker proves about a node's link to its parent; ``unknown`` is never a guess. */
+export type SessionFamilyKind = 'root' | 'branch' | 'compression' | 'subagent' | 'unknown'
 export interface SessionMostRecentParams {
   profile?: string | null
 }
@@ -6529,6 +6558,8 @@ export interface RpcMethods {
   'session.events.since': { params: SessionEventsSinceParams; result: SessionEventsSinceResult }
   /** Replay-buffer occupancy telemetry (ops/debug). */
   'session.events.stats': { params: SessionEventsStatsParams; result: SessionEventsStatsResult }
+  /** Read-only family around one session (root, branches, compression continuations, subagents) for the /tree navigator; never writes. */
+  'session.family': { params: SessionFamilyParams; result: SessionFamilyResult }
   /** Import a foreign session into this profile's history (idempotent per origin). */
   'session.foreign.import': { params: SessionForeignIdParams; result: SessionForeignImportResult }
   /** One page of Claude Code / Codex sessions found on the serving backend. */
@@ -6863,6 +6894,7 @@ export const RPC_METHODS = [
   'session.delete',
   'session.events.since',
   'session.events.stats',
+  'session.family',
   'session.foreign.import',
   'session.foreign.list',
   'session.foreign.preview',
@@ -6995,6 +7027,7 @@ export interface CanonicalRpcMethods {
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
   /** The /save transcript rendered for the client to write (the gateway writes nothing). */
   'session.export': { params: SessionExportParams; result: SessionExportResult }
+  'session.family': { params: SessionFamilyParams; result: SessionFamilyResult }
   /** Frozen launch policy projection of one local session. */
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
@@ -7055,6 +7088,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.detach',
   'session.events.since',
   'session.export',
+  'session.family',
   'session.info',
   'session.interrupt',
   'session.list',

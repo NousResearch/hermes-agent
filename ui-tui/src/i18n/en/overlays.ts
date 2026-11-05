@@ -26,6 +26,27 @@ export const overlaysEn = {
       listHint: '↑/↓ select · Enter edit & resend · f fork from here · Esc close',
       editHint: 'Enter rewind here and send · Esc back to the list'
     },
+    tree: {
+      title: '⠪ session tree',
+      detail: 'the family around this session: its root, branches and continuations',
+      listHint:
+        '↑/↓ select · ←/→ fold · / search · c compressions · s subagents · Enter switch · Esc close',
+      searchHint: 'type to filter titles · Esc clear',
+      kindRoot: 'root',
+      kindBranch: 'branch',
+      kindCompression: 'compression',
+      kindSubagent: 'subagent',
+      kindUnknown: 'unknown',
+      msgs: (count: string) => `${count} msgs`,
+      msg: (count: string) => `${count} msg`,
+      afterMsg: (number: string) => `after msg ${number}`,
+      compressed: (count: string) => `+${count} compressed`,
+      current: 'current',
+      untitled: (id: string) => `untitled ${id}`,
+      empty: 'No stored family for this session yet — send a message first.',
+      truncated: '(family truncated: more sessions than this view lists)',
+      switched: (title: string) => `switched to ${title}`
+    },
     clarify: {
       other: 'Other (type your answer)',
       skipped: '(skipped)',

@@ -1669,6 +1669,8 @@ slash:
     description: "Show active profile name and home directory"
   sessions:
     description: "Browse and resume previous sessions"
+  tree:
+    description: "Show this session's branch family and switch to any session in it"
   config:
     description: "Show current configuration"
   model:
@@ -1794,6 +1796,24 @@ cli:
     invalid: "(._.) No prompt {value} — pick 1 to {total}."
     usage: "Usage: /rewind [N | fork N]"
     rewind_failed: "(x_x) Rewind failed; history was not changed: {error}"
+  tree:
+    usage: "Usage: /tree [--all]"
+    title: "Session tree"
+    header: "Session tree · {title} · {count} session(s)"
+    cancel: "Cancel"
+    empty: "No stored family for this session yet — send a message first."
+    untitled: "untitled {id}"
+    messages: "{count} msgs"
+    messages_one: "{count} msg"
+    after_message: "after msg {number}"
+    compressed_segments: "+{count} compressed"
+    current: "current"
+    truncated: "(family truncated: more sessions than this view lists)"
+    kind_root: "root"
+    kind_branch: "branch"
+    kind_compression: "compression"
+    kind_subagent: "subagent"
+    kind_unknown: "unknown"
   modern:
     thought_for: "Thought for {seconds}s"
     thought: "Thought"

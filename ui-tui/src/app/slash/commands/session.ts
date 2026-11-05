@@ -23,6 +23,7 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import { openSessionTree } from '../canonicalSessionTree.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 import { usageTotalsSections } from '../usagePanel.js'
 
@@ -245,6 +246,19 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       patchOverlayState({ sessions: true })
+    }
+  },
+
+  {
+    help: 'show this session’s branch family and switch to any session in it',
+    name: 'tree',
+    run: (arg, ctx) => {
+      const all = arg.trim() === '--all'
+
+      return openSessionTree(
+        ctx,
+        all ? { folded: [], show_compressions: true, show_subagents: true } : undefined
+      )
     }
   },
 

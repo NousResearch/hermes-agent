@@ -1197,6 +1197,28 @@ class GatewaySessionCommandsMixin:
 
     # ----------------------------------------------------------------------- /branch
 
+    async def _handle_tree_command(self, event: MessageEvent) -> str:
+        """Handle /tree [--all] — this chat's session family as indented text, read-only.
+
+        The same family the terminal surfaces show, listed flat: messaging has no picker, so
+        switching stays a follow-up and the ids are printed for /resume.
+        """
+        if not self._session_db:
+            return self._session_db_unavailable_reply()
+        from hermes_cli.session_tree import empty_line, family_view, tree_text, usage_line
+        args = event.get_command_args().strip().split()
+        if any(token not in {"--all", "all"} for token in args):
+            return usage_line()
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        # Peek, never get_or_create: asking what the family is must not mint a session.
+        session_id = self.session_store.peek_session_id(self._session_key_for_source(source))
+        if not isinstance(session_id, str) or not session_id:
+            return empty_line()
+        db = getattr(self._session_db, "_db", self._session_db)
+        family, _lines = await asyncio.to_thread(
+            family_view, db, session_id, show_compressions=bool(args), show_subagents=bool(args))
+        return tree_text(family)
+
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [--here] [name] — fork the current session into an independent copy.
 

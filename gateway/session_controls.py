@@ -222,6 +222,7 @@ class AuthorityConnection:
                     'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
+                    'session.family': self.family,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
                     'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
@@ -563,6 +564,24 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         await self.authority.resolve(self.actor, ref)
         return await snapshot_info(self.authority, ref)
+
+    async def family(self, ref, params):
+        """`/tree`: this session's family, read-only, from the profile's own store.
+
+        Same builder the classic CLI and the sidecar use (`SessionDB.session_family`); the view
+        flags only drop rows. A session this profile does not hold returns an empty family rather
+        than another profile's rows.
+        """
+        if 'session:read' not in self.actor.capabilities:
+            raise RuntimeStoreError('permission_denied')
+        session_id = params.get('session_id')
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeStoreError('invalid_params')
+        return await asyncio.to_thread(
+            self.authority.db.session_family, session_id,
+            show_compressions=bool(params.get('show_compressions')),
+            show_subagents=bool(params.get('show_subagents')),
+            folded=[str(item) for item in (params.get('folded') or [])])
 
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:

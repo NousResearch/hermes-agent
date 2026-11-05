@@ -17,10 +17,12 @@ from types import SimpleNamespace
 
 import psutil
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from hermes_cli.process_identity import worker_birth
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 from tests.waiting import async_wait_until
 
@@ -46,13 +48,14 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
         real = int(launcher.stdout.readline())
         # One hop on POSIX; a venv trampoline (Windows) nests a second launcher in the chain.
         assert real != launcher.pid and launcher.pid in [p.pid for p in psutil.Process(real).parents()]
-        with closing(SessionDB(tmp_path / 'state.db')) as db:
-            db.create_session('owned', 'cli')
-            epoch = begin_runtime_epoch(db, instance_id='owner')
-            authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-            admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
-            claim_session_input(db, epoch=epoch, session_id='owned')
-            kwargs = dict(admission_id=admitted['admission_id'], process=launcher, principal_id='human')
+        with closing(open_persistence(profile_scope(home=tmp_path))) as db:
+            seed_session(db, 'owned', 'cli')
+            epoch = db.runtime.begin_epoch(instance_id='owner')
+            authority = SimpleNamespace(epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None,
+                                        persistence=storage_handle(tmp_path))
+            admitted, _ = db.admissions.admit(epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+            db.admissions.claim(epoch=epoch, session_id='owned')
+            kwargs = dict(admission_id=admitted.admission_id, process=launcher, principal_id='human')
             # Alive, truthful birth, same user — but a sibling, not a descendant of the reserved handle.
             with pytest.raises(Exception, match='permission_denied'):
                 reserve_admission_worker(authority, hello=_hello(stranger.pid), **kwargs)
@@ -62,7 +65,8 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
             # A worker claiming the owner's own pid never adopts.
             with pytest.raises(Exception, match='permission_denied'):
                 reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
-            assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
+            with raw_holder(db)._read_ctx() as conn:
+                assert conn.execute('SELECT COUNT(*) FROM worker_executions').fetchone()[0] == 0
             scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
             assert (scope['pid'], scope['birth']) == (real, worker_birth(psutil.Process(real)))
             assert scope['pid'] != launcher.pid

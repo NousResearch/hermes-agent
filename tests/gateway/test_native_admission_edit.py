@@ -9,7 +9,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
-from hermes_state_runtime import list_session_admissions
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -37,10 +37,10 @@ async def test_edit_of_an_admitted_message_is_its_own_admission(tmp_path, monkey
         second = await send('hello!', '1800000020')
         assert again.admission_id == edit.admission_id
         assert len({first.admission_id, edit.admission_id, second.admission_id}) == 3
-        rows = list_session_admissions(authority.db, session_id=first.ref.session_id, pending_only=False)
-        assert [row['payload']['text'] for row in rows] == ['helo', 'hello', 'hello!']
+        rows = authority.persistence.admissions.list(session_id=first.ref.session_id, pending_only=False)
+        assert [row.payload['text'] for row in rows] == ['helo', 'hello', 'hello!']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_telegram_same_second_edits_get_distinct_revisions():

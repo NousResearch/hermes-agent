@@ -44,15 +44,10 @@ def resolve_checkpoints_enabled(cfg: dict | None = None) -> bool:
 
 
 def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
-    """``/rollback N`` style number → the checkpoint's hash; a real hash passes through."""
-    try:
-        checkpoints = mgr.list_checkpoints(cwd)
-        idx = int(ref) - 1
-    except ValueError:
-        return ref
-    if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
-    raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+    """``/rollback`` number or hash → the checkpoint's hash (``tools/checkpoint_refs.py``, every surface's rule)."""
+    from tools.checkpoint_refs import resolve_checkpoint_ref
+    return resolve_checkpoint_ref(mgr.list_checkpoints(cwd), ref)
+
 
 
 def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: list) -> dict | None:
@@ -66,11 +61,12 @@ def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: li
         return None
     from tools.checkpoint_undo_hint import undo_hint_payload
     from tui_gateway import server  # method bodies are bound onto server.py's globals (method_ctx.py)
-    cwd = server._session_cwd(session)
-    if server._container_checkpoint_refusal(session, mgr, cwd):
-        return None
-    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+
+    def hint(mgr, cwd):  # under the same profile scope rollback.restore runs in (_with_checkpoints)
+        if server._container_checkpoint_refusal(session, mgr, cwd):
+            return None
         return undo_hint_payload(mgr, cwd, (target_message or {}).get("timestamp"), kept_history, task_id=None)
+    return server._with_checkpoints(session, hint)
 
 
 def undo_hint_fields(session: dict, rewound, params: dict) -> dict:

@@ -871,8 +871,7 @@ DEFAULT_CONFIG = {
         # them; balance data and /usage keep working.
         "credits_notices": True,
         # Append a one-line explanation when a turn ends with no usable reply (empty after retries,
-        # truncated stream, pending tool result, iteration/budget limit) instead of the bare
-        # "(empty)" sentinel.
+        # truncated stream, pending tool result, iteration/budget limit) instead of "(empty)".
         "turn_completion_explainer": True,
         "show_cost": False,       # $ cost in the status bar
         "battery": False,         # battery read-out first in status bar; no-op w/o battery
@@ -887,13 +886,14 @@ DEFAULT_CONFIG = {
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # TUI composer submit key: "enter" (default) submits on Enter, newline on Cmd/Ctrl+Enter;
+        # "cmd_enter" swaps the two. Shift+Enter always inserts a newline in both modes.
+        "submit_key": "enter",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
-        # fights terminal auto-scroll in non-fullscreen mode.
-        # See #45592.
+        # fights terminal auto-scroll in non-fullscreen mode. See #45592.
         "cli_refresh_interval": 1.0,
-        # Vi/vim keybindings in the CLI input composer (config-only, no slash command).
-        # Off by default, preserving prompt_toolkit's standard emacs bindings.
+        # Vi/vim keybindings in the CLI input composer (config-only); off keeps the emacs bindings.
         "vim_mode": False,
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,

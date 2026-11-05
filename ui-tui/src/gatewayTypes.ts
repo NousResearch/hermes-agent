@@ -159,6 +159,8 @@ export interface ConfigDisplayConfig {
   /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
    *  (default) trusts the OSC-11 probe + env signals. */
   tui_theme?: string
+  /** TUI composer submit key: "enter" (default) or "cmd_enter" (swap). */
+  submit_key?: string
 }
 
 export interface ConfigVoiceConfig {

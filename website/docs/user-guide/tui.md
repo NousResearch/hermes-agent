@@ -190,6 +190,29 @@ display:
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
+## Submit key
+
+By default `Enter` sends the draft and `Cmd+Enter` (macOS) / `Ctrl+Enter` (Linux, Windows) inserts a newline. Set `display.submit_key` to swap them:
+
+```yaml
+display:
+  submit_key: cmd_enter   # enter (default) | cmd_enter
+```
+
+| Key | `enter` (default) | `cmd_enter` |
+|---|---|---|
+| `Enter` | submit | newline |
+| `Cmd/Ctrl+Enter`, `Alt+Enter` | newline | submit |
+| `Shift+Enter` | newline | newline |
+
+`Shift+Enter` inserts a newline in both modes. Any other value falls back to `enter`. The key applies to the TUI composer only; the classic CLI keeps its own bindings. Edits to `config.yaml` take effect in a running TUI on its next config poll.
+
+:::warning
+`cmd_enter` needs a terminal that reports the modifier on `Enter`. The TUI turns on extended key reporting (kitty keyboard protocol / modifyOtherKeys) only in iTerm2, kitty, WezTerm, Ghostty, tmux, Windows Terminal and the VS Code terminal, plus any terminal where a binding such as the ones `/terminal-setup` installs sends a modified `Enter`. In other terminals, Warp and Terminal.app included, every modified `Enter` arrives as a bare `Enter`. In `cmd_enter` mode that inserts a newline, so **nothing submits the draft**. Keep the default `enter` there.
+
+Some terminals also bind `Cmd+Enter` to their own action (full screen in iTerm2 and Ghostty), so the TUI never sees it. Use `Ctrl+Enter` there, or remove the terminal's binding.
+:::
+
 ## Auto-resume
 
 By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:

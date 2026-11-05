@@ -93,3 +93,29 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
+
+
+@pytest.mark.parametrize("error_type,message", [(AssertionError, ""), (RuntimeError, " \t")])
+@pytest.mark.parametrize("raised", [False, True])
+def test_empty_message_errors_identify_the_exception_and_origin(error_type, message, raised):
+    error = error_type(message)
+    if raised:
+        with pytest.raises(error_type):
+            raise error
+
+    summary = AIAgent._summarize_api_error(error)
+
+    assert error_type.__name__ in summary
+    if raised:
+        assert f"{__file__}:" in summary
+        assert "in test_empty_message_errors_identify_the_exception_and_origin()" in summary
+    else:
+        assert "no message, no traceback" in summary
+
+
+def test_response_payload_precedes_empty_message_traceback():
+    error = _make_empty_body_error('{"error": {"message": "Requested model is unavailable"}}')
+    with pytest.raises(Exception):
+        raise error
+
+    assert AIAgent._summarize_api_error(error) == "HTTP 400: Requested model is unavailable"

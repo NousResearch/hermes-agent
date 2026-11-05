@@ -107,6 +107,24 @@ describe('applyDisplay', () => {
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
+    expect(s.editorAutoSubmit).toBe(true)
+  })
+
+  it('hydrates display.editor_auto_submit and only explicit false disables it', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { editor_auto_submit: false } } }, setBell)
+    expect($uiState.get().editorAutoSubmit).toBe(false)
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().editorAutoSubmit).toBe(true)
+
+    applyDisplay({ config: { display: { editor_auto_submit: true } } }, setBell)
+    expect($uiState.get().editorAutoSubmit).toBe(true)
+
+    applyDisplay({ config: { display: { editor_auto_submit: false } } }, setBell)
+    applyDisplay(null, setBell)
+    expect($uiState.get().editorAutoSubmit).toBe(false)
   })
 
   it('parses display.sections into per-section overrides', () => {

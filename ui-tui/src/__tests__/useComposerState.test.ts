@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, resolveEditorResult } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -43,5 +43,20 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('resolveEditorResult', () => {
+  it('submits by default and when explicitly enabled', () => {
+    expect(resolveEditorResult('first\nlast')).toEqual({ kind: 'submit', text: 'first\nlast' })
+    expect(resolveEditorResult('first\nlast', true)).toEqual({ kind: 'submit', text: 'first\nlast' })
+  })
+
+  it('returns multiline editor text to the composer when explicitly disabled', () => {
+    expect(resolveEditorResult('first\nsecond\nlast', false)).toEqual({
+      input: 'last',
+      inputBuf: ['first', 'second'],
+      kind: 'compose'
+    })
   })
 })

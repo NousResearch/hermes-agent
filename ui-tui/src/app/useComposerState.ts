@@ -118,6 +118,25 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
+export type EditorResult =
+  | { input: string; inputBuf: string[]; kind: 'compose' }
+  | { kind: 'submit'; text: string }
+
+/** Resolve save-and-quit from the external editor using the shared TUI policy. */
+export function resolveEditorResult(text: string, editorAutoSubmit = true): EditorResult {
+  if (editorAutoSubmit) {
+    return { kind: 'submit', text }
+  }
+
+  const lines = text.split('\n')
+
+  return {
+    input: lines[lines.length - 1] ?? '',
+    inputBuf: lines.slice(0, -1),
+    kind: 'compose'
+  }
+}
+
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInputState] = useState('')
   const [inputBuf, setInputBufState] = useState<string[]>([])
@@ -546,13 +565,23 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return
       }
 
-      setInput('')
-      setInputBuf([])
-      submitRef.current(text)
+      const editorResult = resolveEditorResult(text, getUiState().editorAutoSubmit)
+
+      if (editorResult.kind === 'submit') {
+        setInput('')
+        setInputBuf([])
+        submitRef.current(editorResult.text)
+      } else {
+        // Returning to the composer must reconcile attachments whose labels
+        // were removed in the editor, just like ordinary text edits do.
+        syncTokens(text)
+        setInputBuf(editorResult.inputBuf)
+        setInput(editorResult.input)
+      }
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [enqueue, input, inputBuf, setInput, setInputBuf, submitRef])
+  }, [enqueue, input, inputBuf, setInput, setInputBuf, submitRef, syncTokens])
 
   const actions = useMemo(
     () => ({

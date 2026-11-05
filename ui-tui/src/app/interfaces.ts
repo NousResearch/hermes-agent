@@ -343,6 +343,9 @@ export interface UiState {
   // `compact`, which is the /compact layout-density flag.
   compacting: boolean
   destructiveSlashConfirm: boolean
+  // `display.editor_auto_submit` — save-and-quit from the external editor
+  // submits by default; explicit false returns the text to the composer.
+  editorAutoSubmit: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the

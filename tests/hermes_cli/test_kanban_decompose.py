@@ -302,7 +302,7 @@ def test_decompose_force_refuses_fanout_when_over_bound(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body():
+        with _patch_aux_client(llm_payload):
             outcome = decomp.decompose_task(tid, author="me", force=True)
     finally:
         for p in patches:
@@ -334,7 +334,7 @@ def test_decompose_force_single_appends_unseen_tail(kanban_home):
     for p in patches:
         p.start()
     try:
-        with _patch_aux_client(llm_payload), _patch_extra_body():
+        with _patch_aux_client(llm_payload):
             outcome = decomp.decompose_task(tid, author="me", force=True)
     finally:
         for p in patches:

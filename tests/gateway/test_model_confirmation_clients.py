@@ -100,7 +100,7 @@ async def test_cli_chat_view_asks_and_applies_a_guarded_model_once_with_the_toke
 
 
 @pytest.mark.asyncio
-async def test_acp_set_session_model_asks_through_request_permission(tmp_path, monkeypatch):
+async def test_acp_set_config_option_model_asks_through_request_permission(tmp_path, monkeypatch):
     from acp.schema import AllowedOutcome, DeniedOutcome
     from acp_adapter.gateway_server import GatewayACPAgent
     owner = _Owner(tmp_path, monkeypatch)
@@ -121,13 +121,13 @@ async def test_acp_set_session_model_asks_through_request_permission(tmp_path, m
         before = owner.state()
         agent._conn = Editor(DeniedOutcome(outcome='cancelled'))
         with pytest.raises(GatewayClientError, match='model_switch_cancelled'):
-            await agent.set_session_model(model_id='pricey', session_id=owner.sid)
+            await agent.set_config_option(config_id='model', session_id=owner.sid, value='pricey')
         assert owner.state() == before and [p.get('confirm') for p in owner.mutations] == [None]
         assert asked[0][0] == owner.sid and asked[0][1] == ['allow_once', 'deny']
 
         owner.mutations.clear()
         agent._conn = Editor(AllowedOutcome(outcome='selected', option_id='allow_once'))
-        await agent.set_session_model(model_id='pricey', session_id=owner.sid)
+        await agent.set_config_option(config_id='model', session_id=owner.sid, value='pricey')
         token = owner.mutations[1].get('confirm')
         assert token and [p.get('confirm') for p in owner.mutations] == [None, token]
         assert owner.state() == ('pricey', before[1] + 1, before[2] + 1)

@@ -26,6 +26,8 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        # The tier those overrides were pinned for (restored_request_overrides).
+        "service_tier": getattr(agent, "service_tier", None),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
@@ -66,6 +68,8 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        # The tier those overrides were pinned for (restored_request_overrides).
+        "service_tier": getattr(agent, "service_tier", None),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
@@ -82,3 +86,22 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
     return rt
+
+
+def restored_request_overrides(agent, rt):
+    """``request_overrides`` for restoring the snapshot ``rt``. The live tier wins over the snapshot's fast
+    params, re-derived for ``rt``'s route: otherwise ``/fast off`` re-enables a paid tier. An unchanged
+    non-static tier restores as is, so an explicit top-level value stays the caller's own."""
+    overrides = dict(rt.get("request_overrides") or {})
+    tier = getattr(agent, "service_tier", None)
+    from agent.fast_mode import STATIC_TIERS
+    if tier not in STATIC_TIERS and ("service_tier" not in rt or rt["service_tier"] == tier):
+        return overrides
+    from hermes_cli.models import resolve_fast_mode_overrides
+    fast = resolve_fast_mode_overrides(
+        rt.get("model"), provider=rt.get("provider"), base_url=rt.get("anthropic_base_url") or rt.get("base_url"), tier=tier,
+    ) if tier in STATIC_TIERS else None
+    # Only the values /fast pins are stale; any other service_tier word is the caller's own.
+    kept = {k: v for k, v in overrides.items()
+            if not ((k == "speed" and v == "fast") or (k == "service_tier" and v in STATIC_TIERS))}
+    return {**kept, **(fast or {})}

@@ -16,8 +16,10 @@ import pytest
 from persistence import PersistenceError
 from persistence.sqlite import _registry as holders
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import (
-    DeletedWalGenerationError, StateDbCorruptError, StateDbReplacedError,
+from persistence.sqlite._state.errors import (
+    DeletedWalGenerationError,
+    StateDbCorruptError,
+    StateDbReplacedError,
 )
 from persistence.sqlite.admin import SQLiteStoreAdmin
 from persistence.sqlite.admin._maintenance import _optimize_fts
@@ -194,7 +196,7 @@ class TestQuarantineScope:
             db.close()
 
     def test_classify_persistence_error_maps_quarantine_to_corrupt(self):
-        from hermes_state_errors import _STATE_DB_CORRUPT_MSG, classify_persistence_error
+        from persistence.sqlite._state.errors import _STATE_DB_CORRUPT_MSG, classify_persistence_error
 
         assert classify_persistence_error(StateDbCorruptError("x")) == "corrupt"
         # The stringified form (RPC boundaries) must classify the same way.

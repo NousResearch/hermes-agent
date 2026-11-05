@@ -11,8 +11,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state_repair as repair_module
-from hermes_state_repair import repair_state_db_schema
+from persistence.sqlite._state import repair as repair_module
+from persistence.sqlite._state.repair import repair_state_db_schema
 
 
 def _make_db(path):

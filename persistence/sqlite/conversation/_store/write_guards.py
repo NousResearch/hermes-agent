@@ -15,8 +15,8 @@ def _guarded_ids(holder: StoreHolder, conn, ids: Iterable[str]) -> set:
 def _write_guards_reject(holder: StoreHolder, conn, sid: str, **kwargs) -> bool:
     """True when a live turn lease / compression lock protects ``sid``; expired or
     dead-holder guards are reclaimed and fenced as a side effect."""
-    from hermes_state_errors import SessionCompressionInProgressError
-    from hermes_state_errors import SessionTurnLeaseLostError
+    from persistence.sqlite._state.errors import SessionCompressionInProgressError
+    from persistence.sqlite._state.errors import SessionTurnLeaseLostError
     try:
         _check_transcript_write_guards(holder,
             conn, sid, compression_lock_holder=None, turn_lease_holder=None,

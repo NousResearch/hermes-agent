@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import main
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope, store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
@@ -16,19 +18,14 @@ def store(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    # `hermes sessions` opens the ACTIVE home's store by explicit path (a served-profile process has
-    # no single default store); the hermetic conftest re-pins hermes_state's argless default to its
-    # own home, so point that default here too or the seeded rows land in a store the CLI never reads.
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
-    with SessionDB() as db:
+    with open_persistence(profile_scope()) as handle:
         for session_id in ("normal", "pinned", "archived"):
-            db.create_session(session_id, "cli")
-            db.append_message(session_id, "user", f"Keep {session_id}")
-            db.end_session(session_id, "done")
-        db.set_session_pinned("pinned", True)
-        db.set_session_archived("archived", True)
-        db._conn.execute("UPDATE sessions SET started_at=1")
-        db._conn.commit()
+            seed_session(handle, session_id, "cli")
+            seed_messages(handle, session_id, {"role": "user", "content": f"Keep {session_id}"})
+            handle.sessions.end(session_id, "done")
+        handle.sessions.set_pinned("pinned", True)
+        handle.sessions.set_archived("archived", True)
+        raw_holder(handle)._execute_write(lambda conn: conn.execute("UPDATE sessions SET started_at=1"))
     return home
 
 
@@ -41,8 +38,7 @@ def test_filtered_backup_covers_protected_sessions_before_retention_prune(store,
     backup = tmp_path / "backup.jsonl"
     _run(monkeypatch, "export", "--before", "2000-01-01", "--format", "jsonl", "--yes", str(backup))
     exported = {row["id"]: row for row in map(json.loads, backup.read_text(encoding="utf-8").splitlines())}
-    with SessionDB() as db:
-        assert Path(db.db_path).resolve().is_relative_to(tmp_path.resolve())
+    assert store_location(profile_scope()).resolve().is_relative_to(tmp_path.resolve())
     assert set(exported) == {"normal", "pinned", "archived"}
     assert all(row["messages"] for row in exported.values())
     assert exported["pinned"]["pinned"] == 1
@@ -50,8 +46,8 @@ def test_filtered_backup_covers_protected_sessions_before_retention_prune(store,
 
     # This fixture is the sole writer; bypass the unrelated host-wide holder inventory.
     _run(monkeypatch, "prune", "--before", "2000-01-01", "--include-archived", "--include-pinned", "--yes", "--force")
-    with SessionDB() as db:
-        assert all(db.get_session(session_id) is None for session_id in exported)
+    with open_persistence(profile_scope()) as handle:
+        assert all(handle.sessions.get(session_id) is None for session_id in exported)
 
 
 def test_explicit_missing_export_fails_without_creating_an_output(store, tmp_path, monkeypatch, capsys):

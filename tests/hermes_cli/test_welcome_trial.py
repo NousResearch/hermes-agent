@@ -77,12 +77,12 @@ def test_a_claimed_trial_carries_inference_outside_the_desktop_too(portal, monke
 
 
 def _chat(db_path, model: str) -> None:
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path)
-    db.create_session("s1", "desktop", model=model)
-    db.append_message("s1", "user", "hi")
-    db.close()
+    with open_persistence(profile_scope(home=db_path.parent)) as db:
+        seed_session(db, "s1", "desktop", model=model)
+        seed_messages(db, "s1", {"role": "user", "content": "hi"})
 
 
 def test_a_lost_claim_is_not_replaced(portal, monkeypatch):

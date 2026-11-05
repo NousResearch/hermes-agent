@@ -25,6 +25,8 @@ import httpx
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 def _jwt(label):
     def part(value):
@@ -54,8 +56,6 @@ def gateway(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from hermes_cli import auth, nous_account, nous_billing
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
     from tui_gateway import launch_profile_policy, server
 
     launch, b = tmp_path / "launch", tmp_path / "launch" / "profiles" / "b"
@@ -76,17 +76,14 @@ def gateway(tmp_path, monkeypatch):
     previous = secret_scope.is_multiplex_active()
     launch_profile_policy.activate_multi_profile_hosting()
 
-    by_home, dbs = {}, []
+    by_home = {}
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=True))
     runner.session_authorities = SimpleNamespace(for_home=lambda home: by_home.get(Path(home).resolve()))
     for home in (launch, b):
-        db = SessionDB(home / "state.db")
-        dbs.append(db)
-        store = SessionStore(config=GatewayConfig(), sessions_dir=home / "sessions")
-        store._db = db
-        runner.session_store = store
-        by_home[home.resolve()] = SessionAuthority(runner, profile_id=str(home), instance_id="first", db=db,
-                                                   epoch=begin_runtime_epoch(db, instance_id="first"))
+        db = storage_handle(home)
+        runner.session_store = SessionStore(config=GatewayConfig(), sessions_dir=home / "sessions")
+        by_home[home.resolve()] = SessionAuthority(runner, profile_id=str(home), instance_id="first",
+                                                   persistence=db, epoch=db.runtime.begin_epoch(instance_id="first"))
     runner.session_authority = by_home[launch.resolve()]
 
     portal_hits = []
@@ -116,8 +113,6 @@ def gateway(tmp_path, monkeypatch):
         yield SimpleNamespace(launch=launch, b=b, authority=runner.session_authority, portal_hits=portal_hits)
     finally:
         secret_scope.set_multiplex_active(previous)
-        for db in dbs:
-            db.close()
 
 
 class _Socket:

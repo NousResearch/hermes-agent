@@ -29,16 +29,16 @@ _HOLDER = (
 
 @pytest.fixture
 def state_db(monkeypatch, tmp_path):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     db_path = tmp_path / "state.db"
     # cmd_sessions opens the ACTIVE home's store by explicit path (a served-profile process has
-    # no single default store), so the home is the seam, not hermes_state's default resolver.
+    # no single default store), so the home is the seam.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    seed = SessionDB(db_path=db_path)
-    seed.create_session("seed", "cli")
-    seed.append_message("seed", "user", "hello")
-    seed.close()
+    with open_persistence(profile_scope(home=tmp_path)) as seed:
+        seed_session(seed, "seed", "cli")
+        seed_messages(seed, "seed", {"role": "user", "content": "hello"})
     return db_path
 
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -34,7 +34,10 @@ function fixture() {
 
 test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_execpath', (directory) => {
   const [node, installedCli] = npmCommand()
-  const root = mkdtempSync(join(tmpdir(), 'npm layout with spaces-'))
+  // npmCommand() realpaths every PATH entry it probes; on macOS tmpdir() is
+  // /var/folders, whose real path is /private/var/folders. Normalize the
+  // fixture root the same way or the string comparison below never matches.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'npm layout with spaces-')))
   roots.push(root)
   mkdirSync(join(root, 'bin'))
   mkdirSync(join(root, 'lib'))

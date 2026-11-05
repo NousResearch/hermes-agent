@@ -541,3 +541,71 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+# ── late device advertisement (W2) ────────────────────────────────────────────────────────────
+
+def _device_agent(*, enabled=("file_ops", "browser"), probe=None):
+    agent = types.SimpleNamespace(session_id="sess-late", enabled_toolsets=list(enabled) if enabled else enabled)
+    if probe is not None:
+        agent._device_toolsets_probe = probe
+    return agent
+
+
+def test_a_device_that_advertised_late_is_folded_in_at_the_turn_boundary(monkeypatch):
+    """A phone that attaches after the agent was built used to be invisible for the life of the
+    session (the toolset is decided at build time). The turn prologue re-reads the advertisement and
+    appends ``mobile_device`` for THIS turn — before ``tools=`` is assembled, never mid-turn."""
+    from agent import turn_context
+
+    calls = []
+    monkeypatch.setattr("tools.mcp_tool_agent.refresh_agent_mcp_tools",
+                        lambda agent, **kw: calls.append(kw) or {"device_request"})
+    agent = _device_agent(probe=lambda: ["mobile_device"])
+
+    turn_context._refresh_device_tools_between_turns(agent)
+
+    assert len(calls) == 1
+    assert calls[0]["enabled_override"] == ["browser", "file_ops", "mobile_device"]
+    assert calls[0]["preserve_prefix"] is True  # existing tools keep their slot: the prefix stays cached
+    assert agent.enabled_toolsets == ["browser", "file_ops", "mobile_device"]
+    # Idempotent: a second turn must not re-append or re-break the cache.
+    turn_context._refresh_device_tools_between_turns(agent)
+    assert len(calls) == 1
+
+
+def test_no_device_no_refresh(monkeypatch):
+    from agent import turn_context
+
+    calls = []
+    monkeypatch.setattr("tools.mcp_tool_agent.refresh_agent_mcp_tools",
+                        lambda agent, **kw: calls.append(kw) or set())
+    turn_context._refresh_device_tools_between_turns(_device_agent(probe=list))
+    assert calls == []
+
+
+def test_every_toolset_already_includes_the_device_surface(monkeypatch):
+    """``enabled_toolsets=None`` means "all", so there is nothing to widen — and nothing to break."""
+    from agent import turn_context
+
+    calls = []
+    monkeypatch.setattr("tools.mcp_tool_agent.refresh_agent_mcp_tools",
+                        lambda agent, **kw: calls.append(kw) or set())
+    turn_context._refresh_device_tools_between_turns(_device_agent(enabled=None, probe=lambda: ["mobile_device"]))
+    assert calls == []
+
+
+def test_a_failing_probe_or_refresh_never_breaks_the_turn(monkeypatch):
+    from agent import turn_context
+
+    def boom():
+        raise RuntimeError("gateway gone")
+
+    def broken_refresh(agent, **kw):
+        raise RuntimeError("registry gone")
+
+    turn_context._refresh_device_tools_between_turns(_device_agent(probe=boom))
+    monkeypatch.setattr("tools.mcp_tool_agent.refresh_agent_mcp_tools", broken_refresh)
+    agent = _device_agent(probe=lambda: ["mobile_device"])
+    turn_context._refresh_device_tools_between_turns(agent)
+    assert "mobile_device" not in agent.enabled_toolsets

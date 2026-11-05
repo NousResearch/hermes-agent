@@ -601,7 +601,8 @@ from tui_gateway import server_requests as _server_requests
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid),
-                            lambda sid: _session_answering_clients(sid))
+                            lambda sid: _session_answering_clients(sid),
+                            lambda sid, capability: _session_device_capable(sid, capability))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -973,6 +974,56 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     result = server_requests.send(method, sid, params, timeout=timeout)
     value = (result or {}).get("value", "")
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+_DEFAULT_DEVICE_REQUEST_TIMEOUT_S = 60.0
+
+
+def _device_request_timeout_seconds() -> float:
+    """``device.request_timeout_seconds``: how long one ``device.request`` may wait, clamped to
+    5..300. A capture the user has to physically take needs real time; an unattended one must not
+    park the turn."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        seconds = float(cfg_get(load_config(), "device", "request_timeout_seconds",
+                                default=_DEFAULT_DEVICE_REQUEST_TIMEOUT_S))
+    except Exception:
+        return _DEFAULT_DEVICE_REQUEST_TIMEOUT_S
+    return min(max(seconds, 5.0), 300.0)
+
+
+def _device_request(sid: str, capability: str, options: dict | None = None) -> dict:
+    """Ask the session's client for one device capability over ``device.request``.
+
+    The agent's side of the capability advertisement: a phone that advertised ``camera`` gets the
+    request and answers with the capture; a desktop window or the TUI never advertised one, so
+    ``server_requests`` refuses it before a frame is written and this returns ``success: False``
+    immediately instead of stalling the turn for the deadline.
+
+    Returns ``{"success", "value", "denied", "reason", "captures"}`` — ``denied`` is the user's own
+    refusal (distinct from "no client could do this"), ``value`` is the capability's JSON text and
+    ``captures`` the base64 bodies the tool materialises into the media cache. Nothing here decides
+    what reaches the model: that is the tool's job (``tools/device_tool.py``).
+    """
+    from tui_gateway import server_requests
+
+    params: dict = {"capability": capability}
+    if options:
+        params["options"] = dict(options)
+    result = server_requests.send("device.request", sid, params,
+                                  timeout=_device_request_timeout_seconds())
+    if not result:
+        return {"success": False, "value": "", "denied": False, "captures": [],
+                "reason": "no attached client advertised that device capability"}
+    if result.get("denied"):
+        return {"success": False, "value": "", "denied": True, "captures": [],
+                "reason": result.get("reason") or "the user declined the request"}
+    value = result.get("value") or ""
+    captures = result.get("captures") or []
+    return {"success": True,
+            "value": value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
+            "denied": False, "reason": None,
+            "captures": [dict(capture) for capture in captures if isinstance(capture, dict)]}
 
 
 
@@ -2022,7 +2073,8 @@ from . import (
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n, methods_machine as _methods_machine,
+    methods_i18n as _methods_i18n, methods_machine as _methods_machine,
+    methods_onboarding as _methods_onboarding, methods_device as _methods_device,
     methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
@@ -2036,6 +2088,6 @@ for _m in (
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_machine, _methods_shared_metrics, _methods_plugin_catalog):
+    _methods_i18n, _methods_machine, _methods_device, _methods_shared_metrics, _methods_plugin_catalog):
     _m.register(sys.modules[__name__])
 del _m

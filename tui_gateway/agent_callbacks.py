@@ -179,6 +179,10 @@ def _agent_cbs(sid: str) -> dict:
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload),
+        # device_request: ask the session's client for a phone capability it advertised
+        # (camera, location, …) over ``device.request``.
+        "device_callback": lambda payload: _device_request(
+            sid, str(payload.get("capability") or ""), payload.get("options")),
         # set_theme (desktop GUI): theme.apply with the tour probe ladder, or a theme.pick card.
         "theme_callback": lambda payload: theme_request(sid, payload),
         "setup_beat_callback": lambda payload: _setup_beat_request(sid, payload)}

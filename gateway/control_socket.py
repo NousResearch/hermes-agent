@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from gateway.control_dispatch import ControlRequestDispatcher
+
 logger = logging.getLogger(__name__)
 
 CONTROL_PROTOCOL_VERSION = 1
@@ -218,6 +220,7 @@ class GatewayControlServer:
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
+        self._request_dispatch: ControlRequestDispatcher | None = None
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
         self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
@@ -235,6 +238,8 @@ class GatewayControlServer:
             return False
 
     async def _start_posix(self) -> bool:
+        if self._request_dispatch is None:
+            self._request_dispatch = ControlRequestDispatcher()
         bind_path, pointer_file = resolve_server_socket_path(self._home)
         try:
             bind_path = await self._bind_posix(bind_path, pointer_file)
@@ -306,6 +311,9 @@ class GatewayControlServer:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(self._pipe_server.close)
         self._server = self._pipe_server = None
+        if self._request_dispatch is not None:
+            self._request_dispatch.close()
+            self._request_dispatch = None
         self.cleanup_files()
 
     def cleanup_files(self) -> None:
@@ -421,10 +429,11 @@ class GatewayControlServer:
             raw = await asyncio.wait_for(reader.readline(), timeout=_DEFAULT_CLIENT_TIMEOUT)
             if not raw or len(raw) > _MAX_REQUEST_BYTES:
                 return
-            # Handlers read disk; keep that off the loop that drives every platform
-            # adapter so a fast-polling consumer can't stall heartbeats.
-            response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
+            dispatcher = self._request_dispatch
+            if dispatcher is None:
+                return  # listener shutdown won the race with this connection's read
+            response = await dispatcher.dispatch(
+                self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
             await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError):

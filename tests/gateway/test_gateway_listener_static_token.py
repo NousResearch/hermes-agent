@@ -62,6 +62,10 @@ def gated_gateway(tmp_path_factory):
             served = {p['profile_id'] for p in descriptor['served_profiles']}
             assert {str(home.resolve()), str(beta.resolve())} <= served, descriptor
             with httpx.Client(base_url=descriptor['api_origin'], trust_env=False, timeout=30) as client:
+                # The gate is engaged: the session-token provider verified the bearer. An ungated
+                # listener also takes this token, as the legacy session token ('loopback').
+                me = client.get('/api/auth/me', headers={'Authorization': f'Bearer {TOKEN}'})
+                assert me.status_code == 200 and me.json()['provider'] == 'session-token', me.text
                 yield client
         finally:
             if process.poll() is None:

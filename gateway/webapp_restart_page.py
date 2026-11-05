@@ -34,17 +34,21 @@ _NO_STORE = "no-store, no-cache, must-revalidate"  # the Cache-Control value web
 # answers another page kind (the restart is over but the bundle is stale: show that page instead).
 # A redirect may also be the proxy's own (``/hermes/`` -> ``/hermes``) while Hermes is still down, so
 # the poll count survives the reload in sessionStorage: a page that comes back refused within 30 s
-# keeps backing off instead of restarting at one second. An older count (a later restart) is ignored.
+# keeps backing off instead of restarting at one second. An older or malformed count is ignored. Where
+# the count cannot be read back or saved (storage blocked), a redirect waits the longest delay first.
 # The root and kind come from ``<main>``'s data attributes, so the script and its hash are constant.
 _SCRIPT = (
-    "(function(){var c=document.querySelector('main').dataset,K='hermes-restart-page-tries',tries=0;"
-    "function store(f){try{f(window.sessionStorage);}catch(e){}}"
-    "store(function(s){var v=(s.getItem(K)||'').split(':');if(Date.now()-v[1]<30000)tries=+v[0]||0;});"
+    "(function(){var c=document.querySelector('main').dataset,K='hermes-restart-page-tries',tries=0,kept=false;"
+    "function store(f){try{f(window.sessionStorage);return true;}catch(e){return false;}}"
+    "var read=store(function(s){var v=(s.getItem(K)||'').split(':'),n=+v[0],age=Date.now()-v[1];"
+    "if(n>=0&&n<=14&&age>=0&&age<30000)tries=Math.floor(n);});"
     "function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
-    "function poll(){tries++;store(function(s){s.setItem(K,tries+':'+Date.now());});"
+    "function poll(){tries++;kept=read&&store(function(s){s.setItem(K,Math.min(tries,14)+':'+Date.now());});"
     "fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
     "headers:{accept:'text/html'}}).then(function(r){var k=r.headers.get('" + _KIND_HEADER.lower() + "');"
-    "if(r.ok||r.type==='opaqueredirect'||(k&&k!==c.kind)){location.reload();}else{later();}},later);}"
+    "if(r.ok||(k&&k!==c.kind)){location.reload();}"
+    "else if(r.type==='opaqueredirect'){setTimeout(function(){location.reload();},kept?0:15000);}"
+    "else{later();}},later);}"
     "later();})();"
 )
 _CSP = (

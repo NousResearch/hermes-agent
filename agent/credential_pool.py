@@ -1960,6 +1960,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
+            if entry is not None:
+                pending_refresh = [
+                    item for item in pending_refresh if item.id == entry.id
+                ]
+            else:
+                # When every candidate needs a proactive single-use-token
+                # refresh, refresh only the highest-priority candidate.  A
+                # selection must not spend or delete unselected fallbacks.
+                pending_refresh = pending_refresh[:1]
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:

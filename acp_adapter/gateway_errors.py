@@ -76,14 +76,12 @@ def recovery_text(reason, text):
         recovery = (text if text.startswith('unknown_execution:') else
                     'The turn outcome is unknown; do not resend accepted work. Inspect the session and '
                     'use /discard <admission-id> only after checking the lost turn; then continue.')
-    elif reason == 'queue_full':
-        recovery = ('The session queue is full; this input was not admitted. Inspect the pending queue '
-                    'and cancel unwanted queued inputs. If a lost turn blocks it, explicitly /discard '
-                    'that admission after checking its outcome; do not resend accepted work.')
-    elif reason == 'session_busy':
-        recovery = 'This control requires an idle session. Wait for the active turn to finish, or cancel it, then retry.'
-    elif reason == 'not_found':
-        recovery = 'Reload an existing session or explicitly create a new session.'
-    else:
-        recovery = text
-    return recovery
+        return recovery
+    return {
+        'queue_full': ('The session queue is full; this input was not admitted. Inspect the pending queue '
+                       'and cancel unwanted queued inputs. If a lost turn blocks it, explicitly /discard '
+                       'that admission after checking its outcome; do not resend accepted work.'),
+        'session_busy': ('This control requires an idle session. Wait for the active turn to finish, '
+                         'or cancel it, then retry.'),
+        'not_found': 'Reload an existing session or explicitly create a new session.',
+    }.get(reason, text)

@@ -107,3 +107,26 @@ async def test_cached_unknown_and_missing_session_refusals_keep_recovery():
         await agent.prompt([acp.text_block('new work')], 'missing')
     assert caught.value.code == -32002
     assert caught.value.data['reason'] == 'not_found'
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_is_not_reclassified_as_definite_owner_refusal():
+    agent = GatewayACPAgent()
+    agent._client = AsyncMock(side_effect=TimeoutError())
+    with pytest.raises(acp.RequestError) as caught:
+        await agent.new_session('.')
+    assert caught.value.data['reason'] == 'gateway_timeout'
+    assert not isinstance(caught.value, GatewayRPCError)
+    agent._client = AsyncMock(side_effect=RuntimeError('programming bug'))
+    with pytest.raises(RuntimeError, match='programming bug'):
+        await agent.new_session('.')
+
+
+def test_owner_data_remains_bounded_and_local_reason_comparisons_survive():
+    from acp_adapter.gateway_errors import request_error
+    error = request_error(GatewayRPCError('queue_full', -32000, {'limit': 32, 'nested': {'secret': 'no'}}), 's')
+    assert isinstance(error, GatewayRPCError)
+    assert str(error) == 'queue_full'
+    assert error.data['limit'] == 32 and 'nested' not in error.data
+    assert error.data['gatewayCode'] == -32000
+    assert error.to_error_obj()['code'] != -32000  # ACP reserves this for authentication required

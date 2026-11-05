@@ -5,6 +5,7 @@ import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 from tests.gateway.test_ticket_profile_scope import _Transport
+from persistence_assembly import close_stores_under
 
 
 @pytest.mark.asyncio
@@ -53,6 +54,6 @@ async def test_sibling_route_rebinds_after_the_profile_is_unserved_and_served_ag
             with owner_scope(connection.authority):
                 await connection.close()
         for authority in [*retired, *(getattr(runner, 'session_authorities', None) or [])]:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(Path(home))

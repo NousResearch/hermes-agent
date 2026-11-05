@@ -12,6 +12,7 @@ import pytest
 
 from gateway import run_runtime
 from gateway.config import Platform
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _runtime(tmp_path, monkeypatch, failing):
@@ -36,6 +37,8 @@ def _runtime(tmp_path, monkeypatch, failing):
                                            adopted={}, retiring=False, hosted_room_service=None,
                                            waiters={}, native_waiters=set(),
                                            db=SimpleNamespace(_read_all=lambda *_a: []),
+                                           persistence=SimpleNamespace(admissions=SimpleNamespace(
+                                               pending_targets=lambda **_kw: frozenset())),
                                            logical_owner=lambda sid: sid,
                                            recover_native_sessions=no_native_sessions), name=name)
     recovered, parked = [], {}
@@ -152,12 +155,15 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         for authority in all_authorities(runner):
             authority.db._read_ctx = unreadable if authority is beta else no_admissions
             authority.db._read_one = unreadable if authority is beta else (lambda *_a: None)
+            authority.persistence = storage_handle(authority.profile_id)
+        for read in ("_read_ctx", "_read_all"):  # the retained store's own reads fail the same way
+            monkeypatch.setattr(beta.persistence.holder(), read, unreadable)
         api_read = []
 
-        def collect(db):
-            if db is beta.db:
+        def collect(store):
+            if store is beta.persistence:
                 unreadable()
-            api_read.append(db)
+            api_read.append(store)
 
         monkeypatch.setattr("gateway.session_ingress_media.collect_unheld_api_images", collect)
         monkeypatch.setattr("gateway.session_api_media.compact_settled_api_payloads", lambda db: None)
@@ -168,7 +174,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
         except sqlite3.OperationalError as exc:
             pytest.fail(f"the retained store's read error stopped API adapter publication: {exc}")
         assert host.adapters[Platform.API_SERVER] is api_adapter
-        assert api_read == [a.db for a in all_authorities(runner) if a is not beta]
+        assert api_read == [a.persistence for a in all_authorities(runner) if a is not beta]
 
         # Auto-resume fails closed on the retained store: the entry is held back, never resumed.
         fresh_checks = []

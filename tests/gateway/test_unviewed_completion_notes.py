@@ -11,6 +11,10 @@ import pytest
 from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _PROCESS, _admissions, _deliver, _local, _notes
 from tools import async_delegation as delegation
+from gateway.session_authority import admission_row
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture(autouse=True)
@@ -21,9 +25,9 @@ def _no_delegations():
 
 
 def _human(authority, ref, request_id, text):
-    from hermes_state_runtime import admit_session_input
-    return admit_session_input(authority.db, epoch=authority.epoch, principal_id='test-owner',
-                               session_id=ref.session_id, request_id=request_id, payload={'text': text})
+    return admission_row(authority.persistence.admissions.admit(
+        epoch=authority.epoch, principal_id='test-owner', session_id=ref.session_id, request_id=request_id,
+        payload={'text': text})[0])
 
 
 def _turns(runner, authority, target, marker='RESULT_'):
@@ -38,7 +42,7 @@ def _turns(runner, authority, target, marker='RESULT_'):
 
 
 def _texts(authority, target, marker):
-    return [m for m in authority.db.get_messages(target) if marker in str(m.get('content'))]
+    return [m for m in transcript_rows(authority.persistence, target) if marker in str(m.get('content'))]
 
 
 def _target(runner, authority, ref):
@@ -75,7 +79,7 @@ async def test_busy_session_keeps_the_completion_durably_until_its_turn(tmp_path
                                        for name in (_PROCESS[1], evt['session_id']))
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['cancelled', 'completed']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -91,7 +95,7 @@ async def test_input_admitted_after_the_completion_sees_its_note(tmp_path, monke
         assert seen == [('AFTER', 1)]
         assert len(_notes(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -107,10 +111,10 @@ async def test_viewer_back_before_execution_gets_the_turn(tmp_path, monkeypatch)
         assert [text for text, _ in seen] == [f'[finished] RESULT_{_PROCESS[1]}']
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
         assert _notes(authority, target) == []
-        assert not [m for m in authority.db.get_messages(target)
+        assert not [m for m in transcript_rows(authority.persistence, target)
                     if (m.get('display_metadata') or {}).get('completion_admission')]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -120,16 +124,16 @@ async def test_note_keeps_the_cached_agent(tmp_path, monkeypatch):
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         target, route = _target(runner, authority, ref), authority.sessions[ref.session_id].route
-        agent, before = object(), authority.db.get_session(target)['message_count']
+        agent, before = object(), session_row(authority.persistence, target)['message_count']
         runner._agent_cache[route] = (agent, 'sig', before, target)
         await _deliver(runner, authority, ref, _PROCESS)
         await authority._drain(ref)
         assert len(_notes(authority, target)) == 1
-        after = authority.db.get_session(target)['message_count']
+        after = session_row(authority.persistence, target)['message_count']
         assert after == before + 1
         assert runner._agent_cache[route] == (agent, 'sig', after, target), 'the next turn would rebuild the agent'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -150,7 +154,7 @@ async def test_watch_notice_without_a_viewer_is_a_note(tmp_path, monkeypatch):
         assert [m['content'] for m in _notes(authority, target)] == ['[watch] RESULT_watch_match',
                                                                     '[watch] RESULT_watch_disabled']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 async def _restart(tmp_path, monkeypatch, old):
@@ -158,20 +162,21 @@ async def _restart(tmp_path, monkeypatch, old):
     from gateway.config import GatewayConfig
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import AsyncSessionDB, SessionDB
-    path = old.db.db_path
-    old.db.close()
+    from persistence_assembly import open_persistence, profile_scope
+    home = old.persistence.scope.profile_dir
+    close_stores_under(home)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    db = SessionDB(path)
-    runner.session_store._db = db
-    runner._session_db = AsyncSessionDB(db)
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='lc7-restarted', db=db)
+    persistence = open_persistence(profile_scope(home=home))
+    runner._session_db = persistence
+    monkeypatch.setattr(GatewayRunner, 'persistence', persistence)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='lc7-restarted',
+                                                   persistence=persistence)
     assert authority.epoch > old.epoch
     return runner, authority
 
 
 def _delegation_note(authority, target, name):
-    return [m for m in authority.db.get_messages(target) if name in str(m.get('content'))]
+    return [m for m in transcript_rows(authority.persistence, target) if name in str(m.get('content'))]
 
 
 @pytest.mark.asyncio
@@ -191,7 +196,7 @@ async def test_lost_ack_restart_and_regrouped_batch_note_each_result_once(tmp_pa
     monkeypatch.undo()
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr(delegation, '_CLAIM_LEASE_S', -1.0)  # the dead owner's claim is reclaimable
+    monkeypatch.setattr('persistence.sqlite.authority.coordination.DELEGATION_CLAIM_STALE_SECONDS', -1.0)  # the dead owner's claim is reclaimable
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
     from gateway.session_authority import SessionAuthority
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -203,7 +208,7 @@ async def test_lost_ack_restart_and_regrouped_batch_note_each_result_once(tmp_pa
         assert len(_delegation_note(authority, target, 'deleg_bravo')) == 1, 'a fresh sibling was dropped'
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed', 'completed']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -234,7 +239,7 @@ async def test_executed_turn_stays_a_turn_after_lost_ack_detach_and_restart(tmp_
     assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
     if producer == 'delegation':
         assert settled and settled[0][0] == 'complete', 'the acknowledgement was the step that got lost'
-        monkeypatch.setattr(delegation, '_CLAIM_LEASE_S', -1.0)  # the dead owner's claim is reclaimable
+        monkeypatch.setattr('persistence.sqlite.authority.coordination.DELEGATION_CLAIM_STALE_SECONDS', -1.0)  # the dead owner's claim is reclaimable
 
     authority.sessions[ref.session_id].subscribers.clear()  # the viewer leaves
     runner, authority = await _restart(tmp_path, monkeypatch, authority)
@@ -244,12 +249,12 @@ async def test_executed_turn_stays_a_turn_after_lost_ack_detach_and_restart(tmp_
         assert await offer(runner) is True, 'the retry resolves to the executed admission'
         await authority._drain(ref)
         assert seen == [], 'never a second turn'
-        assert not [m for m in authority.db.get_messages(target)
+        assert not [m for m in transcript_rows(authority.persistence, target)
                     if (m.get('display_metadata') or {}).get('completion_admission')], 'never also a note'
         assert _texts(authority, target, name) == []
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -266,7 +271,7 @@ async def test_queued_completion_survives_owner_restart_as_one_note(tmp_path, mo
         assert seen == [('FIRST', 0)]
         assert len(_notes(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 # Every last-viewer close a local client sends (``session.detach {end_reason}``): the classic CLI's exit,
@@ -281,12 +286,11 @@ async def test_completion_after_new_is_noted_on_the_closed_session(tmp_path, mon
     """The viewer closed the session (exit, /new): work finishing afterwards is a note on that original
     session, never dropped and never delivered into the session opened next."""
     from gateway.session_local import create_local_session
-    from hermes_state_local import end_idle_local_session
     runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
     try:
         target = _target(runner, authority, ref)
-        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                      target_id=target, reason=reason)
+        assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                       target_id=target, reason=reason)
         fresh = create_local_session(authority, actor, dict(request_id='lc7-next', source='cli', model='fixture',
                                                             toolsets=[]))
         route = authority.sessions[ref.session_id].route
@@ -300,24 +304,27 @@ async def test_completion_after_new_is_noted_on_the_closed_session(tmp_path, mon
             name = 'proc_after_new'
         await authority._drain(ref)
         assert len(_delegation_note(authority, target, name)) == 1
-        row = authority.db.get_session(target)
+        row = session_row(authority.persistence, target)
         assert row['ended_at'] and row['end_reason'] == reason, 'the note must not reopen the closed session'
         fresh_target = _target(runner, authority, fresh)
         assert not _delegation_note(authority, fresh_target, name)
         assert _admissions(authority, fresh) == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def _compress(runner, authority, ref, parent, child):
     """A real compression rotation of the local conversation's physical transcript, route included."""
-    db = authority.db
-    assert db.try_acquire_compression_lock(parent, 'lc7')
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    db = authority.persistence
+    assert db.coordination.try_acquire_compression_lock(session_id=parent, holder='lc7')
     try:
-        db.publish_compression_child(parent_session_id=parent, child_session_id=child, source='cli',
-                                     messages=[{'role': 'user', 'content': 'SUMMARY'}], compression_lock_holder='lc7')
+        db.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source='cli'),
+                                             [NewMessage.from_live({'role': 'user', 'content': 'SUMMARY'})],
+                                             compression_lock_holder='lc7')
     finally:
-        db.release_compression_lock(parent, 'lc7')
+        db.coordination.release_compression_lock(session_id=parent, holder='lc7')
     assert runner.session_store.advance_compression_session(authority.sessions[ref.session_id].route, parent, child)
 
 
@@ -328,14 +335,13 @@ async def test_compressed_then_closed_completion_is_noted_on_the_closed_tip(tmp_
     """Work started before compression stays pinned to the ancestor; the user then closed the compressed
     continuation (exit, /new). The result is a note on that closed tip, not the ancestor, not the replacement."""
     from gateway.session_local import create_local_session
-    from hermes_state_local import end_idle_local_session
     runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
     try:
         ancestor = _target(runner, authority, ref)
         _compress(runner, authority, ref, ancestor, 'lc7-tip')
         assert _target(runner, authority, ref) == 'lc7-tip'
-        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                      target_id='lc7-tip', reason=reason)
+        assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                       target_id='lc7-tip', reason=reason)
         fresh = create_local_session(authority, actor, dict(request_id='lc7-next', source='cli', model='fixture',
                                                             toolsets=[]))
         route, name = authority.sessions[ref.session_id].route, f'{producer}_compressed'
@@ -350,54 +356,53 @@ async def test_compressed_then_closed_completion_is_noted_on_the_closed_tip(tmp_
         assert seen == []
         assert len(_delegation_note(authority, 'lc7-tip', name)) == 1
         assert not _delegation_note(authority, ancestor, name)
-        row = authority.db.get_session('lc7-tip')
+        row = session_row(authority.persistence, 'lc7-tip')
         assert row['ended_at'] and row['end_reason'] == reason, 'the note must not reopen the closed tip'
         assert [r['outcome'] for r in _admissions(authority, ref)] == ['completed']
         assert not _delegation_note(authority, _target(runner, authority, fresh), name)
         assert _admissions(authority, fresh) == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_closed_tip_note_needs_the_route_to_name_it(tmp_path, monkeypatch):
     """Only the conversation's own continuation qualifies: a local route that names another session is
     never retargeted onto the closed lineage."""
-    from hermes_state_local import end_idle_local_session
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         ancestor = _target(runner, authority, ref)
         _compress(runner, authority, ref, ancestor, 'lc7-tip')
-        assert end_idle_local_session(authority.db, epoch=authority.epoch, session_id=ref.session_id,
-                                      target_id='lc7-tip', reason='new_session')
+        assert authority.persistence.bindings.end_idle(epoch=authority.epoch, session_id=ref.session_id,
+                                                       target_id='lc7-tip', reason='new_session')
         route = authority.sessions[ref.session_id].route
         assert await runner._classify_completion_owner(ancestor, route) == ('deliver', ancestor, 'lc7-tip')
-        authority.db.create_session('lc7-other', source='cli')
+        seed_session(authority.persistence, 'lc7-other', 'cli')
         runner.session_store._entries[route].session_id = 'lc7-other'
         assert (await runner._classify_completion_owner(ancestor, route))[0] != 'deliver'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_closed_tip_lookup_defers_only_a_failed_read():
     """A state read that fails leaves the completion to the compression path, which defers it; any
     other error is a bug and surfaces instead of being logged at debug."""
-    import sqlite3
     from types import SimpleNamespace
     from typing import Any
     from gateway.config import Platform
     from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
-    from hermes_state_errors import StateDbReplacedError
+    from persistence import StoreContention, StoreReplaced
     entry: Any = SimpleNamespace(platform=Platform.LOCAL, session_id='lc7-tip')
+    pinned = SimpleNamespace(end_reason='compression', ended_at=None)
 
     def db(error):
         async def tip(_session_id):
             raise error
-        return SimpleNamespace(get_compression_tip=tip)
+        return SimpleNamespace(lineage=SimpleNamespace(tip=tip))
 
     lookup = GatewayNotificationOwnershipMixin()._closed_local_target
-    for error in (sqlite3.OperationalError('database is locked'), StateDbReplacedError('replaced')):
-        assert await lookup(db(error), entry, 'lc7-root', {'end_reason': 'compression'}) == ''
+    for error in (StoreContention('database is locked'), StoreReplaced('replaced')):
+        assert await lookup(db(error), entry, 'lc7-root', pinned) == ''
     with pytest.raises(AttributeError):
-        await lookup(db(AttributeError('bug')), entry, 'lc7-root', {'end_reason': 'compression'})
+        await lookup(db(AttributeError('bug')), entry, 'lc7-root', pinned)

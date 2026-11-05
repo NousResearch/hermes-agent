@@ -42,7 +42,8 @@ cached entry's snapshot session_id..." / ``_stale_dead_sid_reuse``).
 
 import threading
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _make_runner_with_db(tmp_path):
@@ -57,7 +58,7 @@ def _make_runner_with_db(tmp_path):
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
 
-    db = SessionDB(db_path=tmp_path / "sessions.db")
+    db = storage_handle(tmp_path)
 
     class _FakeSessionStore:
         """Just enough of SessionStore for the new guard's DB check."""
@@ -68,8 +69,8 @@ def _make_runner_with_db(tmp_path):
         def _is_session_ended_in_db(self, session_id):
             if not self._db or not session_id:
                 return False
-            row = self._db.get_session(session_id)
-            return bool(row is not None and row.get("end_reason") is not None)
+            row = self._db.sessions.get(session_id)
+            return bool(row is not None and row.end_reason is not None)
 
     runner.session_store = _FakeSessionStore(db)
     return runner, db
@@ -137,8 +138,7 @@ class TestStaleSelfHealAgentCacheEviction:
         session_id.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("dead_sid", source="telegram")
-        db.end_session("dead_sid", "user_requested")  # #54878 self-heal target
+        seed_session(db, "dead_sid", "telegram", end_reason="user_requested")  # #54878 self-heal target
 
         agent = object()
         with runner._agent_cache_lock:
@@ -163,8 +163,8 @@ class TestStaleSelfHealAgentCacheEviction:
         fire when the cached session_id is not actually ended.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("sA", source="telegram")
-        db.create_session("sB", source="telegram")
+        seed_session(db, "sA", "telegram")
+        seed_session(db, "sB", "telegram")
         # sA is NOT ended — a genuine live sibling conversation.
 
         agent = object()
@@ -184,7 +184,7 @@ class TestStaleSelfHealAgentCacheEviction:
         unaffected by the new dead-session check.
         """
         runner, db = _make_runner_with_db(tmp_path)
-        db.create_session("s1", source="telegram")
+        seed_session(db, "s1", "telegram")
 
         agent = object()
         with runner._agent_cache_lock:

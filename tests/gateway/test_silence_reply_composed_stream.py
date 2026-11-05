@@ -16,6 +16,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from tests.agent import test_empty_response_recovery_persistence as recovery
+from tests.fixtures.storage_read import conversation
 from tests.gateway.test_gateway_silence_tokens import _runner
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter
 
@@ -133,6 +134,6 @@ async def test_streamed_reply_then_marker_shows_the_reply_once(monkeypatch, tmp_
     assert not script, "the real agent must consume the whole streamed provider script"
     shown = adapter.visible() + ([reply] if reply else [])
     assert shown == [expected], (adapter.sent, adapter.edits, adapter.deleted, reply)
-    history = real_loop.db.get_messages_as_conversation(real_loop.sid)
+    history = conversation(real_loop.db, real_loop.sid)
     assert history[-1]["content"] == expected
     assert not any(WARNING in text or "NO_REPLY" in text for text in shown)

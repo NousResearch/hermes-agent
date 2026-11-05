@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 class _Transport:
@@ -33,8 +35,8 @@ async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, 
         store = runner.session_ticket_store
         alpha_id, beta_id = (str(home.resolve()) for _, home in homes[1:])
         beta = authority_for_profile_id(runner, beta_id)
-        beta.db.create_session('beta-private', source='api_server')
-        beta.db.append_message('beta-private', 'user', 'PRIVATE_BETA_MARKER')
+        seed_session(beta.persistence, 'beta-private', 'api_server')
+        seed_messages(beta.persistence, 'beta-private', {'role': 'user', 'content': 'PRIVATE_BETA_MARKER'})
         beta.sessions['beta-private'] = LiveSession(
             SessionSource(platform=Platform.LOCAL, chat_id='local-x', user_id='uid:other'), 'route')
 
@@ -80,6 +82,6 @@ async def test_profile_bound_ticket_never_reaches_a_sibling_authority(tmp_path, 
             with owner_scope(connection.authority):
                 await connection.close()
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(Path(home))

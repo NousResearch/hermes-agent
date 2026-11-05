@@ -78,7 +78,9 @@ const {
   $backendUpdateApply,
   $updateOverlayOpen,
   $updateOverlayTarget,
+  $updateApply,
   applyBackendUpdate,
+  applyUpdates,
   joinRunningBackendUpdate,
   startUpdatePoller,
   stopUpdatePoller
@@ -208,12 +210,10 @@ describe('joinRunningBackendUpdate', () => {
   // Its process died: the backend reads the run interrupted, and the follow fails now, not at the deadline.
   it('fails a followed run the backend reports interrupted', async () => {
     const joined = 'b'.repeat(32)
-    getActionStatusSpy
-      .mockResolvedValueOnce(receiptRunning(joined))
-      .mockResolvedValue({
-        ...receiptRunning(joined),
-        receipt: { ...receiptRunning(joined).receipt, outcome: 'interrupted' }
-      })
+    getActionStatusSpy.mockResolvedValueOnce(receiptRunning(joined)).mockResolvedValue({
+      ...receiptRunning(joined),
+      receipt: { ...receiptRunning(joined).receipt, outcome: 'interrupted' }
+    })
     await joinRunningBackendUpdate()
 
     await vi.advanceTimersByTimeAsync(1500)
@@ -232,6 +232,82 @@ describe('joinRunningBackendUpdate', () => {
 
     expect($updateOverlayOpen.get()).toBe(false)
     expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  // The dashboard's live process may be another action than the receipt it falls back to: its exit code
+  // never decides the joined run either.
+  it.each([0, 1])('a receipt join beside another live process ignores that process exiting %s', async code => {
+    const joined = '9'.repeat(32)
+    getActionStatusSpy
+      .mockResolvedValueOnce({ ...receiptRunning(joined), running: true, pid: 7 })
+      .mockResolvedValueOnce({ ...receiptRunning(joined), exit_code: code })
+    await joinRunningBackendUpdate()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().applying).toBe(true)
+
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: null,
+      lines: [`=== hermes-update completed ${joined} ===`],
+      name: 'hermes-update',
+      pid: null,
+      running: false
+    })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
+  it('drops an answer for an update a press started and finished while the join asked', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    getActionStatusSpy.mockReturnValueOnce(new Promise(resolve => (answer = resolve)))
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 3 })
+    getActionStatusSpy.mockResolvedValue({ exit_code: 0, lines: [], name: 'hermes-update', pid: 3, running: false })
+
+    const joining = joinRunningBackendUpdate()
+    const pressed = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    await pressed
+    answer({ exit_code: null, lines: [], name: 'hermes-update', pid: 3, running: true })
+    await joining
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('drops an answer that arrives after the scope moved away and back', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    getActionStatusSpy.mockReturnValue(new Promise(resolve => (answer = resolve)))
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: {
+        updates: { check: vi.fn().mockResolvedValue({ supported: true, behind: 0, fetchedAt: 0 }), onProgress: vi.fn() }
+      },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    }
+    startUpdatePoller()
+
+    const joining = joinRunningBackendUpdate()
+    setApiRequestProfile('work')
+    setApiRequestProfile(null)
+    answer({ exit_code: null, lines: [], name: 'hermes-update', pid: 4, running: true })
+    await joining
+    stopUpdatePoller()
+    delete (globalThis as unknown as { window?: unknown }).window
+
+    expect($updateOverlayOpen.get()).toBe(false)
+  })
+
+  it('a client update that finishes leaves a hidden backend update running', async () => {
+    const live = { ...idle, applying: true, stage: 'restart' as const }
+    $backendUpdateApply.set(live)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: vi.fn().mockResolvedValue({ ok: true, backendUpdated: true }) } }
+    }
+    await applyUpdates()
+    delete (globalThis as unknown as { window?: unknown }).window
+
+    expect($updateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get()).toEqual(live)
   })
 
   it('drops an answer that arrives after the update poller stopped', async () => {

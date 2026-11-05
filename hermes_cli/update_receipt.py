@@ -341,7 +341,7 @@ def reconcile_interrupted_runs() -> list[dict[str, Any]]:
         for path in sorted(directory.glob("update_*.json"), key=lambda p: p.stat().st_mtime)[-_RECEIPT_KEEP:]:
             with suppress(Exception):
                 record = json.loads(path.read_text(encoding="utf-8-sig"))
-                if not isinstance(record, dict) or record.get("outcome") != "running" or _owner_alive(record):
+                if not isinstance(record, dict) or record.get("outcome") != "running" or effective_outcome(record) != "interrupted":
                     continue
                 stages = record.get("stages") or []
                 last = stages[-1].get("name") if stages and isinstance(stages[-1], dict) else None

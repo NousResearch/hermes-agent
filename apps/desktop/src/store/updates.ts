@@ -810,7 +810,8 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         // the overlay and let the user know the new version loads next launch
         // rather than stranding them on an un-closeable spinner.
         setUpdateOverlayOpen(false)
-        resetUpdateApplyState()
+        // The client's own state: a hidden backend update keeps running under it.
+        resetUpdateApplyState('client')
 
         if (result.updateAvailable === false) {
           return result
@@ -1010,7 +1011,8 @@ function legacyBackendReachedTarget(
 }
 
 let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
-// Bumped by stopUpdatePoller: a join still asking when the poller stopped never opens.
+// Bumped when the poller stops, the request scope moves, or an apply takes over: a join still
+// asking across any of those never opens (A→B→A included, and a press that finished meanwhile).
 let joinGeneration = 0
 
 /** One running `hermes-update` action a window joined after it started (a reload, a second tab). */
@@ -1018,8 +1020,8 @@ interface JoinedBackendUpdate {
   name: string
   action_id?: string
   startedAtMs: number
-  /** Joined from the update's receipt alone: the status's exit code then belongs to whatever action
-   *  this dashboard last spawned, not necessarily the joined one. */
+  /** Joined from the update's receipt: the status's process and exit code are whatever action this
+   *  dashboard last spawned, which the receipt does not name, so only that run's own evidence counts. */
   receiptOnly?: boolean
 }
 
@@ -1189,6 +1191,7 @@ export function applyBackendUpdate(joined?: JoinedBackendUpdate): Promise<Deskto
     return backendUpdateInFlight
   }
 
+  joinGeneration++
   // A joined update is already running: follow it instead of starting another.
   const start = joined ? async () => ({ ok: true, ...joined }) : startBackendUpdate
   backendUpdateInFlight = runBackendUpdate(start).finally(() => {
@@ -1219,7 +1222,7 @@ function runningBackendUpdate(status: Awaited<ReturnType<typeof getActionStatus>
       name: status.name,
       action_id: receipt.action_id,
       startedAtMs: receiptStartedMs,
-      receiptOnly: !status.running
+      receiptOnly: true
     }
   }
 
@@ -1524,6 +1527,7 @@ export function startUpdatePoller(): void {
     }
 
     lastVersionScopeKey = key
+    joinGeneration++
     void refreshDesktopVersion()
   }
 

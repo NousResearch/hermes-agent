@@ -3969,6 +3969,7 @@ export interface RollbackListParams {
   session_id: string
   profile?: string | null
   undo_since?: number | null
+  undo_message_id?: number | null
 }
 export interface RollbackListResult {
   enabled: boolean

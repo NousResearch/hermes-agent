@@ -115,7 +115,7 @@ async def _undo(view, rest):
     view.prefill = text
     with contextlib.suppress(Exception):  # advisory: an older owner refuses ``undo_since``, as main prints nothing
         listed = await view.client.rpc("rollback.list", session_id=view.session_id,
-                                       undo_since=target.get("timestamp"))
+                                       undo_since=target.get("timestamp"), undo_message_id=target.get("id"))
         if hint := (listed.get("undo_hint") or {}).get("text"):
             print(hint)
 

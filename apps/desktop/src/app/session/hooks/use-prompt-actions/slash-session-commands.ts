@@ -166,7 +166,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     out: SlashOutput,
     turnsBack: number,
     intent: 'retry' | 'undo'
-  ): Promise<undefined | { count: number; content: unknown; timestamp?: unknown }> {
+  ): Promise<undefined | { count: number; content: unknown; id?: unknown; timestamp?: unknown }> {
     const { render, sessionId, storedSessionId } = out
     const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
 
@@ -207,7 +207,9 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       )
     }
 
-    return { count, content: receipt?.target_message?.content, timestamp: receipt?.target_message?.timestamp }
+    const target = receipt?.target_message
+
+    return { count, content: target?.content, id: target?.id, timestamp: target?.timestamp }
   }
 
   // Derive the Nth newest user turn from the owner's snapshot and rewind it. Resolves undefined after
@@ -253,14 +255,16 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
   }
 
   // Main's /undo never touches files: the owner names the /rollback that restores what the undone turns changed.
-  async function undoRollbackHint(out: SlashOutput, since: unknown): Promise<string> {
-    if (typeof since !== 'number') {
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  async function undoRollbackHint(out: SlashOutput, target: { id?: unknown; timestamp?: unknown }): Promise<string> {
+    if (typeof target.timestamp !== 'number') {
       return ''
     }
 
     const listed = await requestGateway<{ undo_hint?: { text?: string } | null }>('rollback.list', {
       session_id: out.sessionId,
-      undo_since: since
+      undo_since: target.timestamp,
+      ...(typeof target.id === 'number' ? { undo_message_id: target.id } : {})
     }).catch(() => undefined) // advisory: an older owner refuses `undo_since`, and main printed nothing
 
     return listed?.undo_hint?.text ?? ''
@@ -313,7 +317,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
         }
 
         const undid = rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count))
-        const hint = await undoRollbackHint(out, rewound.timestamp)
+        const hint = await undoRollbackHint(out, rewound)
         out.render(hint ? `${undid}\n${hint}` : undid)
       } catch (err) {
         out.render(rewindErrorText(err, 'undo'))

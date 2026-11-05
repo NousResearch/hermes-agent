@@ -170,7 +170,7 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
 
-        return showUndoRollbackHint(ctx, sid, (result.target_message as undefined | { timestamp?: unknown })?.timestamp)
+        return showUndoRollbackHint(ctx, sid, result.target_message as undefined | { id?: unknown; timestamp?: unknown })
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -192,13 +192,16 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
 }
 
 /** `/undo`'s pointer at the `/rollback` that restores the undone turns' files; silent when the owner has none. */
-function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, since: unknown) {
-  if (typeof since !== 'number') {
+function showUndoRollbackHint(ctx: SlashRunCtx, sid: string, target?: { id?: unknown; timestamp?: unknown }) {
+  if (typeof target?.timestamp !== 'number') {
     return
   }
 
+  // The rewound row's id pins the span to the rewind's own boundary: a turn started since cannot move it.
+  const undoMessageId = typeof target.id === 'number' ? { undo_message_id: target.id } : {}
+
   void ctx.gateway
-    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: since })
+    .rpc<RollbackListResponse>('rollback.list', { session_id: sid, undo_since: target.timestamp, ...undoMessageId })
     .then(r => {
       if (r?.undo_hint?.text && !ctx.stale()) {
         ctx.transcript.sys(r.undo_hint.text)

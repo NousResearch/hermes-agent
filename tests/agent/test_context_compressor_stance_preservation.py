@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION
 
 
 def _response(content: str) -> SimpleNamespace:
@@ -70,9 +71,11 @@ def _captured_prompt(compressor: ContextCompressor) -> str:
 
 
 @pytest.mark.parametrize("previous_summary", [None, "## Goal\nEarlier summary."], ids=["first", "iterative"])
-def test_summary_prompt_asks_for_labelled_uncertain_claims(compressor, previous_summary):
+def test_summary_prompt_carries_stance_rule_and_section(compressor, previous_summary):
+    # Wiring, not wording: the rule sits in the preamble (ahead of the turns) and the section in the
+    # output template (after them), on both prompt forms.
     compressor._previous_summary = previous_summary
     prompt = _captured_prompt(compressor)
-    assert "Never restate an uncertain claim" in prompt
-    assert "\n## Unverified / Working Hypotheses\n" in prompt
-    assert "UNVERIFIED: <claim>" in prompt
+    turns_at = prompt.index(_user_turns()[0]["content"])
+    assert 0 <= prompt.find(EPISTEMIC_STANCE_RULE) < turns_at
+    assert prompt.find(UNVERIFIED_HYPOTHESES_SECTION) > turns_at

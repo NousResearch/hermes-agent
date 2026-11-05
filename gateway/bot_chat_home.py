@@ -80,7 +80,7 @@ async def _admit_note(authority, text: str) -> bool:
     from gateway.session_cron import _admit_local_delivery
     from hermes_state_runtime import RuntimeStoreError
     actor = SessionActor(host_owner_subject(), authority.profile_id,
-                         frozenset({"session:create", "session:submit"}), "gateway-home-notice")
+                         frozenset({"session:create", "session:read", "session:submit"}), "gateway-home-notice")
     try:
         ref, live, _entry = await _target(authority, actor)
         if live.source.platform != Platform.LOCAL:

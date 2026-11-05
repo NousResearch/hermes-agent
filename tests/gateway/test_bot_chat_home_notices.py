@@ -110,6 +110,19 @@ async def test_the_planned_restart_notice_is_a_note_in_each_profiles_bot_chat(ga
 
 
 @pytest.mark.asyncio
+async def test_a_notice_reaches_a_bot_chat_that_already_exists(gateway):
+    from gateway.bot_chat_home import post_note
+
+    assert await post_note(gateway.root, "First notice")
+    assert await post_note(gateway.root, "Second notice")
+
+    authority = gateway.authorities["default"]
+    await async_wait_until(lambda: "Second notice" in _bot_chat_text(authority), timeout=30,
+                           what="the second notice in the existing Bot Chat")
+    assert "First notice" in _bot_chat_text(authority)
+
+
+@pytest.mark.asyncio
 async def test_the_shutdown_ping_skips_the_replaced_home_channels(gateway):
     from gateway.run_shutdown_home import broadcast_home_shutdown_notice
 

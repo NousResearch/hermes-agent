@@ -4,21 +4,19 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state_runtime import list_session_admissions
+from gateway.session_authority import SessionAuthority, admission_row, initialize_session_authority
 
 
 async def _discord_session(tmp_path, monkeypatch):
     from gateway.session_ingress_context import native_callback, register_transport_home
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)  # nothing claims: all stay queued
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    db = SessionDB(tmp_path / 'state.db')
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='fold', db=db)
+    db = open_persistence(profile_scope(home=tmp_path))
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='fold', persistence=db)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
     runner._wire_adapter_handlers(adapter)
@@ -48,9 +46,9 @@ async def _discord_session(tmp_path, monkeypatch):
     complete.tick = tick
 
     def queued():
-        return [row for row in list_session_admissions(authority.db, session_id=owner) if row['status'] == 'queued']
+        return [row for row in authority.persistence.admissions.list(session_id=owner) if row.status == 'queued']
     def history():
-        return list_session_admissions(authority.db, session_id=owner, pending_only=False)
+        return authority.persistence.admissions.list(session_id=owner, pending_only=False)
     complete.history = history
     return authority, human, complete, queued
 
@@ -64,21 +62,21 @@ async def test_completions_queued_behind_a_turn_fold_into_one_turn(tmp_path, mon
         await complete('proc_b')
         await complete('proc_c')
         rows = queued()
-        assert [row['principal_id'].split(':')[0] for row in rows] == ['messaging', 'automation']
-        text = rows[-1]['payload']['text']
+        assert [row.principal_id.split(':')[0] for row in rows] == ['messaging', 'automation']
+        text = rows[-1].payload['text']
         assert text.startswith('[IMPORTANT: 3 background process results arrived')
         assert text.count('background process results arrived') == 1  # re-folding replaces the header
         assert all(f'{name} finished' in text for name in ('proc_a', 'proc_b', 'proc_c'))
         assert text.count('INTERNAL NOTIFICATION') == 1
-        assert len(rows[-1]['payload']['native_text_v1']['automation']['identities']) == 3
+        assert len(rows[-1].payload['native_text_v1']['automation']['identities']) == 3
         # Each replaced row keeps only its own identity (the batch carries text and identities):
         # storage grows with N, not N^2.
-        folded = [row for row in complete.history() if row['outcome'] == 'cancelled'
-                  and row['request_id'].startswith('["completion"')]
-        assert [row['payload']['text'] for row in folded] == ['[folded into a later completion batch]'] * 2
-        assert not [row for row in folded if 'identities' in row['payload']['native_text_v1']['automation']]
+        folded = [row for row in complete.history() if row.outcome == 'cancelled'
+                  and row.request_id.startswith('["completion"')]
+        assert [row.payload['text'] for row in folded] == ['[folded into a later completion batch]'] * 2
+        assert not [row for row in folded if 'identities' in row.payload['native_text_v1']['automation']]
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 @pytest.mark.asyncio
@@ -91,11 +89,11 @@ async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, mo
         await complete('proc_a')
         if stale_read:
             tail = queued()[-1]
-            monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: {**tail, '_skip': []})
+            monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: {**admission_row(tail), '_skip': []})
         await human('queued follow-up')
         await complete('proc_b')
         rows = queued()
-        assert [row['payload']['text'].split('\n')[0] for row in rows] == [
+        assert [row.payload['text'].split('\n')[0] for row in rows] == [
             'running turn', '[IMPORTANT: proc_a finished]', 'queued follow-up', '[IMPORTANT: proc_b finished]']
     finally:
-        authority.db.close()
+        authority.persistence.close()

@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.gateway import test_session_bot_retry as retry_suite
 from tests.gateway.test_session_bot_retry import KEY, _admissions, _settle_quietly
 
@@ -29,7 +29,7 @@ async def test_cancel_after_a_transient_failure_withdraws_the_retry_for_good(bot
     async def full_for_the_retry(adapter, event, identity):
         if identity.endswith(':retry') and full[0]:
             blocked.append(identity)  # the retry is owed but not admitted yet: the cancel's window
-            raise RuntimeStoreError('queue_full')
+            raise AuthorityRefusal('queue_full')
         return await admit(adapter, event, identity)
 
     monkeypatch.setattr(bot.authority, 'admit_automation', full_for_the_retry)
@@ -47,7 +47,7 @@ async def test_cancel_after_a_transient_failure_withdraws_the_retry_for_good(bot
     await recover_bot_deliveries(bot.authority)
     await _settle_quietly(bot)
 
-    assert isinstance(stranger[0], RuntimeStoreError) and stranger[0].reason == 'permission_denied'
+    assert isinstance(stranger[0], AuthorityRefusal) and stranger[0].reason == 'permission_denied'
     assert answer == {'delivery_id': KEY, 'status': 'cancelled', 'receipt_status': 'cancelled'}
     assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]  # the retry never ran
     assert (await asyncio.to_thread(read_delivery_result, bot.home, KEY))['status'] == 'cancelled'

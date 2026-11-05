@@ -278,6 +278,17 @@ class ProviderProfile:
     # *model*; ``()`` = no reasoning control, None = the generic ladder gated by models.dev.
     setup_reasoning_efforts: Callable[[str], Any] | None = None
 
+    # ── Balance / quota probe (optional) ─────────────────────
+    # ``balance_probe(api_key) -> dict``: one bounded GET against this provider's
+    # DOCUMENTED balance endpoint (never a guessed URL — a path that answers 404/HTML
+    # would read as a working balance of zero). Returns any subset of
+    # ``{"primary": {"amount", "unit", "label"}, "breakdown": {...}, "quota": {...},
+    # "extra": {...}}``; raises on any failure and the caller renders ``status="error"``
+    # from the exception's first line. Implementations must honor their own timeout
+    # and must never echo the key into the result, a log line or an exception message.
+    # ``None`` (default) = this provider reports ``unsupported`` rather than a guess.
+    balance_probe: Callable[[str], Any] | None = None
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def fetch_account_usage(

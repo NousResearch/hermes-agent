@@ -20,6 +20,7 @@ import type {
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { cloudOwnsUpdates } from '@/store/cloud-updates'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -71,6 +72,10 @@ export const $updateOverlayTarget = atom<UpdateTarget>('client')
 export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(open)
 
 export const openUpdateOverlayFor = (target: UpdateTarget): void => {
+  if (cloudOwnsUpdates(target)) {
+    return
+  }
+
   $updateOverlayTarget.set(target)
   $updateOverlayOpen.set(true)
   void (target === 'backend' ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
@@ -207,13 +212,16 @@ export function reportBackendContract(contract: number | undefined, protocol?: s
     }
 
     notify({
-      action: {
-        label: translateNow('notifications.updateHermes'),
-        onClick: () => {
-          snoozeSkewToast()
-          void applyBackendUpdate()
-        }
-      },
+      // Hermes Cloud updates its agents itself: name the skew, offer no update.
+      action: cloudOwnsUpdates('backend')
+        ? undefined
+        : {
+            label: translateNow('notifications.updateHermes'),
+            onClick: () => {
+              snoozeSkewToast()
+              void applyBackendUpdate()
+            }
+          },
       durationMs: 0,
       id: SKEW_TOAST_ID,
       kind: 'warning',
@@ -282,7 +290,7 @@ export function reportInstallMethodWarning(message: string | undefined): void {
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
   // Either signal means "update ready": behind > 0 (git checkout) or
   // updateAvailable (shallow clone, App Installer feed).
-  if (!status || status.supported === false || status.error) {
+  if (!status || status.supported === false || status.error || cloudOwnsUpdates(target)) {
     return
   }
 
@@ -412,6 +420,10 @@ export function openUpdatesWindow(target: UpdateTarget = activeUpdateTarget()): 
  * machine's status and must not fan out to the others.
  */
 export function startActiveUpdate(target?: UpdateTarget): void {
+  if (cloudOwnsUpdates(target ?? activeUpdateTarget())) {
+    return
+  }
+
   if (!target && hasMultipleUpdateTargets()) {
     $updateOverlayOpen.set(true)
     void applyEverythingUpdate()
@@ -434,6 +446,10 @@ export function startActiveUpdate(target?: UpdateTarget): void {
  * triggers the everything-flow.
  */
 export function requestActiveUpdate(): void {
+  if (cloudOwnsUpdates(activeUpdateTarget())) {
+    return
+  }
+
   if (hasMultipleUpdateTargets()) {
     const clientStatus = $updateStatus.get()
     const backendStatus = $backendUpdateStatus.get()
@@ -562,7 +578,7 @@ let backendCheckPendingKey: string | undefined
 export async function checkBackendUpdates({
   force = false
 }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode()) {
+  if (!isRemoteMode() || cloudOwnsUpdates('backend')) {
     return $backendUpdateStatus.get()
   }
 
@@ -620,7 +636,7 @@ export async function checkBackendUpdates({
 export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): Promise<DesktopUpdateStatus | null> {
   const bridge = window.hermesDesktop?.updates
 
-  if (!bridge || $updateChecking.get()) {
+  if (!bridge || $updateChecking.get() || cloudOwnsUpdates('client')) {
     return $updateStatus.get()
   }
 
@@ -721,7 +737,13 @@ export async function setUpdateChannel(channel: SourceUpdateChannel): Promise<De
   }
 }
 
+const CLOUD_OWNED: DesktopUpdateApplyResult = { ok: false, error: 'cloud-managed' }
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
+  if (cloudOwnsUpdates('client')) {
+    return CLOUD_OWNED
+  }
+
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')
 
@@ -1128,6 +1150,10 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 }
 
 export function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
+  if (cloudOwnsUpdates('backend')) {
+    return Promise.resolve(CLOUD_OWNED)
+  }
+
   if (backendUpdateInFlight) {
     return backendUpdateInFlight
   }

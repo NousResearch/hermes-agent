@@ -4,8 +4,10 @@ import { useNavigate } from 'react-router'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { cloudOwnsUpdates } from '@/store/cloud-updates'
 import { openCommandPalette } from '@/store/command-palette'
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
+import { $connection } from '@/store/session'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -33,15 +35,20 @@ function shellSections(
     onSelect: () => navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
   })
 
-  const update = renderActionItem(kit, {
-    icon: 'cloud-download',
-    key: 'shell-update',
-    label: t.commandCenter.updateHermes,
-    onSelect: requestActiveUpdate
-  })
+  // Hermes Cloud updates its agents itself: no Update row for the target it owns.
+  const updateHidden = cloudOwnsUpdates($connection.get()?.mode === 'remote' ? 'backend' : 'client')
+
+  const update = updateHidden
+    ? null
+    : renderActionItem(kit, {
+        icon: 'cloud-download',
+        key: 'shell-update',
+        label: t.commandCenter.updateHermes,
+        onSelect: requestActiveUpdate
+      })
 
   if (primaryOnly) {
-    return [[newChat, settings, update]]
+    return [update ? [newChat, settings, update] : [newChat, settings]]
   }
 
   return [
@@ -86,7 +93,7 @@ function shellSections(
       }),
       settings
     ],
-    [update]
+    ...(update ? [[update]] : [])
   ]
 }
 

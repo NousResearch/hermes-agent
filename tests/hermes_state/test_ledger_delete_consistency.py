@@ -171,8 +171,8 @@ def _local_session(db, epoch):
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
     from gateway.session_lifecycle import _now
-    from gateway.session_local_recovery import local_identity
     from gateway.session_policy import build_policy
+    from hermes_state_keys import local_identity
     sid = local_identity('profile', 'human', 'r')
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
     now = _now()

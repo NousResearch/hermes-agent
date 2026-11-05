@@ -1,6 +1,6 @@
 """Post-commit work of the session delete, prune and archive verbs, and the automatic archive and prune passes, over the persistence contracts.
 
-A delete or prune verb returns the ids it removed; its caller runs ``after_sessions_removed`` right after the verb commits: the ``on_session_delete`` plugin hook, then retired-media collection, then transcript-file removal. An archive that hid rows runs ``emit_session_deleted`` with ``reason="archive"``. The plugin dispatch, the gateway's media file checks and capture leases, and the spillover reference scan are application services, imported where they run.
+A delete or prune verb returns the ids it removed; its caller runs ``after_sessions_removed`` right after the verb commits: the ``on_session_delete`` plugin hook, then retired-media collection, then transcript-file removal. An archive that hid rows runs ``emit_session_deleted`` with ``reason="archive"``. The plugin dispatch, the media release and the spillover reference scan are application services, imported where they run.
 """
 
 from __future__ import annotations
@@ -93,40 +93,13 @@ def collect_retired_spillover(store, store_home) -> None:
     store.admissions.drop_retired_candidates(done)
 
 
-def _release_unheld_media(store, references) -> None:
-    """Unlink each referenced native input nothing holds: a retained transcript row (one read snapshot, then the rows added after it under the writer), a live admission or hosted prompt, a capture lease of this process, or a held path sharing its file. The file checks and the lease table are the gateway's media module's own."""
-    from gateway import session_ingress_media as media
-    root = media.native_inputs_root()
-    references = media._collectable(references, root)
-    if not references:
-        return
-    last_id, seen = store.admissions.history_mentions(references)
-    references = [reference for reference in references if reference["path"] not in seen]
-    if not references:
-        return
-    found = store.admissions.unheld_media(references, after_id=last_id, retain_history=True, media_root=str(root))
-    identities = media._held_file_identities(found.held, root)
-    if identities is None:
-        return
-    for reference in found.candidates:
-        path = Path(reference["path"])
-        try:
-            with media._lease_lock:
-                if (reference["path"] in media._leases or path.parent.resolve() != path.parent
-                        or media._file_identity(path) in identities):
-                    continue
-                path.unlink()
-            path.parent.rmdir()
-        except (OSError, ValueError):
-            continue
-
-
 def collect_retired_media(store, store_home) -> None:
     """Release retired media candidates no admission or retained transcript row owns, and drop the candidates whose file is gone; spillover candidates first. Synchronous store reads and writes: async callers run it off the event loop."""
+    from gateway.session_ingress_media import release_unheld_media
     collect_retired_spillover(store, store_home)
     rows = store.admissions.retired_candidates("media")
     if rows:
-        _release_unheld_media(store, [reference for _key, reference in rows])
+        release_unheld_media(store, [reference for _key, reference in rows])
         gone = [key for key, reference in rows if not Path(reference["path"]).exists()]
         if gone:
             store.admissions.drop_retired_candidates(gone)

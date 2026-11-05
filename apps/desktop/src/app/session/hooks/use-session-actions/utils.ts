@@ -1877,7 +1877,6 @@ function upsertResolvedSession(
   // resume-by-id can open archived history, and a later request after a
   // settled rollback can publish normally.
   if (
-    session.archived ||
     identities.some(id => (id ? removed.has(id) : false)) ||
     tombstoneLifecycleChanged(tombstoneGenerationsAtRequestStart, identities)
   ) {
@@ -1886,12 +1885,16 @@ function upsertResolvedSession(
 
   const lineage = session._lineage_root_id ?? session.id
 
-  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
-  // inserting it into $sessions paints a sidebar row until the next refresh,
-  // and the keep-list then holds it there (#113273). Park it on the off-list
-  // owner atom the draft stubs ride — owner resolution still finds it via
-  // ownerLookupSessionRows, the sidebar never does.
-  if (session.hidden) {
+  // A hidden row (canonical Bot Chat, room plumbing) and an ARCHIVED row
+  // (#85163) are unlisted by design: inserting either into $sessions paints a
+  // sidebar row until the next refresh, and the keep-list then holds it there
+  // (#113273). Park it on the off-list owner atom the draft stubs ride — owner
+  // resolution still finds it via ownerLookupSessionRows, the sidebar never
+  // does. The archived park is what lets an OPENED archive hydrate its session
+  // controls: every other owner rung (sidebar slices, resume hint, tile route)
+  // is empty for an archived row, so without this session.control.read fails
+  // closed with SessionOwnerResolutionError (FRAMEWORK-07).
+  if (session.archived || session.hidden) {
     setUnlistedSessionOwnerRows(prev => [
       session,
       ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)

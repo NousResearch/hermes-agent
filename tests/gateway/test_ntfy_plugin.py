@@ -296,6 +296,7 @@ class TestOnMessage:
             "time": 1700000000,
         }
         _run(adapter._on_message(event))
+        _run(asyncio.gather(*adapter._background_tasks))
         assert len(calls) == 1
         assert calls[0].text == "Hello from ntfy"
 
@@ -322,7 +323,9 @@ class TestOnMessage:
         adapter.set_message_handler(handler)
         event = {"id": "dup-1", "event": "message", "topic": "hermes-in", "message": "hi", "time": None}
         _run(adapter._on_message(event))
+        _run(asyncio.gather(*adapter._background_tasks))
         _run(adapter._on_message(event))
+        _run(asyncio.gather(*adapter._background_tasks))
         assert len(calls) == 1
 
     def test_own_tagged_message_skipped(self):

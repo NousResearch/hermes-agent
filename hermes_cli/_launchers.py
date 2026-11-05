@@ -133,6 +133,14 @@ def resolve_store_python(repo_root: Path, *, publication: bool = False) -> Path 
 
 def _store_python(runtime: Path) -> Path | None:
     rel = "python.exe" if _is_windows() else "bin/python3"
+    # A Termux/Android payload unpacks a whole $PREFIX tree, so the interpreter lands
+    # under data/data/com.termux/files/usr/bin instead of the entry root. Without this
+    # the store reads as having no managed Python, and the launcher composes the store
+    # env's site-packages onto the *host* interpreter (3.11 vs 3.14) -- every C
+    # extension then fails with "did not return an extension module".
+    rels = [rel]
+    if not _is_windows():
+        rels.append("data/data/com.termux/files/usr/bin/python3")
 
     facts = runtime / "facts.json"
     if facts.is_file():
@@ -144,9 +152,10 @@ def _store_python(runtime: Path) -> Path | None:
         except (OSError, ValueError):
             entry = None
         if entry:
-            candidate = runtime / entry / rel
-            if candidate.is_file():
-                return candidate
+            for rel_path in rels:
+                candidate = runtime / entry / rel_path
+                if candidate.is_file():
+                    return candidate
 
     return None
 

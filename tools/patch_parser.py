@@ -136,17 +136,20 @@ def _split_hunk(hunk: Hunk) -> tuple[list[str], list[str]]:
 
 
 def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> str:
-    """Best-effort 'Did you mean...' suffix; never lets a hint failure mask the real error."""
+    """Offer nearby line numbers without echoing potentially secret source text."""
     with contextlib.suppress(Exception):
         from tools.fuzzy_match import format_no_match_hint
-        return format_no_match_hint(error, 0, search_pattern, content)
+        hint = format_no_match_hint(error, 0, search_pattern, content)
+        lines = dict.fromkeys(re.findall(r"(?m)^\s*(\d+)\| ", hint))
+        if lines:
+            return "\n\nSimilar sections near lines " + ", ".join(lines) + "; read the file for context."
     return ""
 
 
 def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
     """(occurrences, error) for an addition-only hunk's context hint; error is '' when unique."""
     n = _count_occurrences(content, hint)
-    return n, f"context hint '{hint}' is ambiguous ({n} occurrences){tail}" if n > 1 else ""
+    return n, f"context hint is ambiguous ({n} occurrences){tail}" if n > 1 else ""
 
 
 # codex seek_sequence tiers: a hunk's lines match exactly, then ignoring trailing whitespace,
@@ -295,7 +298,7 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     windows, hinted = _hint_pick(content, hunk, sites)
     if hinted:
         if cursor and hinted[0] < cursor and after:
-            return None, len(after) + 1, (f"its @@ {hunk.context_hint} @@ hint names a site before "
+            return None, len(after) + 1, ("its @@ hint targets a site before "
                                           "the previous hunk while another site follows it")
         return hinted, 1, None
     if windows and ordered:
@@ -380,7 +383,7 @@ def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str
     windows = [(lo, hi, [s for s in found if free((lo + s[0], lo + s[1]))]) for lo, hi, _name, found in chains]
     targets = _distinct([(lo + s, lo + e) for lo, _hi, found in windows for s, e in found])
     if len(targets) > 1 or any(len(found) > 1 for *_w, found in windows):
-        return content, None, (f"context hint '{hunk.context_hint}' selects {len(targets)} "
+        return content, None, (f"context hint selects {len(targets)} "
                                f"different matches — {_v4a_advice(hunk)}"), None
     if targets:
         edited = _window_edit(content, *targets[0], pattern, replacement)
@@ -443,7 +446,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
     for index, hunk in enumerate(hunks, start=1):
         search_lines, replace_lines = _split_hunk(hunk)
         free = lambda span: _unwritten(content, span, hunk, written)
-        label = f"hunk {index} " + (f"'{hunk.context_hint}'" if hunk.context_hint else "(no hint)")
+        label = f"hunk {index} " + ("(with hint)" if hunk.context_hint else "(no hint)")
         if search_lines == replace_lines:
             # Context-only anchor hunks (models emit these between changes) are inert; identical
             # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
@@ -457,7 +460,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
         replacement = '\n'.join(replace_lines)
         if not search_lines:  # addition-only: placed after a unique context hint, else at EOF
             if hunk.context_hint and not _count_occurrences(content, hunk.context_hint):
-                errors.append(f"addition-only hunk context hint '{hunk.context_hint}' not found")
+                errors.append(f"addition-only hunk {index} context hint not found")
                 continue
             new_content, error, at = _insert_addition_only(content, hunk, replacement)
             if error:

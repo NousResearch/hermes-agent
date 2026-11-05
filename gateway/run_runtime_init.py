@@ -207,32 +207,16 @@ class GatewayRuntimeInitMixin:
 
     @property
     def persistence(self):
-        """The storage interface handle for the active profile scope, one per ``state.db`` path
-        ``_session_db`` resolves: borrowed from ``session_store`` as ``_session_db`` is (the store
-        closes it), else opened lazily and kept until shutdown; None while ``_session_db`` is pinned
-        or when the handle cannot open (the next read tries again)."""
+        """The storage interface handle for the active profile scope, borrowed from ``session_store`` as
+        ``_session_db`` is (the store closes it); without a session store, the runner's own handle on the scope's
+        store, as ``_session_db`` opens it. None while ``_session_db`` is pinned."""
         from gateway.run import _SESSION_DB_UNPINNED
-        from persistence_assembly import profile_scope
-        from persistence_beside import open_beside
         if getattr(self, "_session_db_pinned", _SESSION_DB_UNPINNED) is not _SESSION_DB_UNPINNED:
             return None
-        if (store := getattr(self, "session_store", None)) is not None:
-            return getattr(store, "persistence", None)
-        scope = profile_scope()
-        with self._session_db_handles_lock:
-            handles = self.__dict__.setdefault("_persistence_handles", {})
-            handle = handles.get(scope.hermes_home_key)
-            if handle is None and (handle := open_beside(scope.profile_dir)) is not None:
-                handles[scope.hermes_home_key] = handle
-        return handle
-
-    def close_all_persistence_handles(self) -> None:
-        """Close every storage interface handle ``persistence`` opened."""
-        from persistence_beside import close_beside
-        with self._session_db_handles_lock:
-            handles = list(self.__dict__.pop("_persistence_handles", {}).values())
-        for handle in handles:
-            close_beside(handle)
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return self._open_session_db_for_active_scope()
+        return getattr(store, "persistence", None)
 
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""

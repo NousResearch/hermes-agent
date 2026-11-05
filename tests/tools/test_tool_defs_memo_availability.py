@@ -469,16 +469,19 @@ def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outa
     ``/model``, a fresh agent per turn) while its only deferrable tools are down: the bridge is
     synthesized, never registered, so the restore must carry it like the between-turns refresh does.
     Otherwise tools[] shrinks to the fresh build, the narrowed pin is persisted, and recovery keeps it."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
     from tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
 
     selection = ["mcp-probe-mail", "clarify"]
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("bridge-session", source="cli")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "bridge-session", "cli")
 
     def rebuild():
         agent = _agent(selection)
-        agent._session_db, agent.session_id = db, "bridge-session"
+        agent._session_db = agent.persistence = db
+        agent.session_id = "bridge-session"
         return agent
 
     mail_state["up"] = True
@@ -492,10 +495,10 @@ def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outa
     clock.now += registry_mod._CHECK_FN_FAILURE_GRACE_SECONDS + 1
     down = rebuild()
     assert not BRIDGE & _names(down.tools)  # the fresh build drops the bridge
-    restore_agent_tool_prefix(down, json.loads(db.get_session("bridge-session")["tool_names"]))
+    restore_agent_tool_prefix(down, json.loads(session_row(db, "bridge-session")["tool_names"]))
     assert json.dumps(down.tools) == sent
     assert BRIDGE <= down.valid_tool_names
-    assert json.dumps(json.loads(db.get_session("bridge-session")["tool_names"])["tools"]) == sent
+    assert json.dumps(json.loads(session_row(db, "bridge-session")["tool_names"])["tools"]) == sent
 
 
 def test_grace_reuse_window_starts_when_a_slow_failing_probe_returns(mail_state, clock):

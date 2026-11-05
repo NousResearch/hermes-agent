@@ -5,14 +5,14 @@ import threading
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import get_session_admission
+from tests.gateway.fixtures.storage_handles import close_storage_handles
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
 async def test_settlement_write_leaves_the_loop_free_and_publishes_in_order(tmp_path, monkeypatch):
-    from gateway import session_results
+    from tests.fixtures.storage_holder import admission_store_operation
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     loop_ran, writing, events, served_during_write = threading.Event(), threading.Event(), [], []
@@ -23,14 +23,14 @@ async def test_settlement_write_leaves_the_loop_free_and_publishes_in_order(tmp_
         owner.pending_results[row['admission_id']] = {'result': {'final_response': 'done'}, 'usage': {}}
         return 'done'
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
-    settle = session_results.settle_session_input
+    settle = admission_store_operation('settle_session_input')
 
     def slow_settle(*args, **kwargs):
         # A contended writer: the owner loop must keep serving other work meanwhile.
         writing.set()
         served_during_write.append(loop_ran.wait(2))
         return settle(*args, **kwargs)
-    monkeypatch.setattr(session_results, 'settle_session_input', slow_settle)
+    monkeypatch.setattr('persistence.sqlite.authority._admission_store.settle_session_input', slow_settle)
 
     async def other_session_work():
         # Runs on the owner loop only once the settlement write is in flight off it.
@@ -42,7 +42,7 @@ async def test_settlement_write_leaves_the_loop_free_and_publishes_in_order(tmp_
         waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
 
         def resolved(_):
-            events.append(('waiter', get_session_admission(db, admission_id=receipt.admission_id)['status']))
+            events.append(('waiter', authority.persistence.admissions.get(admission_id=receipt.admission_id).status))
         waiter.add_done_callback(resolved)
         events.clear()
         other = asyncio.create_task(other_session_work())

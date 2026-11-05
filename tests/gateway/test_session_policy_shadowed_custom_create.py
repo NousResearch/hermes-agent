@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_controls import AuthorityConnection
+from persistence_assembly import close_stores_under
 
 _ENTRY = {'name': 'deepseek', 'api': 'https://api.deepseek.com', 'key_env': 'DEEPSEEK_ENTRY_KEY',
           'transport': 'chat_completions', 'default_model': 'deepseek-flash'}
@@ -23,7 +24,6 @@ async def test_session_create_with_the_entrys_bare_pick_freezes_its_custom_route
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from hermes_state_local import local_receipt
 
     for var in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY'):
         monkeypatch.delenv(var, raising=False)
@@ -32,7 +32,7 @@ async def test_session_create_with_the_entrys_bare_pick_freezes_its_custom_route
                         'base_url': 'https://api.deepseek.com', 'key_env': 'DEEPSEEK_ENTRY_KEY'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: json.loads(json.dumps(config)))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
@@ -42,13 +42,13 @@ async def test_session_create_with_the_entrys_bare_pick_freezes_its_custom_route
             'request_id': 'desktop-pick', 'source': 'gui', 'cwd': str(tmp_path),
             'model': 'deepseek-flash', 'provider': pick}})
         assert 'error' not in reply, reply
-        policy = local_receipt(authority.db, reply['result']['session_id'])['policy']
+        policy = authority.persistence.bindings.receipt(reply['result']['session_id']).policy
         model = json.loads(policy['config_json'])['model']
         assert (model.get('provider'), model.get('base_url'), model.get('key_env')) == \
             ('custom:deepseek', 'https://api.deepseek.com', 'DEEPSEEK_ENTRY_KEY'), model
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,6 @@ async def test_only_the_held_entrys_own_key_keeps_its_route(tmp_path, monkeypatc
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from hermes_state_local import local_receipt
 
     for var in ('DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'):
         monkeypatch.delenv(var, raising=False)
@@ -79,7 +78,7 @@ async def test_only_the_held_entrys_own_key_keeps_its_route(tmp_path, monkeypatc
                         'base_url': 'https://private.example/v1', 'key_env': 'PRIVATE_ENTRY_KEY'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: json.loads(json.dumps(config)))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
@@ -88,9 +87,9 @@ async def test_only_the_held_entrys_own_key_keeps_its_route(tmp_path, monkeypatc
             'request_id': 'desktop-pick', 'source': 'gui', 'cwd': str(tmp_path),
             'model': 'picked-model', 'provider': pick}})
         assert 'error' not in reply, reply
-        policy = local_receipt(authority.db, reply['result']['session_id'])['policy']
+        policy = authority.persistence.bindings.receipt(reply['result']['session_id']).policy
         model = json.loads(policy['config_json'])['model']
         assert (model.get('provider'), model.get('base_url'), model.get('key_env')) == frozen, model
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

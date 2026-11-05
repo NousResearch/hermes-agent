@@ -12,7 +12,7 @@ def _authority_fixture(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     return store, runner
@@ -24,7 +24,6 @@ async def test_row_cwd_is_recorded_apart_from_the_execution_cwd(tmp_path, monkey
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
 
     store, runner = _authority_fixture(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
@@ -37,10 +36,10 @@ async def test_row_cwd_is_recorded_apart_from_the_execution_cwd(tmp_path, monkey
                             ('repo', {'row_cwd': str(tmp_path / 'repo')})):
             ref = create_local_session(authority, actor, {'request_id': name, 'source': 'cli', 'cwd': str(work),
                                                           'model': 'm', 'toolsets': [], **extra})
-            receipt = local_receipt(authority.db, ref.session_id)
-            policy = restore_policy(receipt['policy'])
+            receipt = authority.persistence.bindings.receipt(ref.session_id)
+            policy = restore_policy(receipt.policy)
             assert policy.cwd == str(work)  # the tools still run in the launch/worktree dir
-            rows[name] = authority.db.get_session(receipt['entry']['session_id'])['cwd']
+            rows[name] = authority.persistence.sessions.get(receipt.entry['session_id']).cwd
         assert rows == {'default': str(work), 'blank': None, 'repo': str(tmp_path / 'repo')}
         with pytest.raises(Exception):
             create_local_session(authority, actor, {'request_id': 'bad', 'source': 'cli', 'cwd': str(work),

@@ -17,10 +17,12 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:
@@ -64,7 +66,10 @@ def _make_group_event(text: str, *, thread_id: str | None = None) -> MessageEven
 def _make_runner(session_db=None):
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle ``session_db``, set below
+
+    runner = object.__new__(_Runner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
     )
@@ -131,11 +136,8 @@ def _make_runner(session_db=None):
     runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
-    # Gateway holds the async facade; the slash handlers await it.
-    if session_db is not None:
-        from hermes_state import AsyncSessionDB
-        session_db = AsyncSessionDB(session_db)
-    runner._session_db = session_db
+    # The gateway reads the storage interface handle as ``persistence`` and as its pinned ``_session_db``.
+    runner.persistence = runner._session_db = session_db
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -172,7 +174,7 @@ def _make_runner(session_db=None):
 @pytest.mark.asyncio
 async def test_root_dm_auto_transfer_creates_a_new_topic_when_opted_in(tmp_path):
     """Regression for #139136: opt-in root-DM messages start a fresh topic lane."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
     runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
@@ -180,12 +182,11 @@ async def test_root_dm_auto_transfer_creates_a_new_topic_when_opted_in(tmp_path)
 
     assert await runner._transfer_telegram_root_dm(_make_source()) == ("777", True)
     runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_awaited_once()
-    db.close()
 
 
 @pytest.mark.asyncio
 async def test_root_dm_auto_transfer_failure_keeps_lobby_recovery(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
     runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
@@ -193,12 +194,11 @@ async def test_root_dm_auto_transfer_failure_keeps_lobby_recovery(tmp_path):
 
     assert await runner._transfer_telegram_root_dm(_make_source()) == ("222", False)
     runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_awaited_once()
-    db.close()
 
 
 @pytest.mark.asyncio
 async def test_root_dm_auto_transfer_is_off_by_default(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
@@ -206,11 +206,10 @@ async def test_root_dm_auto_transfer_is_off_by_default(tmp_path):
     assert await runner._transfer_telegram_root_dm(source) is None
     assert runner._recover_telegram_topic_thread_id(source) == "222"
     runner.adapters[Platform.TELEGRAM]._create_dm_topic.assert_not_awaited()
-    db.close()
 
 
 def test_root_dm_auto_transfer_defers_lobby_recovery_until_creation_attempt(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
     runner.config.platforms[Platform.TELEGRAM].extra["dm_topic_auto_transfer"] = True
@@ -218,26 +217,24 @@ def test_root_dm_auto_transfer_defers_lobby_recovery_until_creation_attempt(tmp_
     source = _make_source()
     assert runner._recover_telegram_topic_thread_id(source) is None
     assert runner._recover_telegram_lobby_thread_id(source) == "222"
-    db.close()
 
 
 @pytest.mark.asyncio
 async def test_topic_restore_quote_never_exposes_compaction_scaffolding(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    db.create_session(
-        session_id="restorable",
-        source="telegram",
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        db, "restorable", "telegram",
         user_id="208214988",
     )
-    db.set_session_title("restorable", "Browser control")
-    db.append_message("restorable", "assistant", "real completed answer")
+    db.sessions.set_title("restorable", "Browser control")
+    seed_messages(db, "restorable", {"role": "assistant", "content": "real completed answer"})
     summary = (
         f"{SUMMARY_PREFIX}\n\n"
         f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
         f"{_SUMMARY_END_MARKER}"
     )
-    db.append_message("restorable", "assistant", summary)
+    seed_messages(db, "restorable", {"role": "assistant", "content": summary})
     runner = _make_runner(session_db=db)
 
     result = await runner._restore_telegram_topic_session(
@@ -248,16 +245,14 @@ async def test_topic_restore_quote_never_exposes_compaction_scaffolding(tmp_path
     assert "Last Hermes message:\nreal completed answer" in result
     assert "CONTEXT COMPACTION" not in result
     assert "Historical Task Snapshot" not in result
-    db.close()
 
 
 @pytest.mark.asyncio
 async def test_topic_restore_quote_unwraps_merged_assistant_carrier(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    db.create_session(
-        session_id="restorable",
-        source="telegram",
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        db, "restorable", "telegram",
         user_id="208214988",
     )
     carrier = (
@@ -268,7 +263,7 @@ async def test_topic_restore_quote_unwraps_merged_assistant_carrier(tmp_path):
         f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
         f"{_SUMMARY_END_MARKER}"
     )
-    db.append_message("restorable", "assistant", carrier)
+    seed_messages(db, "restorable", {"role": "assistant", "content": carrier})
     runner = _make_runner(session_db=db)
 
     result = await runner._restore_telegram_topic_session(
@@ -279,7 +274,6 @@ async def test_topic_restore_quote_unwraps_merged_assistant_carrier(tmp_path):
     assert "Last Hermes message:\nreal completed answer" in result
     assert "PRIOR CONTEXT" not in result
     assert "CONTEXT COMPACTION" not in result
-    db.close()
 
 
 @pytest.mark.asyncio
@@ -338,14 +332,13 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    session_db.create_session(
-        session_id="restored-session",
-        source="telegram",
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        session_db, "restored-session", "telegram",
         user_id="208214988",
     )
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id="208214988",
         thread_id="17585",
         user_id="208214988",
@@ -383,8 +376,8 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
     runner._handle_message_with_agent = AsyncMock(return_value="group agent response")
 
@@ -396,7 +389,7 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
 
     assert result == "group agent response"
     runner._handle_message_with_agent.assert_awaited_once()
-    assert session_db.get_telegram_topic_binding(chat_id="-100123", thread_id="555") is None
+    assert session_db.routing.get_topic_binding(chat_id="-100123", thread_id="555") is None
 
 
 @pytest.mark.asyncio
@@ -405,8 +398,8 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 ):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
     group_source = _make_group_source(thread_id="555")
     group_key = build_session_key(group_source)
@@ -449,16 +442,15 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     """
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    session_db.create_session(
-        session_id="old-topic-session",
-        source="telegram",
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        session_db, "old-topic-session", "telegram",
         user_id="208214988",
     )
     topic_source = _make_source(thread_id="17585")
     topic_key = build_session_key(topic_source)
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id="208214988",
         thread_id="17585",
         user_id="208214988",
@@ -477,11 +469,10 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
         origin=topic_source,
     )
     # Mirror SessionStore.reset_session: in production it calls
-    # SessionDB.create_session() for the new id before returning, so the
+    # a session row for the new id before returning, so the
     # bindings FK can reference it.
-    session_db.create_session(
-        session_id="new-topic-session",
-        source="telegram",
+    seed_session(
+        session_db, "new-topic-session", "telegram",
         user_id="208214988",
     )
     runner.session_store.reset_session.return_value = new_entry
@@ -493,11 +484,11 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
 
     await runner._handle_message(_make_event("/new", thread_id="17585"))
 
-    binding = session_db.get_telegram_topic_binding(
+    binding = session_db.routing.get_topic_binding(
         chat_id="208214988", thread_id="17585",
     )
     assert binding is not None
-    assert binding["session_id"] == "new-topic-session"
+    assert binding.session_id == "new-topic-session"
 
 
 @pytest.mark.asyncio
@@ -508,30 +499,29 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     session_id, the binding row still pointed at the parent. On the next
     inbound message in that topic, the gateway used to reload the oversized
     parent transcript and re-run preflight compression — sometimes in a loop.
-    The read path now walks ``SessionDB.get_compression_tip()`` and rewrites
+    The read path now walks the compression lineage to its tip and rewrites
     the binding to the descendant.
     """
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    # Build a parent -> compression child chain. end_session sets ended_at;
-    # create_session sets started_at to "now", so the child's started_at is
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    # Build a parent -> compression child chain. Ending a session sets ended_at;
+    # creating one sets started_at to "now", so the child's started_at is
     # always >= parent's ended_at on a real clock.
-    session_db.create_session(
-        session_id="parent-session", source="telegram", user_id="208214988",
+    seed_session(
+        session_db, "parent-session", "telegram", user_id="208214988",
     )
-    session_db.end_session("parent-session", end_reason="compression")
-    session_db.create_session(
-        session_id="child-session",
-        source="telegram",
+    session_db.sessions.end("parent-session", "compression")
+    seed_session(
+        session_db, "child-session", "telegram",
         user_id="208214988",
         parent_session_id="parent-session",
     )
     topic_source = _make_source(thread_id="17585")
     topic_key = build_session_key(topic_source)
     # Pre-bug binding: topic still pointed at the pre-compression parent.
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id="208214988",
         thread_id="17585",
         user_id="208214988",
@@ -576,11 +566,11 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     assert switched_to.get("id") == "child-session"
     # The binding row was rewritten to point at the descendant so future
     # inbound messages skip the tip walk and resolve directly.
-    refreshed = session_db.get_telegram_topic_binding(
+    refreshed = session_db.routing.get_topic_binding(
         chat_id="208214988", thread_id="17585",
     )
     assert refreshed is not None
-    assert refreshed["session_id"] == "child-session"
+    assert refreshed.session_id == "child-session"
 
 
 @pytest.mark.asyncio
@@ -591,12 +581,12 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
     calling ``switch_session``; a /new or /resume that lands in that window must win, so the
     switch is pinned to the snapshot ``session_entry.session_id`` via ``expected_session_id=``.
     """
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    session_db.create_session(session_id="bound-session", source="telegram", user_id="208214988")
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(session_db, "bound-session", "telegram", user_id="208214988")
     topic_source = _make_source(thread_id="17585")
     topic_key = build_session_key(topic_source)
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id="208214988", thread_id="17585", user_id="208214988",
         session_key=topic_key, session_id="bound-session",
     )
@@ -615,32 +605,29 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    session_db.create_session(
-        session_id="old-unlinked",
-        source="telegram",
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        session_db, "old-unlinked", "telegram",
         user_id="208214988",
     )
-    session_db.set_session_title("old-unlinked", "Old research")
-    session_db.append_message("old-unlinked", "user", "first prompt")
-    session_db.append_message("old-unlinked", "assistant", "old answer")
-    session_db.create_session(
-        session_id="already-linked",
-        source="telegram",
+    session_db.sessions.set_title("old-unlinked", "Old research")
+    seed_messages(session_db, "old-unlinked", {"role": "user", "content": "first prompt"})
+    seed_messages(session_db, "old-unlinked", {"role": "assistant", "content": "old answer"})
+    seed_session(
+        session_db, "already-linked", "telegram",
         user_id="208214988",
     )
-    session_db.set_session_title("already-linked", "Already linked")
-    session_db.bind_telegram_topic(
+    session_db.sessions.set_title("already-linked", "Already linked")
+    session_db.routing.bind_topic(
         chat_id="208214988",
         thread_id="11111",
         user_id="208214988",
         session_key="agent:main:telegram:dm:208214988:11111",
         session_id="already-linked",
     )
-    session_db.create_session(
-        session_id="other-user",
-        source="telegram",
+    seed_session(
+        session_db, "other-user", "telegram",
         user_id="someone-else",
     )
     runner = _make_runner(session_db=session_db)
@@ -665,11 +652,10 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
 async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    session_db.create_session(
-        session_id="sess-topic",
-        source="telegram",
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(
+        session_db, "sess-topic", "telegram",
         user_id="208214988",
     )
     runner = _make_runner(session_db=session_db)
@@ -683,14 +669,14 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
     entry = runner.session_store.get_or_create_session(source)
     runner._record_telegram_topic_binding(source, entry)
 
-    binding = session_db.get_telegram_topic_binding(
+    binding = session_db.routing.get_topic_binding(
         chat_id="208214988",
         thread_id="17585",
     )
     assert binding is not None
-    assert binding["user_id"] == "208214988"
-    assert binding["session_id"] == "sess-topic"
-    assert binding["session_key"] == build_session_key(_make_source(thread_id="17585"))
+    assert binding.user_id == "208214988"
+    assert binding.session_id == "sess-topic"
+    assert binding.session_key == build_session_key(_make_source(thread_id="17585"))
 
 
 @pytest.mark.asyncio
@@ -703,8 +689,8 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     replies arrive as chat_type="dm" with user_id=chat_id. Recovery then sees
     the topic as unbound and can rewrite it to another recent topic.
     """
-    session_db = SessionDB(db_path=tmp_path / "state.db")
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db = storage_handle(tmp_path)
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
         platform=Platform.TELEGRAM,
@@ -740,10 +726,10 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
 @pytest.mark.asyncio
 async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.apply_telegram_topic_migration()
-    db.create_session("sess-topic", source="telegram", user_id="208214988")
-    db.bind_telegram_topic(
+    db = storage_handle(tmp_path)
+    db.routing.prepare_topic_storage()
+    seed_session(db, "sess-topic", "telegram", user_id="208214988")
+    db.routing.bind_topic(
         chat_id="208214988",
         thread_id="42",
         user_id="208214988",
@@ -771,7 +757,7 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     """Unauthorized DMs cannot flip multi-session mode on."""
     import gateway.run as gateway_run
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     runner = _make_runner(session_db=db)
     runner._is_user_authorized = lambda _source: False  # Deny
 
@@ -783,12 +769,13 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
 
     assert "not authorized" in result.lower()
     # Tables must not be created for an unauthorized caller.
-    tables = {
-        row[0]
-        for row in db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
-        ).fetchall()
-    }
+    with raw_holder(db)._read_ctx() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
+            ).fetchall()
+        }
     assert tables == set()
 
 
@@ -799,21 +786,19 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
 
 def _seed_two_topic_bindings(session_db):
     """Create two topics for the same user in topic mode, oldest first."""
-    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
     # Seed two distinct sessions so the bind FK resolves.
-    session_db.create_session(
-        session_id="sess-A",
-        source="telegram",
+    seed_session(
+        session_db, "sess-A", "telegram",
         user_id="208214988",
     )
-    session_db.create_session(
-        session_id="sess-B",
-        source="telegram",
+    seed_session(
+        session_db, "sess-B", "telegram",
         user_id="208214988",
     )
     # Old topic A first, then current topic B (so B is "most recent").
     src_a = _make_source(thread_id="111")
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id=src_a.chat_id,
         thread_id=src_a.thread_id,
         user_id=src_a.user_id,
@@ -821,7 +806,7 @@ def _seed_two_topic_bindings(session_db):
         session_id="sess-A",
     )
     src_b = _make_source(thread_id="222")
-    session_db.bind_telegram_topic(
+    session_db.routing.bind_topic(
         chat_id=src_b.chat_id,
         thread_id=src_b.thread_id,
         user_id=src_b.user_id,
@@ -834,7 +819,7 @@ def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
     # A newly-created Telegram DM topic arrives with a real, previously-unbound
     # message_thread_id. It must become its own session lane rather than being
     # rewritten to whichever older topic was most recently active.
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
@@ -845,14 +830,15 @@ def test_recover_preserves_unknown_thread_id_for_new_topic(tmp_path):
 
 def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
     # Missing topic-mode tables → [] without auto-migrating.
-    db = SessionDB(db_path=tmp_path / "state.db")
-    assert db.list_telegram_topic_bindings_for_chat(chat_id="208214988") == []
-    tables = {
-        row[0]
-        for row in db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
-        ).fetchall()
-    }
+    db = storage_handle(tmp_path)
+    assert db.routing.list_topic_bindings_for_chat(chat_id="208214988") == ()
+    with raw_holder(db)._read_ctx() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'telegram_dm%'"
+            ).fetchall()
+        }
     assert tables == set()
 
 
@@ -862,10 +848,10 @@ def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):
 
 def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
     """Reverse lookup by session_id returns the binding row."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
-    db.create_session(session_id="sess-27166", source="telegram", user_id="208214988")
-    db.bind_telegram_topic(
+    db = storage_handle(tmp_path)
+    db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988")
+    seed_session(db, "sess-27166", "telegram", user_id="208214988")
+    db.routing.bind_topic(
         chat_id="208214988",
         thread_id="17585",
         user_id="208214988",
@@ -873,12 +859,12 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
         session_id="sess-27166",
     )
 
-    binding = db.get_telegram_topic_binding_by_session(session_id="sess-27166")
+    binding = db.routing.get_topic_binding_for_session(session_id="sess-27166")
 
     assert binding is not None
-    assert binding["chat_id"] == "208214988"
-    assert binding["thread_id"] == "17585"
-    assert binding["session_id"] == "sess-27166"
+    assert binding.chat_id == "208214988"
+    assert binding.thread_id == "17585"
+    assert binding.session_id == "sess-27166"
 
 
 # ---------------------------------------------------------------------------

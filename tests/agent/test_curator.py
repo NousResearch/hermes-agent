@@ -402,6 +402,35 @@ def test_llm_candidate_list_omits_bundled_and_disabled_skills(
     assert "disabled-fixture" not in listing
 
 
+def test_llm_candidate_list_omits_pinned_skills(curator_env, monkeypatch):
+    """Pinned skills stay in ``curated_report()`` (dashboard/status visibility)
+    but are never offered to the LLM consolidation pass (#146018)."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "pinned-fixture")
+    _write_skill(skills_dir, "agent-fixture")
+    u.mark_agent_created("pinned-fixture")
+    u.mark_agent_created("agent-fixture")
+    assert u.set_pinned("pinned-fixture", True) is True
+
+    report_names = {r["name"]: r for r in u.curated_report()}
+    assert report_names["pinned-fixture"]["pinned"] is True
+    assert report_names["agent-fixture"]["pinned"] is False
+
+    listing = c._render_candidate_list()
+    assert "agent-fixture" in listing
+    assert "pinned-fixture" not in listing
+
+    # When every remaining agent skill is pinned, the LLM fork is skipped.
+    assert u.set_pinned("agent-fixture", True) is True
+    assert "No agent-created skills" in c._render_candidate_list()
+    captured = {}
+    monkeypatch.setattr(c, "_run_llm_review", lambda prompt: captured.setdefault("prompt", prompt))
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    assert "prompt" not in captured
+
+
 def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
     curator_env, monkeypatch,
 ):

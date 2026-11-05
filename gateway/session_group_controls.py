@@ -17,11 +17,13 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
+    'groups.context': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
     'groups.stop': 'session:control',
+    'groups.continue': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
@@ -33,11 +35,13 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
     'groups.stop': {'room_id', 'cancel_id'},
+    'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
@@ -87,6 +91,7 @@ async def dispatch_group_control(connection, method, params):
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_context import room_context, set_room_context
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -98,7 +103,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
+                         'groups.approve'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -212,8 +218,10 @@ def _group(authority, actor, method, params, *, host_scope=False):
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
-            result['driver_status'] = service.status(room['room_id'])
+        if room.get('disbanded_at') is None:
+            result['context'] = room_context(db_path, room_id=room['room_id'])
+            if service is not None:
+                result['driver_status'] = service.status(room['room_id'])
         return result
 
     handlers = {
@@ -223,6 +231,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.state': state,
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
+        'groups.context': lambda: set_room_context(db_path, **params),
         'groups.disband': disband,
     }
     return handlers[method]()
@@ -263,6 +272,8 @@ def _execution_control(service, method, params):
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
             params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+        'groups.continue': lambda: {'continued': True, 'event': service.continue_room(
+            params.get('room_id'), discussion_event_id=str(params.get('discussion_event_id') or ''))},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,

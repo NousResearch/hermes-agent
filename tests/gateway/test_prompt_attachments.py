@@ -68,6 +68,9 @@ async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypat
     assert path != staged, 'execution must read committed bytes, not the mutable staging file'
     assert 'native-inputs' in path
     # Retained bytes are exact-retry evidence by digest only; settlement releases them.
+    from gateway.session_runtime_workers import mutation_tasks
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='off-loop media collection')
     assert not os.path.exists(path)
 
 
@@ -154,6 +157,9 @@ async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_pat
     rt.recover_session_inputs(authority.db, epoch=authority.epoch)
     await authority.resolve_unknown(actor, SessionRef('p', 's'), receipt.admission_id, row['generation'])
     assert rt.get_session_admission(authority.db, admission_id=receipt.admission_id)['status'] == 'terminal'
+    from gateway.session_runtime_workers import mutation_tasks
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='off-loop media collection')
     assert not os.path.exists(committed)
 
 

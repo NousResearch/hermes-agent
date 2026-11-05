@@ -399,3 +399,29 @@ def test_a_reassigned_token_variable_does_not_grow_the_state(two_profiles):
         return depth
 
     assert contextvars.copy_context().run(run) <= 3
+
+
+def test_legacy_switch_builds_the_target_policy_on_first_read_only(two_profiles, monkeypatch):
+    """A legacy setter naming another profile moves the whole scope there, but builds that profile's
+    terminal policy on its first read: a caller that only redirects file paths (a credential reader
+    inside the profile's first config load) never reads the profile's config. The policy, once
+    read, is the same one an eager bind builds."""
+    from tools import terminal_scope
+
+    a, b = two_profiles
+    built = []
+    real = terminal_scope.prepare_profile_terminal_scope
+    monkeypatch.setattr(terminal_scope, "prepare_profile_terminal_scope",
+                        lambda home, **kw: built.append(Path(home)) or real(home, **kw))
+    with bind_profile_scope(a):
+        built.clear()
+        token = set_hermes_home_override(str(b))
+        try:
+            assert current_scope() == Scope("local", str(b), LOCAL_OWNER)
+            assert built == [], "the switch built the target's terminal policy before anything read it"
+            assert _state() == _expect(b, "b", "docker")
+            get_terminal_scope()
+            assert built == [b], "the policy is built once, on its first read"
+        finally:
+            reset_hermes_home_override(token)
+        assert _state() == _expect(a, "a", "local")

@@ -17,8 +17,11 @@ from typing import Any, Literal
 
 from agent.prompt_builder import CONTROL_FRAME_OPENERS
 from gateway import hosted_room_driver as driver
+from gateway import hosted_room_lead as lead_routing
+from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
+from gateway.hosted_room_context import scheduled_post_kind, validate_context
 from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 
@@ -33,7 +36,7 @@ MAX_MEMBER_TEXT_BYTES = 64 * 1024
 _TRUNCATED_REPLY_NOTICE = "\n\n[Reply truncated. Ask the Bot to share the full result as a file.]"
 
 Payload = Mapping[str, Any]
-DecisionStatus = Literal["idle", "task", "settled", "bounded"]
+DecisionStatus = Literal["idle", "task", "settled", "bounded", "route"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
@@ -51,6 +54,12 @@ _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>0|[1-9][0-9]*)\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$")
+
+
+def turn_round(turn_id: str) -> int | None:
+    """The 0-based round a Discussion turn id names, or None for a turn id of another shape."""
+    match = _TURN_ID_RE.fullmatch(turn_id)
+    return int(match.group("round")) if match else None
 
 _TARGET_FIELDS = {
     "local": frozenset({"kind", "profile"}),
@@ -74,7 +83,9 @@ _GATEWAY_EVENT_FIELDS = {
         frozenset({"status", "reason_code", "thread_id", "discussion_event_id"}),
         ("reason_code", "thread_id", "discussion_event_id")),
     "room.stop_requested": (frozenset({"cancel_id"}), ("cancel_id",))}
-_EPOCH_STAMPED_KINDS = _TERMINAL_EVENT_KINDS | {"message.member", *_GATEWAY_EVENT_FIELDS}
+_EPOCH_STAMPED_KINDS = _TERMINAL_EVENT_KINDS | {
+    "message.member", lead_routing.ASSIGNMENT_EVENT_KIND, router.ROUTED_EVENT_KIND, router.CONTINUED_EVENT_KIND,
+    *_GATEWAY_EVENT_FIELDS}
 
 
 class DiscussionPolicyError(ValueError): """Base class for invalid policy input or unreconstructable state."""
@@ -139,6 +150,8 @@ class DiscussionDecision:
     source_event_seq: int | None = None
     thread_id: str | None = None
     task: DiscussionTaskPlan | None = None
+    #: How many times the user granted this discussion another budget (``room.continued``).
+    continues: int = 0
 
 
 @dataclass(frozen=True)
@@ -463,7 +476,9 @@ def _validate_gateway_event(kind: str, payload: Payload, actor: Payload, room: D
 _EVENT_VALIDATORS = {
     "message.user": _validate_user_event, "message.member": _validate_member_message,
     **dict.fromkeys(_TERMINAL_EVENT_KINDS, _validate_terminal_event),
-    **dict.fromkeys(_GATEWAY_EVENT_FIELDS, _validate_gateway_event)}
+    **dict.fromkeys(_GATEWAY_EVENT_FIELDS, _validate_gateway_event),
+    lead_routing.ASSIGNMENT_EVENT_KIND: lead_routing.validate_assignment_event,
+    router.ROUTED_EVENT_KIND: router.validate_routed_event, router.CONTINUED_EVENT_KIND: router.validate_continued_event}
 
 
 def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _ValidatedEvent:
@@ -549,10 +564,21 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
     return tuple((*members[shift:], *members[:shift]))
 
 
+def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
+    """The job label of a scheduler-authored ``message.user`` event, else None (the human wrote it)."""
+    if event is None or event.kind != "message.user" or scheduled_post_kind(event.actor) is None:
+        return None
+    return str(event.actor.get("display_name") or event.actor.get("id"))
+
+
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
-    if event.kind == "message.user":
+    if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
         return f"User (user): {event.payload['text']}"
+    # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
+    # control-frame relabel as a member reply; only the human's own lines stay verbatim.
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+    if event.kind == "message.user":
+        return f'Scheduled job "{job}" (automated post, not the user): {text}'
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
 
@@ -565,19 +591,39 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
     return prefix + suffix if prefix else suffix.strip()
 
 
+def _context_lines(context: Mapping[str, str] | None) -> list[str]:
+    """Room purpose and shared notes, rendered inside the user-role turn prompt (never the system prompt)."""
+    lines: list[str] = []
+    if context and context.get("purpose"):
+        lines.append(f"Room purpose (set by the user): {context['purpose']}")
+    if context and context.get("notes"):
+        lines += ["Room notes (shared with every member; the user keeps them in room settings):",
+                  *(f"  {line}" for line in context["notes"].splitlines())]
+    return [*lines, ""] if lines else []
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int) -> str:
+    seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
+    addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
-        f"with {peers or 'no other members'} and the user.", "",
+        f"with {peers or 'no other members'} and the user.", "", *_context_lines(context),
         "New messages in this thread since your last turn (oldest first):"]
-    rules = [
-        "", "Rules for this Discussion:",
+    addressed = (f"- The room lead @{assigned_by.handle} gave the user's message to you." if assigned_by
+                 else f'- The scheduled job "{addressed_by_job}" addressed you.' if addressed_by_job
+                 else "- The room picked you to answer the user's message." if routed
+                 else "- The user directly addressed you.")
+    participation = [
+        f"{addressed} Reply with your answer, result, or concrete blocker.",
+        '- Do not return "(pass)". If you cannot proceed, explain why and what you need from the user.',
+    ] if reply_required or assigned_by or routed else [
         "- Reply with one conversational message only when you have something new worth adding.",
-        '- If you have nothing new to add, reply with exactly "(pass)".',
+        '- If you have nothing new to add, reply with exactly "(pass)".']
+    rules = [
+        "", "Rules for this Discussion:", *participation,
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
@@ -598,21 +644,34 @@ def _build_prompt(
     return prompt
 
 
+def _requires_direct_reply(
+    room: DiscussionRoom, source: _ValidatedEvent | None, member: DiscussionMember, round_index: int,
+) -> bool:
+    # Only the user's initial address requires a reply. A later peer handoff may
+    # legitimately pass after this member has already answered that user.
+    return (round_index == 0 and source is not None and source.kind == "message.user"
+            and member in resolve_mentions((str(source.payload["text"]),), room.members, default_all=False))
+
+
 def _make_task_plan(
     *, room: DiscussionRoom, discussion_event: _ValidatedEvent, member: DiscussionMember, member_index: int,
     round_index: int, seen_through_seq: int, prompt: str,
     input_context: Mapping[str, Any] | None = None,
-    attachments: Sequence[Mapping[str, Any]] = ()) -> DiscussionTaskPlan:
+    attachments: Sequence[Mapping[str, Any]] = (), lead_routing: bool = False) -> DiscussionTaskPlan:
     turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
     if attachments:
         attachments = driver.validate_bound_task_manifest(list(attachments))
+    # A routing turn's id omits its prompt: the planner re-mints it on every replay to find its receipt, and
+    # the prompt names the room and roster, which a rename or display-name edit changes after the turn ran.
     seed = compact_json({
         "discussion_event_id": discussion_event.event_id, "member_id": member.member_id, "member_index": member_index,
-        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(), "room_id": room.room_id,
+        **({} if lead_routing else {"prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest()}),
+        "room_id": room.room_id,
         "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
         "thread_id": discussion_event.payload["thread_id"],
         **({"input_context": input_context} if input_context is not None else {}),
-        **({"attachments": attachments} if attachments else {})})
+        **({"attachments": attachments} if attachments else {}),
+        **({"lead_routing": True} if lead_routing else {})})
     identity = driver.TaskIdentity(
         room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
         thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
@@ -623,16 +682,21 @@ def _make_task_plan(
         payload["attachments"] = list(attachments)
     if input_context is not None:
         payload["input_context"] = dict(input_context)
+    if lead_routing:
+        payload["lead_routing"] = True
     return DiscussionTaskPlan(
         identity, payload, discussion_event.event_id, member, member_index, round_index, seen_through_seq)
 
 
 def _pending_discussion(validated: Sequence[_ValidatedEvent]) -> _ValidatedEvent | None:
-    """Oldest latest-per-thread user message not stopped and not yet completed."""
+    """Oldest latest-per-thread user message not stopped and not yet completed. A ``room.continued``
+    reopens a discussion its earlier activity completed (Continue at the cap)."""
     stopped_through_seq = max((event.seq for event in validated if event.kind == "room.stop_requested"), default=0)
+    continued_at = router.continued_through(validated)
     completed_discussion_ids = {
         str(event.payload["discussion_event_id"]) for event in validated
-        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}}
+        if event.kind == "room.activity" and event.payload.get("status") in {"settled", "bounded"}
+        and event.seq > continued_at.get(str(event.payload["discussion_event_id"]), 0)}
     latest_by_thread = {
         str(event.payload["thread_id"]): event for event in validated if event.kind == "message.user"}
     return next((
@@ -703,37 +767,94 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
     return selected, attachments
 
 
+def _first_round_responders(discussion: _ValidatedEvent, room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
+    """The human's message with no mention addresses everyone. A scheduled post is only a message in the
+    room: it pulls in exactly the members it @mentions, and a failure notice pulls in nobody."""
+    scheduled = scheduled_post_kind(discussion.actor)
+    if scheduled == "notice":
+        return ()
+    return resolve_mentions((str(discussion.payload["text"]),), room.members, default_all=scheduled is None)
+
+
+@dataclass(frozen=True)
+class _LeadRound:
+    """Lead routing for one discussion: the routing turn still to run, or who the lead gave it to."""
+    task: DiscussionTaskPlan | None
+    responders: tuple[DiscussionMember, ...]
+    lead: DiscussionMember
+    routing_task_id: str
+
+
+def _lead_round(
+    room: DiscussionRoom, discussion: _ValidatedEvent, validated: Sequence[_ValidatedEvent],
+    context: Mapping[str, str]) -> _LeadRound | None:
+    """None unless the room routes through a lead and this message goes to it (``hosted_room_lead``)."""
+    lead = lead_routing.lead_member(room, context)
+    if lead is None or not lead_routing.routes_through_lead(discussion, room, validated):
+        return None
+    prompt = lead_routing.routing_prompt(
+        room=room, lead=lead, discussion=discussion, context_lines=_context_lines(context))
+    task = _make_task_plan(room=room, discussion_event=discussion, member=lead, member_index=0, round_index=0,
+                           seen_through_seq=discussion.seq - 1, prompt=prompt, lead_routing=True)
+    chosen = lead_routing.first_round_members(room, lead, validated, discussion.event_id, task.identity.task_id)
+    return _LeadRound(task if chosen is None else None, chosen or (), lead, task.identity.task_id)
+
+
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
     freeze_input_context: bool = False,
     limits: DiscussionLimits = DiscussionLimits(),
+    room_context: Mapping[str, Any] | None = None,
 ) -> DiscussionDecision:
-    """Replay the complete room log and return at most one next member task."""
+    """Replay the complete room log and return at most one next member task. ``room_context`` is the
+    room settings in force when the pending discussion opened (``hosted_room_context.room_context``)."""
     room = validate_room(room_value, local_profiles=local_profiles)
+    try:
+        context = validate_context(**{key: str((room_context or {}).get(key) or default) for key, default in (
+            ("purpose", ""), ("notes", ""), ("routing", "everyone"), ("lead_member_id", ""))})
+    except ValueError as exc:
+        raise DiscussionValidationError(str(exc)) from exc
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
     thread_id = str(discussion.payload["thread_id"])
+    continues = router.continue_count(validated, discussion.event_id)
+    # Each Continue grants one more full budget of rounds and messages for the same discussion.
+    max_rounds, max_messages = limits.max_rounds * (continues + 1), limits.max_messages * (continues + 1)
     decide = partial(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
-        thread_id=thread_id)
+        thread_id=thread_id, continues=continues)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
-    if len(member_messages) >= limits.max_messages:
+    if len(member_messages) >= max_messages:
         return decide("bounded", "max_messages")
+    routed = router.routed_responders(room, discussion, validated, context)
+    if routed is router.ROUTE_PENDING:
+        # The router's answer is recorded as ``room.routed`` before any turn is planned, so replay never re-asks.
+        return decide("route", "router_pending")
+    if (lead_round := _lead_round(room, discussion, validated, context)) is not None and lead_round.task:
+        return decide("task", "lead_routing", task=lead_round.task)
+    # The lead's routing receipt is not its round-0 turn: a lead that gave the message to itself still answers.
+    routing_task_id = lead_round.routing_task_id if lead_round else None
     terminals = {
         (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
-        if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
+        if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id
+        and event.payload.get("task_id") != routing_task_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
-    for round_index in range(limits.max_rounds):
+    resume_round = router.resume_round(validated, discussion.event_id, member_messages)
+    for round_index in range(max_rounds):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
         # Bot and not heard from afterward gets another turn. Every member's
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
         responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
+            (lead_round.responders if lead_round else routed if routed is not None
+             else _first_round_responders(discussion, room)) if round_index == 0
             else _unaddressed_member_mentions(discussion_messages, room))
+        if not responders and round_index == resume_round:
+            # The round after the pause: with nobody cited, the whole room picks the discussion back up.
+            responders = room.members
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
             delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)
@@ -742,7 +863,10 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
+                seen_through_seq=seen_through_seq, context=context, addressed_by_job=_scheduled_job(discussion),
+                reply_required=_requires_direct_reply(room, discussion, member, round_index),
+                assigned_by=lead_round.lead if lead_round and round_index == 0 and member != lead_round.lead else None,
+                routed=round_index == 0 and routed is not None and len(routed) < len(room.members))
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
@@ -750,9 +874,20 @@ def plan_next_task(
                     if freeze_input_context or attachments else None)))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
-        if round_index == limits.max_rounds - 1:
+        if round_index == max_rounds - 1:
             return decide("bounded", "max_rounds")
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
+
+
+def _reconstructed_lead_routing(payload: Mapping[str, Any], match: re.Match[str], source_event_seq: int) -> bool:
+    """A persisted routing turn keeps the only coordinates ``_lead_round`` mints: round 0, position 0,
+    seeing through the message before its own, with no frozen input or files."""
+    if "lead_routing" not in payload:
+        return False
+    if payload["lead_routing"] is not True or (match.group("round"), match.group("position")) != ("0", "0") or (
+            int(match.group("seen")) != source_event_seq - 1 or {"input_context", "attachments"} & set(payload)):
+        raise DiscussionReconstructionError("lead routing task does not match its turn_id")
+    return True
 
 
 def reconstruct_task_plan(
@@ -808,10 +943,11 @@ def reconstruct_task_plan(
         by_seq = {event.seq: event for event in validated}
         attachments = [item for seq in input_context["event_seqs"]
                        for item in _event_attachments(by_seq[seq], member)]
+    lead_routing = _reconstructed_lead_routing(payload, match, source_event_seq)
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
-        input_context=input_context, attachments=attachments)
+        input_context=input_context, attachments=attachments, lead_routing=lead_routing)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -896,12 +1032,23 @@ def plan_publication(
         event.kind == "message.user" and event.seq > int(task.payload["source_event_seq"])
         and event.payload.get("thread_id") == task.identity.thread_id for event in validated)
     effective_status: TerminalKind = ("cancelled" if newer_same_thread and status != "deferred" else status)
+    source = next((event for event in validated if event.event_id == task.discussion_event_id), None)
+    if (effective_status == "settled" and _requires_direct_reply(room, source, task.member, task.round_index)
+            and is_pass_text(_terminal_text(result, field="text", fallback=""))):
+        # The execution completed, but did not answer the user. Publish that
+        # failure from the durable receipt without replaying any tools or model calls.
+        effective_status = "failed"
+        result = {"error": f"@{task.member.handle} was directly addressed but returned no visible reply."}
     digest = task.identity.task_id.removeprefix("dtask:")
     terminal_event_id = (
         f"ddeferred:{digest}:g{execution_generation}" if effective_status == "deferred" else f"dterminal:{digest}")
+    routing = lead_routing.is_routing_task(task)
+    # A routing answer is never published as a reply: it becomes the room.assignment ahead of the receipt.
     extra, effects = _TERMINAL_EFFECTS[effective_status](
-        result, task=task, room=room, message_event_id=f"dmessage:{digest}", newer_same_thread=newer_same_thread,
-        execution_generation=execution_generation)
+        "(pass)" if routing and effective_status == "settled" else result, task=task, room=room, message_event_id=f"dmessage:{digest}",
+        newer_same_thread=newer_same_thread, execution_generation=execution_generation)
+    if routing:
+        effects = lead_routing.assignment_effect(result, task=task, room=room, status=effective_status) + effects
     terminal_kind = f"turn.{effective_status}"
     effects.append(EventPlan(
         event_id=terminal_event_id, kind=terminal_kind, actor={"kind": "gateway", "id": room.gateway_id},

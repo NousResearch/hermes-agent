@@ -20,6 +20,7 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -161,16 +162,21 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
 BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
-# Deleted core tools: setup_choose/start_chat with the old setup flow; the built-in browser_* tools with
-# agent-browser (the camofox plugin's same-named tools record as ``plugin``). v4 only adds values, and rows
-# older releases saved with these names must still package; recording maps through the live sets
-# (tool_metric_name, toolset_metric_name).
+# Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup
+# flow; the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as
+# ``plugin``); the five browser_vault_* tools folded into one browser_vault; spotify_* when Spotify left core
+# for its catalog plugin. v4 only adds values, and rows older releases saved with these names must still
+# package; recording maps through the live sets (tool_metric_name, toolset_metric_name).
 RETIRED_TOOL_NAMES = frozenset({
     "setup_choose", "start_chat",
     "browser_back", "browser_click", "browser_console", "browser_get_images", "browser_navigate",
     "browser_press", "browser_scroll", "browser_snapshot", "browser_type", "browser_vision",
+    "browser_vault_enter_code", "browser_vault_fill", "browser_vault_list", "browser_vault_save_login",
+    "browser_vault_unlock",
+    "spotify_albums", "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
+    "spotify_queue", "spotify_search",
 })
-RETIRED_TOOLSET_NAMES = frozenset({"setup", "start_chat"})
+RETIRED_TOOLSET_NAMES = frozenset({"setup", "spotify", "start_chat"})
 _LIVE_TOOL_NAMES = BUILTIN_TOOL_NAMES | BRIDGE_TOOL_NAMES | {"connector", "mcp", "plugin", "unknown"}
 TOOL_NAMES = _LIVE_TOOL_NAMES | RETIRED_TOOL_NAMES
 TOOL_ERROR_CLASSES = frozenset({
@@ -334,7 +340,7 @@ PLATFORM_ERROR_CLASSES = frozenset({"none", "auth", "network", "rate_limited", "
 DELIVERY_OUTCOMES = frozenset({"sent", "failed"})
 DELIVERY_FAILURE_CLASSES = frozenset({"none", "rate_limited", "too_long", "auth", "network", "forbidden", "other"})
 REPLY_LATENCY_BUCKETS = frozenset({"lt_2s", "2s_to_5s", "5s_to_15s", "15s_to_60s", "gte_60s"})
-CRON_RUN_OUTCOMES = frozenset({"success", "failed", "missed", "skipped"})
+CRON_RUN_OUTCOMES = frozenset({"success", "failed", "missed", "skipped", "cancelled"})
 CRON_DELIVERY_KINDS = frozenset({"local", "platform", "webhook", "none", "other"})
 
 # ---- v4 install ----
@@ -1019,7 +1025,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     # ---- v5 engagement ----
     ENGAGEMENT_DAY_METRIC: {
         "active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "active_profile_count_bucket": SIZE_BUCKETS,
-        "surfaces_used_count": SURFACES_USED_BUCKETS,
+        "surfaces_used_count": SURFACES_USED_BUCKETS, BUSY_PEAK_FIELD: COUNT_BUCKETS,
     },
     ENGAGEMENT_SURFACE_METRIC: {"active_minutes_bucket": ACTIVE_MINUTES_BUCKETS, "surface": ENGAGEMENT_SURFACES},
     MODEL_SWITCH_AFTER_METRIC: {"turns_before_switch_bucket": TURNS_BEFORE_SWITCH_BUCKETS},
@@ -1063,6 +1069,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     # ---- end v4 connectors ----
     PREPARED_COMPACTION_METRIC: {**PREPARED_COMPACTION_DIMENSIONS, "failure_class": COMPRESSION_FAILURE_CLASSES},
+    BUSY_ARRIVAL_METRIC: {"disposition": BUSY_ARRIVAL_DISPOSITIONS, "platform": ADAPTER_PLATFORMS, "wait_bucket": BUSY_WAIT_BUCKETS},
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1159,6 +1166,7 @@ _LEGACY_METRIC_FIELDS[EXTENSION_INSTALL_METRIC] = (
 )
 _LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - {"failure_class"},)
 # ---- end iuf c1 ----
+_LEGACY_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] = (_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] - {BUSY_PEAK_FIELD},)  # busy-wait
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
 SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
@@ -1215,6 +1223,7 @@ _DECISION_MARK_METRICS = {
     # ---- end iuf c2 ----
     TOOL_SEARCH_MARK: TOOL_SEARCH_METRIC, TOOL_BATCH_MARK: TOOL_BATCH_METRIC,
     CONNECTOR_CHAIN_MARK: CONNECTOR_CHAIN_METRIC, PREPARED_COMPACTION_MARK: PREPARED_COMPACTION_METRIC,
+    BUSY_ARRIVAL_METRIC: BUSY_ARRIVAL_METRIC,  # busy-wait: the gateway marks under the metric's own name
 }
 
 

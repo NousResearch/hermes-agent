@@ -145,6 +145,17 @@ def _copy(result: dict[str, Any]) -> dict[str, Any]:
     return {**result, "warnings": list(result["warnings"])}
 
 
+def forget_inspection(identifier: str, *, catalog_name: Optional[str] = None) -> None:
+    """Drop the kept answer for this source in the current profile home once an install consumed it: a
+    source that moved since must be read afresh when the dialog re-opens, not served for the rest of
+    :data:`_RESULT_TTL_SECONDS`. A read still running is left for the requests joined to it."""
+    from hermes_constants import get_hermes_home
+    key = (str(get_hermes_home()), catalog_name or "", identifier)
+    with _inspections_lock:
+        if _inspections.get(key, [None, None])[1] is not None:
+            del _inspections[key]
+
+
 def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
     pc = _pc()
     revision = None

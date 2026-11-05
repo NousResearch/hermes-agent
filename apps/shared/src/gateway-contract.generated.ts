@@ -649,6 +649,7 @@ export interface SetupRuntimeCheckResult {
   model?: string | null
   source?: string | null
   error?: string | null
+  error_code?: string | null
   free_tier_route?: boolean | null
   profile?: string | null
 }
@@ -856,6 +857,7 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   ultrafast?: boolean
+  daybreak?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
@@ -908,6 +910,23 @@ export interface ImageGenerateResult {
   image?: string | null
   image_data?: string | null
   error?: string | null
+}
+export interface ImageRenderParams {
+  path: string
+  cols: number
+  rows: number
+  graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
+}
+/** ``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``) as half-blocks. ``off``: inline images are disabled or the file is not a readable image. */
+export interface ImageRenderResult {
+  mode: 'kitty' | 'unicode' | 'off'
+  cols?: number | null
+  rows?: number | null
+  color?: string | null
+  transmit?: string | null
+  placeholder?: string[] | null
+  cells?: number[][][] | null
 }
 export interface SessionControlReadParams {
   profile?: string | null
@@ -1088,6 +1107,7 @@ export interface ConnectionOperationTarget {
   alias?: string | null
   attempt?: string | null
   required_env?: ConnectionTargetEnvField[] | null
+  launch?: ConnectionTargetLaunch | null
   tools?: string[] | null
   hint?: string | null
   display?: string | null
@@ -1122,6 +1142,14 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
+/** What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed display text, never env values or headers. */
+export interface ConnectionTargetLaunch {
+  kind: ConnectionTargetLaunchKind
+  target: string
+  env?: string[] | null
+  cwd?: string | null
+}
+export type ConnectionTargetLaunchKind = 'remote' | 'stdio'
 export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {
@@ -1630,6 +1658,7 @@ export interface GroupsStateParams {
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
+  context?: RoomContext | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken). ``member_activity`` lists live tasks in admission order (absent from older gateways). ``last_error`` is this room's last preparation failure, null once one succeeds. */
 export interface RoomDriverStatus {
@@ -1640,17 +1669,32 @@ export interface RoomDriverStatus {
   pending_actions: Record<string, unknown>[]
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
+  max_rounds?: number | null
+  max_continues?: number | null
+  routing_modes?: string[] | null
   peer_routes: PeerRouteStatus[]
 }
-/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
 export interface RoomMemberActivity {
   member_id: string
   status: string
+  thread_id?: string | null
+  round_index?: number | null
+  started_at?: number | null
+  tool?: string | null
+  progress_at?: number | null
 }
 export interface PeerRouteStatus {
   room_id: string
   member_id: string
   status: string
+}
+/** ``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn prompt carries (inside the user-role message). */
+export interface RoomContext {
+  purpose: string
+  notes: string
+  routing?: 'everyone' | 'lead' | 'auto'
+  lead_member_id?: string
 }
 export interface GroupsSendParams {
   profile?: string | null
@@ -1672,6 +1716,19 @@ export interface GroupsRenameParams {
 }
 export interface GroupsRenameResult {
   room: Room
+}
+export interface GroupsContextParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  purpose: string
+  notes: string
+  routing?: 'everyone' | 'lead' | 'auto' | null
+  lead_member_id?: string | null
+}
+export interface GroupsContextResult {
+  context: RoomContext
+  event: RoomEvent
 }
 export interface GroupsLogParams {
   profile?: string | null
@@ -1714,6 +1771,15 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+}
+export interface GroupsContinueParams {
+  profile?: string | null
+  room_id: string
+  discussion_event_id: string
+}
+export interface GroupsContinueResult {
+  continued?: boolean
+  event: RoomEvent
 }
 export interface GroupsApproveParams {
   profile?: string | null
@@ -1904,19 +1970,20 @@ export interface BotRelayReplyParams {
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
-/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. */
+/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. ``surfaces`` are the surfaces some layer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface, since picking it would only show English. */
 export interface LanguageOption {
   id: string
   endonym: string
   rtl: boolean
   source: string
+  surfaces: LocaleSurface[]
 }
+export type LocaleSurface = 'core' | 'tui' | 'desktop'
 export interface I18nCatalogParams {
   profile?: string | null
   lang: string
   surface?: LocaleSurface
 }
-export type LocaleSurface = 'core' | 'tui' | 'desktop'
 /** ``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the client merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request resolved to (``pt-BR`` → ``pt-br``; an unknown id resolves to ``en`` with an empty layer). */
 export interface I18nCatalogResult {
   lang: string
@@ -1937,6 +2004,7 @@ export interface ClientCapabilitiesParams {
 export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
+  canonical_clarify_batch?: boolean
 }
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
@@ -2386,6 +2454,14 @@ export interface FailedDelegation {
   dispatched_at?: number | null
   completed_at?: number | null
 }
+export interface SubagentRosterResult {
+  sessions?: SubagentRosterEntry[]
+}
+export interface SubagentRosterEntry {
+  session_id: string
+  subagents?: number
+  background?: number
+}
 export interface SubagentIdParams {
   session_id: string
   profile?: string | null
@@ -2664,6 +2740,7 @@ export interface PetCellsParams {
   state?: string | null
   cols?: number | null
   graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
 }
 /** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
 export interface PetCellsResult {
@@ -4272,6 +4349,7 @@ export interface McpServerRuntimeRow {
   status: McpRuntimeStatus
   source: McpServerSource
   plugin?: string | null
+  needs_auth?: boolean
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
@@ -4388,7 +4466,7 @@ export interface PluginToolsetRow {
   label: string
   description: string
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto the host that serves this client; ``remove_desktop``: ``name`` (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields; ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4400,11 +4478,12 @@ export interface PluginsManageParams {
   catalog_name?: string | null
   force?: boolean | null
   ref?: string | null
+  inspected_sha?: string | null
   accept_capabilities?: boolean | null
   values?: Record<string, unknown> | null
   names?: string[] | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'install_desktop' | 'remove_desktop' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence' | 'update_all' | 'auto_update'
 /** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
@@ -4441,6 +4520,14 @@ export interface PluginsManageResult {
   agent_name?: string | null
   desktop_name?: string | null
   insecure?: boolean | null
+  path?: string | null
+  paired_with_agent?: boolean | null
+  unpaired_from?: string | null
+  results?: PluginUpdateAllRow[] | null
+  skipped?: PluginUpdateAllSkip[] | null
+  current?: number | null
+  auto_apply?: boolean | null
+  check_hours?: number | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -4538,6 +4625,17 @@ export interface CatalogPluginPresence {
   state: CatalogAppState
   sentence: string
   disclosure: string
+}
+/** One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the plugin or its scan returned caution; the plugin's own ``update`` walks that review. */
+export interface PluginUpdateAllRow {
+  name: string
+  status: PluginUpdateAllStatus
+  detail?: string
+}
+export type PluginUpdateAllStatus = 'updated' | 'current' | 'failed' | 'needs_review'
+export interface PluginUpdateAllSkip {
+  name: string
+  reason: string
 }
 export interface PluginCatalogLookupParams {
   profile?: string | null
@@ -4711,6 +4809,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   source: string
   model?: string | null
   lazy: boolean
@@ -5045,6 +5144,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -5241,6 +5341,7 @@ export interface CanonicalConfigGetResult {
   mcp_rev?: string | null
   key?: string | null
   scope?: string | null
+  options?: ('normal' | 'fast' | 'auto' | 'cold' | 'ultrafast')[] | null
 }
 /** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {
@@ -5334,6 +5435,18 @@ export interface CanonicalBotDeliverResult {
   retry_admission_id?: string | null
   error?: string | null
   reason?: string | null
+  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
+}
+export interface CanonicalBotCancelParams {
+  profile?: string | null
+  id: string
+  author_id?: string | null
+}
+/** ``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending automatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished`` (nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it. */
+export interface CanonicalBotCancelResult {
+  delivery_id: string
+  status: 'cancelled' | 'stopping' | 'finished'
+  receipt_status: string
 }
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
@@ -5804,6 +5917,7 @@ export interface ToolCompletePayload {
   todos?: unknown[] | null
   revision?: number | null
   labels?: ToolLabel[] | null
+  image_path?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {
@@ -6159,6 +6273,10 @@ export interface RpcMethods {
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
+  /** Set one hosted room's purpose and shared notes; members see them from the next message. */
+  'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
+  /** Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued. */
+  'groups.continue': { params: GroupsContinueParams; result: GroupsContinueResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6211,6 +6329,8 @@ export interface RpcMethods {
   'image.detach': { params: ImageDetachParams; result: ImageDetachResult }
   /** Generate an image through the tool's provider dispatcher and hand the renderer a data URL. */
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
+  /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
+  'image.render': { params: ImageRenderParams; result: ImageRenderResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -6485,6 +6605,8 @@ export interface RpcMethods {
   'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session. */
+  'subagent.roster': { params: ProfileParams; result: SubagentRosterResult }
   /** Queue steering text into a live delegated child owned by this session. */
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
@@ -6613,6 +6735,8 @@ export const RPC_METHODS = [
   'groups.attachment.download',
   'groups.attachment.upload',
   'groups.capabilities',
+  'groups.context',
+  'groups.continue',
   'groups.create',
   'groups.demote',
   'groups.disband',
@@ -6639,6 +6763,7 @@ export const RPC_METHODS = [
   'image.attach_bytes',
   'image.detach',
   'image.generate',
+  'image.render',
   'input.detect_drop',
   'insights.get',
   'learning.delete',
@@ -6776,6 +6901,7 @@ export const RPC_METHODS = [
   'spawn_tree.save',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.roster',
   'subagent.steer',
   'subagent.tail',
   'subscription.change',
@@ -6814,6 +6940,7 @@ export interface CanonicalRpcMethods {
   /** Forward one A2A input into the conversation its identity tuple names. */
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
+  'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
@@ -6894,6 +7021,7 @@ export type CanonicalRpcMethod = keyof CanonicalRpcMethods
 export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
   'approval.respond',
+  'bot_relay.cancel',
   'bot_relay.deliver',
   'bot_relay.settle',
   'clarify.lock',

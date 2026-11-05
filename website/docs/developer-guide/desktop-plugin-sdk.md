@@ -2150,6 +2150,11 @@ pipeline as the standalone disk door (hot reload included):
 
 The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
 imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+A `plugin.js` at the package root works too, as it does for a standalone
+install: the root `plugin.js` wins over `desktop/plugin.js`, and the whole
+package folder is copied as the desktop half (without `.git` and
+`__pycache__`). It must hold no symlinks and stay under 64 MB, or nothing is
+copied.
 Installing, sharing, or removing the feature is one folder: the app-root copy
 is refreshed when the source `plugin.js` changes (`hermes plugins update`, or
 **Rescan**) and removed when the package folder disappears. The copy is what

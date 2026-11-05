@@ -14,7 +14,8 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   needs as a child holding the fd (and start the daemon under it), so before a move the objects
   are fetched without the fd and with the user's helpers (:func:`_prefetch_for_move`); a lazy
   fetch the prefetch missed still runs, just without a helper. A killed fetch that leaves
-  ``*.lock`` ref files is recovered by the stale-lock rules (``gitlock.clear_stale_git_locks``).
+  ``*.lock`` ref files or ``shallow.lock`` is recovered by the stale-lock rules (``gitlock.release_dead_fetch_locks``
+  once its update is proven dead, ``gitlock.clear_stale_git_locks`` by age otherwise).
 * Windows has no fd inheritance: while this process holds (or joined) the checkout lock, every
   child started here is created SUSPENDED, assigned to the update's kill-on-close job and only
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
@@ -362,6 +363,7 @@ def _owner_watch(pid: int):
     read_end, write_end = os.pipe()  # non-inheritable: no other child keeps the owner's end open
     try:
         watcher = subprocess.Popen([sys.executable, "-I", "-S", "-c", _OWNER_WATCH, str(pid)], stdin=read_end,
+                                   # detached-spawn: ok — the owner-death watchdog itself: it must outlive the owner to kill the fetch
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as exc:
         os.close(write_end)
@@ -405,6 +407,7 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict, *, watch_owner: bool =
         kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    # detached-spawn: ok — awaited; _owner_watch kills a fetch's group on owner death, and a mutator must finish its write
     with subprocess.Popen(list(argv), start_new_session=True, **kwargs) as proc:
         dismiss = _owner_watch(proc.pid) if watch_owner else None
         try:

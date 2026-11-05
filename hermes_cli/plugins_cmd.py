@@ -95,6 +95,13 @@ class PluginOperationError(Exception):
             self.failure_class = failure_class
 
 
+class PluginSourceMoved(PluginOperationError):
+    """The source is no longer at the commit the install dialog reviewed. Clients answer it by reading
+    the source again (``plugins.manage`` error ``data.reason == "source_moved"``), never by resending."""
+
+    failure_class = "clone_failed"
+
+
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
 
@@ -1086,6 +1093,20 @@ def _action_update(args):
     cmd_update_all(yes=getattr(args, "yes", False))
 
 
+def _action_auto_update(args):
+    from hermes_cli.plugins_auto_update import auto_update_state, set_auto_update
+    console = _console()
+    state = getattr(args, "state", None)
+    try:
+        current = auto_update_state() if state is None else set_auto_update(state == "on")
+    except PluginOperationError as exc:
+        _fail(console, f"[red]Error:[/red] {exc}")
+    word = "[green]on[/green]" if current["auto_apply"] else "[dim]off[/dim]"
+    cadence = (f"checked every {current['check_hours']:g}h by the gateway" if current["check_hours"] > 0
+               else "the gateway's check is off: plugins.auto_update_check_hours is 0")
+    console.print(f"Plugin auto-update: {word} ({cadence}; updates load in new sessions)")
+
+
 def _action_pack(args):
     from hermes_cli.plugin_packs import pack_command
     pack_command(args)
@@ -1107,6 +1128,8 @@ _PLUGIN_ACTIONS = {
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
     "update": _action_update,
+    "auto-update": _action_auto_update,
+    "autoupdate": _action_auto_update,
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

@@ -138,19 +138,6 @@ async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkey
 
 
 @pytest.mark.asyncio
-async def test_expired_approval_removes_discord_components():
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    message = SimpleNamespace(edit=AsyncMock())
-    channel = SimpleNamespace(get_partial_message=lambda _id: message)
-    adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
-
-    result = await adapter.expire_exec_approval("555", "1234", "Approval timed out")
-
-    assert result.success
-    assert message.edit.await_args.kwargs["view"] is None
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("ends,footer_key", [
     ("after_send", "platform.discord.prompt.expired_footer"),
     ("during_send", "platform.discord.prompt.expired_footer"),

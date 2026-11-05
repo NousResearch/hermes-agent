@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — cambia modello"
     usage_switch_provider: "`/model <name> --provider <slug>` — cambia provider"
     usage_persist: "`/model <name> --global` — rendi permanente"
+    usage_reset: "`/model reset` — rimuovi l'override di questa sessione"
+    reset_done: "Override del modello di sessione rimosso — ora in uso `{model}` (predefinito del canale/globale). Cronologia della conversazione conservata."
+    reset_none: "Nessun override del modello attivo in questa sessione — già in uso `{model}` (predefinito del canale/globale)."
     err_skew: "Questo gateway esegue il codice di {boot_rev}, ma il checkout su disco è ora {disk_rev}. Cambiare modello rischierebbe un crash per moduli obsoleti — riavvia il gateway per caricare il nuovo codice: hermes gateway restart"
     err_switch_failed: "Passaggio al modello {model} non riuscito ({error}); resto su {current}."
     err_config_not_updated: "config.yaml non aggiornato ({error})"
@@ -1368,6 +1371,12 @@ platform:
       unauthorized: "Solo un utente Matrix autorizzato può usare questi controlli."
       not_requester: "Solo l'utente che ha richiesto questa azione può usare questi controlli."
   feishu:
+    clarify:
+      title: "Hermes ha bisogno del tuo contributo"
+      other: "✏️ Altro (digita)"
+      awaiting_typed: "In attesa della risposta digitata da {user}…"
+    picker:
+      apply_error: "Errore nell'applicare la selezione: {error}"
     approval:
       action_session: "Sessione"
       action_always: "Sempre"
@@ -2009,6 +2018,8 @@ cli:
     usage_switch_reasoning: "cambia e imposta il livello di ragionamento"
     usage_switch_provider: "cambia provider"
     usage_refresh: "ricarica gli elenchi dei modelli disponibili"
+    reset_none: "Già sul predefinito configurato ({model}) — niente da ripristinare."
+    reset_no_default: "Nessun model.default in config.yaml — niente a cui tornare."
     choice_switch_anyway: "Cambia comunque"
     desc_switch_anyway: "Usa questo modello per la sessione Hermes corrente."
     choice_cancel: "Annulla"
@@ -2159,6 +2170,7 @@ cli:
     images_attached_other: "📎 {count} immagini allegate"
     command_interrupted: "Comando interrotto."
     welcome: "Benvenuto in Hermes Agent! Digita il tuo messaggio o /help per i comandi."
+    vscode_images_hint: "VS Code può mostrare qui le immagini a piena risoluzione: attiva terminal.integrated.enableImages nelle impostazioni."
     activated_skills_label: "Skill attivate:"
     redaction_disabled_title: "⚠  La redazione dei segreti è DISATTIVATA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Chiavi API e token potrebbero comparire in chiaro nell'output della chat, nei JSON di sessione e nei log. Imposta {setting} in config.yaml per riattivarla."
@@ -2613,6 +2625,7 @@ cli:
     goal_turns: "⊙ obiettivo {used}/{max}"
     goal: "⊙ obiettivo"
     ctx_pinned: " fissato"
+    ctx_fallback: " predefinito"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} elemento)"

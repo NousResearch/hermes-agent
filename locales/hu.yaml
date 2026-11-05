@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — modell váltása"
     usage_switch_provider: "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist: "`/model <name> --global` — megőrzés"
+    usage_reset: "`/model reset` — a munkamenet felülbírálásának törlése"
+    reset_done: "A munkamenet modell-felülbírálása törölve — mostantól a `{model}` (csatorna/globális alapértelmezés) van használatban. A beszélgetés előzményei megmaradnak."
+    reset_none: "Nincs aktív modell-felülbírálás ebben a munkamenetben — már a `{model}` (csatorna/globális alapértelmezés) van használatban."
     err_skew: "Ez az átjáró a(z) {boot_rev} revízió kódját futtatja, de a lemezen már a(z) {disk_rev} van kicsekkolva. A modellváltás elavult modul miatti összeomlást kockáztatna — indítsd újra az átjárót az új kód betöltéséhez: hermes gateway restart"
     err_switch_failed: "A(z) {model} modellre váltás nem sikerült ({error}); marad: {current}."
     err_config_not_updated: "a config.yaml nem frissült ({error})"
@@ -1385,6 +1388,12 @@ platform:
       unauthorized: "Ezeket a vezérlőket csak jogosult Matrix-felhasználó használhatja."
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
   feishu:
+    clarify:
+      title: "A Hermes a válaszodra vár"
+      other: "✏️ Egyéb (írd be a választ)"
+      awaiting_typed: "Várakozás {user} beírt válaszára…"
+    picker:
+      apply_error: "Hiba a választás alkalmazásakor: {error}"
     approval:
       action_session: "Munkamenet"
       action_always: "Mindig"
@@ -2026,6 +2035,8 @@ cli:
     usage_switch_reasoning: "váltás és gondolkodási szint beállítása"
     usage_switch_provider: "szolgáltató váltása"
     usage_refresh: "élő modellisták újratöltése"
+    reset_none: "Már a beállított alapértelmezés ({model}) van használatban — nincs mit visszaállítani."
+    reset_no_default: "Nincs model.default a config.yaml-ban — nincs mire visszaállni."
     choice_switch_anyway: "Váltás mindenképp"
     desc_switch_anyway: "Ennek a modellnek a használata a jelenlegi Hermes-munkamenetben."
     choice_cancel: "Mégse"
@@ -2176,6 +2187,7 @@ cli:
     images_attached_other: "📎 {count} kép csatolva"
     command_interrupted: "Parancs megszakítva."
     welcome: "Üdv a Hermes Agentben! Írd be az üzenetedet, vagy a /help paranccsal nézd meg a parancsokat."
+    vscode_images_hint: "A VS Code itt teljes felbontású képeket is meg tud jeleníteni: kapcsold be a(z) terminal.integrated.enableImages beállítást."
     activated_skills_label: "Aktivált skillek:"
     redaction_disabled_title: "⚠  A titkok kitakarása KI VAN KAPCSOLVA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Az API-kulcsok és tokenek szó szerint megjelenhetnek a chatkimenetben, a munkamenet-JSON-okban és a naplókban. A visszakapcsoláshoz állítsd be a config.yaml fájlban: {setting}."
@@ -2630,6 +2642,7 @@ cli:
     goal_turns: "⊙ cél {used}/{max}"
     goal: "⊙ cél"
     ctx_pinned: " rögzítve"
+    ctx_fallback: " alapértelmezett"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Félretéve ({count} elem)"

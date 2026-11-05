@@ -1,0 +1,32 @@
+name: africastalking
+repo: https://github.com/geraldkombo/hermes-africastalking
+sha: "149a2c1e2edc20679da17da52534730a72ef6ea2"
+subdir: africastalking
+description: >
+  Africa's Talking platform adapter: talk to Hermes over SMS (two-way) and USSD
+  menus from any phone — feature phones included, no internet and no app
+  required. Hosts a local webhook server for inbound callbacks (optional
+  constant-time ?secret= guard) and sends replies through Africa's Talking's
+  REST API with word-boundary splitting into 160-char parts and a hard cap so
+  agent essays cannot become unbounded SMS bills. Cron delivery via a
+  standalone sender, gateway setup wizard, bundled setup skill, and 53 offline
+  tests. Works fully on the free AT sandbox; production shortcodes are the
+  user's own AT account. Disclosures: outbound HTTPS to api.africastalking.com
+  only; binds 127.0.0.1:8055 for callbacks (user must tunnel it deliberately);
+  credentials via requires_env/scoped secrets only; phone numbers masked in
+  logs; no telemetry, no self-update, no binaries, stdlib client + core aiohttp.
+maintainer: geraldkombo
+tier: community
+category: platform
+version: "1.0.0"
+requires_hermes: ">=0.22"
+docs_url: https://github.com/geraldkombo/hermes-africastalking#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AT_USERNAME
+    - AT_API_KEY

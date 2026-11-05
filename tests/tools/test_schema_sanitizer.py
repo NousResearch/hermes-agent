@@ -630,3 +630,94 @@ def test_registered_tool_schemas_stay_inside_llama_cpp_repetition_limit():
                 if isinstance(val, int) and val >= 2000:
                     offenders.append((name, key, val))
     assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# #133466: nested nullable unions must not re-walk already-normalized subtrees
+# ---------------------------------------------------------------------------
+
+
+def _nested_nullable_schema(depth: int) -> dict:
+    """``depth`` nested optional-object levels, each a nullable ``anyOf`` union."""
+    schema = {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"]}
+    for _ in range(depth):
+        schema = {
+            "type": "object",
+            "required": [],
+            "properties": {"child": {"anyOf": [schema, {"type": "null"}], "default": None}},
+        }
+    return schema
+
+
+def test_nested_nullable_unions_collapse_without_superlinear_work(monkeypatch):
+    """A nested nullable chain must be normalized in one bottom-up pass.
+
+    ``_rewrite`` already normalizes a node's children before the callback sees it, so the
+    ``collapse`` callback re-walking its replacement re-traverses an already-normalized
+    subtree — once per enclosing union. Measured before the fix: 13,255 walker calls for a
+    583-node schema (depth 8: 319 calls / 79 nodes) — ~4x depth cost ~10x work. Through one
+    pass the call count is proportional to the node count.
+    """
+    from tools import schema_sanitizer as ss
+
+    calls = 0
+    real_rewrite = ss._rewrite
+
+    def counting(schema, fn):
+        nonlocal calls
+        calls += 1
+        return real_rewrite(schema, fn)
+
+    monkeypatch.setattr(ss, "_rewrite", counting)
+
+    depth = 64
+    schema = _nested_nullable_schema(depth)
+    out = ss.strip_nullable_unions(schema, keep_nullable_hint=True)
+
+    node = out
+    collapsed = 0
+    while isinstance(node, dict) and "properties" in node:
+        child = node["properties"].get("child")
+        if not isinstance(child, dict):
+            break
+        node = child
+        collapsed += 1
+    assert collapsed <= depth
+
+    def _nodes(n):
+        if isinstance(n, dict):
+            return 1 + sum(_nodes(v) for v in n.values())
+        if isinstance(n, list):
+            return 1 + sum(_nodes(v) for v in n)
+        return 1
+
+    size = _nodes(schema)
+    # One pass visits each node a constant number of times; the old re-walk ran ~23x that.
+    assert calls <= 2 * size, f"walker ran {calls} times over a {size}-node schema — superlinear re-walk"
+
+
+def test_nested_nullable_chain_preserves_hint_and_metadata():
+    """The collapsed chain keeps ``nullable: true`` and outer union metadata at every level."""
+    from tools import schema_sanitizer as ss
+
+    schema = {"anyOf": [{"description": "outer", "anyOf": [{"type": "string"}, {"type": "null"}]},
+                        {"type": "null"}]}
+    out = ss.strip_nullable_unions(schema, keep_nullable_hint=True)
+    assert out.get("nullable") is True, out
+    assert out.get("type") == "string", out
+    assert out.get("description") == "outer", out
+
+
+def test_nested_nullable_chain_identical_to_single_level_result():
+    """Wrapping one nullable union in more nullable unions must not change the result shape."""
+    from tools import schema_sanitizer as ss
+
+    leaf = {"type": "string"}
+    single = ss.strip_nullable_unions({"anyOf": [dict(leaf), {"type": "null"}]}, keep_nullable_hint=True)
+    wrapped = ss.strip_nullable_unions(
+        {"anyOf": [{"anyOf": [{"anyOf": [dict(leaf), {"type": "null"}]}, {"type": "null"}]},
+                   {"type": "null"}]},
+        keep_nullable_hint=True,
+    )
+    assert wrapped == single, (wrapped, single)
+

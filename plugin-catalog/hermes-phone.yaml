@@ -1,6 +1,6 @@
 name: hermes-phone
 repo: https://github.com/winchxyz/hermes-phone
-sha: b6ef97e99b126aaedd0e480084ac00ec74000571
+sha: 5c35048c5ed44504019a6c8543239bbb7c263fd6
 description: >-
   Let your Hermes agent place real phone calls for you with explicit approval.
   It shows a brief card and dials only after you reply "call" (or tap Call),
@@ -21,11 +21,11 @@ category: voice
 title: Hermes Phone
 docs_url: https://github.com/winchxyz/hermes-phone#readme
 version: "0.1.0"
-image: https://raw.githubusercontent.com/winchxyz/hermes-phone/b6ef97e99b126aaedd0e480084ac00ec74000571/docs/assets/banner.png
+image: https://raw.githubusercontent.com/winchxyz/hermes-phone/5c35048c5ed44504019a6c8543239bbb7c263fd6/docs/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: [phone_prepare, phone_call, phone_status, phone_transcript]
-  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_hooks: [pre_tool_call, pre_llm_call, transform_llm_output]
   provides_middleware: []
   requires_env:
     - TWILIO_ACCOUNT_SID

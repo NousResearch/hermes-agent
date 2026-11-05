@@ -154,10 +154,6 @@ export const itSettingsModels = {
           label: 'Compressione',
           hint: 'Compattazione del contesto'
         },
-        skills_hub: {
-          label: 'Hub delle skill',
-          hint: 'Ricerca delle skill'
-        },
         approval: {
           label: 'Approvazione',
           hint: 'Approvazione automatica intelligente'

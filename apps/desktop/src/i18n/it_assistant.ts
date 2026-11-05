@@ -134,6 +134,17 @@ export const itAssistant = {
       updateConsentBody: (name: string, sha: string) =>
         `Il nuovo commit fissato di ${name} nel catalogo (${sha}) aggiunge superfici che la versione installata non ha. Applicalo solo se ti fidi di esse:`,
       updateConsentConfirm: 'Applica aggiornamento',
+      updateAll: 'Aggiorna tutti',
+      updatingAll: 'Aggiornamento…',
+      updateAllTip: 'Controlla ogni plugin installato e applica gli aggiornamenti che non richiedono revisione',
+      updateAllDone: (updated: number, review: number, failed: number) =>
+        `Aggiornati: ${updated}` + (review ? `, ${review} da rivedere` : '') + (failed ? `, ${failed} non riusciti` : ''),
+      updateAllNone: 'Tutti i plugin sono aggiornati',
+      updateAllFailed: 'Impossibile aggiornare i plugin',
+      autoUpdate: 'Aggiornamento automatico',
+      autoUpdateTip: (hours: number) =>
+        `Applica automaticamente gli aggiornamenti dei plugin quando il gateway controlla (ogni ${hours} h). Il codice aggiornato si carica nelle nuove sessioni.`,
+      autoUpdateFailed: 'Impossibile cambiare l’aggiornamento automatico dei plugin',
       uninstall: 'Disinstalla',
       uninstallTip: (name: string, profile: string) => `Disinstalla ${name} da ${profile}`,
       uninstallConfirmTitle: (name: string) => `Disinstallare ${name}?`,
@@ -632,6 +643,10 @@ export const itAssistant = {
       authorized: server => `${server} autorizzato`,
       failed: server => `Configurazione non riuscita per ${server}`,
       toolCount: count => (count === 1 ? '1 strumento' : `${count} strumenti`),
+      launchCommand: target => `Esegue: ${target}`,
+      launchRemote: target => `Si connette a: ${target}`,
+      launchEnv: keys => `Env: ${keys}`,
+      launchCwd: dir => `Directory di lavoro: ${dir}`,
       envRequired: 'Compila prima le credenziali obbligatorie',
       sendFailed: 'Impossibile inviare la risposta di configurazione MCP',
       reloadFailed: 'Server salvato, ma il ricaricamento degli strumenti MCP non è riuscito — verranno caricati nella prossima sessione',

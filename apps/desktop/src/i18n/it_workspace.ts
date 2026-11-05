@@ -1064,6 +1064,15 @@ export const itWorkspace = {
           system_prompt: 'Prompt di sistema',
           tool_definitions: 'Definizioni degli strumenti'
         },
+        compact: {
+          action: 'Compatta la conversazione',
+          busyHint: 'Termina o interrompi prima la risposta in corso',
+          confirm: 'Compatta',
+          hint: 'Riassumi il contesto più vecchio per fare spazio. Si continua in questa stessa conversazione.',
+          question: 'Comprimere questa chat in un riassunto?',
+          questionNamed: title => `Comprimere “${title}” in un riassunto?`,
+          working: 'Compattazione…'
+        },
         empty: 'Ancora nessun dato di contesto',
         loading: 'Caricamento del dettaglio…',
         percentFull: percent => `${percent}% pieno`,

@@ -208,3 +208,50 @@ def test_engine_that_never_overrode_the_prune_hook_is_not_a_suppressed_authority
 
     assert _prune_would_have_run(_InheritsTheDefault(), 400_000) is False
     assert _prune_would_have_run(_OccupiesTheHook(), 400_000) is True
+
+
+def _hosted(engine, home):
+    """The proxy the plugin host builds for ``engine`` under ``plugins.isolation: host``, without a
+    host process: the host's requests go to the child runtime's own handlers in-process."""
+    import itertools
+    import threading
+    from typing import Any, cast
+
+    from agent.context_engine import ContextEngine
+    from hermes_cli.plugin_host import PluginHost
+    from hermes_cli.plugin_host_child import HostRuntime
+
+    runtime = HostRuntime.__new__(HostRuntime)
+    runtime.refs, runtime.owners = {}, {}
+    runtime._ids, runtime._lock = itertools.count(1), threading.Lock()
+    ref = runtime._describe_object("engine-plugin", engine)
+
+    def call(method, params, timeout=None):
+        return getattr(runtime, f"op_{method}")(params)
+
+    host = PluginHost(SimpleNamespace(home_path=home, _plugins={}))
+    host._channel = cast(Any, SimpleNamespace(call=call, closed_reason=None))
+    return host._object_proxy(ref, ContextEngine)
+
+
+def test_hosted_engine_is_withheld_but_not_reported_as_a_suppressed_authority(tmp_path):
+    """Under ``plugins.isolation: host`` every engine method is a proxy, so identity can't tell the
+    inherited no-op from an override. The armed gate still withholds the call; it just doesn't count
+    a prune it can't prove would have run."""
+    compress_only = _engine_stub()
+
+    class _OccupiesTheHook(compress_only):
+        def __init__(self):
+            self.calls = 0
+
+        def prune_tool_results_only(self, messages, current_tokens=None):
+            self.calls += 1
+            return list(messages), 1
+
+    messages = [{"role": "user", "content": "scan"}]
+    agent, overriding = _agent(True), _OccupiesTheHook()
+
+    assert _proactive_tool_result_prune(agent, _hosted(compress_only(), tmp_path), messages, 400_000) is messages
+    assert _proactive_tool_result_prune(agent, _hosted(overriding, tmp_path), messages, 400_000) is messages
+    assert getattr(agent, "_checkpoint_gate_suppression_count", 0) == 0
+    assert overriding.calls == 0

@@ -1276,10 +1276,17 @@ def _handle_specify(args: dict, **kw) -> str:
     """Promote a creator-owned triage card without changing its content."""
     _reject_delegated_child_mutation("kanban_specify")
     tid = _require_task_id(args)
-    _enforce_worker_task_ownership(tid)
     identity = _persisted_identity()
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
+        # A worker may specify a different card only through this narrow,
+        # creator-authorized path. All other worker mutations retain the
+        # generic task ownership guard above.
+        if os.environ.get("HERMES_KANBAN_TASK") and tid != os.environ["HERMES_KANBAN_TASK"]:
+            _check(task.created_by == identity,
+                   f"task {tid} was created by {task.created_by!r}, not the authenticated profile")
+        else:
+            _enforce_worker_task_ownership(tid)
         _check(task.status == "triage", f"task {tid} is not in triage (status={task.status!r})")
         _check(task.created_by == identity,
                f"task {tid} was created by {task.created_by!r}, not the authenticated profile")

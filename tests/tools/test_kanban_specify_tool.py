@@ -81,6 +81,50 @@ def test_creator_reaches_ready_when_all_parents_done(board_env):
     assert out["ok"] and out["status"] == "ready"
 
 
+def test_worker_can_specify_different_card_it_created(board_env, monkeypatch):
+    worker_task = _task("worker task")
+    target = _task("worker-created target")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker_task)
+
+    out = _dispatch({"task_id": target})
+
+    assert out.get("ok"), out
+    assert _read(target)[0].status == "ready"
+    assert _read(worker_task)[0].status == "triage"
+
+
+
+def test_worker_cross_card_denials_leave_state_graph_and_audit_unchanged(board_env, monkeypatch):
+    from hermes_cli.kanban_db_connect import connect
+
+    worker_task = _task("worker task")
+    cases = [("noncreator", _task("other-owned", created_by="other"), "creator", {})]
+    cases.append(("spoofed author", _task("creator-owned"), "other", {"author": "creator"}))
+    cases.append(("unauthenticated", _task("creator-owned unauthenticated"), None, {}))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker_task)
+
+    for _label, target, profile, extra in cases:
+        if profile is None:
+            monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_PROFILE", profile)
+        with connect() as conn:
+            before = (
+                conn.execute("SELECT status, body FROM tasks WHERE id = ?", (target,)).fetchone(),
+                conn.execute("SELECT parent_id, child_id FROM task_links WHERE parent_id = ? OR child_id = ? ORDER BY parent_id, child_id", (target, target)).fetchall(),
+                [(row.kind, row.payload) for row in __import__("hermes_cli.kanban_db", fromlist=["list_events"]).list_events(conn, target)],
+            )
+        out = _dispatch({"task_id": target, **extra})
+        assert not out.get("ok"), (_label, out)
+        with connect() as conn:
+            after = (
+                conn.execute("SELECT status, body FROM tasks WHERE id = ?", (target,)).fetchone(),
+                conn.execute("SELECT parent_id, child_id FROM task_links WHERE parent_id = ? OR child_id = ? ORDER BY parent_id, child_id", (target, target)).fetchall(),
+                [(row.kind, row.payload) for row in __import__("hermes_cli.kanban_db", fromlist=["list_events"]).list_events(conn, target)],
+            )
+        assert after == before
+
+
 def test_noncreator_and_spoofed_identity_are_rejected_without_change(board_env, monkeypatch):
     other_task = _task("owned by someone else", created_by="other")
     out = _dispatch({"task_id": other_task})

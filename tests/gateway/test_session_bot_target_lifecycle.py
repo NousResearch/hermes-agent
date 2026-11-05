@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 
 from gateway.session_contract import SessionActor
+from tests.fixtures.storage_read import session_row
 
 
 @pytest_asyncio.fixture
@@ -19,15 +20,13 @@ async def bot(tmp_path, monkeypatch):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
                         lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
@@ -35,7 +34,7 @@ async def bot(tmp_path, monkeypatch):
     try:
         yield SimpleNamespace(authority=authority, owner=owner, home=tmp_path)
     finally:
-        store._db.close()
+        store.close_all_db_handles()
 
 
 async def _target_id(bot):
@@ -46,20 +45,25 @@ async def _target_id(bot):
 
 @pytest.mark.asyncio
 async def test_renamed_or_deleted_bot_chat_gets_a_fresh_replacement(bot):
-    db = bot.authority.db
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
+    db = bot.authority.persistence
     first = await _target_id(bot)
     assert await _target_id(bot) == first  # converges: resolved by title, never re-created
 
-    db.set_session_title(first, 'Planning notes')
+    db.sessions.set_title(first, 'Planning notes')
     second = await _target_id(bot)
     assert second != first
-    assert db.get_session(first)['title'] == 'Planning notes'  # the rename stands
-    assert db.get_session(second)['title'] == 'Bot Chat'
+    assert session_row(db, first)['title'] == 'Planning notes'  # the rename stands
+    assert session_row(db, second)['title'] == 'Bot Chat'
 
-    assert db.delete_session(second, sessions_dir=bot.home / 'sessions')
+    removed = db.sessions.delete(second, media_root=str(native_inputs_root()))
+    after_sessions_removed(db, db.scope.profile_dir, removed, reason='delete', primary=second,
+                           sessions_dir=bot.home / 'sessions')
+    assert removed
     bot.authority.sessions.pop(second, None)
     third = await _target_id(bot)
     assert third not in (first, second)  # a replacement, not the retired id
-    assert db.get_session(second) is None
-    assert db.get_session(third)['title'] == 'Bot Chat'
+    assert session_row(db, second) is None
+    assert session_row(db, third)['title'] == 'Bot Chat'
     assert await _target_id(bot) == third

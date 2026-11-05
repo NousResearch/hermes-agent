@@ -6,8 +6,10 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 ACTOR = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')
@@ -15,14 +17,15 @@ REF = SessionRef('owned', 's')
 
 def _authority(tmp_path, monkeypatch, platform=None):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    epoch = begin_runtime_epoch(db, instance_id='current')
+    persistence = storage_handle(tmp_path)
+    seed_session(persistence, 's', 'test')
+    epoch = persistence.runtime.begin_epoch(instance_id='current')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', epoch=epoch,
+                                 persistence=persistence)
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=platform, user_id='human'), 'route')
-    return db, authority
+    return storage_handle(tmp_path), authority
 
 
 def _submit(authority, request_id, text=None):
@@ -69,7 +72,7 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
 
     def check_api_turn(authority, ref, payload):
         if payload['text'] == 'blocked':
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
     monkeypatch.setattr(session_api_turn, 'check_api_turn', check_api_turn)
 
     async def execute(authority, ref, row):
@@ -92,8 +95,8 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
         assert task is not None and task is not paused, 'cancelling the blocking head must reschedule the drain'
         await asyncio.wait_for(task, 5)
         assert executed == ['follower']
-        statuses = {r['request_id']: (r['status'], r['outcome'])
-                    for r in list_session_admissions(db, session_id='s', pending_only=False)}
+        statuses = {r.request_id: (r.status, r.outcome)
+                    for r in authority.persistence.admissions.list(session_id='s', pending_only=False)}
         assert statuses == {'blocked': ('terminal', 'cancelled'), 'follower': ('terminal', 'completed')}
 
 
@@ -115,7 +118,7 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
             release_head.wait(5)
             return True
         # B's own reauthorization is revoked; it must be asked, never inherit A's verdict.
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
 
     async def execute(authority, ref, row):
@@ -138,7 +141,7 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
 
     assert executed == [], 'the successor reached execution without its own hosted validation'
     assert validated == ['hosted:A', 'hosted:B']
-    statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
+    statuses = {r.request_id: r.status for r in authority.persistence.admissions.list(session_id='s', pending_only=False)}
     assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
 
 
@@ -149,7 +152,7 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
     check (and was re-read as queued) while the off-loop claim waits for the writer: the claim takes
     the validated head or nothing, never the successor."""
     import threading
-    from gateway import session_authority, session_finite, session_hosted_transport, session_local_recovery
+    from gateway import session_finite, session_hosted_transport, session_local_recovery
     from gateway.config import Platform
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)
@@ -161,17 +164,17 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
     def check_remote_hosted_admission(authority, ref, row):
         validated.append(row['request_id'])
         if row['request_id'] == 'hosted:B':
-            raise RuntimeStoreError('permission_denied')  # B's own source binding is revoked
+            raise AuthorityRefusal('permission_denied')  # B's own source binding is revoked
         return True
     monkeypatch.setattr(session_hosted_transport, 'check_remote_hosted_admission', check_remote_hosted_admission)
-    claim = session_authority.claim_session_input
+    claim = authority.persistence.admissions.claim
 
     def claim_behind_the_cancellation(*args, **kwargs):
         if not head_cancelled.is_set():
             claim_waiting.set()
             head_cancelled.wait(5)
         return claim(*args, **kwargs)
-    monkeypatch.setattr(session_authority, 'claim_session_input', claim_behind_the_cancellation)
+    monkeypatch.setattr(authority.persistence.admissions, 'claim', claim_behind_the_cancellation)
 
     async def execute(authority, ref, row):
         executed.append(row['request_id'])
@@ -191,7 +194,7 @@ async def test_head_cancelled_after_its_last_preclaim_check_does_not_hand_the_cl
 
     assert executed == [], 'the successor reached execution without its own hosted validation'
     assert validated == ['hosted:A', 'hosted:B']
-    statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
+    statuses = {r.request_id: r.status for r in authority.persistence.admissions.list(session_id='s', pending_only=False)}
     assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
 
 
@@ -274,7 +277,7 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
     async def execute(authority, ref, row):
         # Simulate a concurrent lineage move while the turn ran: the settle fence
         # (settle_session_input) compares sessions.runtime_generation to the claim.
-        authority.db._execute_write(lambda conn: conn.execute(
+        raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id='s'"))
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
@@ -286,9 +289,9 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
         assert task.exception() is None, 'a settlement failure must not escape the drain task'
         assert any(head.admission_id in rec.getMessage() for rec in caplog.records), \
             [rec.getMessage() for rec in caplog.records]
-        row, = [r for r in list_session_admissions(db, session_id='s', pending_only=False)
-                if r['admission_id'] == head.admission_id]
-        assert row['status'] == 'unknown', 'explicit recovery is possible without inventing a terminal result'
+        row, = [r for r in authority.persistence.admissions.list(session_id='s', pending_only=False)
+                if r.admission_id == head.admission_id]
+        assert row.status == 'unknown', 'explicit recovery is possible without inventing a terminal result'
         assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'
 
 
@@ -304,7 +307,7 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
 
     caplog.set_level(logging.WARNING, logger='gateway.session_authority')
     db, authority = _authority(tmp_path, monkeypatch)
-    monkeypatch.setattr(db, '_WRITE_PATIENCE_S', 0.2)
+    monkeypatch.setattr(authority.persistence.holder(), '_WRITE_PATIENCE_S', 0.2)
     monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
     ran = []
 
@@ -333,8 +336,8 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
         assert await asyncio.wait_for(waiter, 10) == 'done'
         await asyncio.wait_for(task, 5)
     assert ran == ['head']
-    row, = list_session_admissions(db, session_id='s', pending_only=False)
-    assert (row['status'], row['outcome']) == ('terminal', 'completed')
+    row, = authority.persistence.admissions.list(session_id='s', pending_only=False)
+    assert (row.status, row.outcome) == ('terminal', 'completed')
 
 
 @pytest.mark.asyncio

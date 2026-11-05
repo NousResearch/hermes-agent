@@ -2,11 +2,16 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
+
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
 
@@ -24,8 +29,9 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
     )
-    from gateway.hosted_room_driver import TaskIdentity
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
+    from gateway.session_authority import admission_row
+    from persistence.core.errors import AuthorityRefusal
     authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
@@ -33,15 +39,15 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
     authority.profile_id = str(target)
     source_authority = SimpleNamespace(profile_id=str(source))
     allowed = [True]
-    task = TaskIdentity('room', 'task', 'thread', 'turn')
+    task = HostedTaskIdentity('room', 'task', 'thread', 'turn')
     def attest(selector, operation, params):
         if not allowed[0] or selector != dict(room_id='room', member_id='member', profile='default'):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         if operation in {'submit', 'execute'}:
             assert params['task'] == asdict(task)
             assert params['execution_generation'] == 1
             if operation == 'submit' and params['prompt_sha256'] != hashlib.sha256(b'input').hexdigest():
-                raise RuntimeStoreError('permission_denied')
+                raise AuthorityRefusal('permission_denied')
         return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
     servers = [_server(source), _server(target)]
     install_hosted_transport(servers[0], source_authority, loop, attest=attest)
@@ -53,11 +59,11 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         coords = dict(profile='default', source='bot_room')
         sid = rpc.create(**coords, title='Group: room')['session_id']
         args = dict(**coords, session_id=sid, prompt='input', task=task, execution_generation=1, on_terminal=lambda r: None)
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             rpc.submit(**args, member_id='other')
         receipt = rpc.submit(**args, member_id='member')
         assert rpc.submit(**args)['admission_id'] == receipt['admission_id']
-        rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        rows = [admission_row(r) for r in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
         assert len(rows) == 1
         from gateway.session_contract import SessionRef
         ref = SessionRef(authority.profile_id, sid)
@@ -65,7 +71,7 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         # Recreate server routing to lose all process-local producer caches.
         install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
         assert check_remote_hosted_admission(authority, ref, rows[0]) is True
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             rpc.submit(**{**args, 'prompt': 'forged'})
         raw = json.dumps({'protocol': 1, 'verb': 'hosted-producer', 'params': {}}).encode()
         assert not json.loads(servers[1].handle_request_line(raw))['ok']
@@ -73,17 +79,17 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         def remapped(params, peer):
             return {**old_attest(params, peer), 'target_home': str(tmp_path / 'different')}
         servers[0].private_handlers['hosted-attest'] = remapped
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             rpc.history(**coords, session_id=sid)
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             check_remote_hosted_admission(authority, ref, rows[0])
         servers[0].private_handlers['hosted-attest'] = old_attest
         allowed[0] = False
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             check_remote_hosted_admission(authority, ref, rows[0])
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             rpc.history(**coords, session_id=sid)
-        assert rows == list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        assert rows == [admission_row(r) for r in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
     finally:
         for server in servers:
             asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
@@ -98,36 +104,34 @@ class _SourceTask:
         from types import SimpleNamespace
         from gateway.session_hosted_service import CanonicalHostedRoomService
         from gateway import hosted_room_driver as tasks
-        from gateway.hosted_rooms import create_room, local_authority_gateway_id
+        from gateway.hosted_rooms import local_authority_gateway_id
         from gateway.hosted_room_attachments import HostedRoomAttachmentStore
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from persistence_assembly import open_persistence, profile_scope
         import gateway.run
         monkeypatch.setenv('HERMES_HOME', str(tmp_path))
         self.homes = {'other': str(tmp_path / 'profiles' / 'other')}
         monkeypatch.setattr(gateway.run, '_load_gateway_config', lambda: {'hosted_rooms': {'profiles': self.homes}})
-        self.db = db = SessionDB(tmp_path / 'state.db')
-        self.authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        self.db = db = open_persistence(profile_scope(home=tmp_path))
+        self.authority = SimpleNamespace(db=db, persistence=storage_handle(tmp_path), profile_id=str(tmp_path), epoch=db.runtime.begin_epoch(instance_id='test'))
         self.service = CanonicalHostedRoomService(self.authority, None)
-        self.service.authorize_room('alice', 'room', create=True)
         self.gateway = local_authority_gateway_id()
-        create_room(db.db_path, room_id='room', name='Room', authority_gateway_id=self.gateway, members=[
+        self.service.insert_room(room_id='room', name='Room', owner='alice', members=[
             {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
             {'member_id': 'two', 'profile': 'other', 'handle': 'two'}])
         self.data = data
-        self.store = store = HostedRoomAttachmentStore(db.db_path)
+        self.store = store = HostedRoomAttachmentStore(self.authority.persistence)
         saved = store.put(room_id='room', upload_id='upload', kind=kind, name=name, mime=mime, data=data)
         manifest = [{k: saved[k] for k in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
         store.commit_message(room_id='room', event_id='event', manifest=manifest, recipient_member_ids=['two'])
         self.bound = [{**manifest[0], 'event_id': 'event'}]
-        self.identity = tasks.TaskIdentity('room', 'task', 'thread', 'turn')
+        self.identity = HostedTaskIdentity('room', 'task', 'thread', 'turn')
         payload = {'target_profile': 'other', 'target_member_id': 'two', 'source_event_seq': 1,
                    'prompt': prompt, 'attachments': self.bound}
-        tasks.admit_task(db.db_path, self.identity, payload=payload, clock=time.time)
-        lease = tasks.acquire_lease(db.db_path, room_id='room', gateway_id=self.gateway, authority_epoch=1,
+        tasks.admit_task(db, self.identity, placement='profile', payload=payload, clock=time.time)
+        lease = tasks.acquire_lease(db, placement='profile', room_id='room', gateway_id=self.gateway, authority_epoch=1,
                                     process_generation='test', ttl_seconds=30, clock=time.time)
-        tasks.start_task(db.db_path, self.identity, lease, expected_cancel_generation=0, clock=time.time)
-        self.task, = tasks.list_tasks(db.db_path, room_id='room')
+        tasks.start_task(db, self.identity, lease, placement='profile', expected_cancel_generation=0, clock=time.time)
+        self.task, = tasks.list_tasks(db, placement='profile', room_id='room')
         self.selector = dict(room_id='room', member_id='two', profile='other')
         self.params = dict(task=asdict(self.identity), execution_generation=self.task['execution_generation'],
                            prompt=prompt, attachments=self.bound, _target_home=self.homes['other'])
@@ -139,7 +143,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
     """A legal source prompt plus chunked files reaches one fenced target admission."""
     from gateway import session_hosted_transport as transport
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authority import admission_row
     authority, loop, _, _ = hosted_owner
     target = tmp_path / 'profiles' / 'other'
     target.mkdir(parents=True, mode=0o700)
@@ -167,7 +171,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
                         execution_generation=1, attachments=source.bound, on_terminal=None)
             first = rpc.submit(**args)
             assert rpc.submit(**args)['admission_id'] == first['admission_id']
-            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            row, = map(admission_row, authority.persistence.admissions.list(session_id=sid, pending_only=False))
             assert row['payload']['text'][:len(prompt)].encode() == prompt.encode()
             assert row['payload']['text'][len(prompt):].startswith('\n[Shared attachment] file: ')
             assert transport.check_remote_hosted_admission(authority, SessionRef(str(target), sid), row)
@@ -178,7 +182,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
             replay = transport.owner_request(target, 'hosted-producer', {
                 **rpc.binding, 'operation': 'submit', 'params': wire})
             assert replay['admission_id'] == first['admission_id']
-            assert row == list_session_admissions(authority.db, session_id=sid, pending_only=False)[0]
+            assert row == admission_row(authority.persistence.admissions.list(session_id=sid, pending_only=False)[0])
             assert max(request_sizes) < 65536
         finally:
             for server in servers:
@@ -186,7 +190,7 @@ def test_large_cjk_prompt_crosses_owner_sockets_once(hosted_owner, tmp_path, mon
 
 
 def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     source = _SourceTask(tmp_path, monkeypatch, b'file')
     with source.db:
         service, params = source.service, source.params
@@ -198,17 +202,17 @@ def test_prompt_digest_preserves_source_fences_and_legacy_input(tmp_path, monkey
                     {'prompt_sha256': None, 'prompt': 'frozen'},
                     {'execution_generation': 999}, {'task': {**params['task'], 'task_id': 'other'}},
                     {'attachments': []}):
-            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            with pytest.raises(AuthorityRefusal, match='permission_denied'):
                 service.attest(source.selector, 'submit', {**digest_params, **bad})
         room = service._room('room')
         monkeypatch.setattr(service, '_room', lambda _: {**room, 'members': []})
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             service.attest(source.selector, 'submit', digest_params)
 
 
 def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path, monkeypatch):
     import base64
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from tui_gateway.hosted_room_driver import HostedRoomBinding
     from gateway.session_hosted_transport import _CHUNK_BYTES
     source = _SourceTask(tmp_path, monkeypatch, b'owned source bytes' * 4000)
@@ -216,7 +220,7 @@ def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path
         service, data, bound, task, gateway, homes, authority = (
             source.service, source.data, source.bound, source.task, source.gateway, source.homes, source.authority)
         selector, params = source.selector, source.params
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             service.attest(selector, 'submit', {**params, 'attachments': []})
         assert service.attest(selector, 'submit', params)['attachments'] == bound
         chunks = []
@@ -244,16 +248,16 @@ def test_source_attestation_binds_bytes_to_task_member_and_current_home(tmp_path
             loop.close()
         for bad in ({'execution_generation': 999}, {'_target_home': str(tmp_path / 'wrong')},
                     {'attachments': [{**bound[0], 'event_id': 'other'}]}, {'index': 1}, {'offset': -1}):
-            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            with pytest.raises(AuthorityRefusal, match='permission_denied'):
                 service.attest(selector, 'attachment', {**params, 'index': 0, 'offset': 0, **bad})
         binding = HostedRoomBinding('room', gateway, 1)
         old_rpc = service._resolve_member_transport(binding, task)
         homes['other'] = str(tmp_path / 'replacement' / 'profiles' / 'other')
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             service.attest(selector, 'history', params)
         assert service._resolve_member_transport(binding, task) is not old_rpc
         homes.clear()
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             service._resolve_member_transport(binding, task)
 
 
@@ -262,14 +266,13 @@ def test_source_chunk_reads_only_the_requested_slice(tmp_path, monkeypatch):
     target still refuses a blob whose bytes drifted from the attested digest."""
     import base64
     import hashlib
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway import session_hosted_transport as transport
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     source = _SourceTask(tmp_path, monkeypatch, bytes(range(256)) * (4 * transport._CHUNK_BYTES // 256 + 1),
                          name='blob.bin', mime='application/octet-stream')
     with source.db:
         service, params = source.service, source.params
-        monkeypatch.setattr(HostedRoomAttachmentStore, '_read_blob',
+        monkeypatch.setattr('persistence.sqlite.gateway.hosted_room_attachments._read_blob',
                             lambda *a, **k: pytest.fail('chunk request read the whole blob'))
         hashed = []
         real_sha256 = hashlib.sha256
@@ -285,9 +288,9 @@ def test_source_chunk_reads_only_the_requested_slice(tmp_path, monkeypatch):
             p['selector'], p['operation'], p['params']))
         attested = service.attest(source.selector, 'submit', params)
         assert transport._attachment_data(source.binding, attested, params) == [(source.bound[0], source.data)]
-        blob, = source.store.blob_root.iterdir()
+        blob, = (tmp_path / 'hosted-room-attachments' / 'blobs').iterdir()
         blob.write_bytes(source.data[:-1] + bytes([source.data[-1] ^ 1]))
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             transport._attachment_data(source.binding, attested, params)
 
 
@@ -339,7 +342,9 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
     from gateway import session_hosted_transport as transport
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from gateway.session_authority import admission_row
+    from persistence.core.errors import AuthorityRefusal
+    from persistence_assembly import store_location
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)
@@ -363,7 +368,7 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
             sid = rpc.create(**coords, title='Group: room')['session_id']
             rpc.submit(**coords, session_id=sid, prompt='frozen', task=source.identity,
                        execution_generation=1, attachments=source.bound, on_terminal=lambda r: None)
-            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            row, = map(admission_row, authority.persistence.admissions.list(session_id=sid, pending_only=False))
             assert 'attachment' in operations
             # Quiesce the driver-side history poller before counting the preflight.
             with rpc._lock:
@@ -379,11 +384,11 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
             assert changed['size'] == source.bound[0]['size'] and changed['sha256'] != source.store.read(
                 room_id='room', attachment_id=source.bound[0]['attachment_id'], event_id='event',
                 recipient_member_id='two').attachment['sha256']
-            with source.store._transaction() as conn:
+            with closing(sqlite3.connect(store_location(source.db.scope))) as conn, conn:
                 conn.execute('UPDATE hosted_room_attachments SET sha256=?, blob_id=(SELECT blob_id FROM '
                              'hosted_room_attachments WHERE attachment_id=?) WHERE attachment_id=?',
                              (changed['sha256'], changed['attachment_id'], source.bound[0]['attachment_id']))
-            with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            with pytest.raises(AuthorityRefusal, match='permission_denied'):
                 check_remote_hosted_admission(authority, ref, row)
         finally:
             with rpc._lock:
@@ -400,7 +405,8 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
     from gateway import session_hosted_transport as transport
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    from gateway.session_authority import admission_row
+    from persistence.core.errors import AuthorityRefusal
     authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)
@@ -424,7 +430,7 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
             sid = rpc.create(**coords, title='Group: room')['session_id']
             rpc.submit(**coords, session_id=sid, prompt='frozen', task=source.identity,
                        execution_generation=1, attachments=source.bound, on_terminal=lambda r: None)
-            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            row, = map(admission_row, authority.persistence.admissions.list(session_id=sid, pending_only=False))
             with rpc._lock:
                 rpc.callbacks.clear()
             rpc._monitor.join(5)
@@ -435,13 +441,13 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
             assert retained.read_bytes() == source.data
             operations.clear()
             retained.write_bytes(bytes([source.data[0] ^ 1]) + source.data[1:])
-            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
                 check_remote_hosted_admission(authority, ref, row)
             retained.unlink()
-            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
                 check_remote_hosted_admission(authority, ref, row)
             assert operations == ['execute', 'execute'], 'destination verification must not re-transfer bytes'
-            assert row == list_session_admissions(authority.db, session_id=sid, pending_only=False)[0]
+            assert row == admission_row(authority.persistence.admissions.list(session_id=sid, pending_only=False)[0])
         finally:
             with rpc._lock:
                 rpc.callbacks.clear()

@@ -25,17 +25,18 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.usage import TokenCounts, UsageDelta
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture
 def db(tmp_path):
-    d = SessionDB(db_path=tmp_path / "state.db")
-    yield d
-    try:
-        d.close()
-    except Exception:
-        pass
+    return storage_handle(tmp_path)
 
 
 PEER = dict(
@@ -56,46 +57,47 @@ def _mk_session(db, session_id, *, key=True, started_at=None, last_activity_at=N
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type=PEER["chat_type"],
         )
-    db.create_session(session_id, "telegram", **kwargs)
+    seed_session(db, session_id, "telegram", **kwargs)
     for i in range(msgs):
-        db.append_message(session_id, "user" if i % 2 == 0 else "assistant", f"m{i}")
-    with db._lock:
+        seed_messages(db, session_id, {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"})
+
+    def backdate(conn):
         if started_at is not None:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started_at, session_id))
+            conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started_at, session_id))
         if last_activity_at is not None:
-            db._conn.execute("UPDATE sessions SET last_activity_at=? WHERE id=?", (last_activity_at, session_id))
+            conn.execute("UPDATE sessions SET last_activity_at=? WHERE id=?", (last_activity_at, session_id))
         if ended_at is not None:
-            db._conn.execute(
+            conn.execute(
                 "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
                 (ended_at, end_reason, session_id),
             )
-        db._conn.commit()
+    raw_holder(db)._execute_write(backdate)
 
 
 class TestIdentityAtInsert:
     def test_insert_session_row_persists_origin_and_display_name(self, db):
         origin = json.dumps({"platform": "telegram", "chat_id": "6308981865"})
-        db.create_session(
-            "s1", "telegram",
+        seed_session(
+            db, "s1", "telegram",
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type="dm", origin_json=origin, display_name="Teknium",
         )
-        row = db.get_session("s1")
+        row = session_row(db, "s1")
         assert row["origin_json"] == origin
         assert row["display_name"] == "Teknium"
         assert row["session_key"] == PEER["session_key"]
 
     def test_conflict_backfills_origin_without_overwriting(self, db):
-        db.create_session("s2", "telegram", session_key=PEER["session_key"])
+        seed_session(db, "s2", "telegram", session_key=PEER["session_key"])
         # Second insert (agent-side upsert) backfills origin_json on the
         # existing row...
-        db.create_session("s2", "telegram", origin_json='{"a":1}', display_name="X")
-        row = db.get_session("s2")
-        assert row["origin_json"] == '{"a":1}'
+        seed_session(db, "s2", "telegram", origin_json='{"a": 1}', display_name="X")
+        row = session_row(db, "s2")
+        assert row["origin_json"] == '{"a": 1}'
         # ...but never overwrites a value already set.
-        db.create_session("s2", "telegram", origin_json='{"b":2}', display_name="Y")
-        row = db.get_session("s2")
-        assert row["origin_json"] == '{"a":1}'
+        seed_session(db, "s2", "telegram", origin_json='{"b": 2}', display_name="Y")
+        row = session_row(db, "s2")
+        assert row["origin_json"] == '{"a": 1}'
         assert row["display_name"] == "X"
 
 
@@ -105,8 +107,8 @@ class TestPeerRecorderSelfHeal:
         create_session write failed. The peer refresh must create the row
         with identity, not silently no-op."""
         sid = "20260806_161836_" + uuid.uuid4().hex[:8]
-        assert db.get_session(sid) is None
-        db.record_gateway_session_peer(
+        assert session_row(db, sid) is None
+        db.routing.record_session_peer(
             sid,
             source="telegram",
             user_id=PEER["user_id"],
@@ -116,7 +118,7 @@ class TestPeerRecorderSelfHeal:
             display_name="Teknium",
             origin_json='{"platform": "telegram"}',
         )
-        row = db.get_session(sid)
+        row = session_row(db, sid)
         assert row is not None, "peer refresh must self-heal the missing row"
         assert row["session_key"] == PEER["session_key"]
         assert row["chat_id"] == PEER["chat_id"]
@@ -126,10 +128,11 @@ class TestPeerRecorderSelfHeal:
         """Orphan-factory shape: update_token_counts materializes the row
         identity-less first; the next peer refresh must stamp it."""
         sid = "lazy_" + uuid.uuid4().hex[:8]
-        db.update_token_counts(sid, input_tokens=10, output_tokens=5)
-        row = db.get_session(sid)
+        db.usage.queue_usage(sid, UsageDelta(tokens=TokenCounts(input_tokens=10, output_tokens=5)))
+        db.usage.flush_usage()
+        row = session_row(db, sid)
         assert row is not None and row["session_key"] is None  # the orphan
-        db.record_gateway_session_peer(
+        db.routing.record_session_peer(
             sid,
             source="telegram",
             user_id=PEER["user_id"],
@@ -137,7 +140,7 @@ class TestPeerRecorderSelfHeal:
             chat_id=PEER["chat_id"],
             chat_type="dm",
         )
-        row = db.get_session(sid)
+        row = session_row(db, sid)
         assert row["session_key"] == PEER["session_key"]
         assert row["chat_id"] == PEER["chat_id"]
 
@@ -152,30 +155,30 @@ class TestPeerResolutionRecency:
                     last_activity_at=now - 3 * 86400, msgs=4)
         _mk_session(db, "live", started_at=now - 3 * 86400,
                     last_activity_at=now - 600, msgs=6)
-        found = db.find_latest_gateway_session_for_peer(**PEER)
+        found = db.routing.latest_session_for_peer(**PEER)
         assert found is not None
-        assert found["id"] == "live"
+        assert found.session.session_id == "live"
 
     def test_empty_keyed_row_returned_not_none(self, db):
         """Returning None mints a fresh id (worse than an empty resume);
         an empty keyed row must be returned."""
         _mk_session(db, "emptyrow", msgs=0)
-        found = db.find_latest_gateway_session_for_peer(**PEER)
+        found = db.routing.latest_session_for_peer(**PEER)
         assert found is not None
-        assert found["id"] == "emptyrow"
+        assert found.session.session_id == "emptyrow"
 
     def test_rows_with_messages_beat_empty_rows(self, db):
         now = time.time()
         _mk_session(db, "hascontent", last_activity_at=now - 86400, msgs=4)
         _mk_session(db, "emptynewer", last_activity_at=now - 60, msgs=0)
-        found = db.find_latest_gateway_session_for_peer(**PEER)
-        assert found["id"] == "hascontent"
+        found = db.routing.latest_session_for_peer(**PEER)
+        assert found.session.session_id == "hascontent"
 
     def test_explicit_reset_rows_stay_unrecoverable(self, db):
         now = time.time()
         _mk_session(db, "resetold", last_activity_at=now - 60,
                     ended_at=now - 30, end_reason="session_reset", msgs=4)
-        found = db.find_latest_gateway_session_for_peer(**PEER)
+        found = db.routing.latest_session_for_peer(**PEER)
         assert found is None, "/new boundaries must never be resurrected"
 
     def test_incident_shape_still_resolves_to_best_available(self, db):
@@ -188,16 +191,16 @@ class TestPeerResolutionRecency:
                     last_activity_at=now - 3 * 86400, msgs=4)
         _mk_session(db, "real", key=False, started_at=now - 3 * 86400,
                     last_activity_at=now - 600, msgs=8)
-        found = db.find_latest_gateway_session_for_peer(**PEER)
-        assert found["id"] == "zombie2"  # unstamped rows are invisible
+        found = db.routing.latest_session_for_peer(**PEER)
+        assert found.session.session_id == "zombie2"  # unstamped rows are invisible
         # Self-heal stamps the real row (any later peer refresh):
-        db.record_gateway_session_peer(
+        db.routing.record_session_peer(
             "real", source="telegram", user_id=PEER["user_id"],
             session_key=PEER["session_key"], chat_id=PEER["chat_id"],
             chat_type="dm",
         )
-        found = db.find_latest_gateway_session_for_peer(**PEER)
-        assert found["id"] == "real"
+        found = db.routing.latest_session_for_peer(**PEER)
+        assert found.session.session_id == "real"
 
 
 class TestLoadTranscriptReroutes:
@@ -208,15 +211,15 @@ class TestLoadTranscriptReroutes:
         from gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw-failed-read", config=GatewayConfig())
-        db = store._db
-        assert db is not None
-        monkeypatch.setattr(db, "get_compression_tip", lambda _session_id: None)
+        handle = store.persistence
+        assert handle is not None
+        monkeypatch.setattr(handle.lineage, "tip", lambda _session_id: None)
 
-        def _malformed(_session_id, *, repair_alternation):
-            assert repair_alternation is True
+        def _malformed(_session_id, request):
+            assert request.repair_alternation is True
             raise RuntimeError("database disk image is malformed")
 
-        monkeypatch.setattr(db, "get_messages_as_conversation", _malformed)
+        monkeypatch.setattr(handle.messages, "read_conversation", _malformed)
 
         with pytest.raises(TranscriptReadError) as exc_info:
             store.load_transcript("existing-session")
@@ -230,11 +233,11 @@ class TestLoadTranscriptReroutes:
         from gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("parent", "telegram", session_key=PEER["session_key"])
-        db.create_session("child", "telegram", session_key=PEER["session_key"])
-        db.append_message("child", "user", "hello from the child")
+        seed_session(db, "parent", "telegram", session_key=PEER["session_key"])
+        seed_session(db, "child", "telegram", session_key=PEER["session_key"])
+        seed_messages(db, "child", {"role": "user", "content": "hello from the child"})
         # Write-side reroute installed after a compression rotation:
         store._transcript_reroutes["parent"] = "child"
         msgs = store.load_transcript("parent")
@@ -248,15 +251,14 @@ class TestLoadTranscriptReroutes:
         from gateway.config import GatewayConfig
 
         store = SessionStore(sessions_dir=tmp_path / "gw2", config=GatewayConfig())
-        db = store._db
+        db = store.persistence
         assert db is not None
-        db.create_session("p2", "telegram", session_key=PEER["session_key"])
-        db.append_message("p2", "user", "old")
-        db.publish_compression_child(
-            parent_session_id="p2",
-            child_session_id="c2",
-            source="telegram",
-            messages=[{"role": "user", "content": "compressed history"}],
+        seed_session(db, "p2", "telegram", session_key=PEER["session_key"])
+        seed_messages(db, "p2", {"role": "user", "content": "old"})
+        db.lineage.publish_compression_child(
+            "p2",
+            CompressionChild(session_id="c2", source="telegram"),
+            [NewMessage.from_live({"role": "user", "content": "compressed history"})],
             require_compression_lease=False,
         )
         # No in-memory reroute (fresh store after restart) — durable tip only.

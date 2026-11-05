@@ -308,6 +308,27 @@ def test_overflow_closes_only_the_slow_peer_and_healthy_keeps_streaming():
         loop.close()
 
 
+def test_overflow_and_send_deadline_close_the_socket_once():
+    """abort() (fanout overflow) and the send-deadline path both reach for a 1011 close; under load both
+    fire. The peer must still get exactly one close frame, not two."""
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    ws = _SocketWS()
+    t = WSTransport(ws, loop, peer="slow")
+    try:
+        # The two independent real triggers, scheduled on the loop as production does.
+        f1 = asyncio.run_coroutine_threadsafe(t._close_socket(1011, "send deadline"), loop)
+        f2 = asyncio.run_coroutine_threadsafe(t._close_socket(1011, "fanout overflow"), loop)
+        f1.result(2)
+        f2.result(2)
+        assert ws.close_codes == [1011]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2)
+        loop.close()
+
+
 def test_fanout_close_and_detach_leave_peer_sockets_open():
     kept, detached = RecordingTransport(), RecordingTransport()
     fan = FanoutTransport(kept, detached)

@@ -164,9 +164,10 @@ def delegation_wakes_parent(evt: dict) -> bool:
     if evt.get("_sibling_failed"):
         return True
     raw = evt.get("results")
+    # No child results (a single child's event, or a crashed batch's ``results=[]``): the unit's own
+    # status decides. Otherwise the children do, so an interrupted-only batch's aggregate error stays asleep.
     results = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
-    if not results and not isinstance(raw, list):
-        results = [evt]
+    results = results or [evt]
     return any(
         (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *_STOPPED)
         for r in results)

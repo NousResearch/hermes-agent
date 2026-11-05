@@ -405,7 +405,13 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    supervisor = _ensure_supervisor(effective_task_id) if _page_backend(effective_task_id) is None else None
+    page = _page_backend(effective_task_id)
+    if page is not None:
+        probe = _eval_js(effective_task_id, _TAB_PROBES["otp"])
+        if not probe.get("success") or _parse_json_result(probe.get("result")) is not True:
+            return json.dumps({"success": False, "error_type": "no_code_field",
+                               "error": "No unique one-time-code field on the current page; nothing was resolved or filled."})
+    supervisor = _ensure_supervisor(effective_task_id) if page is None else None
     if supervisor is not None:
         focused = supervisor.focus_page("", accept=_TAB_PROBES["otp"], unique=True)
         if not focused.get("ok"):

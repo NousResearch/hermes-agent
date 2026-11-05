@@ -166,3 +166,28 @@ def test_the_whole_picker_fits_80x24_with_long_labels_and_a_long_translated_hint
     assert max(len(line) for line in lines) <= 80, max(lines, key=len)
     assert any("❯" in line and "5. P4" in line for line in lines)  # the selection stays on screen
     assert sum("reply 4 row" in line for line in lines) >= 1
+
+
+def _cells(line):
+    from prompt_toolkit.utils import get_cwidth
+    return get_cwidth(line)
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh", "ko"])
+def test_the_picker_fits_80x24_in_terminal_cells_with_a_cjk_ui_and_chinese_prompts(cli, monkeypatch, lang):
+    # CJK characters take two cells: counting characters let rows run past 80 columns, where the
+    # overlay soft-wraps them (taller than the screen) and the right border breaks.
+    from agent import i18n
+    from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
+    _terminal(monkeypatch, 80, 24)
+    monkeypatch.setattr("hermes_cli.cli_backtrack.t", lambda key, **kw: i18n.t(key, lang=lang, **kw))
+    prompt = "请帮我把这个函数重构成更小的部分，并解释每一步为什么这样做，同时保留原有的行为和测试。"
+    cli.conversation_history = [row for n in range(9) for row in (
+        {"role": "user", "content": f"P{n} {prompt}"},
+        {"role": "assistant", "content": "\n".join(f"回答 {n} 第 {i} 行：重构完成，所有测试通过。" for i in range(40))})]
+    assert cli._open_backtrack_picker()
+    lines = _panel_text(cli).rstrip("\n").split("\n")
+    assert len(lines) + _PANEL_RESERVED_BELOW <= 24, lines
+    assert {_cells(line) for line in lines} == {_cells(lines[0])} and _cells(lines[0]) <= 80, lines
+    assert any("❯" in line and "9. P8" in line for line in lines)
+

@@ -39,7 +39,8 @@ class BacktrackResend(str):
 
 
 def _clip(line: str, limit: int) -> str:
-    return line if len(line) <= limit else line[: max(0, limit - 1)] + "…"
+    from hermes_cli.cli_render import _clip_cells
+    return _clip_cells(line, limit)
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -160,7 +161,8 @@ class CLIBacktrackMixin:
         scroll = max(scroll, selected - listed + 1)
         state["_scroll_offset"] = scroll
 
-        panel = _Panel("class:clarify-border", inner + 2, t("cli.backtrack.title"), "class:clarify-title")
+        panel = _Panel("class:clarify-border", inner + 2, _clip(t("cli.backtrack.title"), inner - 2),
+                       "class:clarify-title")
         panel.blank()
         for row in hints:
             panel.row("class:clarify-hint", row)

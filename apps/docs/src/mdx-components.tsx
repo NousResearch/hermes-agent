@@ -1,5 +1,6 @@
 import defaultComponents from 'fumadocs-ui/mdx';
 import type { MDXComponents } from 'mdx/types';
+import { DefaultCalloutLabel } from '@/components/callout-label';
 import { DocumentLink } from '@/components/document-link';
 import { Mermaid } from '@/components/mermaid';
 import UserStoriesCollage from '@/components/UserStoriesCollage';
@@ -11,6 +12,7 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     ...defaultComponents,
     a: DocumentLink,
     Link: DocumentLink,
+    DefaultCalloutLabel,
     UserStoriesCollage,
     AutomationBlueprintsCatalog,
     img: ({ src, alt, ...props }) => <img {...props} alt={alt ?? ''} src={typeof src === 'string' && src.startsWith('/') ? publicHref(src) : src} />,

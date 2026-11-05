@@ -65,6 +65,16 @@ def _picker_budget(free_rows: int, entries: int) -> tuple[int, int]:
     return listed, max(1, free_rows - listed)
 
 
+def _first_page(rows: list[str], reply_at: int, window: int) -> tuple[list[str], int]:
+    """(rows shown, offset PgDn goes to) for the context view's first page. When the prompt alone
+    fills the window, its head is cut with ``…`` so the first reply row shows too; PgDn then
+    continues at the first prompt row the cut hid, so nothing is skipped."""
+    if reply_at < window or window < 4:
+        return rows[:window], max(1, window - 1)
+    keep = window - 4  # prompt label + kept prompt rows + "…" + reply label + first reply row
+    return [*rows[:1 + keep], "  …", rows[reply_at - 1], rows[reply_at]], 1 + keep
+
+
 class CLIBacktrackMixin:
     # picker: {"entries": [(ordinal, text)] newest first, "selected", "_scroll_offset", "context_offset"}
     _backtrack_state = None
@@ -100,16 +110,18 @@ class CLIBacktrackMixin:
                  if m is not None and m.get("role") == "assistant"]
         return "\n\n".join(text for text in texts if text)
 
-    def _backtrack_context_rows(self, ordinal: int, text: str, width: int) -> list[str]:
-        """The selected exchange as panel rows: the prompt in full, then the reply that followed."""
+    def _backtrack_context_rows(self, ordinal: int, text: str, width: int) -> tuple[list[str], int]:
+        """The selected exchange as panel rows (the prompt in full, then the reply that followed) and
+        the index of the first reply row."""
         from cli import _wrap_panel_text
         rows = [t("cli.backtrack.prompt_label")]
         rows += [f"  {row}" for row in _wrap_panel_text(text or "", width, keep_ws=True)]
         reply = self._backtrack_reply(ordinal)
         rows += ["", t("cli.backtrack.reply_label")]
+        reply_at = len(rows)
         rows += ([f"  {row}" for row in _wrap_panel_text(reply, width, keep_ws=True)] if reply
                  else [f"  {t('cli.backtrack.no_reply')}"])
-        return rows
+        return rows, reply_at
 
     def _backtrack_blocked(self) -> bool:
         return bool(self._agent_running or self._command_running or self._clarify_state or self._approval_state
@@ -170,15 +182,18 @@ class CLIBacktrackMixin:
         picked = self._backtrack_selected()
         if picked is not None:
             ordinal, text = picked
-            rows = self._backtrack_context_rows(ordinal, text, inner - 2)
+            rows, reply_at = self._backtrack_context_rows(ordinal, text, inner - 2)
             offset = max(0, min(state.get("context_offset", 0), len(rows) - window))
             state["context_offset"] = offset
+            shown, state["_first_page_next"] = _first_page(rows, reply_at, window)
+            if offset:
+                shown = rows[offset:offset + window]
             label = t("cli.backtrack.preview_label", number=ordinal + 1, total=len(entries))
             if len(rows) > window:
                 label += "  " + t("cli.backtrack.scroll_hint", first=offset + 1,
                                   last=min(len(rows), offset + window), total=len(rows))
             panel.row("class:clarify-hint", _clip(label, inner))
-            for row in rows[offset:offset + window]:
+            for row in shown:
                 panel.row("class:clarify-hint", row)
             panel.blank()
         for idx in range(scroll, min(scroll + listed, len(entries))):
@@ -201,7 +216,10 @@ class CLIBacktrackMixin:
         state = self._backtrack_state
         if state:
             step = max(1, state.get("_context_window", 1) - 1)
-            state["context_offset"] = max(0, state.get("context_offset", 0) + pages * step)
+            offset = state.get("context_offset", 0)
+            if offset == 0 and pages > 0:  # the first page may have cut the prompt: resume where it did
+                offset, pages = state.get("_first_page_next", step), pages - 1
+            state["context_offset"] = max(0, offset + pages * step)
             self._invalidate(min_interval=0.0)
 
     def _backtrack_choose_edit(self) -> None:

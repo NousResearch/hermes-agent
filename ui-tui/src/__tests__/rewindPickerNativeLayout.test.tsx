@@ -97,61 +97,76 @@ afterEach(() => {
   }
 })
 
-describe('native rewind picker at 80x24', () => {
-  it('fits the whole layout with the heading, the selection and the selected exchange on screen', async () => {
-    vi.stubEnv('HERMES_TUI_NATIVE', '1')
-    vi.resetModules()
-    Object.defineProperty(process.stdout, 'rows', { configurable: true, value: 24 })
-    const { AppLayout } = await import('../components/appLayout.js')
-    const { GatewayProvider } = await import('../app/gatewayContext.js')
-    const { patchOverlayState, resetOverlayState } = await import('../app/overlayStore.js')
-    const { patchUiState, resetUiState } = await import('../app/uiStore.js')
+/** The first frame native mode writes for `targets` at 80x24, top to bottom. */
+async function firstFrame(targets: Array<{ reply: string; rowId: number; text: string; turn: number }>) {
+  vi.stubEnv('HERMES_TUI_NATIVE', '1')
+  vi.resetModules()
+  Object.defineProperty(process.stdout, 'rows', { configurable: true, value: 24 })
+  const { AppLayout } = await import('../components/appLayout.js')
+  const { GatewayProvider } = await import('../app/gatewayContext.js')
+  const { patchOverlayState, resetOverlayState } = await import('../app/overlayStore.js')
+  const { patchUiState, resetUiState } = await import('../app/uiStore.js')
 
-    const reply = Array.from({ length: 40 }, (_, i) => `reply row ${i + 1}`).join('\n')
+  resetOverlayState()
+  resetUiState()
+  patchUiState({ sessionTitle: 'test', sid: 'sid-1', status: 'ready' })
+  patchOverlayState({ rewind: { onFork: vi.fn(), onSubmit: vi.fn(), targets } })
 
-    const targets = Array.from({ length: 8 }, (_, i) => ({
-      reply,
-      rowId: i + 1,
-      text: `prompt ${i + 1} long enough to fill the whole picker row at eighty columns and more`,
-      turn: i + 1
-    }))
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, ref: vi.fn(), setRawMode: vi.fn(), unref: vi.fn() })
+  const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+  const out = { text: '' }
 
+  stdout.on('data', chunk => {
+    out.text += chunk.toString()
+  })
+
+  const props = { ...layoutProps, composer: { ...layoutProps.composer, cols: 80 } }
+
+  const instance = renderSync(
+    <GatewayProvider value={gatewayStub}>
+      <AppLayout {...props} />
+    </GatewayProvider>,
+    { patchConsole: false, stderr: new PassThrough() as any, stdin: stdin as any, stdout: stdout as any }
+  )
+
+  try {
+    await vi.waitFor(() => expect(stripAnsi(out.text)).toContain('~/repo'))
+
+    // The first frame of a primary-buffer render is the whole layout, top to bottom.
+    return stripAnsi(out.text).split('~/repo')[0]!.replace(/^\n/, '').split('\n')
+  } finally {
+    instance.unmount()
+    instance.cleanup()
     resetOverlayState()
     resetUiState()
-    patchUiState({ sessionTitle: 'test', sid: 'sid-1', status: 'ready' })
-    patchOverlayState({ rewind: { onFork: vi.fn(), onSubmit: vi.fn(), targets } })
+  }
+}
 
-    const stdin = Object.assign(new PassThrough(), { isTTY: true, ref: vi.fn(), setRawMode: vi.fn(), unref: vi.fn() })
-    const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
-    const out = { text: '' }
+const reply = Array.from({ length: 40 }, (_, i) => `reply row ${i + 1}`).join('\n')
 
-    stdout.on('data', chunk => {
-      out.text += chunk.toString()
-    })
-
-    const props = { ...layoutProps, composer: { ...layoutProps.composer, cols: 80 } }
-
-    const instance = renderSync(
-      <GatewayProvider value={gatewayStub}>
-        <AppLayout {...props} />
-      </GatewayProvider>,
-      { patchConsole: false, stderr: new PassThrough() as any, stdin: stdin as any, stdout: stdout as any }
+describe('native rewind picker at 80x24', () => {
+  it('fits the whole layout with the heading, the selection and the selected exchange on screen', async () => {
+    const frame = await firstFrame(
+      Array.from({ length: 8 }, (_, i) => ({
+        reply,
+        rowId: i + 1,
+        text: `prompt ${i + 1} long enough to fill the whole picker row at eighty columns and more`,
+        turn: i + 1
+      }))
     )
 
-    try {
-      await vi.waitFor(() => expect(stripAnsi(out.text)).toContain('~/repo'))
-      // The first frame of a primary-buffer render is the whole layout, top to bottom.
-      const frame = stripAnsi(out.text).split('~/repo')[0]!.replace(/^\n/, '').split('\n')
+    expect(frame.length).toBeLessThanOrEqual(24)
+    expect(frame.some(row => row.includes('↺ rewind'))).toBe(true)
+    expect(frame.some(row => row.includes('▸ 8. prompt 8'))).toBe(true)
+    expect(frame.some(row => row.includes('Hermes replied:'))).toBe(true)
+  })
 
-      expect(frame.length).toBeLessThanOrEqual(24)
-      expect(frame.some(row => row.includes('↺ rewind'))).toBe(true)
-      expect(frame.some(row => row.includes('▸ 8. prompt 8'))).toBe(true)
-      expect(frame.some(row => row.includes('Hermes replied:'))).toBe(true)
-    } finally {
-      instance.unmount()
-      instance.cleanup()
-      resetOverlayState()
-      resetUiState()
-    }
+  it('shows the first reply row even when the selected prompt fills the context window', async () => {
+    const prompt = Array.from({ length: 6 }, (_, i) => `prompt line ${i + 1}`).join('\n')
+    const frame = await firstFrame([{ reply, rowId: 1, text: prompt, turn: 1 }])
+
+    expect(frame.length).toBeLessThanOrEqual(24)
+    expect(frame.some(row => row.includes('prompt line 1'))).toBe(true)
+    expect(frame.some(row => row.includes('reply row 1'))).toBe(true)
   })
 })

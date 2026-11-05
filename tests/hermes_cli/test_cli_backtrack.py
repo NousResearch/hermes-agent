@@ -191,3 +191,17 @@ def test_the_picker_fits_80x24_in_terminal_cells_with_a_cjk_ui_and_chinese_promp
     assert {_cells(line) for line in lines} == {_cells(lines[0])} and _cells(lines[0]) <= 80, lines
     assert any("❯" in line and "9. P8" in line for line in lines)
 
+
+def test_the_first_page_shows_the_reply_even_when_the_prompt_fills_the_window(cli, monkeypatch):
+    _terminal(monkeypatch, 80, 24)
+    long = " ".join(f"word{i}" for i in range(120))  # about six panel rows of prompt
+    cli.conversation_history[-2]["content"] = long
+    cli.conversation_history[-1]["content"] = "FIRST REPLY LINE\nsecond reply line"
+    assert cli._open_backtrack_picker()
+    panel = _panel_text(cli)
+    assert "FIRST REPLY LINE" in panel and "word0 " in panel
+    seen = set()
+    for _ in range(6):  # paging from the first page skips no prompt row
+        cli._backtrack_scroll_context(1)
+        seen |= {w for w in _panel_text(cli).split() if w.startswith("word")}
+    assert {f"word{i}" for i in range(120)} <= seen | set(panel.split())

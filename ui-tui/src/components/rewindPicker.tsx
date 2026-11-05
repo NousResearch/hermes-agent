@@ -40,6 +40,24 @@ export function rewindContextRows(target: RewindTarget, width: number, labels: R
   ]
 }
 
+/** The context view's first page and the offset PgDn goes to from it. When the prompt alone fills the
+ * window, its head is cut with `…` so the first reply row shows too; PgDn then continues at the first
+ * prompt row the cut hid, so nothing is skipped. */
+export function rewindFirstPage(rows: ContextRow[], window: number) {
+  const replyAt = rows.findIndex((row, i) => i > 0 && row.kind === 'label') + 1
+
+  if (replyAt <= 0 || replyAt < window || window < 4) {
+    return { next: Math.max(1, window - 1), rows: rows.slice(0, window) }
+  }
+
+  const keep = window - 4 // prompt label + kept prompt rows + "…" + reply label + first reply row
+
+  return {
+    next: 1 + keep,
+    rows: [...rows.slice(0, 1 + keep), { kind: 'muted' as const, text: '  …' }, rows[replyAt - 1]!, rows[replyAt]!]
+  }
+}
+
 /** List and context rows sharing what the terminal leaves the picker: the list takes at most a third
  * (a window around the selection), the selected exchange the rest; neither goes under one row. Native
  * mode writes the whole layout, so anything taller pushes the heading and selection off the top. */
@@ -91,6 +109,8 @@ export function RewindPicker({
   const contextWindow = budget.context
   const maxContextOffset = Math.max(0, contextRows.length - contextWindow)
   const shownOffset = Math.min(contextOffset, maxContextOffset)
+  const firstPage = rewindFirstPage(contextRows, contextWindow)
+  const shownRows = shownOffset ? contextRows.slice(shownOffset, shownOffset + contextWindow) : firstPage.rows
 
   useEffect(() => {
     $rewindFocus.set(focused ? { text: focused.text, turn: focused.turn } : null)
@@ -119,8 +139,9 @@ export function RewindPicker({
 
     if (contextView && (key.pageUp || key.pageDown)) {
       const step = Math.max(1, contextWindow - 1)
+      const next = key.pageUp ? shownOffset - step : shownOffset ? shownOffset + step : firstPage.next
 
-      return setContextOffset(Math.max(0, Math.min(maxContextOffset, shownOffset + (key.pageUp ? -step : step))))
+      return setContextOffset(Math.max(0, Math.min(maxContextOffset, next)))
     }
 
     if ((ch === 'f' || ch === 'F') && rows[idx]) {
@@ -191,7 +212,7 @@ export function RewindPicker({
                     )}`
                   : ''}
               </Text>
-              {contextRows.slice(shownOffset, shownOffset + contextWindow).map((row, i) => (
+              {shownRows.map((row, i) => (
                 <Text
                   bold={row.kind === 'label'}
                   color={row.kind === 'label' ? t.color.label : row.kind === 'muted' ? t.color.muted : t.color.text}

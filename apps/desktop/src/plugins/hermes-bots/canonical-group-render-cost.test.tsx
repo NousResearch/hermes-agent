@@ -11,12 +11,21 @@ import type * as RoomStatus from './group-room-status'
 // and only the working chips tick each second; the whole room does not re-render on the clock.
 const request = vi.hoisted(() => vi.fn())
 const handoffScans = vi.hoisted(() => ({ count: 0 }))
+const cycleRuns = vi.hoisted(() => ({ count: 0 }))
+const outcomeRuns = vi.hoisted(() => ({ count: 0 }))
 vi.mock('./group-room-status', async importOriginal => {
   const real = await importOriginal<typeof RoomStatus>()
 
-  return { ...real, roomHandoffs: (...args: Parameters<typeof real.roomHandoffs>) => { handoffScans.count++
+  return { ...real,
+    roomHandoffs: (...args: Parameters<typeof real.roomHandoffs>) => { handoffScans.count++
 
-    return real.roomHandoffs(...args) } }
+      return real.roomHandoffs(...args) },
+    roomCycle: (...args: Parameters<typeof real.roomCycle>) => { cycleRuns.count++
+
+      return real.roomCycle(...args) },
+    memberOutcomes: (...args: Parameters<typeof real.memberOutcomes>) => { outcomeRuns.count++
+
+      return real.memberOutcomes(...args) } }
 })
 const historyRenders = vi.hoisted(() => ({ count: 0 }))
 vi.mock('./canonical-group-history', async importOriginal => {
@@ -49,7 +58,7 @@ const members = [{ member_id: 'ops', profile: 'ops', handle: 'ops', display_name
 const binding = { connectionId: 'local', profile: 'team', roomId: 'busy', roomName: 'Room' }
 
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); vi.useRealTimers(); handoffScans.count = 0; historyRenders.count = 0 })
+afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); vi.useRealTimers(); handoffScans.count = 0; cycleRuns.count = 0; outcomeRuns.count = 0; historyRenders.count = 0 })
 
 it('ticks only the working member’s time, never re-deriving the room each second', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
@@ -111,6 +120,7 @@ it('does not rescan the log for handoffs on each keystroke in the composer', asy
   const input = await screen.findByRole('textbox') as HTMLTextAreaElement
   await vi.waitFor(() => expect(input.disabled).toBe(false))
   const scans = handoffScans.count
+  const outcomes = outcomeRuns.count
 
   for (const text of ['h', 'he', 'hel', 'hell', 'hello']) {
     await act(async () => { fireEvent.change(input, { target: { value: text } }) })
@@ -118,6 +128,7 @@ it('does not rescan the log for handoffs on each keystroke in the composer', asy
 
   expect(input.value).toBe('hello')
   expect(handoffScans.count - scans).toBe(0)
+  expect(outcomeRuns.count - outcomes).toBe(0)
 })
 
 
@@ -136,11 +147,12 @@ it('moves the round strip when only groups.state changes (the log stays the same
 })
 
 
-it('does not rescan the log for handoffs when a poll brings the same room back', async () => {
+it('re-derives nothing (handoffs, round) when a poll brings the same room back', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   request.mockImplementation(async (_route, method) => method === 'groups.state'
-    // A fresh object graph every read, as over the wire: same roster, new arrays.
-    ? { room: { name: 'Room', members: members.map(member => ({ ...member })), latest_seq: 1 }, driver_status: {} }
+    // A fresh object graph every read, as over the wire: same roster and live rows, new arrays.
+    ? { room: { name: 'Room', members: members.map(member => ({ ...member })), latest_seq: 1 },
+        driver_status: { working: true, member_activity: [{ member_id: 'ops', status: 'running', started_at: 1, round_index: 1 }] } }
     : method === 'groups.log'
       ? { events: [{ seq: 1, event_id: 'u1', kind: 'message.user', actor: { kind: 'user', id: 'u' }, payload: { text: 'hi', thread_id: 't' } }] }
       : {})
@@ -148,12 +160,38 @@ it('does not rescan the log for handoffs when a poll brings the same room back',
   await vi.waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.log')).toBe(true))
   await act(async () => { await vi.advanceTimersByTimeAsync(100) })
   const scans = handoffScans.count
+  const cycles = cycleRuns.count
+  const outcomes = outcomeRuns.count
   const reads = request.mock.calls.filter(call => call[1] === 'groups.state').length
 
   await act(async () => { await vi.advanceTimersByTimeAsync(6100) })  // three 2 s polls
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.state').length - reads).toBeGreaterThanOrEqual(3)
   expect(handoffScans.count - scans).toBe(0)
+  expect(cycleRuns.count - cycles).toBe(0)
+  expect(outcomeRuns.count - outcomes).toBe(0)
+})
+
+it('ticks every busy part of one member on one clock: the chip and its details row agree each second', async () => {
+  const { MemberStatusChip } = await import('./group-room-ui')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  vi.setSystemTime(new Date(4_000_000_000))
+  const labels = CANONICAL_GROUP_LOCALES.en as never
+  const status = { kind: 'working' as const, startedAt: 4_000_000 - 3 }
+  const view = render(<ul><MemberStatusChip avatar={null} labels={labels} name="Ops" status={status} /></ul>)
+  await act(async () => { vi.advanceTimersByTime(500) })   // the second view mounts mid-second
+  view.rerender(<ul><MemberStatusChip avatar={null} labels={labels} name="Ops" status={status} /><MemberStatusChip avatar={null} labels={labels} name="Ops" status={status} /></ul>)
+  expect(vi.getTimerCount()).toBe(1)
+
+  for (let second = 0; second < 3; second++) {
+    await act(async () => { vi.advanceTimersByTime(1000) })
+    const [first, second_] = [...view.container.querySelectorAll('li')].map(chip => chip.textContent)
+    expect(second_).toBe(first)
+  }
+
+  view.unmount()
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 

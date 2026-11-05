@@ -4,7 +4,7 @@ import { type ReactNode, useLayoutEffect, useRef } from 'react'
 import { canonicalMemberName } from './canonical-group-activity'
 import type { CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import type { MemberStatus } from './group-room-status'
-import { AvatarStack, fill, memberStatusText, type RoomStatusLabels, useShownStatus } from './group-room-ui'
+import { AvatarStack, fill, memberStatusText, type RoomStatusLabels, shownDetail, useShownStatus } from './group-room-ui'
 
 /** What an open room last saw, for its row in the Bots list. */
 export interface CanonicalRoomLive { working: boolean; failed: boolean; needsYou: boolean }
@@ -151,13 +151,12 @@ export function CanonicalGroupDetails({ avatarFor, children, labels, onClose, ro
   </aside>
 }
 
-
 /** One member row of the details panel; it ticks on its own while that member works. */
 function DetailsMember({ avatar, labels, member, status }: {
   avatar: ReactNode; labels: RoomStatusLabels; member: CanonicalRoom['members'][number]; status: MemberStatus
 }) {
   const shown = useShownStatus(status)
-  const detail = 'detail' in shown ? shown.detail : undefined
+  const detail = shownDetail(shown)
 
   return <div className="flex items-center gap-2 py-1" data-member-status={shown.kind}>
     {avatar}

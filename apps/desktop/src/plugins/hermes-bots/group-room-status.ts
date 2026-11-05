@@ -46,9 +46,6 @@ export type MemberStatus =
   | BusyMember
   | ({ kind: MemberOutcomeKind } & Omit<MemberOutcome, 'kind'>)
 
-/** What a busy chip shows at `nowS`: working or stalled (no sign of life for `STALL_AFTER_S`), and times. */
-export type BusyStatus = { kind: 'stalled' | 'working'; elapsedS?: number; quietS?: number; tool?: string }
-
 /** A running member with no frame for this long reads as stalled. */
 export const STALL_AFTER_S = 120
 
@@ -150,8 +147,8 @@ export function memberStatus(
 
 export const isBusyStatus = (status: MemberStatus): status is BusyMember => status.kind === 'working'
 
-/** A busy member as its chip shows it at `nowS`. */
-export function busyAt(status: BusyMember, nowS: number): BusyStatus {
+/** A busy member as its chip shows it at `nowS`: stalled after `STALL_AFTER_S` with no sign of life. */
+export function busyAt(status: BusyMember, nowS: number): { kind: 'stalled' | 'working'; elapsedS?: number; quietS?: number; tool?: string } {
   const elapsedS = typeof status.startedAt === 'number' ? Math.max(0, nowS - status.startedAt) : undefined
   const quietS = typeof status.lastSignAt === 'number' ? Math.max(0, nowS - status.lastSignAt) : undefined
 

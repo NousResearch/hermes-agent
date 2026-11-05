@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
@@ -21,8 +21,7 @@ export interface CanonicalActivityLabels extends RoomStatusLabels {
 export const canonicalMemberName = (member: CanonicalRoomMember) => member.display_name || member.handle || member.member_id
 const avatarName = (member: CanonicalRoomMember) => member.profile || member.handle || member.member_id
 
-/** The coarse phase the roster has always exposed (`data-phase`); a stalled member is still working; outcomes
- *  read as idle. */
+/** The coarse phase the roster has always exposed (`data-phase`); outcomes read as idle. */
 const PHASE: Partial<Record<MemberStatus['kind'], string>> = { working: 'working', queued: 'queued' }
 
 const statusOf = (statuses: Map<string, MemberStatus>, member: CanonicalRoomMember): MemberStatus =>
@@ -80,12 +79,23 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
     text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking} working={[]} />
 }
 
-/** Every member's status, the room's cycle and whether it works, from one read's state + log. Outcomes are
+/** `value`, or the last one while equal by content. Each read builds new objects; the room's memos key on
+ *  identity. Compares only when `value` itself is new (a read), never on a re-render that reuses it. */
+export function useSameValue<T>(value: T): T {
+  const kept = useRef({ given: value, shown: value })
+
+  if (kept.current.given !== value) {
+    kept.current = { given: value, shown: JSON.stringify(value) === JSON.stringify(kept.current.shown) ? kept.current.shown : value }
+  }
+
+  return kept.current.shown
+}
+
+/** Every member's status, the room's cycle and whether it works, from one poll's state + log. Outcomes are
  *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work).
- *  Clock-free and memoised: the room re-derives when its log or state changes, never as time passes (each
- *  busy chip reads the clock itself). */
+ *  Clock-free: it re-derives when the log or the live rows change, never as time passes. */
 export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverActivity | undefined, members: CanonicalRoomMember[], replyThread?: string) {
-  const activity = driver?.member_activity
+  const activity = useSameValue(driver?.member_activity)
   const log = events as RoomLogEvent[]
   const focus = useMemo(() => focusThread(log, replyThread), [log, replyThread])
   const outcomes = useMemo(() => memberOutcomes(log), [log])

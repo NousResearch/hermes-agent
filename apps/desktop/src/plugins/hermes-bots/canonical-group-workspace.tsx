@@ -1,7 +1,7 @@
 import { Button, host, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive, useSameValue } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
 import { CanonicalGroupHeader } from './canonical-group-header'
@@ -34,10 +34,10 @@ const sameGroupPayload = (payload: Record<string, unknown>, text: string, attach
   // Preparing mints a thread for a new conversation, so only a reply's thread must match.
   (thread === undefined || payload.thread_id === thread)
 
-/** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
- *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const NO_MEMBERS: CanonicalRoomMember[] = []
 
+/** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
+ *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
 const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
   current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
 
@@ -117,9 +117,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     }
 
     if (alive.current && version === revision.current) {
-      // An unchanged roster keeps its identity too, so the room's memoised statuses and handoffs hit.
-      setState(current => current && JSON.stringify(current.room.members) === JSON.stringify(snapshot.room.members)
-        ? { ...snapshot, room: { ...snapshot.room, members: current.room.members } } : snapshot)
+      setState(snapshot)
       setEvents(current => sameLog(current, log) ? current : log)
       setReadError('')
     }
@@ -212,7 +210,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
-  const members = state?.room.members ?? NO_MEMBERS
+  const members = useSameValue(state?.room.members ?? NO_MEMBERS)
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))

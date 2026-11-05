@@ -74,8 +74,8 @@ async def _mutate(view, operation, payload):
 
 
 async def _rewind(view, turns_back, *, retry=False):
-    """``(text, count, target row)`` of the rewound user turn (``/retry``: ``(lossless resend text, count)``),
-    or None when there was nothing to rewind."""
+    """The rewound user turn's text (``/retry``: its lossless resend text), or None when there was
+    nothing to rewind."""
     payload = _rewind_to(turns_back, retry=retry)
     result = await view.mutations.apply(view.client, view.session_id, "rewind", payload)
     if result.get("status") == "nothing" or not result.get("rewound_count"):
@@ -91,7 +91,7 @@ async def _rewind(view, turns_back, *, retry=False):
         from agent.context_compressor import retryable_user_text
         with contextlib.suppress(ValueError):
             return retryable_user_text(content), result["rewound_count"]
-    return content if isinstance(content, str) else "", result["rewound_count"], result.get("target_message") or {}
+    return content if isinstance(content, str) else "", result["rewound_count"]
 
 
 async def _title(view, rest):
@@ -110,14 +110,9 @@ async def _undo(view, rest):
     if rewound is None:
         print(t("cli.session.undo_no_user_message"))
         return
-    text, count, target = rewound
+    text, count = rewound
     print(f"Undid {turns} turn{'s' if turns != 1 else ''} ({count} message(s)); the removed message is in the composer.")
     view.prefill = text
-    with contextlib.suppress(Exception):  # advisory: an older owner refuses ``undo_since``, as main prints nothing
-        listed = await view.client.rpc("rollback.list", session_id=view.session_id,
-                                       undo_since=target.get("timestamp"), undo_message_id=target.get("id"))
-        if hint := (listed.get("undo_hint") or {}).get("text"):
-            print(hint)
 
 
 async def _retry(view, rest):

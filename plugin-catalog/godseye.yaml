@@ -1,0 +1,98 @@
+name: godseye
+title: God's Eye View
+repo: https://github.com/mojomast/hermes-godseye
+sha: b9b184701e6bfa00128ff037138073a99f3c5f36
+description: >-
+  God's Eye View (bilawalsidhu/gods-eye-view, MIT) inside Hermes: 29 godseye_* public-data
+  tools (aircraft, ships, satellites, quakes, fires, weather, infrastructure) backed by its MCP
+  server, 33 godseye_live_* tools that let Hermes drive and read the live 3D globe open in a
+  Desktop/Webapp pane, and HUD summaries generated with the Hermes model (ctx.llm) instead of
+  OpenAI. Requires Node 24.14+ and a running God's Eye View checkout. No named-person search,
+  face recognition or tracking of individuals. Disclosure — starts one node MCP child from the
+  user's God's Eye View checkout; runs loopback-only HUD bridge (127.0.0.1:18791) and live relay
+  (127.0.0.1:18792) threads gated by a random token stored 0600 in plugin-data; talks only to the
+  user's God's Eye View app, which itself fetches public third-party data feeds; the pane
+  backend adds a base tag, an opt-in UI flag, a Cesium worker shim and the live agent script
+  inside the sandboxed frame only.
+maintainer: mojomast
+tier: community
+category: tools
+docs_url: https://github.com/mojomast/hermes-godseye#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-godseye/b9b184701e6bfa00128ff037138073a99f3c5f36/docs/screenshots/hermes-chat-tokyo-nvg.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-godseye/b9b184701e6bfa00128ff037138073a99f3c5f36/docs/screenshots/pane-full-ui.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-godseye/b9b184701e6bfa00128ff037138073a99f3c5f36/docs/screenshots/live-fly-to-tokyo.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-godseye/b9b184701e6bfa00128ff037138073a99f3c5f36/docs/screenshots/hud-via-hermes.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-godseye/b9b184701e6bfa00128ff037138073a99f3c5f36/docs/screenshots/pane-globe-only.jpg
+platforms: []
+known_issues:
+  - "Full UI in the pane and the in-app HUD via Hermes need two opt-in God's Eye View patches (shipped in patches/, upstream PRs #1571 and #1572); stock upstream gets the globe-only pane."
+capabilities:
+  provides_tools:
+    - godseye_get_earthquakes
+    - godseye_get_active_fires
+    - godseye_get_recent_launches
+    - godseye_aircraft_in_area
+    - godseye_find_aircraft
+    - godseye_get_aircraft_track
+    - godseye_get_aircraft_info
+    - godseye_vessels_in_area
+    - godseye_find_vessel
+    - godseye_get_vessel_track
+    - godseye_next_satellite_pass
+    - godseye_satellites_overhead
+    - godseye_find_cctv_cameras
+    - godseye_get_cctv_snapshot
+    - godseye_find_alpr_cameras
+    - godseye_get_traffic_flow
+    - godseye_get_weather_map
+    - godseye_get_recent_imagery
+    - godseye_find_submarine_cables
+    - godseye_find_infrastructure
+    - godseye_get_bhote_koshi_flood
+    - godseye_get_cyclones
+    - godseye_get_fire_perimeters
+    - godseye_get_terrain_height
+    - godseye_find_military_installations
+    - godseye_get_map_features
+    - godseye_situation_brief
+    - godseye_military_awareness
+    - godseye_show_in_gods_eye_view
+    - godseye_hud_summary
+    - godseye_live_fly_to_location
+    - godseye_live_select_nearest_aircraft
+    - godseye_live_adjust_camera_zoom
+    - godseye_live_zoom_to_globe
+    - godseye_live_set_layer_visibility
+    - godseye_live_show_data_layers_menu
+    - godseye_live_set_panel_open
+    - godseye_live_set_context_mode
+    - godseye_live_control_cockpit
+    - godseye_live_set_visual_style
+    - godseye_live_get_entity_context
+    - godseye_live_get_current_view_state
+    - godseye_live_set_hud
+    - godseye_live_set_cyber_sonar
+    - godseye_live_set_detection
+    - godseye_live_set_map_stack
+    - godseye_live_set_post_processing
+    - godseye_live_control_scene
+    - godseye_live_control_cctv
+    - godseye_live_control_radio
+    - godseye_live_track_entity
+    - godseye_live_stop_tracking
+    - godseye_live_frame_overhead
+    - godseye_live_annotate_map
+    - godseye_live_clear_annotations
+    - godseye_live_move_camera
+    - godseye_live_fly_route
+    - godseye_live_analyst_query
+    - godseye_live_resolve_area
+    - godseye_live_find_imagery
+    - godseye_live_osm_query
+    - godseye_live_next_iss_pass
+    - godseye_live_next_satellite_pass
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

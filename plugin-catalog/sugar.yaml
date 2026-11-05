@@ -1,8 +1,8 @@
 name: sugar
 repo: https://github.com/roboticforce/sugar
-sha: a112b59dece2d59842e87011afa549fcb77df8bb
+sha: e1221776234fcd66d55595b8c35465f299605a78
 subdir: hermes-plugin
-version: "0.3.0"
+version: "0.3.1"
 description: Local-first persistent memory for coding agents. SQLite on your disk -
   decisions, preferences, error patterns, and guidelines with project and global
   scopes and guideline-aware search. No cloud, no API key, nothing leaves the machine.

@@ -130,6 +130,16 @@ jobs:
             exit 0
           fi
 
+          # Push-triggered deploys carry no run id, and the scheduled
+          # deploy-site dispatch they displace (concurrency group "pages"
+          # keeps exactly one pending run) was the one carrying the fresh
+          # index. Discover the latest successful skills-index build so its
+          # artifact still lands instead of redeploying the stale live
+          # copy (#122609).
+          if [ -z "$SKILLS_INDEX_RUN_ID" ]; then
+            SKILLS_INDEX_RUN_ID="$(gh run list --workflow skills-index.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || true)"
+          fi
+
           if [ -n "$SKILLS_INDEX_RUN_ID" ]; then
             tmpdir="$(mktemp -d)"
             echo "Downloading skills-index artifact from run $SKILLS_INDEX_RUN_ID"

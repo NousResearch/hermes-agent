@@ -1,0 +1,21 @@
+name: certarc
+title: CertArc
+repo: https://github.com/CertArc/certarc-mcp
+sha: d48307aa2124665550dd46f01ae3dbaa21749366
+subdir: hermes
+version: "1.0.0"
+description: "Free scenario practice for the CISM, CISSP, CISA, AAISM and AAIA exams through CertArc's hosted MCP server (Streamable HTTP at https://certarc.com/mcp/grok, CertArc's free no-sign-in endpoint, no keys in config): 10 practice questions per certification with explanations for every option, exam outlines and study guides. Bundles the certarc-practice skill, which offers a link to CertArc's free assessment that the user opens and signs in to themselves. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to certarc.com, and the assessment links carry a source tag. The endpoint offers four tools, all annotated read-only, and none reads a learner's own study. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: CertArc
+tier: community
+category: tools
+docs_url: https://certarc.com/integrations
+requires_hermes: ">=0.22.7"
+readme: true
+platforms: []
+known_issues:
+  - "Reading your own CertArc study from Hermes is not available yet; free practice works without an account."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

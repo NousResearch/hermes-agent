@@ -10,6 +10,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.runtime_ownership import process_ownership
+from persistence_assembly import close_stores_under
 
 
 @pytest.fixture
@@ -23,8 +24,6 @@ def multiplexed(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     beta = root / 'profiles' / 'beta'
     beta.mkdir(parents=True, mode=0o700)
     (beta / 'config.yaml').write_text('{}')
@@ -37,7 +36,7 @@ def multiplexed(tmp_path, monkeypatch):
     yield runner, beta.resolve()
     for authority in list(getattr(runner, 'session_authorities', None) or []):
         if authority is not None:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
     for _, home in homes:
         process_ownership.release(home)
 
@@ -111,7 +110,6 @@ async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multip
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.session_api import bind_api_session
     from gateway.session_authority import SessionAuthority
-    from hermes_state_runtime import admit_session_input
     runner, beta = multiplexed
     api = SimpleNamespace(gateway_runner=runner)
     runner.adapters[Platform.API_SERVER] = api  # the launch API adapter is already published
@@ -122,9 +120,9 @@ async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multip
     await initialize_gateway_runtime(runner)
     first = runner.session_authorities.for_home(beta)
     ref = bind_api_session(first, 'api-queued')
-    admit_session_input(first.db, epoch=first.epoch, principal_id='api', session_id=ref.session_id,
-                        request_id='chat:scope:queued',
-                        payload={'text': 'do the queued work', 'api_turn_v1': {'history': [], 'settings': {}}})
+    first.persistence.admissions.admit(epoch=first.epoch, principal_id='api', session_id=ref.session_id,
+                                       request_id='chat:scope:queued',
+                                       payload={'text': 'do the queued work', 'api_turn_v1': {'history': [], 'settings': {}}})
     await _boot_with_beta_parked(runner, beta, monkeypatch)
     await _rescan(runner, beta, monkeypatch)
     # A cold boot schedules it when the API adapter is published (recover_api_turns).

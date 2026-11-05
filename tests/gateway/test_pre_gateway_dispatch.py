@@ -13,6 +13,8 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_holder import raw_holder
 
 
 def _clear_auth_env(monkeypatch) -> None:
@@ -166,7 +168,6 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     async def rewrite(name, **_kwargs):
@@ -192,7 +193,7 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
         event = await runner._hm_pre_gateway_dispatch_hook(human, source)
         receipt = await authority.admit_native(event)
 
-    payload = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)[-1]["payload"]
+    payload = authority.persistence.admissions.list(session_id=receipt.ref.session_id, pending_only=False)[-1].payload
     assert expected is not None and event is not human
     assert (payload["text"], payload["native_text_v1"].get("provenance")) == ("rewritten", expected)
 
@@ -291,12 +292,12 @@ async def test_webhook_delivery_fires_the_hook_once_at_ingress_before_commit():
         del authority._schedule  # this test needs the real drain to execute the admitted row
         runner._handle_message_with_agent = AsyncMock(return_value="agent-ok")
         assert (await post(client, "drop this", "d-drop")).status == 202
-        assert fired == ["d-drop"] and not authority.db._read_all("SELECT 1 FROM session_admissions")
+        assert fired == ["d-drop"] and not raw_holder(authority.persistence)._read_all("SELECT 1 FROM session_admissions")
 
         assert (await post(client, "keep this", "d-keep")).status == 202
         assert (await post(client, "please rewrite", "d-rewrite")).status == 202
         def settled():
-            rows = authority.db._read_all("SELECT request_id, status, payload_json FROM session_admissions")
+            rows = raw_holder(authority.persistence)._read_all("SELECT request_id, status, payload_json FROM session_admissions")
             return rows if len(rows) == 2 and all(row["status"] == "terminal" for row in rows) else None
 
         rows = await async_wait_until(settled, what="both admitted deliveries executed")
@@ -375,7 +376,7 @@ async def test_a_resend_whose_raw_payload_changed_conflicts_even_when_its_prompt
             assert (retry.status, (await retry.json())["status"]) == (200, "duplicate")
         changed = await _post_webhook(client, {"action": "opened", "detail": "handle two"}, "d-1")
         assert changed.status == 503
-        rows = authority.db._read_all("SELECT request_id, payload_json FROM session_admissions")
+        rows = raw_holder(authority.persistence)._read_all("SELECT request_id, payload_json FROM session_admissions")
     assert sorted((row["request_id"], json.loads(row["payload_json"])["text"]) for row in rows) == [
         ("d-1", "handle one"), ("d-2", "")]
     assert fired == ["handle one", "blank"]
@@ -399,7 +400,7 @@ async def test_rewritten_webhook_delivery_retries_to_its_receipt_and_a_changed_o
         retry = await _post_webhook(client, "please rewrite", "d-1")
         assert (retry.status, (await retry.json())["status"]) == (200, "duplicate")
         assert (await _post_webhook(client, "please rewrite it twice", "d-1")).status == 503
-        rows = authority.db._read_all("SELECT payload_json FROM session_admissions")
+        rows = raw_holder(authority.persistence)._read_all("SELECT payload_json FROM session_admissions")
     assert [json.loads(row["payload_json"])["text"] for row in rows] == ["rewritten"]
     assert fired == ["d-1"]
 
@@ -427,12 +428,12 @@ async def test_a_webhook_row_committed_before_the_fingerprint_retries_exactly_an
         retry = await _post_webhook(client, "please rewrite", "d-old")
         assert (retry.status, (await retry.json())["status"]) == (200, "duplicate")
         assert (await _post_webhook(client, "please rewrite it twice", "d-old")).status == 503
-        [row] = authority.db._read_all("SELECT target_session_id, payload_json FROM session_admissions")
+        [row] = raw_holder(authority.persistence)._read_all("SELECT target_session_id, payload_json FROM session_admissions")
         assert "ingress_sha256" not in json.loads(row["payload_json"])["native_text_v1"]
 
         del authority._schedule  # the queued row now runs on the real drain
         authority._schedule(SessionRef(authority.profile_id, row["target_session_id"]))
-        await async_wait_until(lambda: authority.db._read_all("SELECT 1 FROM session_admissions WHERE status='terminal'"),
+        await async_wait_until(lambda: raw_holder(authority.persistence)._read_all("SELECT 1 FROM session_admissions WHERE status='terminal'"),
                                what="the queued row executed")
         executed = [call.args[0].text for call in runner._handle_message_with_agent.await_args_list]
     assert executed == ["please rewrite"]
@@ -510,10 +511,10 @@ async def test_relay_resend_of_a_rewritten_delivery_resolves_its_admission(tmp_p
                 await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": buffer_id}) + "\n")
                 await async_wait_until(lambda: buffer_id in acked() and turns, timeout=20,
                                        what=f"{buffer_id} acknowledged after the turn ran")
-            rows = authority.db._read_all("SELECT admission_id, payload_json FROM session_admissions")
+            rows = raw_holder(authority.persistence)._read_all("SELECT admission_id, payload_json FROM session_admissions")
         finally:
             await adapter.disconnect()
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
     assert [json.loads(row["payload_json"])["text"] for row in rows] == ["rewritten"]
     assert outcomes == [rows[0]["admission_id"]] * 2
     assert (turns, fired) == (["rewritten"], ["r1"])
@@ -603,13 +604,13 @@ async def test_relay_resend_of_a_rewritten_media_delivery_reuses_its_admission_a
             await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": "buf-3"}) + "\n")
             await async_wait_until(lambda: "buf-3" in acked(), timeout=20, what="the changed re-send acknowledged")
             after_conflict = retained()
-            rows = authority.db._read_all("SELECT admission_id, payload_json FROM session_admissions")
+            rows = raw_holder(authority.persistence)._read_all("SELECT admission_id, payload_json FROM session_admissions")
         finally:
             _Media.body = PNG
             media.shutdown()
             media.server_close()
             await adapter.disconnect()
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
     [row] = rows
     committed = json.loads(row["payload_json"])
     assert committed["text"] == "rewritten" and len(committed["native_text_v1"]["media"]) == 1
@@ -663,7 +664,7 @@ async def test_an_identical_webhook_delivery_waits_for_the_running_hook_and_gets
         first, second = await asyncio.gather(first, second)
         assert first.status == 202
         assert (second.status, (await second.json())["status"]) == (200, "duplicate")
-        rows = authority.db._read_all("SELECT payload_json FROM session_admissions")
+        rows = raw_holder(authority.persistence)._read_all("SELECT payload_json FROM session_admissions")
     assert [json.loads(row["payload_json"])["text"] for row in rows] == ["rewritten"]
     assert fired == ["d-1"]
 
@@ -752,13 +753,13 @@ async def test_a_relay_media_delivery_no_admission_owns_retains_no_bytes(
                                 "user_id": "relay-user"}}
             await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": "buf-1"}) + "\n")
             await async_wait_until(lambda: outcomes, timeout=20, what="the delivery decided")
-            rows = authority.db._read_all("SELECT 1 FROM session_admissions")
+            rows = raw_holder(authority.persistence)._read_all("SELECT 1 FROM session_admissions")
         finally:
             runner._draining = False
             media.shutdown()
             media.server_close()
             await adapter.disconnect()
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
     assert (fired, outcomes, rows) == ([hook_name], [outcome], [])
     assert not list(_media_root().rglob("*.png")), "a delivery no admission owns left its retained copy"
 

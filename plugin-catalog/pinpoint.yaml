@@ -1,0 +1,30 @@
+name: pinpoint
+repo: https://github.com/stupidburgers/pinpoint
+sha: "8d41dddd43ee65ac7d4bf1440bbd3b8227e8b240"
+subdir: ""
+description: "Measure the live page in Hermes Desktop's Browser pane with in-page audits (WCAG contrast, tap targets, alt/labels, overflow, small text), pin numbered findings on the real elements, send a pin to the agent as a fix task, and verify the fix with a re-audit and score delta. Disclosure - Pinpoint's desktop half runs its own audit script inside the web page open in Hermes Desktop's Browser pane, only after you allow it for that site (Desktop's per-origin consent dialog; revocable under Capabilities > Plugins); the script reads computed styles, layout and attribute names (not form values or cookies) and draws an overlay. Findings (CSS selectors, short element labels, measured values) are stored in a local SQLite file under the plugin-data folder (pinpoint/data.db, 20 pages max) and are sent to the model only when the agent calls pinpoint_audit/pinpoint_pins or when you click Fix on a pin; element labels originate from the page. The desktop half polls the page every 0.5-1 s while pins are shown (via executeJavaScript) and re-audits automatically after page changes (switch off in the pane). pinpoint_audit blocks up to 90 s waiting for the Desktop (configurable) and returns desktop_unavailable when no Desktop window answers, including under cron. No network calls, no subprocesses, no shell, no credentials, no telemetry, no files written outside plugin-data; it never edits your source (the agent does, under normal approvals)."
+maintainer: stupidburgers
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+image: "https://raw.githubusercontent.com/stupidburgers/pinpoint/8d41dddd43ee65ac7d4bf1440bbd3b8227e8b240/docs/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/8d41dddd43ee65ac7d4bf1440bbd3b8227e8b240/docs/screenshots/01-pins.png"
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/8d41dddd43ee65ac7d4bf1440bbd3b8227e8b240/docs/screenshots/02-pin-card.png"
+  - "https://raw.githubusercontent.com/stupidburgers/pinpoint/8d41dddd43ee65ac7d4bf1440bbd3b8227e8b240/docs/screenshots/03-after-fix.png"
+readme: true
+platforms: [windows, macos, linux]
+known_issues:
+  - "Both halves must be enabled: `hermes plugins enable pinpoint` and Desktop > Capabilities > Plugins > Pinpoint."
+  - "The consent dialog is owned by Desktop; its text cannot be customised."
+  - "Pin clicks and page changes reach the agent by polling every 0.5-1 s (no page-to-plugin push exists)."
+  - "Focus-indicator rule is a static CSSOM heuristic; cross-origin stylesheets and iframes and closed shadow roots are not scanned."
+  - "Only tested on Windows 11 with Hermes 0.22.7; macOS and Linux untested."
+capabilities:
+  provides_tools:
+    - pinpoint_audit
+    - pinpoint_pins
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

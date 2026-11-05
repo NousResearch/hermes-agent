@@ -25,6 +25,7 @@ from tests.tools.docker_root_script_harness import (
     SYSTEM_PATH,
     calls,
     dropped_command,
+    records,
     redirect_root_tools,
     write_fake_id,
     write_recorders,
@@ -122,8 +123,8 @@ class _Harness:
                               env={**base, **(env or {})}, timeout=60, check=False,
                               stdin=subprocess.DEVNULL, cwd=self.home)
 
-    def planted_runs(self) -> list[str]:
-        return self.planted_log.read_text().splitlines() if self.planted_log.exists() else []
+    def planted_runs(self) -> list[list[str]]:
+        return records(self.planted_log)
 
     def drops(self) -> list[tuple[str | None, list[str]]]:
         out = []
@@ -238,6 +239,46 @@ def test_exec_shim_decides_and_drops_without_the_inherited_path(tmp_path: Path, 
     else:
         assert h.drops() == []
         assert calls(h.log, "hermes") == [["--version"]]
+
+
+# Arguments a shell would split, glob, expand or drop if any hop lost the quoting.
+TRICKY_ARGS = ("", "a b", "it's", "$HOME", "*", "--flag=x y", " lead", "tab\there", "line\nbreak")
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("first", ["chat", "sleep"])
+def test_main_wrapper_hands_the_dropped_child_its_argv_unchanged(tmp_path: Path, first: str) -> None:
+    h = _Harness(tmp_path)
+    (h.home / "glob-bait").write_text("", encoding="utf-8")
+
+    proc = h.run(DOCKER / "main-wrapper.sh", first, *TRICKY_ARGS,
+                 rewrite={"\ncd /opt/data\n": f"\ncd {h.home}\n"})
+
+    assert proc.returncode == 0, proc.stderr
+    (child_path, child), = h.drops()
+    # A subcommand runs through hermes; an executable on the PATH runs directly.
+    expected = ["hermes", first, *TRICKY_ARGS] if first == "chat" else [first, *TRICKY_ARGS]
+    assert child == expected
+    _assert_hermes_path(child_path, f"{h.planted}:{h.fake}:/usr/bin:/bin")
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("uid", ["0", "10000"])
+def test_exec_shim_hands_hermes_its_argv_unchanged(tmp_path: Path, uid: str) -> None:
+    h = _Harness(tmp_path)
+    real = write_recorders(tmp_path / "venv", h.log, {"hermes": ""}) / "hermes"
+    (h.home / "glob-bait").write_text("", encoding="utf-8")
+
+    proc = h.run(DOCKER / "hermes-exec-shim.sh", *TRICKY_ARGS, env={"FAKE_UID": uid},
+                 rewrite={"REAL=/opt/hermes/.venv/bin/hermes": f"REAL={real}"})
+
+    assert proc.returncode == 0, proc.stderr
+    if uid == "0":
+        (_child_path, child), = h.drops()
+        assert child == [str(real), *TRICKY_ARGS]
+    else:
+        assert h.drops() == []
+        assert calls(h.log, "hermes") == [list(TRICKY_ARGS)]
 
 
 def _login_path(tmp_path: Path, uid: str) -> list[str]:

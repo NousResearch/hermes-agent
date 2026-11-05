@@ -26,13 +26,17 @@ def redirect_root_tools(text: str, bindir: Path) -> str:
 
 
 def write_recorders(bindir: Path, log: Path, names: dict[str, str]) -> Path:
-    """Executables that append ``<name> <args>`` to ``log`` and print a canned stdout."""
+    """Executables that append their name and argv to ``log`` and print a canned stdout.
+
+    Each call is one record of NUL-terminated fields: the argument count, the name, then
+    every argument as given, so empty arguments and embedded whitespace or quotes survive
+    (see :func:`records`)."""
     bindir.mkdir(parents=True, exist_ok=True)
     for name, stdout in names.items():
         script = bindir / name
         script.write_text(
             "#!/bin/sh\n"
-            f'printf "%s\\n" "{name} $*" >> "{log}"\n'
+            f'printf \'%s\\0\' "$#" \'{name}\' "$@" >> "{log}"\n'
             + (f"printf '%s\\n' '{stdout}'\n" if stdout else "")
             + "exit 0\n",
             encoding="utf-8",
@@ -53,10 +57,24 @@ def write_fake_id(bindir: Path) -> None:
     fake.chmod(0o755)
 
 
-def calls(log: Path, name: str) -> list[list[str]]:
+def records(log: Path) -> list[list[str]]:
+    """Every recorded call in ``log`` as ``[name, *argv]``, in call order."""
     if not log.exists():
         return []
-    return [line.split()[1:] for line in log.read_text().splitlines() if line.split()[:1] == [name]]
+    fields = log.read_bytes().decode("utf-8", "surrogateescape").split("\0")
+    assert fields[-1] == "", f"truncated record in {log}"
+    out, i = [], 0
+    while i < len(fields) - 1:
+        count = int(fields[i])
+        out.append(fields[i + 1:i + 2 + count])
+        i += 2 + count
+    assert i == len(fields) - 1, f"truncated record in {log}"
+    return out
+
+
+def calls(log: Path, name: str) -> list[list[str]]:
+    """The argv of every recorded call to ``name``."""
+    return [rec[1:] for rec in records(log) if rec[0] == name]
 
 
 def dropped_command(args: list[str]) -> tuple[str | None, list[str]]:

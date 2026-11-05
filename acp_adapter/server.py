@@ -16,7 +16,7 @@ from typing import Any, Callable, Deque, Optional
 
 import acp
 from acp.schema import (
-    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
+    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ConfigOptionUpdate, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
     McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionConfigOptionSelect, SessionConfigSelectOption, SessionForkCapabilities,
@@ -865,12 +865,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
+            previous_route = (state.model, getattr(state.agent, "provider", None))
             # Off the loop: /model validates through switch_model (network I/O) and /compress
             # calls the LLM; handlers are sync and hold no loop-bound state.
             response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
             if response_text is not None:
                 if self._conn:
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
+                    if previous_route != (state.model, getattr(state.agent, "provider", None)):
+                        # Editors replace the selector list, including the retained approval policy.
+                        options = await asyncio.to_thread(self._session_config_options, state)
+                        await self._conn.session_update(session_id, ConfigOptionUpdate(
+                            session_update="config_option_update", config_options=options))
                     await self._send_usage_update(state)
                 # A mutating command held command_op; prompts that arrived mid-op are queued.
                 await self._drain_queued_prompts(state, session_id, self._conn)

@@ -1,7 +1,7 @@
 name: verifyum
 title: Verifyum
 repo: https://github.com/aisenseapi/verifyum-agent-plugin
-sha: 3a88032dcf3b38a298fc76a235daec75ac9a17c8
+sha: 15c80a75593a04fdcf22a3ed52ed3c545bceee0b
 description: >-
   Privacy-preserving file proofs on Solana Mainnet through Verifyum (no account, no key): the agent
   hashes a file on the user's machine, anchors only a domain-separated commitment, follows the proof
@@ -23,8 +23,8 @@ maintainer: aisenseapi
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/aisenseapi/verifyum-agent-plugin/blob/3a88032dcf3b38a298fc76a235daec75ac9a17c8/README.md
-version: "0.1.0"
+docs_url: https://github.com/aisenseapi/verifyum-agent-plugin/blob/15c80a75593a04fdcf22a3ed52ed3c545bceee0b/README.md
+version: "0.2.0"
 platforms: []
 known_issues:
   - "The file tool stays off until VERIFYUM_MCP_ALLOWED_DIRS is set for the verifyum-local server."

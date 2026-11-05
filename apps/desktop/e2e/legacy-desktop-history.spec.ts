@@ -37,21 +37,21 @@ test('pre-cutover Desktop conversations remain visible and open across profiles'
   const seed = spawnSync(python, ['-c', `
 import json, os, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import open_persistence, profile_scope
 
-def seed(db_path, rows, profile):
-    with SessionDB(db_path=db_path) as db:
+def seed(home, rows, profile):
+    with open_persistence(profile_scope(home=home)) as store:
         for r in rows:
-            db.create_session(r['id'], source=r['source'], model='e2e-mock', cwd=os.environ['HOME'], user_id=r['userId'])
-            db.set_session_title(r['id'], 'Retained ' + r['id'])
-            db.append_message(r['id'], 'user', 'Historical question ' + r['id'])
-            db.append_message(r['id'], 'assistant', 'Historical answer ' + r['id'])
-            db._conn.execute('UPDATE sessions SET profile_name=? WHERE id=?', (profile, r['id']))
-        db._conn.commit()
+            store.sessions.create(NewSession(r['id'], source=r['source'], model='e2e-mock', cwd=os.environ['HOME'], user_id=r['userId'], profile_name=profile))
+            store.sessions.set_title(r['id'], 'Retained ' + r['id'])
+            store.messages.append(r['id'], NewMessage(role='user', content='Historical question ' + r['id']))
+            store.messages.append(r['id'], NewMessage(role='assistant', content='Historical answer ' + r['id']))
 
 home = Path(os.environ['HERMES_HOME'])
-seed(home / 'state.db', json.loads(sys.argv[1]), 'default')
-seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source': 'desktop', 'userId': None}], 'developer')
+seed(home, json.loads(sys.argv[1]), 'default')
+seed(home / 'profiles' / 'developer', [{'id': sys.argv[2], 'source': 'desktop', 'userId': None}], 'developer')
 `, JSON.stringify(ROWS), NAMED_ROW], { cwd: root, env: { ...env, PYTHONPATH: root }, encoding: 'utf8' })
 
   expect(seed.status, seed.stderr).toBe(0)

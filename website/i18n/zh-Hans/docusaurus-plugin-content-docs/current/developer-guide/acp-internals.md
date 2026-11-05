@@ -169,7 +169,7 @@ ACP 在 prompt 执行期间临时在终端工具上安装审批回调，执行�
 
 ## 当前限制
 
-- ACP 会话持久化至共享的 `~/.hermes/state.db`（SessionDB），在进程重启后透明恢复；它们会出现在 `session_search` 中
+- ACP 会话持久化至共享的 `~/.hermes/state.db`（通过 `persistence_assembly.open_persistence`），在进程重启后透明恢复；它们会出现在 `session_search` 中
 - 非文本 prompt 块在请求文本提取时当前被忽略
 - 编辑器特定的 UX 因 ACP 客户端实现而异
 

@@ -16,6 +16,7 @@ import time
 import pytest
 
 from gateway import status
+from gateway.status import looks_like_gateway_command_line
 
 
 @pytest.fixture
@@ -44,7 +45,64 @@ def test_psutil_answers_without_forking_ps(no_proc, monkeypatch):
 
     cmdline = status._read_process_cmdline(os.getpid())
 
-    assert cmdline and sys.executable.split("/")[-1] in cmdline
+    assert cmdline and sys.executable.split("/")[-1].lower() in cmdline.lower()
+
+
+def test_psutil_preserves_spaces_in_argv_boundaries(no_proc, monkeypatch):
+    """A spaced interpreter path must stay one token for gateway identity parsing."""
+    import psutil
+
+    argv = [
+        r"D:\Hermes Agent\tools\python.exe",
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+    ]
+
+    class _Process:
+        def cmdline(self):
+            return argv
+
+    monkeypatch.setattr(psutil, "Process", lambda _pid: _Process())
+    monkeypatch.setattr(status, "_IS_WINDOWS", True)
+    _no_fork(monkeypatch)
+
+    cmdline = status._read_process_cmdline(1234)
+
+    assert cmdline == subprocess.list2cmdline(argv)
+    assert cmdline is not None
+    assert '"D:\\Hermes Agent\\tools\\python.exe"' in cmdline
+    assert looks_like_gateway_command_line(cmdline)
+
+
+def test_proc_preserves_nul_separated_argv_boundaries(no_proc, monkeypatch):
+    """The /proc reader must preserve a spaced argv[0] and its gateway verdict."""
+    argv = [
+        "/opt/Hermes Agent/tools/python",
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+    ]
+    raw = b"\x00".join(part.encode() for part in argv) + b"\x00"
+    real_read_bytes = status.Path.read_bytes
+
+    def _read_bytes(self, *args, **kwargs):
+        if str(self) == "/proc/1234/cmdline":
+            return raw
+        return real_read_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(status.Path, "read_bytes", _read_bytes)
+    monkeypatch.setattr(status, "_IS_WINDOWS", False)
+    _no_fork(monkeypatch)
+
+    cmdline = status._read_process_cmdline(1234)
+
+    assert cmdline == subprocess.list2cmdline(argv)
+    assert cmdline is not None
+    assert '"/opt/Hermes Agent/tools/python"' in cmdline
+    assert looks_like_gateway_command_line(cmdline)
 
 
 def test_ps_still_answers_when_psutil_cannot(no_proc, monkeypatch):

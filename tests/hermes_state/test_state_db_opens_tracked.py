@@ -156,3 +156,16 @@ def test_set_journal_mode_switch_connection_is_tracked(state_db, tracked, monkey
     args = argparse.Namespace(sessions_action="set-journal-mode", mode="delete", db=None, force=True)
     assert cmd_set_journal_mode(args) == 0
     assert _key(state_db) in tracked
+
+
+def test_read_file_sqlite_extractor_rejects_a_live_non_database(tmp_path):
+    """Skipping the magic check for a live file must not let a non-database through."""
+    from tools.read_extract import ExtractionError, _extract_sqlite
+    fake = tmp_path / "live.db"
+    fake.write_bytes(b"definitely not sqlite" * 100)
+    live = safe_read.connect_tracked(str(fake), tracking_path=fake)  # SQLite opens lazily
+    try:
+        with pytest.raises(ExtractionError, match="SQLite read failed"):
+            _extract_sqlite(str(fake))
+    finally:
+        live.close()

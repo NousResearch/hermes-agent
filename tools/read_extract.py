@@ -572,7 +572,9 @@ def _extract_sqlite(path: str) -> str:
 
     # A raw open()/close() of a database this process has open (the agent reading its own
     # state.db) would cancel that connection's POSIX locks, so the magic check goes through the
-    # guarded reader. A live connection already proves the file is SQLite.
+    # guarded reader. While a connection is live the header can't be read safely, so the magic
+    # check is skipped; a live file that isn't a database then fails on the first query below,
+    # which still surfaces as ExtractionError ("SQLite read failed: ...").
     header = read_header_bytes_preopen(path, length=len(_SQLITE_MAGIC))
     if header is None and not has_live_connection(path):
         raise ExtractionError("could not read the file")

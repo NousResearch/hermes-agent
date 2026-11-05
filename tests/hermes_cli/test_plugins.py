@@ -122,6 +122,20 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
 
+    def test_hidden_plugin_directories_are_ignored(self, tmp_path, caplog):
+        from hermes_cli.plugins_discovery import scan_directory
+
+        root = tmp_path / "plugins"
+        hidden = root / "superpowers" / ".claude-plugin"
+        hidden.mkdir(parents=True)
+        (hidden / "plugin.json").write_text("{}", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            manifests = scan_directory(root, "user")
+
+        assert manifests == []
+        assert "Failed to parse" not in caplog.text
+
     def test_removed_relay_plugin_identity_cannot_be_reloaded(
         self, monkeypatch, caplog
     ):

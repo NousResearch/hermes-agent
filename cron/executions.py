@@ -26,7 +26,8 @@ from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
-MAX_TERMINAL_EXECUTIONS = 1000
+# Keep more than one week of terminal history even with one-minute and five-minute jobs.
+MAX_TERMINAL_EXECUTIONS = 20000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0

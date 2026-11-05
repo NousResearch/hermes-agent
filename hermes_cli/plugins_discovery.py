@@ -111,7 +111,11 @@ def scan_directory(
         return manifests
     for child in sorted(path.iterdir()):
         try:
-            if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
+            if (
+                not child.is_dir()
+                or child.name.startswith(".")
+                or (depth == 0 and skip_names and child.name in skip_names)
+            ):
                 continue
             manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
             portable_file = child / "plugin.json"

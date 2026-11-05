@@ -41,8 +41,8 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
-# A Continue re-reads the pause when an unrelated event lands between its read and its write.
-_CONTINUE_APPEND_ATTEMPTS = 3
+# Continue and the router answer re-read the log when an event lands between their read and their write.
+_FENCED_APPEND_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 
 
@@ -561,24 +561,33 @@ class HostedRoomService:
     def _record_route(self, binding: HostedRoomBinding, asked: discussion.DiscussionDecision,
                       picked: tuple[str, ...] | None) -> None:
         """Write the router's answer only when the room still waits for exactly this message's route: a
-        Stop or a newer message in the thread while the call ran makes the answer moot."""
-        with self._policy_lock:
-            room = self._room(binding.room_id)
-            snapshot = self._policy_snapshot(room)
-            current = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
-                room_context=room_context(self.db_path, room_id=binding.room_id, before_seq=asked.source_event_seq))
-            if (current.status, current.discussion_event_id) != ("route", asked.discussion_event_id):
-                return
-            gateway_id, epoch = _authority(room)
-            hosted_rooms.append_event(
-                self.db_path, room_id=binding.room_id,
-                event_id=router.routed_event_id(str(asked.discussion_event_id)),
-                kind=router.ROUTED_EVENT_KIND, actor={"kind": "gateway", "id": gateway_id},
-                payload=router.routed_payload(discussion_event_id=str(asked.discussion_event_id),
-                                              thread_id=str(asked.thread_id), member_ids=picked),
-                authority_gateway_id=gateway_id, authority_epoch=epoch)
+        Stop or a newer message in the thread while the call ran makes the answer moot. Stop and Send append
+        without the policy lock, so the write carries the log position the plan was read at and a changed
+        log re-plans instead of recording a route over a Stop."""
+        for _attempt in range(_FENCED_APPEND_ATTEMPTS):
+            with self._policy_lock:
+                room = self._room(binding.room_id)
+                snapshot = self._policy_snapshot(room)
+                current = discussion.plan_next_task(
+                    room, list(snapshot.events), local_profiles=self.room_profiles(room),
+                    initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
+                    room_context=room_context(self.db_path, room_id=binding.room_id,
+                                              before_seq=asked.source_event_seq))
+                if (current.status, current.discussion_event_id) != ("route", asked.discussion_event_id):
+                    return
+                gateway_id, epoch = _authority(room)
+                try:
+                    hosted_rooms.append_event(
+                        self.db_path, room_id=binding.room_id,
+                        event_id=router.routed_event_id(str(asked.discussion_event_id)),
+                        kind=router.ROUTED_EVENT_KIND, actor={"kind": "gateway", "id": gateway_id},
+                        payload=router.routed_payload(discussion_event_id=str(asked.discussion_event_id),
+                                                      thread_id=str(asked.thread_id), member_ids=picked),
+                        authority_gateway_id=gateway_id, authority_epoch=epoch,
+                        expected_latest_seq=int(room["latest_seq"]))
+                except hosted_rooms.EventCursorConflictError:
+                    continue
+            break
         self.runtime.wakeup()
 
     def continue_room(self, room_id: str, *, discussion_event_id: str) -> dict[str, Any]:
@@ -598,7 +607,7 @@ class HostedRoomService:
         """Append ``room.continued`` only onto the exact log the pause was read from. Stop and Send append
         without the policy lock, so a Stop or a newer message landing between the read and the write must
         refuse the Continue (re-read once more), never reopen the discussion over them."""
-        for _attempt in range(_CONTINUE_APPEND_ATTEMPTS):
+        for _attempt in range(_FENCED_APPEND_ATTEMPTS):
             events = self._events(room_id)
             paused = router.paused_discussion(events, discussion_event_id)
             if paused is None:

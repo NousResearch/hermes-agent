@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -79,34 +80,74 @@ def _load_config_dict(profile_dir: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _names_external_provider(profile_dir: Path) -> bool:
+    """Cheap pre-check before binding a profile's secrets: does its config.yaml, or the managed
+    overlay, name a non-core ``memory.provider`` (a ``${VAR}`` selector counts)?"""
+    from agent.memory_provider import is_core_memory_provider
+    from hermes_cli import managed_scope
+
+    from hermes_cli.config import cfg_get
+
+    for config in (_load_config_dict(profile_dir), managed_scope.load_managed_config()):
+        name = cfg_get(config, "memory", "provider")
+        if isinstance(name, str) and name.strip() and not is_core_memory_provider(name):
+            return True
+    return False
+
+
+def _drop_hook_only_registrations(name: str) -> None:
+    """Drop the fallback hooks a hook-only provider load registered on this profile's manager: they
+    proxy into the plugin host that is about to stop. The provider's next real load registers them
+    again (``plugins.memory`` drops and re-adds the same group)."""
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins_ledger import _hook_source_of
+    from plugins.memory import find_provider_dir
+
+    provider_dir = find_provider_dir(name)
+    if provider_dir is None:
+        return
+    manager = get_plugin_manager()
+    with manager._discovery_lock:
+        manager._drop_fallback_hooks(_hook_source_of(name, SimpleNamespace(__file__=str(provider_dir / "__init__.py"))))
+
+
 def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], None]) -> None:
     """Run ``call`` on the memory provider *profile_dir*'s config selects, with that profile's home AND
     its own secrets bound (a profile lifecycle hook): ``get_secret`` reads the target profile's
     ``.env`` and never falls back to the caller's environment for a key it lacks. No
     provider selected or installed: nothing runs. Best-effort: a failing
     provider, or an unreadable config, is logged and never fails the create/rename that called it
-    (the directory is already published)."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    (the directory is already published). A plugin host the hook started for that profile is
+    stopped afterwards (``plugins.isolation: host``), so a long-lived dashboard keeps none behind."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from plugins.memory import load_memory_provider
 
     name = None
     home_token = set_hermes_home_override(str(profile_dir))
     secret_token = None
     try:
+        if not _names_external_provider(profile_dir):
+            return  # the common case: no provider, so no secret scope, effective config or load
+        from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+        from hermes_cli.plugin_isolation import transient_plugin_host
+        from plugins.memory import load_memory_provider
         # Secrets first: the effective config (managed scope, ``${VAR}`` refs) expands through them.
+        # Its configured secret sources too (1Password etc.); a brand-new profile was never hydrated.
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        hydrate_profile_secret_sources(profile_dir)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_dir), profile_home=str(profile_dir))
         from hermes_cli.config import load_config_readonly
         name = active_memory_provider(load_config_readonly())
         if not name:
             return
-        provider = load_memory_provider(name, register_skills=False)
-        if provider is not None:
-            call(provider)
+        with transient_plugin_host(before_stop=lambda: _drop_hook_only_registrations(name)):
+            provider = load_memory_provider(name, register_skills=False)
+            if provider is not None:
+                call(provider)
     except (Exception, SystemExit):  # ConfigBackendUnavailable is a SystemExit; a plugin may sys.exit
         logger.warning("memory provider %r: profile hook failed for %s", name, profile_dir, exc_info=True)
     finally:
         if secret_token is not None:
+            from agent.secret_scope import reset_secret_scope
             reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 

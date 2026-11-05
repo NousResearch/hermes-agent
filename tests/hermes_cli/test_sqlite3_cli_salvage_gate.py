@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.session_lost_and_found import (
+from persistence.sqlite.admin._lost_and_found import (
     _parse_sqlite3_cli_version,
     _wal_reset_vulnerable,
     find_sqlite3_cli,
@@ -89,18 +89,18 @@ class TestWalResetVersionGate:
 class TestFindSqlite3CliRefusal:
     def test_missing_binary_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which", lambda _: None
+            "persistence.sqlite.admin._lost_and_found.shutil.which", lambda _: None
         )
         assert find_sqlite3_cli() is None
         assert find_sqlite3_cli_refusal()["reason"] == "missing"
 
     def test_no_dbpage_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: False,
         )
         assert find_sqlite3_cli() is None
@@ -114,15 +114,15 @@ class TestFindSqlite3CliRefusal:
         passes, while the WAL-reset opener bug is still present.
         """
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 45, 1),
         )
         assert find_sqlite3_cli() is None
@@ -133,15 +133,15 @@ class TestFindSqlite3CliRefusal:
 
     def test_fixed_capable_cli_accepted(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/local/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 51, 3),
         )
         assert find_sqlite3_cli() == "/usr/local/bin/sqlite3"
@@ -152,15 +152,15 @@ class TestFindSqlite3CliRefusal:
         version grounds alone (the salvage lane runs against a snapshot
         copy, not the live file)."""
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "persistence.sqlite.admin._lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "persistence.sqlite.admin._lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "persistence.sqlite.admin._lost_and_found._parse_sqlite3_cli_version",
             lambda _: None,
         )
         assert find_sqlite3_cli() == "/usr/bin/sqlite3"
@@ -172,14 +172,14 @@ class TestParseSqlite3CliVersion:
             stdout = b"3.51.4 2026-XX-XX 12:34:56\n"
 
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "persistence.sqlite.admin._lost_and_found.subprocess.run",
             return_value=Probe(),
         ):
             assert _parse_sqlite3_cli_version("x") == (3, 51, 4)
 
     def test_unexecutable_returns_none(self):
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "persistence.sqlite.admin._lost_and_found.subprocess.run",
             side_effect=OSError("no such file"),
         ):
             assert _parse_sqlite3_cli_version("x") is None

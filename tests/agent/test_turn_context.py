@@ -541,3 +541,26 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+def test_prologue_hands_the_titler_the_agents_writer_handle():
+    from agent import turn_context
+
+    agent = _TitlingAgent("desktop")
+    agent.persistence = types.SimpleNamespace(read_only=False)
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Fix the login button"}])
+    assert titler.call_args.kwargs["persistence"] is agent.persistence
+
+
+def test_prologue_names_a_subagent_run_through_the_writer_handle():
+    from agent import turn_context
+    from persistence.conversation.sessions import TitleSource
+
+    agent = _TitlingAgent("subagent")
+    agent.persistence = types.SimpleNamespace(read_only=False, sessions=MagicMock())
+    agent.persistence.sessions.set_auto_title.return_value = True
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Audit the billing module"}])
+    agent.persistence.sessions.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source=TitleSource.DERIVED)
+    assert not agent._session_db.set_auto_title.called

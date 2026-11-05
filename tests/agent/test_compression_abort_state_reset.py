@@ -30,7 +30,7 @@ def _make_agent(session_db):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id="abort-state-session",
             skip_context_files=True,
             skip_memory=True,
@@ -97,10 +97,10 @@ class TestAbortPathsResetPerAttemptState:
             compress_context,
             conversation_history_after_compression,
         )
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            db = open_persistence(profile_scope(home=Path(tmpdir)))
             agent = _make_agent(db)
             agent.compression_in_place = True
             original = [

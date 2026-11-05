@@ -95,17 +95,22 @@ def test_session_runtime_view_preserves_requested_provider_during_voice_turn():
 
 
 def test_voice_usage_never_becomes_the_session_route(tmp_path):
-    from hermes_state import SessionDB
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s1", source="cli", model="main-model")
-    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="voice-model",
-                           billing_provider="voicep", api_call_count=1, task="voice_chat")
-    row = db.get_session("s1")
-    assert row["model"] == "main-model"
-    assert row["input_tokens"] == 10
-    assert db.auxiliary_usage_by_task("s1")["voice_chat"]["input_tokens"] == 10
-    assert db.get_recent_session_model_route("s1") is None
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "s1", "cli", model="main-model")
+        db.usage.queue_usage("s1", UsageDelta(tokens=TokenCounts(input_tokens=10, output_tokens=5), api_call_count=1,
+                                              route=BillingRoute(model="voice-model", billing_provider="voicep"),
+                                              task="voice_chat"))
+        assert db.usage.flush_usage()
+        row = session_row(db, "s1")
+        assert row["model"] == "main-model"
+        assert row["input_tokens"] == 10
+        assert db.usage.auxiliary_usage_by_task("s1")["voice_chat"].tokens.input_tokens == 10
+        assert db.usage.recent_route("s1") is None
 
 
 @pytest.mark.parametrize("separate_voice_model", [False, True])

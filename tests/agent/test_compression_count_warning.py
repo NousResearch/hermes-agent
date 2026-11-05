@@ -15,10 +15,11 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int):
+def _build_agent_with_db(db, session_id: str, compression_count: int):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -27,7 +28,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int)
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -50,9 +51,9 @@ def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int)
 
 
 def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "PARENT_36908"
-    db.create_session(sid, source="cli")
+    seed_session(db, sid, "cli")
 
     # compression_count == 2 → the "compressed N times" warning should fire.
     agent = _build_agent_with_db(db, sid, compression_count=2)
@@ -72,9 +73,9 @@ def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path)
 
 
 def test_no_warning_below_threshold(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     sid = "PARENT_36908_ONCE"
-    db.create_session(sid, source="cli")
+    seed_session(db, sid, "cli")
 
     # compression_count == 1 → no repeated-compression warning.
     agent = _build_agent_with_db(db, sid, compression_count=1)

@@ -234,12 +234,14 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
     # Fallback compaction (no LLM summary) + SQLite reload between cycles:
     # the active request must be recognized from persisted content alone.
     from agent.conversation_compression import _ensure_compressed_has_user_turn
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_session
 
-    db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
+    db = open_persistence(profile_scope(home=tmp_path))
     session_id = "active-turn-restart"
-    db.create_session(session_id, "test")
+    seed_session(db, session_id, "test")
     messages = _oversized_active_turn()
     try:
         for cycle in range(3):
@@ -259,10 +261,10 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
             assert user_content.count(_ACTIVE_REQUEST) == 1
             assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
             assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
-            db.archive_and_compact(session_id, messages)
+            db.messages.compact(session_id, [NewMessage.from_live(m) for m in messages])
             db.close()
-            db = SessionDB(db_path=db_path)
-            messages = db.get_messages_as_conversation(session_id)
+            db = open_persistence(profile_scope(home=tmp_path))
+            messages = conversation(db, session_id)
     finally:
         db.close()
 

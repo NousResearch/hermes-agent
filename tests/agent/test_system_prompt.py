@@ -956,3 +956,62 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+class TestSessionReadsThroughTheStorageInterface:
+    """An agent carrying a writer handle reads its session through the handle; the store beside it is never called."""
+
+    @staticmethod
+    def _agent(handle, **fields):
+        from unittest.mock import MagicMock
+
+        return SimpleNamespace(_session_db=MagicMock(), persistence=handle, **fields)
+
+    def test_session_start_reads_the_lineage_root(self):
+        from unittest.mock import MagicMock
+
+        from agent.system_prompt import _session_start_like
+
+        handle = SimpleNamespace(read_only=False, lineage=MagicMock())
+        handle.lineage.conversation_root.return_value = "20260101_120000_root"
+        agent = self._agent(handle, session_id="20260615_090000_seg9", session_start=datetime(2026, 6, 15, 9, 0))
+        start = _session_start_like(agent, datetime(2026, 6, 16, 9, 0, tzinfo=ZoneInfo("UTC")))
+        assert start.strftime("%Y-%m-%d") == "2026-01-01"
+        handle.lineage.conversation_root.assert_called_once_with("20260615_090000_seg9")
+        assert agent._session_db.method_calls == []
+
+    def test_agent_home_is_the_handles_profile(self, tmp_path):
+        from agent.system_prompt import _agent_home
+
+        handle = SimpleNamespace(read_only=False, scope=SimpleNamespace(profile_dir=tmp_path / "bot"))
+        assert _agent_home(self._agent(handle)) == tmp_path / "bot"
+
+    def test_bot_chat_title_is_read_through_the_handle(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from agent.system_prompt import _bot_mode_parts
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+        handle = SimpleNamespace(read_only=False, sessions=MagicMock(), scope=SimpleNamespace(profile_dir=tmp_path))
+        handle.sessions.get_title.return_value = BOT_CHAT_TITLE
+        agent = self._agent(handle, session_id="sess-1")
+        with patch("tools.bot_mode_probe.get_bot_mode_protocol_section", return_value="BOT PROTOCOL") as section, \
+                patch("tools.bot_mode_probe.epoch_line", return_value="EPOCH"):
+            assert _bot_mode_parts(agent) == ["BOT PROTOCOL", "EPOCH"]
+        section.assert_called_once_with(tmp_path)
+        handle.sessions.get_title.assert_called_once_with("sess-1")
+        assert agent._session_db.method_calls == []
+
+    def test_session_prompt_reads_the_persisted_row_through_the_handle(self, tmp_path):
+        from agent.system_prompt import _session_prompt
+        from persistence.conversation.sessions import NewSession
+        from persistence_assembly import open_persistence, profile_scope
+
+        handle = open_persistence(profile_scope(home=tmp_path))
+        try:
+            handle.sessions.create(NewSession(session_id="sess-1", source="cli", system_prompt="STORED PROMPT"))
+            agent = self._agent(handle, session_id="sess-1")
+            assert _session_prompt(agent) == "STORED PROMPT"
+            assert agent._session_db.method_calls == []
+        finally:
+            handle.close()

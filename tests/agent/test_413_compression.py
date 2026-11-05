@@ -18,9 +18,11 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
 import run_agent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 # ---------------------------------------------------------------------------
@@ -1321,27 +1323,27 @@ class TestPreflightCompression:
         idle or threshold preflight can summarize the opaque checkpoint using its
         ciphertext-sized rough estimate.
         """
-        db_path = tmp_path / "state.db"
         session_id = "restored-native-checkpoint"
         checkpoint = {
             "type": "compaction",
             "encrypted_content": "opaque-checkpoint",
             "_issuer_kind": "codex_backend",
         }
-        db = SessionDB(db_path=db_path)
-        db.create_session(session_id, source="test")
-        db.append_message(session_id, "user", "before restart")
-        db.append_message(
-            session_id,
-            "assistant",
-            "checkpoint captured",
-            codex_reasoning_items=[checkpoint],
-        )
-        db.close()
+        with open_persistence(profile_scope(home=tmp_path)) as store:
+            seed_session(store, session_id, "test")
+            seed_messages(
+                store,
+                session_id,
+                {"role": "user", "content": "before restart"},
+                {
+                    "role": "assistant",
+                    "content": "checkpoint captured",
+                    "codex_reasoning_items": [checkpoint],
+                },
+            )
 
-        reopened = SessionDB(db_path=db_path)
-        history = reopened.get_messages_as_conversation(session_id)
-        reopened.close()
+        with open_persistence(profile_scope(home=tmp_path)) as reopened:
+            history = conversation(reopened, session_id)
         assert history[-1]["codex_reasoning_items"] == [checkpoint]
 
         agent: Any = _new_test_agent()

@@ -18,6 +18,8 @@ from agent.conversation_compression_checkpoint import CompressionCheckpointUnava
 from agent.transports.codex_app_server_session import TurnResult
 from hermes_cli.observability import shared_metrics_events
 from hermes_cli.observability.shared_metrics_fields import compression_fields
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
 
@@ -362,12 +364,12 @@ def test_aborted_record_after_a_commit_describes_its_own_attempt(caplog, abort, 
     assert [aborted.get(key) for key in ("tokens_before", "tokens_after", "tokens_reclaimed")] == [None] * 3
 
 
-def _adopt_child(agent, _db, _parent_sid):
+def _adopt_child(agent, _db, _parent_sid, _store=None):
     agent.session_id = "adopted-child"
     return [{"role": "user", "content": "child transcript"}]
 
 
-def _unreadable_ownership(_db, _sid):
+def _unreadable_ownership(_db, _sid, _store=None):
     raise OSError("database is locked")
 
 
@@ -375,18 +377,17 @@ def _unreadable_ownership(_db, _sid):
     ("ownership_patch", "expected"),
     [
         # The lease found the parent already rotated and adopted the live child.
-        ({"_session_was_rotated_by_compression": lambda _db, _sid: True, "_adopt_live_compression_child": _adopt_child},
+        ({"_session_was_rotated_by_compression": lambda _db, _sid, _store=None: True, "_adopt_live_compression_child": _adopt_child},
          ("skipped", "session_ownership_lost")),
         # The ownership lookup itself failed: ownership is unknown, not lost.
         ({"_session_was_rotated_by_compression": _unreadable_ownership}, ("aborted", "session_ownership_unreadable")),
     ],
 )
 def test_ownership_exit_records_the_session_the_attempt_ran_in(caplog, tmp_path, ownership_patch, expected):
-    from hermes_state import SessionDB
-
     agent = _Agent(_compressor())
-    agent._session_db = SessionDB(db_path=tmp_path / "state.db")
-    agent._session_db.create_session(agent.session_id, "cli", model="test/main-model")
+    agent._session_db = storage_handle(tmp_path)
+    agent.persistence = agent._session_db
+    seed_session(agent._session_db, agent.session_id, "cli", model="test/main-model")
 
     with patch.multiple("agent.conversation_compression", **ownership_patch), \
             patch.object(agent.context_compressor, "_generate_summary") as summary:
@@ -404,16 +405,15 @@ def test_session_backed_commit_keeps_the_attempts_own_record(caplog, tmp_path, m
     """The commit's memory flush ends the engine session, and that resets the compressor's telemetry
     before the record is emitted (#118580). The record must still describe this attempt and name the
     session it started in, in both commit modes."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        persistence=storage_handle(tmp_path), session_id="db-session",
         skip_context_files=True, skip_memory=True,
     )
-    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
+    seed_session(agent.persistence, agent.session_id, "cli", model=agent.model)
     agent.compression_in_place = in_place
     agent.context_compressor.tail_token_budget = 10
     try:
@@ -434,16 +434,15 @@ def test_committed_effect_includes_the_retained_partial_compression_tail(
     caplog, tmp_path, monkeypatch, in_place,
 ):
     from agent.model_metadata import estimate_messages_tokens_rough
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     agent = AIAgent(
         api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-        session_db=SessionDB(db_path=tmp_path / "state.db"), session_id="db-session",
+        persistence=storage_handle(tmp_path), session_id="db-session",
         skip_context_files=True, skip_memory=True,
     )
-    agent._session_db.create_session(agent.session_id, "cli", model=agent.model)
+    seed_session(agent.persistence, agent.session_id, "cli", model=agent.model)
     agent.compression_in_place = in_place
     agent.context_compressor.tail_token_budget = 10
     messages = _messages()

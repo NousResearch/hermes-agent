@@ -19,10 +19,11 @@ from unittest.mock import MagicMock, patch
 from agent import compression_facade
 from agent import conversation_compression
 from agent.conversation_compression import CompressionCommitFence
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent(db: SessionDB, session_id: str):
+def _build_agent(db, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -32,7 +33,7 @@ def _build_agent(db: SessionDB, session_id: str):
             model="test/model",
             platform="telegram",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -80,8 +81,8 @@ class TestCommitFenceCompletionOrder:
     def test_earlier_attempt_finishing_first_keeps_newer_live_fence(
         self, tmp_path: Path, monkeypatch
     ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("S", source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "S", "cli")
         agent = _build_agent(db, "S")
         messages = [{"role": "user", "content": "live question"}]
 
@@ -110,8 +111,8 @@ class TestCommitFenceCompletionOrder:
     def test_lifo_completion_restores_outer_fence_while_it_runs(
         self, tmp_path: Path, monkeypatch
     ):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("S", source="cli")
+        db = storage_handle(tmp_path)
+        seed_session(db, "S", "cli")
         agent = _build_agent(db, "S")
         messages = [{"role": "user", "content": "live question"}]
 

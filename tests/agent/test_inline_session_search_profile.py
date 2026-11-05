@@ -11,7 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
@@ -21,17 +22,15 @@ def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    current_db = SessionDB(hermes_home / "state.db")
-    current_db.create_session("default-session", source="gateway")
-    current_db.append_message("default-session", role="user", content="weekly report default")
-    current_db._conn.commit()
-    profile_db = SessionDB(profile_home / "state.db")
-    profile_db.create_session("profile-session", source="cli")
-    profile_db.append_message("profile-session", role="user", content="weekly report llm wiki")
-    profile_db._conn.commit()
+    current_db = open_persistence(profile_scope(home=hermes_home))
+    seed_session(current_db, "default-session", "gateway")
+    seed_messages(current_db, "default-session", {"role": "user", "content": "weekly report default"})
+    profile_db = open_persistence(profile_scope(home=profile_home))
+    seed_session(profile_db, "profile-session", "cli")
+    seed_messages(profile_db, "profile-session", {"role": "user", "content": "weekly report llm wiki"})
     profile_db.close()
 
-    agent = SimpleNamespace(_get_session_db_for_recall=lambda: current_db, session_id="gw-1")
+    agent = SimpleNamespace(_get_session_db_for_recall=lambda: current_db, persistence=current_db, session_id="gw-1")
     ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
     try:
         routed = json.loads(INLINE_TOOL_EXECUTORS["session_search"](

@@ -9,9 +9,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _run(args: list[str], hermes_home: Path) -> subprocess.CompletedProcess:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
-    env.update({"HERMES_HOME": str(hermes_home), "PYTHONPATH": str(REPO)})
+def _run(args: list[str], hermes_home: Path, **extra_env: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "TERMUX_"))}
+    env.update({"HERMES_HOME": str(hermes_home), "PYTHONPATH": str(REPO), **extra_env})
     return subprocess.run(
         [sys.executable, *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False)
 
@@ -63,3 +63,36 @@ def test_gateway_graceful_hard_exit_still_writes_the_profile(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr[-1000:]
     assert pstats.Stats(str(target)).total_calls > 0
+
+
+def test_version_writes_the_profile(tmp_path: Path):
+    """``--version`` returns before agent startup; the parsed flag must still profile."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    target = tmp_path / "version.prof"
+
+    result = _run(["-m", "hermes_cli.main", "--cpu-profile", str(target), "--version"], hermes_home)
+
+    assert result.returncode == 0, result.stderr[-1000:]
+    assert pstats.Stats(str(target)).total_calls > 0
+
+
+def test_termux_interactive_fast_launch_still_writes_the_profile(tmp_path: Path):
+    """Termux's interactive fast path defers agent startup; ``--cpu-profile`` must still profile."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    target = tmp_path / "termux.prof"
+    code = (
+        "import os, sys\n"
+        "import hermes_cli.main as main\n"
+        "main.cmd_chat = lambda args: None  # the interactive REPL needs a TTY\n"
+        f"sys.argv = ['hermes', '--cpu-profile', {str(target)!r}]\n"
+        "assert main._try_termux_fast_cli_launch()\n"
+        "assert os.environ.get('HERMES_DEFER_AGENT_STARTUP') == '1'  # lazy start kept\n"
+    )
+
+    result = _run(["-c", code], hermes_home, TERMUX_VERSION="0.118")
+
+    assert result.returncode == 0, result.stderr[-1000:]
+    assert pstats.Stats(str(target)).total_calls > 0
+

@@ -8,6 +8,8 @@ import pytest
 
 from agent.conversation_compression import _emit_aborted_attempt_telemetry, compress_context
 from agent.context_compressor import ContextCompressor
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class _TodoStore:
@@ -295,20 +297,20 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
     from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
 
     with tempfile.TemporaryDirectory() as tmp:
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from run_agent import AIAgent
 
-        db = SessionDB(db_path=Path(tmp) / "t.db")
+        db = open_persistence(profile_scope(home=Path(tmp)))
         sid = "20260920_234956_0c74e527"
-        db.create_session(sid, "cli", model="test/model")
+        seed_session(db, sid, "cli", model="test/model")
         for idx in range(8):
-            db.append_message(
-                session_id=sid, role="user" if idx % 2 == 0 else "assistant", content=f"msg {idx}",
+            seed_messages(
+                db, sid, {"role": "user" if idx % 2 == 0 else "assistant", "content": f"msg {idx}"},
             )
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             agent = AIAgent(
                 api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
-                quiet_mode=True, session_db=db, session_id=sid,
+                quiet_mode=True, persistence=db, session_id=sid,
                 skip_context_files=True, skip_memory=True,
             )
         agent.compression_in_place = True
@@ -374,17 +376,15 @@ def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
     contender logs its own ``lock_contended`` record from its seed."""
     import os
 
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("S", source="cli")
-    assert db.try_acquire_compression_lock("S", "winner", ttl_seconds=60)
+    db = storage_handle(tmp_path)
+    seed_session(db, "S", "cli")
+    assert db.coordination.try_acquire_compression_lock(session_id="S", holder="winner", ttl_seconds=60)
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id="S", skip_context_files=True, skip_memory=True,
+            persistence=db, session_id="S", skip_context_files=True, skip_memory=True,
         )
     compressor = agent.context_compressor
     running = {"event": "compression_attempt", "attempt_id": "running-attempt", "method": "llm_summary"}

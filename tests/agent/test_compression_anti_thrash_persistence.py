@@ -23,10 +23,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _compressor(db: SessionDB | None = None, session_id: str = "") -> ContextCompressor:
+def _compressor(db=None, session_id: str = "") -> ContextCompressor:
     with patch(
         "agent.context_compressor.get_model_context_length",
         return_value=100_000,
@@ -39,19 +40,19 @@ def _compressor(db: SessionDB | None = None, session_id: str = "") -> ContextCom
             quiet_mode=True,
         )
     if db is not None:
-        cc.bind_session_state(db, session_id)
+        cc.bind_session_state(db, session_id, persistence=db)
     return cc
 
 
-def _db(tmp_path: Path) -> SessionDB:
-    return SessionDB(db_path=tmp_path / "state.db")
+def _db(tmp_path: Path):
+    return storage_handle(tmp_path)
 
 
 class TestCounterRoundTripsBindSessionState:
     def test_fresh_compressor_inherits_tripped_guard_after_restart(self, tmp_path):
         """A restart must not disarm a tripped anti-thrash breaker."""
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
 
         first = _compressor(db, "s1")
         # Two compactions that failed to clear the threshold — judged on the
@@ -75,9 +76,9 @@ class TestCounterRoundTripsBindSessionState:
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""
         db = _db(tmp_path)
-        db.create_session("hot", source="cli")
-        db.create_session("cold", source="cli")
-        db.set_compression_ineffective_count("hot", 2)
+        seed_session(db, "hot", "cli")
+        seed_session(db, "cold", "cli")
+        db.lineage.set_compression_ineffective_count("hot", 2)
 
         cc = _compressor(db, "hot")
         assert cc._ineffective_compression_count == 2
@@ -93,18 +94,18 @@ class TestResetSemanticsPreserved:
         the threshold clears the latch — and now clears the durable copy, so
         a restart cannot resurrect voided strikes."""
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
 
         cc = _compressor(db, "s1")
         cc._verify_compaction_cleared_threshold = True
         cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
         assert cc._ineffective_compression_count == 1
-        assert db.get_compression_ineffective_count("s1") == 1
+        assert db.lineage.compression_ineffective_count("s1") == 1
 
         # An ordinary fitting response (not post-compaction) clears the latch.
         cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
         assert cc._ineffective_compression_count == 0
-        assert db.get_compression_ineffective_count("s1") == 0
+        assert db.lineage.compression_ineffective_count("s1") == 0
 
         # And a restart sees the cleared state.
         fresh = _compressor(db, "s1")
@@ -115,32 +116,32 @@ class TestResetSemanticsPreserved:
         """The post-compaction success verdict (real tokens under threshold)
         also zeroes the durable strike count."""
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
 
         cc = _compressor(db, "s1")
         cc._verify_compaction_cleared_threshold = True
         cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-        assert db.get_compression_ineffective_count("s1") == 1
+        assert db.lineage.compression_ineffective_count("s1") == 1
 
         cc._verify_compaction_cleared_threshold = True
         cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
         assert cc._ineffective_compression_count == 0
-        assert db.get_compression_ineffective_count("s1") == 0
+        assert db.lineage.compression_ineffective_count("s1") == 0
 
     def test_update_model_reset_writes_through(self, tmp_path):
         """update_model() voids strikes judged against the old threshold; the
         durable copy must not resurrect them on the next restart."""
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
 
         cc = _compressor(db, "s1")
-        db.set_compression_ineffective_count("s1", 2)
+        db.lineage.set_compression_ineffective_count("s1", 2)
         cc._ineffective_compression_count = 2
 
         cc.update_model("other/model", 100_000)
 
         assert cc._ineffective_compression_count == 0
-        assert db.get_compression_ineffective_count("s1") == 0
+        assert db.lineage.compression_ineffective_count("s1") == 0
 
 
 class TestStrikesPersistFromEveryVerdictSite:
@@ -153,7 +154,7 @@ class TestStrikesPersistFromEveryVerdictSite:
         can still auto-compact once it grows real compressible material.
         """
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
 
         cc = _compressor(db, "s1")
         # 3 tiny messages < minimum window → the #40803/#93022 no-op branch.
@@ -165,17 +166,17 @@ class TestStrikesPersistFromEveryVerdictSite:
         out = cc.compress(msgs, current_tokens=10**9)
         assert out == msgs
         assert cc._ineffective_compression_count == 0
-        assert db.get_compression_ineffective_count("s1") == 0
+        assert db.lineage.compression_ineffective_count("s1") == 0
         assert cc._structural_no_op_backoff_until > 0.0
 
     def test_persist_failure_is_swallowed_and_memory_still_advances(self, tmp_path):
         """A DB write failure must not break the in-memory guard."""
         db = _db(tmp_path)
-        db.create_session("s1", source="cli")
+        seed_session(db, "s1", "cli")
         cc = _compressor(db, "s1")
 
         with patch.object(
-            db,
+            db.lineage,
             "set_compression_ineffective_count",
             side_effect=Exception("disk full"),
         ):
@@ -183,7 +184,7 @@ class TestStrikesPersistFromEveryVerdictSite:
             cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
 
         assert cc._ineffective_compression_count == 1
-        assert db.get_compression_ineffective_count("s1") == 0
+        assert db.lineage.compression_ineffective_count("s1") == 0
 
 
 class TestCompressionBoundaryCarry:
@@ -191,22 +192,23 @@ class TestCompressionBoundaryCarry:
         """Session-id rotation must not launder an armed guard through the
         fresh child row (same carry contract as the fallback streak)."""
         db = _db(tmp_path)
-        db.create_session("parent", source="cli")
+        seed_session(db, "parent", "cli")
         cc = _compressor(db, "parent")
         cc._verify_compaction_cleared_threshold = True
         cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-        assert db.get_compression_ineffective_count("parent") == 1
+        assert db.lineage.compression_ineffective_count("parent") == 1
 
-        db.create_session("child", source="cli", parent_session_id="parent")
+        seed_session(db, "child", "cli", parent_session_id="parent")
         cc.on_session_start(
             "child",
             boundary_reason="compression",
             old_session_id="parent",
             session_db=db,
+            persistence=db,
         )
 
         assert cc._session_id == "child"
         assert cc._ineffective_compression_count == 1
         # Persisted onto the child row so a restart right after rotation
         # still inherits the armed guard.
-        assert db.get_compression_ineffective_count("child") == 1
+        assert db.lineage.compression_ineffective_count("child") == 1

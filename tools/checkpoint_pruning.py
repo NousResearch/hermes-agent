@@ -97,10 +97,26 @@ class Pruner:
             raise PruneError("cannot remove a project's last snapshot")
         # Never overwrite a snapshot published since we read this history.
         self._git(["update-ref", ref, parent, original[-1]])
+        self._record_drop(ref, original[len(original) - len(keep) - 1])
         if gc:
             self.reclaim()
         else:
             self._mark_gc_pending()
+
+    def _record_drop(self, ref: str, newest_dropped: str) -> None:
+        """Stamp the project's metadata with the newest dropped snapshot's time (``pruned_through``), so
+        ``/undo``'s ``/rollback`` pointer can prove an undone span lost nothing. Drops are always the oldest
+        snapshots (``keep`` is a suffix). Best effort: a missing stamp only costs that pointer its number."""
+        import json
+
+        meta_path = self.store / "projects" / f"{ref.rsplit('/', 1)[-1]}.json"
+        try:
+            stamp = self._git(["log", "-1", "--format=%at", newest_dropped])
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+            meta["pruned_through"] = max(int(stamp), int(meta.get("pruned_through") or 0))
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        except (OSError, ValueError, TypeError, AttributeError, PruneError):
+            return
 
     def trim(self, ref: str, keep_count: int) -> None:
         """Snapshot-count budget on the checkpoint-take path: rewrites the ref, defers the gc."""

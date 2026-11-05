@@ -712,6 +712,9 @@ def _register_project(store: Path, working_dir: str) -> None:
     now = time.time()
     meta: dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
+    if not _ref_tip(store, str(_normalize_path(working_dir)), _ref_name(dir_hash)):
+        # A project with no history yet: every drop from its first snapshot on lands in ``pruned_through``.
+        meta["prune_ledger"] = 1
     evidence = _volume_evidence(_normalize_path(working_dir))
     if evidence:
         meta.update(evidence)
@@ -720,6 +723,8 @@ def _register_project(store: Path, working_dir: str) -> None:
             existing = json.loads(meta_path.read_text(encoding="utf-8-sig"))
             if isinstance(existing, dict):
                 meta["created_at"] = existing.get("created_at", now)
+                meta.pop("prune_ledger", None)  # an older build's project: its drops went unrecorded
+                meta.update({k: existing[k] for k in ("prune_ledger", "pruned_through") if k in existing})
                 if not evidence:
                     # Fresh probe failed — keep the previously recorded
                     # parent identity rather than dropping it. Stale evidence

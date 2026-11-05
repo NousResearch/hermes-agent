@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env`, or `hermes auth add openrouter --type oauth` (browser login via OpenRouter's PKCE flow; stores a key in the credential pool) |
 | **Ramp Router** | `RAMP_ROUTER_API_KEY` in `~/.hermes/.env` (provider: `router`; aliases: `ramp-router`, `ramp`, `router.com`; Responses-native gateway, live account-scoped catalog) |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
+| **Together AI** | `hermes model` → **Together AI**, or `TOGETHER_API_KEY` in `~/.hermes/.env` (provider: `togetherai`; aliases: `together`, `together-ai`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
@@ -1443,39 +1444,23 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ### Cookbook: Together AI, Groq, Perplexity
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+Together AI has built-in setup. Groq and Perplexity use named custom providers in
+`~/.hermes/config.yaml`, with API keys in `~/.hermes/.env`.
 
 #### Together AI
 
-Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices significantly below first-party APIs. Good default for multi-model fleets.
-
-```yaml
-# ~/.hermes/config.yaml
-providers:
-  together:
-    api: https://api.together.xyz/v1
-    key_env: TOGETHER_API_KEY
-    # transport: chat_completions  # default — no need to set
-
-model:
-  default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
-  provider: custom:together
-```
+Run `hermes model`, choose **Together AI**, enter your API key from
+[Together AI](https://api.together.ai/settings/api-keys), and select a model.
+Hermes lists chat models from Together's catalog, with a small fallback list when
+the endpoint is unavailable. Provider ID: `togetherai`; aliases: `together`, `together-ai`.
 
 ```bash
-# ~/.hermes/.env
-TOGETHER_API_KEY=your-together-key
+hermes chat --provider together --model MiniMaxAI/MiniMax-M3
 ```
 
-Switch models mid-session:
-
-```
-/model custom:together:meta-llama/Llama-3.3-70B-Instruct-Turbo
-/model custom:together:google/gemma-4-31b-it
-/model custom:together:deepseek-ai/DeepSeek-V3
-```
-
-Together's `/v1/models` endpoint works, so `hermes model` can auto-discover available models.
+The API key is stored as `TOGETHER_API_KEY` in `~/.hermes/.env`. The default endpoint
+is `https://api.together.ai/v1`; use `model.base_url` in `config.yaml` for an override.
+Existing `custom:together` configurations continue to work.
 
 #### Groq
 

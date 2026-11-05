@@ -2,11 +2,11 @@ import {
   pinSession,
   setPinnedSessionOrder,
   setSidebarSessionOrderIds,
-  setSidebarSessionOrderManual,
-  unpinSession
+  setSidebarSessionOrderManual
 } from '@/store/layout'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { setSessionColorOverride } from '@/store/session-color'
+import { unpinSession } from '@/store/session-pin-sync'
 
 /** Pins and colours are keyed by the DURABLE (lineage-root) id so they survive
  *  compression's session-id rotation; a row's live id resolves through

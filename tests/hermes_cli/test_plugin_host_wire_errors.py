@@ -16,7 +16,7 @@ def test_a_value_error_subclass_is_still_a_value_error_on_the_other_side():
         json.loads("{not json")
     except json.JSONDecodeError as exc:
         original = exc
-    with pytest.raises(ValueError, match="Expecting property name"):
+    with pytest.raises(ValueError, match="^JSONDecodeError: Expecting property name"):
         _roundtrip(original)
 
 
@@ -32,6 +32,15 @@ def test_an_unmapped_error_is_a_plugin_host_error():
     with pytest.raises(PluginHostError) as info:
         _roundtrip(Custom("x"))
     assert info.value.type_name == "Custom"
+
+
+def test_a_runtime_error_subclass_stays_a_plugin_host_error_with_its_name():
+    class TransportError(RuntimeError):
+        pass
+
+    with pytest.raises(PluginHostError) as info:
+        _roundtrip(TransportError("down"))
+    assert info.value.type_name == "TransportError"
 
 
 def test_system_exit_is_not_mapped_to_a_builtin():

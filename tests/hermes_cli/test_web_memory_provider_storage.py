@@ -135,6 +135,15 @@ def test_a_blank_field_clears_the_key(client):
     assert "workspace" not in json.loads(_config_path().read_text(encoding="utf-8"))["hosts"]["hermes"]
 
 
+def test_a_config_the_provider_cannot_read_is_a_400(client):
+    _config_path().write_text("{not json", encoding="utf-8")
+
+    resp = client.get(_URL)
+
+    assert resp.status_code == 400
+    assert "Expecting property name" in resp.json()["detail"]
+
+
 def test_a_refused_write_is_a_400_with_no_secret_saved_and_no_switch(client):
     from hermes_cli.config import load_config, load_env
 

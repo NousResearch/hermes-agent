@@ -1,0 +1,35 @@
+name: hermes-phone
+repo: https://github.com/winchxyz/hermes-phone
+sha: b6ef97e99b126aaedd0e480084ac00ec74000571
+description: >-
+  Let your Hermes agent place real phone calls for you with explicit approval.
+  It shows a brief card and dials only after you reply "call" (or tap Call),
+  says it is an AI in the first sentence of every call, relays mid-call
+  questions to you in chat with a suggested answer, and reports one clean
+  result (what was agreed, confirmation number, duration, cost) plus the
+  transcript. Disclosure: places outbound PSTN calls through your own Twilio
+  account (costs money; a web-phone mode needs no telephony account), streams
+  call audio to OpenAI Realtime, runs a small FastAPI bridge that must be
+  reachable at your PUBLIC_BASE_URL, and stores call logs and text transcripts
+  in plugin data (SQLite). No audio recording, no telemetry, no self-updater,
+  no credential-file reads. Emergency and premium numbers are hard-blocked,
+  dialing is limited to an allowlist you set, card/CVV/OTP are never shared,
+  and there are no automatic redials.
+maintainer: winchxyz
+tier: community
+category: voice
+title: Hermes Phone
+docs_url: https://github.com/winchxyz/hermes-phone#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/winchxyz/hermes-phone/b6ef97e99b126aaedd0e480084ac00ec74000571/docs/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: [phone_prepare, phone_call, phone_status, phone_transcript]
+  provides_hooks: [pre_tool_call, pre_llm_call]
+  provides_middleware: []
+  requires_env:
+    - TWILIO_ACCOUNT_SID
+    - TWILIO_AUTH_TOKEN
+    - TWILIO_FROM_NUMBER
+    - OPENAI_API_KEY
+    - PUBLIC_BASE_URL

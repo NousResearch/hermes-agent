@@ -163,6 +163,19 @@ class StreamTransportMixin:
             logger.debug("supports_native_streaming probe raised", exc_info=True)
             return False
 
+    async def _refresh_draft_activity(self) -> None:
+        """Keep an opt-in empty preview alive without erasing streamed answer text."""
+        if (not self._use_draft_streaming or self._draft_activity_interval <= 0
+                or self.cfg.buffer_only or not self.stream_deltas_enabled
+                or self._accumulated or self._last_sent_text
+                or self._egress_declined):
+            return
+        now = time.monotonic()
+        if (self._last_draft_activity is None
+                or now - self._last_draft_activity >= self._draft_activity_interval):
+            self._last_draft_activity = now
+            await self._send_draft_frame("")
+
     async def _send_draft_frame(self, text: str) -> bool:
         """Emit one draft frame; any failure permanently disables drafts for this run.
         Drafts have no message_id and clear on the client when the final send lands."""

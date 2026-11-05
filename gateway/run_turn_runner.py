@@ -19,7 +19,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from agent.fast_mode import regate_pinned_fast_overrides
+from agent.fast_mode import STATIC_TIERS, regate_pinned_fast_overrides
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
@@ -447,8 +447,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         must survive every reused-agent turn. Drop only the PREVIOUS turn's routing overrides before
         layering this turn's, so stale per-turn values never linger.
 
-        The turn route pins /fast for the PRIMARY route; an agent a cooldown holds on a fallback
-        re-gates it for the route it is actually on (#122010)."""
+        The turn route pins /fast for the PRIMARY route, but the cached agent may sit on another
+        route: a cooldown fallback, or an init-time fallback that ``restore_primary_runtime`` already
+        stopped reporting as one. Under static /fast every turn re-gates for the route it is on (#122010)."""
         overrides = dict(getattr(agent, "request_overrides", {}) or {})
         for key, value in (getattr(agent, "_gateway_turn_request_overrides", {}) or {}).items():
             if overrides.get(key) == value:
@@ -457,7 +458,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         overrides.update(turn_overrides)
         agent.request_overrides = overrides
         agent._gateway_turn_request_overrides = turn_overrides
-        if getattr(agent, "_fallback_activated", False):
+        if turn_overrides and getattr(agent, "service_tier", None) in STATIC_TIERS:
             regate_pinned_fast_overrides(agent)
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,

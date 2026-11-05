@@ -163,3 +163,22 @@ def test_reused_agent_held_on_fallback_does_not_regain_primary_fast_speed():
     agent.api_mode, agent._fallback_activated = "anthropic_messages", False
     TurnRunner._merge_turn_request_overrides(agent, turn_route)
     assert agent.request_overrides == {"speed": "fast"}
+
+
+def test_reused_agent_on_an_init_time_fallback_keeps_dropping_the_primary_tier():
+    """An init-time fallback stops reporting ``_fallback_activated`` once the first
+    ``restore_primary_runtime`` clears it, yet the agent stays on the fallback route. Every
+    later turn must still re-gate the primary's /fast tier away from it."""
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_route = {"request_overrides": {"service_tier": "priority"}}
+    agent = SimpleNamespace(
+        service_tier="priority", model="deepseek/deepseek-v4-pro", provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", api_mode="chat_completions", request_overrides={},
+        _gateway_turn_request_overrides={}, _fallback_activated=False, _primary_runtime={"request_overrides": {}},
+    )
+    for _turn in range(3):
+        TurnRunner._merge_turn_request_overrides(agent, turn_route)
+        assert "service_tier" not in agent.request_overrides

@@ -31,6 +31,8 @@ async def drain_work_results(runner):
 
 
 async def _drain_scoped(runner):
+    from gateway.session_detached import follow_detached_pin
+    from gateway.session_local_recovery import restore_completion_route
     authority = active_authority(runner)
     if authority is None:
         return
@@ -47,7 +49,9 @@ async def _drain_scoped(runner):
             continue
         evt = dict(type='process_work_result', session_id=row['process_id'], event_id=row['result_id'],
                    session_key=row['route'], parent_session_id=row['parent'])
-        verdict = await runner._classify_completion_target(row['parent'], row['route'])
+        restore_completion_route(runner, row['route'])
+        evt = await follow_detached_pin(runner, evt)
+        verdict = await runner._classify_completion_target(row['parent'], evt['session_key'])
         if verdict == 'terminal':
             await asyncio.to_thread(drop, authority.db, result_id=row['result_id'])
         if verdict != 'deliver':
@@ -58,7 +62,7 @@ async def _drain_scoped(runner):
             continue
         identity = admission_identity(row)
         if kind:
-            observation = ('source never started (OS spawn rejected).' if kind == 'never_started' else
+            observation = ('source never started (launch preparation or OS spawn failed).' if kind == 'never_started' else
                            'source ended without an accepted terminal result.')
             identifiers = json.dumps({key: row[key] for key in ('process_id', 'result_id', 'work_id', 'incarnation')},
                                      ensure_ascii=True, separators=(',', ':')).replace('<', '\\u003c').replace('>', '\\u003e')

@@ -29,6 +29,8 @@ _TABLE = '''CREATE TABLE IF NOT EXISTS process_work_results (
     UNIQUE(process_id, work_id, incarnation))'''
 _FENCES = '''CREATE TABLE IF NOT EXISTS process_work_fences (
     route TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0)'''
+_OWNER_FENCES = '''CREATE TABLE IF NOT EXISTS process_work_owner_fences (
+    parent TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0)'''
 
 
 def _exists(conn):
@@ -53,15 +55,26 @@ def enroll(session, work):
         def prepare(conn):
             conn.execute(_TABLE)
             conn.execute(_FENCES)
+            conn.execute(_OWNER_FENCES)
             conn.execute('INSERT OR IGNORE INTO process_work_fences(route) VALUES(?)', (session.session_key,))
-            return conn.execute('SELECT generation FROM process_work_fences WHERE route=?',
-                                (session.session_key,)).fetchone()[0]
+            conn.execute('INSERT OR IGNORE INTO process_work_owner_fences(parent) VALUES(?)',
+                         (session.parent_session_id,))
+            return (
+                conn.execute('SELECT generation FROM process_work_fences WHERE route=?',
+                             (session.session_key,)).fetchone()[0],
+                conn.execute('SELECT generation FROM process_work_owner_fences WHERE parent=?',
+                             (session.parent_session_id,)).fetchone()[0],
+            )
         generation = db._execute_write(prepare)
         if db.get_session(session.parent_session_id) is None:
             raise ValueError('completion_work parent is not persisted')
         def write(conn):
-            current = conn.execute('SELECT generation FROM process_work_fences WHERE route=?',
-                                   (session.session_key,)).fetchone()[0]
+            current = (
+                conn.execute('SELECT generation FROM process_work_fences WHERE route=?',
+                             (session.session_key,)).fetchone()[0],
+                conn.execute('SELECT generation FROM process_work_owner_fences WHERE parent=?',
+                             (session.parent_session_id,)).fetchone()[0],
+            )
             if current != generation:
                 raise ValueError('completion_work enrollment crossed a user boundary')
             if conn.execute('SELECT COUNT(*) FROM process_work_results').fetchone()[0] + len(keys) > MAX_RECORDS:
@@ -78,7 +91,7 @@ def enroll(session, work):
 
 
 def mark_never_started(session):
-    """A definite OS spawn rejection is lifecycle evidence, not a task result."""
+    """A definite pre-spawn failure is lifecycle evidence, not a task result."""
     try:
         with closing(SessionDB(Path(session.completion_work_home) / 'state.db')) as db:
             db._execute_write(lambda conn: conn.execute(
@@ -238,7 +251,7 @@ def admission_guard(result_id, *, disposition='pending', error=None):
     return guard
 
 
-def drop(db, *, route=None, result_id=None, reason='user_boundary'):
+def drop(db, *, route=None, result_id=None, reason='user_boundary', parents=()):
     """Same SQLite writer as admission: Stop wins before admission, never revives on reopen."""
     def write(conn):
         if not _exists(conn):
@@ -248,10 +261,21 @@ def drop(db, *, route=None, result_id=None, reason='user_boundary'):
             conn.execute('INSERT INTO process_work_fences(route,generation) VALUES(?,1) '
                          'ON CONFLICT(route) DO UPDATE SET generation=generation+1', (route,))
         column, value = ('route', route) if route is not None else ('result_id', result_id)
+        predicate, values = f'{column}=?', [value]
+        if parents:
+            # Fence in-flight enrollment too: the owner may now be on another
+            # route, and its obligation row need not exist at Stop time yet.
+            conn.execute(_OWNER_FENCES)
+            for parent in parents:
+                conn.execute('INSERT INTO process_work_owner_fences(parent,generation) VALUES(?,1) '
+                             'ON CONFLICT(parent) DO UPDATE SET generation=generation+1', (parent,))
+            # A resumed owner can have work enrolled on its former detached route.
+            predicate += ' OR parent IN (' + ','.join('?' for _ in parents) + ')'
+            values.extend(parents)
         conn.execute("UPDATE process_work_results SET disposition='dropped', "
                      "error=CASE WHEN disposition IN ('never_started','supervision_failed') THEN error ELSE ? END "
-                     f"WHERE {column}=? AND disposition IN "
-                     "('enrolled','pending','conflict','never_started','supervision_failed')", (reason, value))
+                     f"WHERE ({predicate}) AND disposition IN "
+                     "('enrolled','pending','conflict','never_started','supervision_failed')", (reason, *values))
     db._execute_write(write)
 
 

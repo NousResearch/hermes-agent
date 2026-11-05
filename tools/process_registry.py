@@ -1191,6 +1191,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # Bash runs ``A && B &`` as a subshell holding our stdout pipe open while a server B lives;
         # the rewriter makes it ``A && { B & }`` (#68915). Lazy: terminal_tool imports this module.
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
+        from tools.process_registry_results import retain_never_started
 
         safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
@@ -1200,8 +1201,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             enroll(session, completion_work)
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
-        log = (worker_output_log(session.id, durable=True) if session.completion_work_home
-               else worker_output_log(session.id))
+        log = None
+        try:
+            log = (worker_output_log(session.id, durable=True) if session.completion_work_home
+                   else worker_output_log(session.id))
+        except OSError as exc:
+            if session.completion_work_home:
+                retain_never_started(self, session, exc, log, source='log_preparation')
+            raise
         if use_pty and log is None:
             try:
                 return self._spawn_local_pty(session, safe_command, env_vars)
@@ -1232,7 +1239,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
-        output = open_output_log(log) if log else subprocess.PIPE
+        try:
+            output = open_output_log(log) if log else subprocess.PIPE
+        except OSError as exc:
+            if session.completion_work_home:
+                retain_never_started(self, session, exc, log, source='log_preparation')
+            raise
         try:
             proc = self._spawn_job(
                 session, spawn_argv, persist_on_release, text=True, cwd=session.cwd, env=spawn_env,
@@ -1240,24 +1252,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 stdin=subprocess.DEVNULL, **_popen_kwargs)
         except OSError as exc:
             if session.completion_work_home and getattr(exc, '_hermes_child_not_started', False):
-                from tools.process_work_results import mark_never_started, receipts
-                receipt = dict(session_id=session.id, work_results=[], completion_reason='never_started')
-                exc.process_receipt = receipt  # type: ignore[attr-defined]
-                session.mark_exited(None, reason='never_started', source='os_spawn')
-                session.output_log = str(log or '')
-                with self._lock:
-                    self._finished[session.id] = session
-                try:
-                    mark_never_started(session)
-                    save_completed_result(session)
-                    receipt['work_results'] = receipts(session)
-                except Exception:
-                    # Best-effort persistence must never mask the original OS
-                    # rejection or remove the identity needed to investigate it.
-                    logger.warning('Could not persist spawn receipt for %s', session.id, exc_info=True)
-                    session.work_result_error = 'spawn_receipt_storage_unresolved'
-                if session.work_result_error:
-                    receipt['work_result_error'] = session.work_result_error
+                retain_never_started(self, session, exc, log, source='os_spawn')
             raise
         finally:
             if log:

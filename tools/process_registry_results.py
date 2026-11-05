@@ -27,6 +27,29 @@ _RESULT_FIELDS = (
 )
 
 
+def retain_never_started(registry, session, exc, log, *, source):
+    """Attach a receipt only when the caller has proved no child started."""
+    from tools.process_registry import save_completed_result
+    from tools.process_work_results import mark_never_started, receipts
+
+    receipt = dict(session_id=session.id, work_results=[], completion_reason='never_started')
+    exc.process_receipt = receipt
+    session.mark_exited(None, reason='never_started', source=source)
+    session.output_log = str(log or '')
+    with registry._lock:
+        registry._finished[session.id] = session
+    try:
+        mark_never_started(session)
+        save_completed_result(session)
+        receipt['work_results'] = receipts(session)
+    except Exception:
+        # Persistence must never mask the original failure or remove its identity.
+        logger.warning('Could not persist spawn receipt for %s', session.id, exc_info=True)
+        session.work_result_error = 'spawn_receipt_storage_unresolved'
+    if session.work_result_error:
+        receipt['work_result_error'] = session.work_result_error
+
+
 def _result_paths():
     """Prune by completion time, not start time (jobs can take days)."""
     directory = get_hermes_home() / "logs" / "process-results"

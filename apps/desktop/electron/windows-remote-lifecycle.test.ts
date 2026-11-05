@@ -417,6 +417,23 @@ test('the update marker gate stays CLEAR when CLIXML lands after the final Write
   )
 })
 
+test('Windows relaunch gate reports a dead transport as transient, not as an update', async () => {
+  // The exec can die under the probe without the marker script ever running
+  // (#134131, POSIX twin). Fail closed, but as the transport error it is: an
+  // 'update-in-progress' kind claims an update that is not happening.
+  const cause = Object.assign(new Error('control master closed'), { code: 255 })
+
+  await assert.rejects(
+    assertWindowsRemoteInstallUpdateClear(
+      sshWith(async () => {
+        throw cause
+      }),
+      'C:\\h'
+    ),
+    (error: any) => error.kind === 'transient-transport-error' && error.cause === cause
+  )
+})
+
 test('every parsed Windows PowerShell script silences the progress stream', async () => {
   // The marker gate runs Add-Type (C# compilation) and the spawn/helper scripts
   // import the remote hermes_cli module — both emit progress records the

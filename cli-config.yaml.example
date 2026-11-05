@@ -2072,6 +2072,10 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # Ink TUI: copy transcript/composer text on mouse release, keeping the highlight.
+  # auto preserves macOS-only behavior; true/false override on any OS, including SSH.
+  copy_on_select: auto
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

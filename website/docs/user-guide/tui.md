@@ -252,8 +252,18 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  copy_on_select: auto       # auto = macOS only; true/false overrides on any OS
   inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
 ```
+
+Set `display.copy_on_select: true` to copy transcript and composer text when you
+release a mouse selection, including over SSH to a Linux server. The highlight
+stays visible. `false` disables automatic copying; manual copy shortcuts remain
+available. The default, `auto`, preserves automatic copying when Hermes runs on
+macOS and leaves it off elsewhere (the OS running Hermes determines the default,
+not the computer viewing it). Changes are picked up by the TUI's config reload.
+Remote copying requires a terminal that allows OSC 52 clipboard writes. Mouse
+tracking must support dragging (`buttons` or `all`) for TUI text selections.
 
 Runtime toggles:
 

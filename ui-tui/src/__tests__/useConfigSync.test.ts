@@ -17,6 +17,24 @@ describe('applyDisplay', () => {
     resetUiState()
   })
 
+  it('applies copy-on-select overrides, preserves them on RPC failure, and restores the platform default', () => {
+    const setBell = vi.fn()
+    const platformDefault = process.platform === 'darwin'
+
+    expect($uiState.get().copyOnSelect).toBe(platformDefault)
+    applyDisplay({ config: { display: { copy_on_select: true } } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(true)
+    applyDisplay(null, setBell)
+    expect($uiState.get().copyOnSelect).toBe(true)
+    applyDisplay({ config: { display: { copy_on_select: false } } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(false)
+    applyDisplay({ config: { display: { copy_on_select: 'auto' } } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(platformDefault)
+    applyDisplay({ config: { display: { copy_on_select: !platformDefault } } }, setBell)
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(platformDefault)
+  })
+
   it('fans every display flag out to $uiState and the bell callback', () => {
     const setBell = vi.fn()
 

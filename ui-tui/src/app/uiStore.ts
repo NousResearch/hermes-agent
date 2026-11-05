@@ -3,6 +3,7 @@ import { atom, computed } from 'nanostores'
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { t } from '../i18n/runtime.js'
+import { isMac } from '../lib/platform.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -16,6 +17,7 @@ const buildUiState = (): UiState => ({
   busyInputMode: 'queue',
   compact: false,
   compacting: false,
+  copyOnSelect: isMac,
   destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,

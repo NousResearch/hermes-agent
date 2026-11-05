@@ -1,19 +1,19 @@
 name: hermes-axioma
 repo: https://github.com/percyhendrux123-prog/hermes-axioma
-sha: "66b40e6c802c8b11da961b742b01dd0d958333bd"
-version: "0.2.0"
+sha: "fdd1fee06a2e63ffa3eb74f8e894c626c9b0651e"
+version: "0.3.0"
 title: Axioma
-description: "Inline signal color in the agent's normal reply. The agent marks the few phrases that deserve a second look (stop, caution, go, whisper) and the plugin renders them per surface with color, a style cue and a word, never color alone: Desktop through KaTeX color, CLI/TUI through truecolor ANSI, Telegram/Discord/Slack as bold plus the word, SMS and email as the word only. Green renders only when a tool call Hermes reported as successful in this session backs it; a rarity budget caps marks per reply; malformed tags never leak. A color-vision-safe palette and a style-and-words-only mode are one setting away. Secondary: an advisory card (intent, light, signal, question) staged before configured send/spend/spin/scrub tool calls and shown through Hermes's own approval prompt. Advisor, not a gate: it never blocks, approves or executes anything. Disclosure: no network, model calls, subprocesses, background threads, telemetry or credential reads (agent.secret_scope.get_secret is used for presence only, for an optional provider-conflict check); writes flag metadata and salted span hashes (no message bodies) to SQLite under its own plugin data directory; adds a short markup guide to the system context through pre_llm_call."
+description: "Inline signal color in the agent's normal reply. The agent marks the few phrases that deserve a second look (stop, caution, go, whisper) and the plugin renders them per surface with color, a style cue and a word, never color alone: Desktop through KaTeX color, CLI/TUI through truecolor ANSI, Telegram/Discord/Slack as bold plus the word, SMS and email as the word only. Green renders only when a tool call Hermes reported as successful in this session backs it; a rarity budget caps marks per reply; malformed tags never leak. A color-vision-safe palette and a style-and-words-only mode are one setting away. Secondary: an advisory card (intent, light, signal, question) staged before configured send/spend/spin/scrub tool calls and shown through Hermes's own approval prompt. Each card and notice carries a short card code (a keyed hash of the exact text shown, the tool, its arguments and the card id), logged when shown and again with the answer; /signals verify <code> reports in plain words whether what was staged, shown and answered line up (spec section 5.6, shown equals staged). Advisor, not a gate: it never blocks, approves or executes anything. Disclosure: no network, model calls, subprocesses, background threads, telemetry or credential reads (agent.secret_scope.get_secret is used for presence only, for an optional provider-conflict check); writes flag metadata, salted span hashes and keyed card-code digests (no message bodies) to an owner-only (0600) SQLite file, with the card-code key in a separate owner-only file, under its own plugin data directory; adds a short markup guide to the system context through pre_llm_call."
 maintainer: percyhendrux123-prog
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/percyhendrux123-prog/hermes-axioma/blob/66b40e6c802c8b11da961b742b01dd0d958333bd/README.md
+docs_url: https://github.com/percyhendrux123-prog/hermes-axioma/blob/fdd1fee06a2e63ffa3eb74f8e894c626c9b0651e/README.md
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/66b40e6c802c8b11da961b742b01dd0d958333bd/docs/evidence/desktop/desktop-night-inline-signal.png
-  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/66b40e6c802c8b11da961b742b01dd0d958333bd/docs/evidence/desktop/terminal-app-cli-render.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/fdd1fee06a2e63ffa3eb74f8e894c626c9b0651e/docs/evidence/desktop/desktop-night-inline-signal.png
+  - https://raw.githubusercontent.com/percyhendrux123-prog/hermes-axioma/fdd1fee06a2e63ffa3eb74f8e894c626c9b0651e/docs/evidence/desktop/terminal-app-cli-render.png
 capabilities:
   provides_tools: [axioma_card]
   provides_hooks: [pre_tool_call, post_tool_call, post_approval_response, pre_llm_call, on_session_finalize, transform_llm_output]

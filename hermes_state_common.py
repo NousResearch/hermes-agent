@@ -220,15 +220,25 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
         f"            AND {alias}.session_key != ''            AND {alias}.session_key = p.session_key)")
 
 
+def _forked_child_sql(child: str, parent: str, markers: tuple[str, ...]) -> str:
+    return "".join(
+        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
+        for marker in markers
+    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+
+
 def _non_continuation_child_sql(child: str = "", parent: str = "?") -> str:
     """``  AND ...`` clauses rejecting children that are NOT compression continuations of *parent*
     (branch/delegate/reset forks, tool sessions).  Markers are bound to the parent id: continuations
     inherit ``model_config`` verbatim, so a marker naming another row is inherited, not a fork.
     ``child`` is the column prefix (``""``, ``"c."``); single owner so prune and compression agree."""
-    return "".join(
-        f"  AND COALESCE({_sql_json_extract(f'{child}model_config', f'$.{marker}')}, '') != {parent}\n"
-        for marker in ("_branched_from", "_delegate_from", "_reset_from")
-    ) + f"  AND COALESCE({child}source, '') != 'tool'\n"
+    return _forked_child_sql(child, parent, ("_branched_from", "_delegate_from", "_reset_from"))
+
+
+def _superseding_child_sql(child: str, parent: str) -> str:
+    """Like ``_non_continuation_child_sql`` but a reset child counts: the children that supersede *parent*
+    (its compression continuation or reset successor) rather than fork off it."""
+    return _forked_child_sql(child, parent, ("_branched_from", "_delegate_from"))
 
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.

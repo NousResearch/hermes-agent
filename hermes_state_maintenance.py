@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
+    _superseding_child_sql,
     escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
@@ -192,7 +193,11 @@ class SessionMaintenanceMixin:
             hb_grace = hb_staleness
         cutoff = (now := time.time()) - max_idle_seconds
         pin_scope = f" AND {_not_pinned_sql('sessions')}" if exclude_pinned else ""
-        orphan_predicate = f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
+        # A row that already has a compression/reset successor is a closed lineage step, never an orphan: an
+        # automatic stamp over its boundary makes ``validate_local_lineage`` refuse the whole chat (#149249).
+        orphan_predicate = (f"started_at < ? AND {_sql_session_last_active('sessions')} < ?"
+                            " AND NOT EXISTS (SELECT 1 FROM sessions succ WHERE succ.parent_session_id = sessions.id\n"
+                            f"{_superseding_child_sql('succ.', 'sessions.id')})")
         heartbeat_params: tuple[float, ...] = ()
         if respect_gateway_heartbeats:
             orphan_predicate += (" AND NOT EXISTS (SELECT 1 FROM gateway_heartbeats h WHERE"

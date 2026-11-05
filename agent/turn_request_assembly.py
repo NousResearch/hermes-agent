@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import _sanitize_messages_surrogates, trailing_prefill_replay_supported
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -181,10 +181,18 @@ def assemble_api_request(
     # provider, #67321) the synthetic continuation nudge is Codex-only control text: drop it
     # alongside the opaque replay state.
     _cross_protocol = agent.api_mode != "codex_responses"
+    # A trailing prefill stub is dropped below like any thinking-only turn. Put it back where the
+    # route really continues it (Ollama); elsewhere the "prefill" is a plain re-request of the prompt.
+    _prefill_stub = api_messages[-1] if api_messages and api_messages[-1].get("_thinking_prefill") else None
     api_messages = agent._drop_thinking_only_and_merge_users(
         api_messages, drop_codex_reasoning_items=_cross_protocol,
         drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
     )
+    if _prefill_stub is not None and (not api_messages or api_messages[-1] is not _prefill_stub) and (
+        trailing_prefill_replay_supported(
+            agent.api_mode, agent.provider, agent.base_url, getattr(agent, "api_key", "") or "")
+    ):
+        api_messages.append(_prefill_stub)
 
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
     # (KV-cache reuse on local servers, better cloud cache hits); API copy only.

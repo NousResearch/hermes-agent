@@ -1,0 +1,30 @@
+name: stripe-commerce
+repo: https://github.com/adroidian/stripe-commerce-hermes
+sha: 14fd9b75c113e5f7cf9849c0da9e05329ce39869
+subdir: ''
+description: 'Merchant-side Stripe for agents: products, prices and payment links
+  through an enforced restricted-key boundary. No money movement possible.'
+maintainer: adroidian
+tier: community
+category: platform
+requires_hermes: '>=0.21.0'
+version: 0.1.0
+capabilities:
+  provides_tools:
+  - stripe_whoami
+  - stripe_list_products
+  - stripe_create_product
+  - stripe_archive_product
+  - stripe_list_prices
+  - stripe_create_price
+  - stripe_deactivate_price
+  - stripe_create_payment_link
+  - stripe_list_payment_links
+  - stripe_deactivate_payment_link
+  - stripe_list_subscriptions
+  - stripe_get_subscription
+  - stripe_portal_config
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - STRIPE_API_KEY

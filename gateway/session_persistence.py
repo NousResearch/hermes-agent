@@ -155,8 +155,8 @@ class SessionPersistenceMixin:
         self._db_pinned = value
 
     def _scoped_persistence(self):
-        """The storage interface handle for the active scope: beside a pinned SessionDB, else the cached
-        handle on the scope's ``state.db`` (None while its open fails)."""
+        """The storage interface handle for the active scope: a pinned store's own, else the cached handle on
+        the scope's ``state.db`` (None while its open fails)."""
         pinned = self._pinned_db()
         if pinned is not _DB_UNPINNED:
             return self._persistence_beside(pinned)
@@ -290,30 +290,14 @@ class SessionPersistenceMixin:
         return self._open_persistence_for_active_scope()
 
     def _persistence_beside(self, db):
-        """The storage interface handle on the ``state.db`` beside *db* (a pinned SessionDB), cached per path and
-        closed by ``close_all_db_handles``; None for no store, a store without a file path, or when the handle
-        cannot open (the next call tries again)."""
-        from persistence_beside import open_beside
-
-        path = getattr(db, "db_path", None)
-        if not isinstance(path, (str, Path)):
-            return None
-        path = Path(path)
-        with self._lazy("_db_handles_lock", threading.Lock):
-            handles = self.__dict__.setdefault("_persistence_handles", {})
-            handle = handles.get(path)
-            if handle is None:
-                handle = open_beside(path.parent)
-                if handle is not None:
-                    handles[path] = handle
-        return handle
+        """The storage interface handle of *db* (a pinned store): *db* itself when it is one, else None."""
+        from persistence_assembly import Persistence
+        return db if isinstance(db, Persistence) else None
 
     def close_all_db_handles(self) -> None:
-        """Close every storage interface handle this store opened (one per profile) and the handles beside a pinned
-        SessionDB. Closing only the active scope's would strand secondary profiles' stores with
-        their WAL lock held ('database is locked' on restart). Drained under the lock, closed outside it; a pinned
-        SessionDB is the pinner's."""
-        from persistence_beside import close_beside
+        """Close every storage interface handle this store opened (one per profile). Closing only the active scope's
+        would strand secondary profiles' stores with their WAL lock held ('database is locked' on restart). A pinned
+        store is the pinner's."""
 
         def _close(handle) -> None:
             try:
@@ -322,10 +306,6 @@ class SessionPersistenceMixin:
                 logger.debug("Storage handle close error during handle sweep: %s", exc)
 
         self._db_handle_cache.close_all(_close)
-        with self._db_handles_lock:
-            handles = list(self.__dict__.pop("_persistence_handles", {}).values())
-        for handle in handles:
-            close_beside(handle)
 
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""

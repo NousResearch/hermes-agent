@@ -1,11 +1,11 @@
-"""The TUI gateway's storage interface handles sit beside its stores, open nothing until a verb runs, and reach the
+"""The TUI gateway's stores are their own storage interface handles, open nothing until a verb runs, and reach the
 agents and cross-area helpers those stores reach."""
 import sqlite3
 import types
 
 import pytest
 
-from persistence_assembly import close_all_stores, open_persistence, profile_scope
+from persistence_assembly import close_all_stores, open_persistence, open_persistence_reader, profile_scope
 from tui_gateway import server
 
 
@@ -30,7 +30,6 @@ def launch(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
-    monkeypatch.setattr(server, "_launch_beside", (None, None))
     try:
         yield home
     finally:
@@ -53,17 +52,20 @@ def test_launch_handle_is_kept_with_the_launch_store_and_opens_nothing(launch, c
 def test_dedicated_handle_opens_nothing_until_used_and_releases(launch, tmp_path, connects):
     other = tmp_path / "other"
     other.mkdir()
-    store = types.SimpleNamespace(db_path=other / "state.db")
+    store = open_persistence(profile_scope(home=other))
     handle = server._persistence_beside(store)
     assert handle.scope.profile_dir == other.resolve()
     assert connects == [] and not (other / "state.db").exists()
     handle.ready()
     assert (other / "state.db").exists()  # the check above would see an open
     server._release_persistence(handle)
+    handle.ready()  # the dedicated store keeps its own reference
+    store.close()
     with pytest.raises(RuntimeError):
         handle.ready()
     assert server._persistence_beside(None) is None
     assert server._persistence_beside(types.SimpleNamespace()) is None
+    assert server._persistence_beside(types.SimpleNamespace(db_path=other / "state.db")) is None
 
 
 def test_per_call_handle_follows_the_store_mode(launch, tmp_path, connects):
@@ -71,16 +73,16 @@ def test_per_call_handle_follows_the_store_mode(launch, tmp_path, connects):
     other.mkdir()
     with open_persistence(profile_scope(home=other)) as created:
         created.ready()
-    reader = types.SimpleNamespace(db_path=other / "state.db", read_only=True)
     before = len(connects)
-    with server._persistence_for(reader) as handle:
+    with open_persistence_reader(other / "state.db") as reader, server._persistence_for(reader) as handle:
         assert connects[before:] == []
-        assert handle.read_only is True
+        assert handle is reader and handle.read_only is True
         assert handle.scope.profile_dir == other.resolve()
-    with server._persistence_for(types.SimpleNamespace(db_path=other / "state.db")) as handle:
-        assert handle.read_only is False
-    with pytest.raises(RuntimeError):
-        handle.ready()
+    writer = open_persistence(profile_scope(home=other))
+    with server._persistence_for(writer) as handle:
+        assert handle is writer and handle.read_only is False
+    with server._persistence_for(types.SimpleNamespace(db_path=other / "state.db", read_only=True)) as handle:
+        assert handle is None
     launch_db = server._get_db()
     with server._persistence_for(launch_db) as handle:
         assert handle is server._launch_persistence()

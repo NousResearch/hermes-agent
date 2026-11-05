@@ -1041,6 +1041,26 @@ browser-facing hostname while forwarding to a dashboard bound to
 such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
 guard.
 
+When the same dashboard is legitimately reached under **other** hostnames — a
+Tailscale MagicDNS short name (`https://hermes`), a split-horizon internal DNS
+entry, or a proxy's public hostname while the backend is bound to its LAN IP —
+declare those aliases in `dashboard.trusted_hosts`:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com/hermes"
+  trusted_hosts:
+    - "hermes.tailnet.ts.net"   # exact hostnames; a :port suffix is allowed
+    - "hermes"                  # MagicDNS short name the phone dials
+```
+
+Each entry is matched **exactly** (a port suffix is stripped, letters are
+lowercased); malformed entries are dropped with a warning rather than
+sanitized. A non-loopback alias in the list engages the auth gate just like
+`public_url` does, since it means the dashboard is served beyond the machine.
+When a request is rejected, the dashboard logs the offending Host header and
+the remedy, so the alias a client actually sends is easy to discover.
+
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
 first; without one, Hermes fails closed at startup. This prevents the local SPA

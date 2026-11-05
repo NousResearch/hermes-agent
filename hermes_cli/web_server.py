@@ -353,6 +353,7 @@ def _require_token(request: Request) -> None:
 from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> stays the public seam
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
+    _configured_trusted_hosts,
     _dashboard_public_hosts,
     _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
@@ -384,16 +385,24 @@ async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface (DNS rebinding, GHSA-ppp5-vxwm-4cf7)."""
     # app.state.bound_host is set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
-    if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host, getattr(app.state, "trusted_public_hosts", frozenset())
-    ):
+    trusted = getattr(app.state, "trusted_public_hosts", frozenset())
+    host_header = request.headers.get("host", "")
+    if bound_host and not _is_accepted_host(host_header, bound_host, trusted):
+        # Name the rejected host: without it the 400 is undiagnosable from the
+        # client side alone (mobile shells that dial a tunnel's MagicDNS alias).
+        _log.warning(
+            "dashboard rejected Host header %r (bound %s, trusted hosts: %s). "
+            "If this hostname is a legitimate alias, add it to dashboard.trusted_hosts.",
+            host_header or "(missing)", bound_host, ", ".join(sorted(trusted)) or "none",
+        )
         return JSONResponse(
             status_code=400,
             content={
                 "detail": (
-                    "Invalid Host header. Dashboard requests must use the "
-                    "bound hostname or the configured public hostname."
-                ),
+                    "Invalid Host header: %s. Dashboard requests must use the "
+                    "bound hostname or a configured public hostname "
+                    "(dashboard.public_url / dashboard.trusted_hosts)."
+                ) % (host_header or "(missing)"),
             },
         )
     return await call_next(request)
@@ -979,7 +988,8 @@ def _configure_auth_gate(
     # gateway's, from webapp.public_url) is judged by that one instead.
     own_url = getattr(app.state, "listener_public_url", None)
     app.state.trusted_public_hosts = (
-        _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+        _dashboard_public_hosts() if own_url is None
+        else public_url_hosts(own_url) | _configured_trusted_hosts())
     app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
         _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the

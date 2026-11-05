@@ -341,6 +341,9 @@ def _set_approval_mode(connection, value):
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
         result = run_approval_mode_command(_word(value) or None)
     if not result.ok:
+        from hermes_cli.managed_scope import is_key_managed
+        if _word(value) in ('manual', 'smart', 'off') and is_key_managed('approvals.mode'):
+            raise _managed_refusal('approvals.mode')  # set_config_value refused it: name the key
         raise RuntimeStoreError('invalid_params' if _word(value) not in ('manual', 'smart', 'off')
                                 else 'storage_unavailable')
     return {'key': 'approvals.mode', 'value': result.mode}

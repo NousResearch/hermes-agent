@@ -9,6 +9,10 @@ the compression segment. Real GatewayRunner, SessionAuthority and SQLite store.
 import pytest
 
 from gateway.run import GatewayRunner
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_messages
 
 
 @pytest.fixture(autouse=True)
@@ -28,15 +32,16 @@ async def _compressed_chat(tmp_path):
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='4242', user_id='u-4242', chat_type='dm')
     root = authority.register(source).session_id
     route = runner.session_store._generate_session_key(source)
-    db = authority.db
-    db.append_message(root, 'user', 'first')
-    db.publish_compression_child(parent_session_id=root, child_session_id='seg-1', source='telegram',
-                                 messages=[{'role': 'user', 'content': 'summary'}], require_compression_lease=False)
+    db = authority.persistence
+    seed_messages(db, root, {'role': 'user', 'content': 'first'})
+    db.lineage.publish_compression_child(root, CompressionChild(session_id='seg-1', source='telegram'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert runner.session_store.advance_compression_session(route, root, 'seg-1') is not None
-    db.record_gateway_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
+    db.routing.record_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
                                    chat_id=source.chat_id, chat_type='dm', origin_json=json.dumps(source.to_dict()))
     # The segment's own fences moved on (its turns ran there); the viewer holds the mount's.
-    db._execute_write(lambda conn: conn.execute(
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET runtime_revision=7, runtime_generation=3 WHERE id='seg-1'"))
     viewer = AuthorityConnection(authority, object(), {
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'default', 'instance_id': 'owner',

@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
+
 
 def _make_store(tmp_path):
     from gateway.config import GatewayConfig
@@ -44,8 +46,8 @@ def _entry(session_key, chat_id, profile):
 
 def _state_db():
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
-    return SessionDB(Path(get_hermes_home()) / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    return open_persistence(profile_scope(home=Path(get_hermes_home())))
 
 
 def _runner_stub(store):
@@ -79,7 +81,7 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
         store._entries["agent:oldname:feishu:dm:chatA"] = _entry(
             "agent:oldname:feishu:dm:chatA", "chatA", "oldname")
     db = _state_db()
-    db.register_backend_heartbeat(
+    db.maintenance.register_backend_heartbeat(
         backend_id="be1", pid=1, started_at=time.time(), profile="oldname", host="h")
     db.close()
 
@@ -90,7 +92,7 @@ async def test_unserve_profile_keeps_identity_for_a_rename_to_rekey(tmp_path):
     assert "agent:oldname:feishu:dm:chatA" in store._entries
     db = _state_db()
     try:
-        assert db._read_one(
+        assert raw_holder(db)._read_one(
             "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
             ("oldname",))["n"] == 1
     finally:
@@ -107,7 +109,7 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
         store._entries["agent:keepme:feishu:dm:chatB"] = _entry(
             "agent:keepme:feishu:dm:chatB", "chatB", "keepme")
     db = _state_db()
-    db.register_backend_heartbeat(
+    db.maintenance.register_backend_heartbeat(
         backend_id="be1", pid=1, started_at=time.time(), profile="gone", host="h")
     db.close()
 
@@ -119,7 +121,7 @@ def test_purge_verb_drops_routing_identity_and_reports_ok(tmp_path):
     assert "agent:keepme:feishu:dm:chatB" in store._entries
     db = _state_db()
     try:
-        assert db._read_one(
+        assert raw_holder(db)._read_one(
             "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?", ("gone",))["n"] == 0
     finally:
         db.close()

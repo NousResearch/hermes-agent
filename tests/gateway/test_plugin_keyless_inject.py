@@ -213,7 +213,8 @@ def test_a_key_less_inject_from_a_messaging_chat_keeps_mains_refusal_line(tmp_pa
     main's plain line, not the other-profile local-session refusal."""
     from types import SimpleNamespace
     from gateway import plugin_keyless_inject as keyless
-    authority = SimpleNamespace(sessions={}, db=SimpleNamespace(db_path=str(tmp_path / 'state.db')))
+    from persistence_assembly import profile_scope
+    authority = SimpleNamespace(sessions={}, persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)))
     runner = SimpleNamespace(session_authorities=None, session_authority=authority)
     with caplog.at_level('WARNING', logger='gateway.run'):
         assert keyless.resolve(runner, plugin_home=tmp_path, plugin_id='desk',

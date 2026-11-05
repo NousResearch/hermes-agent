@@ -12,8 +12,9 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import restore_native, snapshot_native
 from gateway.session_results import execution_result
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 REPO = Path(__file__).resolve().parents[2]
 CHAT = '15551234567@s.whatsapp.net'
@@ -81,7 +82,7 @@ async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(t
             assert sent[index] == 'ok', sent
             assert turns[index] == (text, metadata), turns
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -104,20 +105,20 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
                    {'whatsapp_native': {'gateway_session_id': 's'}}, {'whatsapp_from_owner': 'yes'},
                    {'whatsapp_native': {'poll': {1, 2}}}]
         for metadata in refused:
-            with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            with pytest.raises(AuthorityRefusal, match='invalid_params'):
                 snapshot_native(runner, replace(event, metadata=metadata))
         for bad in (replace(event, reply_expected='no'), replace(event, text='/new now')):
-            with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            with pytest.raises(AuthorityRefusal, match='invalid_params'):
                 snapshot_native(runner, bad)
         # MSG-2: an adapter's absent media list (None) is no media at the envelope boundary, with the
         # same fingerprint as []; any other non-list still refuses.
         for name in ('media_urls', 'media_types', 'media_text_inlined'):
             assert snapshot_native(runner, replace(event, **{name: None})) == snapshot_native(runner, event)
             for bad in ('x', ('x',)):
-                with pytest.raises(RuntimeStoreError, match='invalid_params'):
+                with pytest.raises(AuthorityRefusal, match='invalid_params'):
                     snapshot_native(runner, replace(event, **{name: bad}))
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
     # Closed producer matrix: no other adapter stamps MessageEvent.metadata on ordinary inbound,
     # so the WhatsApp keys above are the whole contract. A new producer must extend it here.
     producers = set()

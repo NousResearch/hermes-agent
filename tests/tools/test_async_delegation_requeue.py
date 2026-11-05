@@ -1,6 +1,8 @@
 """An acknowledged completion goes back to the delivery queue when its turn could not confirm the owner."""
 
 import queue
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -28,12 +30,12 @@ def _persisted(delegation_id: str, *, delivered: bool = True) -> None:
 
 
 def _column(delegation_id: str, column: str):
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(ad._db_path())) as conn:
         return conn.execute(f"SELECT {column} FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()[0]
 
 
 def _set(delegation_id: str, column: str, value) -> None:
-    with ad._DB_LOCK, ad._transaction() as conn:
+    with ad._DB_LOCK, closing(sqlite3.connect(ad._db_path())) as conn, conn:
         conn.execute(f"UPDATE async_delegations SET {column}=? WHERE delegation_id=?", (value, delegation_id))
 
 

@@ -43,7 +43,7 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   process and stdin alive.
 - ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,
   then keeps the process and stdin alive.
-- ``"late_pull"`` — holds every ``textDocument/diagnostic`` unanswered.  On
+- ``"late_pull"`` — holds every ``textDocument/diagnostic`` and ``shutdown`` unanswered.  On
   ``$/cancelRequest`` it appends the cancelled id to the file named by
   ``MOCK_LSP_TRACE`` and only then answers that id with a result carrying a
   ``late`` marker: a server that finishes work the client already abandoned.
@@ -96,8 +96,8 @@ _IGNORED_NOTIFICATIONS = {"initialized", "workspace/didChangeConfiguration", "wo
 
 
 def _late_pull(msg: dict) -> bool:
-    """``late_pull``: hold diagnostic pulls; answer one only after the client cancels it."""
-    if msg.get("method") == "textDocument/diagnostic":
+    """``late_pull``: hold diagnostic pulls and ``shutdown``; answer one only after the client cancels it."""
+    if msg.get("method") in {"textDocument/diagnostic", "shutdown"}:
         return True
     if msg.get("method") != "$/cancelRequest":
         return False

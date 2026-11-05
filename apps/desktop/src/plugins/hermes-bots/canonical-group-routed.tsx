@@ -51,47 +51,88 @@ export interface CanonicalPausedDiscussion {
   actionable: boolean
 }
 
-/** Read a `bounded` activity event against the log: how much was said, and whether it can still be continued. */
-export function pausedDiscussion(events: readonly CanonicalGroupEvent[], paused: CanonicalGroupEvent, maxContinues: number): CanonicalPausedDiscussion {
-  const discussion = discussionOf(paused)
-  const thread = paused.payload.thread_id
-  let count = 0
-  let grants = 0
-  let movedOn = false
+const bump = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1)
 
-  for (const event of events) {
-    const same = !!discussion && discussionOf(event) === discussion
+/** Forward pass: each pause's discussion message count before it, and every discussion's Continue total. */
+function pauseCounts(ordered: readonly CanonicalGroupEvent[]) {
+  const said = new Map<string, number>()
+  const grants = new Map<string, number>()
+  const counts = new Map<number, number>()
 
-    if (event.kind === 'message.member' && same && event.seq < paused.seq) {count++}
+  for (const event of ordered) {
+    const discussion = discussionOf(event)
 
-    if (event.kind === CONTINUED_EVENT_KIND && same) {
-      grants++
+    if (!discussion) {continue}
 
-      if (event.seq > paused.seq) {movedOn = true}
-    }
+    if (event.kind === 'message.member') {bump(said, discussion)}
 
-    if (event.seq <= paused.seq) {continue}
+    if (event.kind === CONTINUED_EVENT_KIND) {bump(grants, discussion)}
 
-    if (event.kind === 'room.stop_requested' || (isBoundedActivity(event) && same) ||
-        (event.kind === 'message.user' && typeof thread === 'string' && event.payload.thread_id === thread)) {movedOn = true}
+    if (isBoundedActivity(event)) {counts.set(event.seq, said.get(discussion) ?? 0)}
   }
 
-  return { count, actionable: !!discussion && !movedOn && grants < maxContinues }
+  return { counts, grants }
+}
+
+/** Backward pass: the pauses something later moved on. A Stop retires every earlier pause; a Continue
+ * or a later pause retires its own discussion's; a new user message retires its thread's. */
+function movedOnPauses(ordered: readonly CanonicalGroupEvent[]) {
+  const moved = new Set<number>()
+  const laterDiscussions = new Set<string>()
+  const laterThreads = new Set<string>()
+  let laterStop = false
+
+  for (let index = ordered.length - 1; index >= 0; index--) {
+    const event = ordered[index]
+    const discussion = discussionOf(event)
+    const thread = typeof event.payload.thread_id === 'string' ? event.payload.thread_id : ''
+
+    if (isBoundedActivity(event) && (laterStop || laterDiscussions.has(discussion) || (thread && laterThreads.has(thread)))) {moved.add(event.seq)}
+
+    if (event.kind === 'room.stop_requested') {laterStop = true}
+
+    if (discussion && (event.kind === CONTINUED_EVENT_KIND || isBoundedActivity(event))) {laterDiscussions.add(discussion)}
+
+    if (event.kind === 'message.user' && thread) {laterThreads.add(thread)}
+  }
+
+  return moved
+}
+
+/**
+ * Every `bounded` pause in the log, keyed by its seq: how much its discussion said before it, and
+ * whether Continue/Stop still mean something. Two linear passes per log update, so a room with many
+ * old pauses costs O(events), not O(events x pauses).
+ */
+export function pausedDiscussions(events: readonly CanonicalGroupEvent[], maxContinues: number): Map<number, CanonicalPausedDiscussion> {
+  const ordered = [...events].sort((a, b) => a.seq - b.seq)
+  const { counts, grants } = pauseCounts(ordered)
+  const moved = movedOnPauses(ordered)
+  const result = new Map<number, CanonicalPausedDiscussion>()
+
+  for (const event of ordered) {
+    if (!isBoundedActivity(event)) {continue}
+
+    const discussion = discussionOf(event)
+    result.set(event.seq, { count: counts.get(event.seq) ?? 0, actionable: !!discussion && !moved.has(event.seq) && (grants.get(discussion) ?? 0) < maxContinues })
+  }
+
+  return result
 }
 
 export interface CanonicalGroupPausedRowProps {
   busy?: boolean
   event: CanonicalGroupEvent
-  events: readonly CanonicalGroupEvent[]
-  maxContinues: number
+  /** This pause's entry from `pausedDiscussions`, computed once per log update. */
+  paused: CanonicalPausedDiscussion
   onContinue?: (discussionEventId: string) => unknown
   onStop?: () => unknown
 }
 
 /** "Paused after 12 messages" with Continue and Stop while the pause is still the discussion's latest word. */
-export function CanonicalGroupPausedRow({ busy = false, event, events, maxContinues, onContinue, onStop }: CanonicalGroupPausedRowProps) {
+export function CanonicalGroupPausedRow({ busy = false, event, paused, onContinue, onStop }: CanonicalGroupPausedRowProps) {
   const labels = useCanonicalGroupLabels()
-  const { actionable, count } = pausedDiscussion(events, event, maxContinues)
+  const { actionable, count } = paused
   const discussion = discussionOf(event)
 
   return <RoomNoticeRow kind={event.kind}>

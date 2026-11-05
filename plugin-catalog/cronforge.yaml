@@ -1,6 +1,6 @@
 name: cronforge
 repo: https://github.com/EikeAhlers/hermes-cronforge
-sha: 617d397cbc50b8c452ee0c3136a2716e6ca9a02e
+sha: e08f73782cef2ae8d3c69018b8be672633e47bcf
 description: Compiles recurring cron jobs into zero-token scripts, but only when real run
   history proves the job is deterministic; rolls the job back to the agent automatically
   after repeated script failures.
@@ -9,6 +9,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.20.2"
 docs_url: https://github.com/EikeAhlers/hermes-cronforge#readme
+image: https://raw.githubusercontent.com/EikeAhlers/hermes-cronforge/e08f73782cef2ae8d3c69018b8be672633e47bcf/assets/catalog-banner.png
 version: "0.1.0"
 platforms: []
 title: cronforge

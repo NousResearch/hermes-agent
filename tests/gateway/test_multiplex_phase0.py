@@ -10,6 +10,7 @@ Covers the three Phase 0 deliverables:
 """
 import pytest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 import hermes_yaml as yaml
 
@@ -131,14 +132,19 @@ class TestSessionStoreProfileResolution:
 
 
 class _RecoveringDB:
+    """Store stand-in, legacy and storage handle in one: the peer finder and ``sessions.reopen``."""
+
     def __init__(self, row):
-        self.row = row
-        self.reopened = []
+        self.row, self.reopened = row, []
+        self.routing = self.sessions = self
 
-    def find_latest_gateway_session_for_peer(self, **_kwargs):
-        return self.row
+    def latest_session_for_peer(self, **_kwargs):
+        session = SimpleNamespace(session_id=self.row["id"], started_at=self.row["started_at"],
+                                  session_key=self.row["session_key"], last_activity_at=None, message_count=0,
+                                  origin=None)
+        return SimpleNamespace(session=session, has_messages=False)
 
-    def reopen_session(self, session_id):
+    def reopen(self, session_id):
         self.reopened.append(session_id)
 
 
@@ -149,7 +155,7 @@ class TestSessionStoreUnmultiplexedRecovery:
         config = GatewayConfig(**cfg_kw)
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = _RecoveringDB(row)
+        store._db, store._persistence_beside = _RecoveringDB(row), lambda db: db
         store._loaded = True
         return store
 
@@ -190,7 +196,6 @@ class TestSessionStoreUnmultiplexedRecovery:
         ``agent:<ns>:`` against the REQUESTED key, never the active profile."""
         row = {"id": "sess", "started_at": 1700000000, "session_key": recovered_key}
         store = self._store_with_row(tmp_path, row, multiplex_profiles=True)
-        store._db_pinned = store._db
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
             recovered = store._recover_session_from_db(
                 session_key="agent:main:telegram:dm:99",

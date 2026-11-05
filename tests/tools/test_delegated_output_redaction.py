@@ -2,7 +2,9 @@
 
 import json
 import queue
+import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -98,7 +100,7 @@ def test_old_durable_results_are_redacted_on_read_replay_and_failure_roster():
         "error": SECRET,
     }
     result = {"status": "failed", "summary": SECRET, "error": SECRET}
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(ad._db_path())) as conn, conn:
         conn.execute(
             "UPDATE async_delegations SET state='failed',completed_at=?,event_json=?,result_json=?",
             (time.time(), json.dumps(event), json.dumps(result)),
@@ -210,7 +212,7 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"status": "completed", "summary": SECRET}, "completed")
     assert SECRET in target.get_nowait()["summary"]
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(ad._db_path())) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert SECRET not in "".join(row)
 
@@ -246,6 +248,6 @@ def test_forced_copies_are_projected_from_complete_output_before_the_parent_budg
     monkeypatch.setattr(process_registry, "completion_queue", target)
     ad._push_completion_event(record, {"results": entries}, "completed")
     assert body in target.get_nowait()["results"][0]["summary"]
-    with ad._transaction() as conn:
+    with closing(sqlite3.connect(ad._db_path())) as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert body[-43:] not in "".join(row) and SECRET not in "".join(row)

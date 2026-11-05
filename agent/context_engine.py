@@ -9,6 +9,7 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 """
 
 import copy
+import inspect
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,18 @@ def automatic_compaction_status_message(engine: Any, *, phase: str, default_mess
     if message is None:
         return None
     return str(message).strip() or None
+
+
+def memory_manager_kwargs(on_session_start: Any, agent: Any) -> dict[str, Any]:
+    """``memory_manager`` for an ``on_session_start`` that accepts it by name or ``**kwargs``, else nothing,
+    so an engine written against the older keywords still gets its call."""
+    try:
+        parameters = inspect.signature(on_session_start).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "memory_manager" in parameters or any(p.kind is p.VAR_KEYWORD for p in parameters.values()):
+        return {"memory_manager": getattr(agent, "_memory_manager", None)}
+    return {}
 
 
 class ContextEngine(ABC):

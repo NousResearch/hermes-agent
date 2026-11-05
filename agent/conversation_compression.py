@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
-from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
+from agent.context_engine import automatic_compaction_status_message, memory_manager_kwargs, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
 from agent.conversation_compression_telemetry import (
@@ -1623,7 +1623,7 @@ def _adopt_live_compression_child(
             on_session_start(
                 child_session_id, boundary_reason="compression", old_session_id=parent_session_id,
                 session_db=session_db, platform=getattr(agent, "platform", None) or "cli",
-                conversation_id=getattr(agent, "_gateway_session_key", None), memory_manager=getattr(agent, "_memory_manager", None),
+                conversation_id=getattr(agent, "_gateway_session_key", None), **memory_manager_kwargs(on_session_start, agent),
             )
     else:
         bind_state = getattr(agent.context_compressor, "bind_session_state", None)
@@ -2487,7 +2487,7 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
         callback(
             new_session_id, boundary_reason="compression", old_session_id=old_session_id,
             platform=getattr(agent, "platform", None) or "cli",
-            conversation_id=getattr(agent, "_gateway_session_key", None), memory_manager=getattr(agent, "_memory_manager", None),
+            conversation_id=getattr(agent, "_gateway_session_key", None), **memory_manager_kwargs(callback, agent),
         )
         return True
     except Exception:

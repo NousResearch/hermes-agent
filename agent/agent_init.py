@@ -2049,11 +2049,13 @@ def _inject_context_engine_tools(agent):
 
     if agent.context_compressor:
         try:
+            from agent.context_engine import memory_manager_kwargs
             agent.context_compressor.on_session_start(
                 agent.session_id, hermes_home=str(get_hermes_home()),
                 platform=agent.platform or "cli", model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),
-                conversation_id=getattr(agent, "_gateway_session_key", None), memory_manager=getattr(agent, "_memory_manager", None),
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+                **memory_manager_kwargs(agent.context_compressor.on_session_start, agent),
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)

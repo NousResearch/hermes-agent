@@ -411,7 +411,8 @@ twice for in-place compaction). A session with no live agent may get a fresh eng
 for that compression, which then also receives `on_session_end()`.
 
 The `on_session_start()` calls at agent start and at a compression boundary also carry
-`memory_manager`: the session's memory manager, or `None` when no external memory provider is
+`memory_manager` when your signature accepts it (a `memory_manager` parameter or `**kwargs`): the
+session's memory manager, or `None` when no external memory provider is
 active (and always `None` for a fresh engine built for a session with no live agent). The host
 already calls its `on_pre_compress()` for every span it hands to `compress()` and passes the
 result to `compress()` as `memory_context` when your signature accepts it. Call

@@ -181,10 +181,11 @@ workspace; absent or empty cwd remains unpinned.
 | `on_profile_created(profile_name, hermes_home)` | A profile selecting your provider was created (a clone carries `memory.provider`), from the CLI, dashboard or Desktop | Per-profile state: a peer, a host entry |
 | `on_profile_renamed(old_name, new_name, hermes_home)` | That profile was renamed (`hermes_home` is the new directory) | Re-key state stored under the old name |
 
-The two profile hooks run on an uninitialized instance with that profile's home and its own `.env`
-secrets bound. A key that profile's `.env` lacks reads as unset: the caller's environment is never
-used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
-create/rename request on every surface, so do network work on a background thread.
+The two profile hooks run on an uninitialized instance with that profile's home and its own
+secrets bound: its `.env` plus its configured secret sources (1Password and the like). A key it
+lacks reads as unset: the caller's environment is never used. An exception (`SystemExit` included) is logged and never fails the create or rename. They run inside the
+create/rename request on every surface, so do network work on a background thread. Under
+`plugins.isolation: host`, a plugin host started only for the hook is stopped when it returns.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
@@ -398,6 +399,9 @@ def write_config_fields(self, values: dict, hermes_home: str) -> None:
     # json.JSONDecodeError counts) to refuse the save (shown as a 400), e.g. when your file does not parse.
     ...
 ```
+
+Declaring `storage=STORAGE_PROVIDER` without `write_config_fields` makes a save return 501; a
+provider that fails to load returns 503; an unknown `storage` value shows no panel and refuses saves.
 
 ## Save Config
 

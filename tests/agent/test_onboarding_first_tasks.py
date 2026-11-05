@@ -1,11 +1,11 @@
-"""``agent/onboarding_first_tasks.py``: which first tasks the model may put on the build card."""
+"""``session_rules/onboarding_first_tasks.py``: which first tasks the model may put on the build card."""
 
 from __future__ import annotations
 
 import pytest
 
-from agent.onboarding_first_tasks import FIRST_TASKS, eligible_tasks, pick_error
-from agent.onboarding_flow import Facts, new_record
+from session_rules.onboarding_first_tasks import FIRST_TASKS, eligible_tasks, pick_error
+from session_rules.onboarding_flow import Facts, new_record
 from agent.onboarding_text import reminder
 
 MAC = Facts(os="macos", arch="arm64", machine_kind="Mac")

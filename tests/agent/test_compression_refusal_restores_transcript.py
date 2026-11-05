@@ -20,10 +20,13 @@ from unittest.mock import patch
 import pytest
 
 from agent.conversation_compression import CompressionCommitFence
-from hermes_state import SessionDB
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent(db: SessionDB, session_id: str):
+def _build_agent(db, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
@@ -32,7 +35,7 @@ def _build_agent(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -97,9 +100,9 @@ def _raising_engine(_compressor):
 def test_refused_candidate_from_mutating_engine_returns_original_transcript(
     tmp_path: Path, make_engine, caplog
 ) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "REFUSED_CANDIDATE"
-    db.create_session(session_id, source="test")
+    seed_session(db, session_id, "test")
     agent = _build_agent(db, session_id)
     compressor = agent.context_compressor
 
@@ -110,8 +113,8 @@ def test_refused_candidate_from_mutating_engine_returns_original_transcript(
         with patch.object(type(compressor), "compress", side_effect=make_engine(compressor)), patch.object(
             agent, "commit_memory_session", wraps=agent.commit_memory_session
         ) as commit_memory_session, patch.object(
-            db, "archive_and_compact", wraps=db.archive_and_compact
-        ) as archive_and_compact:
+            db.messages, "compact", wraps=db.messages.compact
+        ) as compact:
             # A caller-owned fence selects the direct path that gateway session hygiene uses.
             with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
                 returned, _sp = agent._compress_context(
@@ -119,15 +122,16 @@ def test_refused_candidate_from_mutating_engine_returns_original_transcript(
                 )
 
         commit_memory_session.assert_not_called()
-        archive_and_compact.assert_not_called()
+        compact.assert_not_called()
         assert returned == original
         assert messages == original
         assert agent.session_id == session_id
-        assert db._conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?", (session_id,)
-        ).fetchone()[0] == 0
-        assert db.get_session(session_id)["end_reason"] is None
-        assert db.get_compression_lock_holder(session_id) is None
+        with raw_holder(db)._read_ctx() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE parent_session_id = ?", (session_id,)
+            ).fetchone()[0] == 0
+        assert session_row(db, session_id)["end_reason"] is None
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) is None
         # The record must not claim an effect the refused candidate never had on the transcript.
         prefix = "context compression attempt telemetry: "
         [record] = [json.loads(r.getMessage()[len(prefix):]) for r in caplog.records if r.getMessage().startswith(prefix)]
@@ -138,9 +142,9 @@ def test_refused_candidate_from_mutating_engine_returns_original_transcript(
 
 
 def test_raising_mutating_engine_restores_original_transcript(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     session_id = "RAISING_ENGINE"
-    db.create_session(session_id, source="test")
+    seed_session(db, session_id, "test")
     agent = _build_agent(db, session_id)
     compressor = agent.context_compressor
     messages = [{"role": "user", "content": f"m{i} " + "x" * 200} for i in range(21)]
@@ -154,7 +158,7 @@ def test_raising_mutating_engine_restores_original_transcript(tmp_path: Path) ->
                 )
         assert messages == original
         assert agent.session_id == session_id
-        assert db.get_session(session_id)["end_reason"] is None
-        assert db.get_compression_lock_holder(session_id) is None
+        assert session_row(db, session_id)["end_reason"] is None
+        assert db.coordination.get_compression_lock_holder(session_id=session_id) is None
     finally:
         agent.close()

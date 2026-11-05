@@ -20,6 +20,8 @@ from agent.context_compressor import ContextCompressor
 from agent.conversation_compression import CompressionCommitFence, compress_context
 from agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
 from agent.transports.codex_app_server_session import TurnResult
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
 V1_FIELDS = {
@@ -395,13 +397,12 @@ def test_an_attempt_aborted_after_a_commit_marks_only_its_own_attempt(published)
 def test_rotation_publishes_after_the_split_with_the_attempts_own_session(published):
     """A rotating commit re-points the agent at a child session and its memory flush resets the compressor's
     telemetry; the record is still built from this attempt's telemetry and names the session it started in."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=SessionDB(db_path=Path(tmpdir) / "state.db"), session_id="rotating-session",
+            persistence=storage_handle(Path(tmpdir)), session_id="rotating-session",
             skip_context_files=True, skip_memory=True,
         )
         agent.compression_in_place = False
@@ -422,20 +423,19 @@ def test_rotation_publishes_after_the_split_with_the_attempts_own_session(publis
 def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(published):
     """The in-place commit stored the compacted transcript, then a later bookkeeping write failed: the model
     sees the compacted history next, so Relay must reset freshness, and the record says what failed."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        db = SessionDB(db_path=Path(tmpdir) / "state.db")
-        db.create_session("in-place-session", "cli", model="test/model")
+        db = storage_handle(Path(tmpdir))
+        seed_session(db, "in-place-session", "cli", model="test/model")
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id="in-place-session", skip_context_files=True, skip_memory=True,
+            persistence=db, session_id="in-place-session", skip_context_files=True, skip_memory=True,
         )
         agent.compression_in_place = True
         agent.context_compressor.tail_token_budget = 10
         with patch.object(agent.context_compressor, "_generate_summary", return_value="SANITIZED SUMMARY"), \
-                patch.object(SessionDB, "update_system_prompt", side_effect=OSError("disk full")):
+                patch.object(type(db.sessions), "update_system_prompt", side_effect=OSError("disk full")):
             compressed, _ = agent._compress_context(_messages(), "sys", approx_tokens=80_000, trigger="pre_api")
         agent.close()
 
@@ -451,7 +451,6 @@ def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(publis
 def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compaction(published):
     """An engine may compact its input list in place, so the returned list IS the input. After the atomic
     archive stored it, a later bookkeeping failure must still mark a compaction (freshness reset)."""
-    from hermes_state import SessionDB
     from run_agent import AIAgent
 
     def _in_place(msgs, **_kwargs):
@@ -464,16 +463,16 @@ def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compa
         return msgs
 
     with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        db = SessionDB(db_path=Path(tmpdir) / "state.db")
-        db.create_session("in-place-engine", "cli", model="test/model")
+        db = storage_handle(Path(tmpdir))
+        seed_session(db, "in-place-engine", "cli", model="test/model")
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id="in-place-engine", skip_context_files=True, skip_memory=True,
+            persistence=db, session_id="in-place-engine", skip_context_files=True, skip_memory=True,
         )
         agent.compression_in_place = True
         messages = _messages()
         with patch.object(type(agent.context_compressor), "compress", side_effect=_in_place), \
-                patch.object(SessionDB, "update_system_prompt", side_effect=OSError("disk full")):
+                patch.object(type(db.sessions), "update_system_prompt", side_effect=OSError("disk full")):
             # A caller-owned fence takes the direct path, where the engine mutates the caller's list itself.
             compressed, _ = agent._compress_context(
                 messages, "sys", approx_tokens=80_000, trigger="pre_api", commit_fence=CompressionCommitFence(),

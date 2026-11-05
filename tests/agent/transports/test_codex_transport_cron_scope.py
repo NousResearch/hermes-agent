@@ -93,13 +93,14 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
     from types import SimpleNamespace
 
     from agent.prompt_cache_scope import resolve_prompt_cache_scope
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     root, rotated = "local-admitted-fire", "local-rotated-fire"
     execution_context(root, "job42", "fire-1")
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session(root, source="cli")
-        agent = SimpleNamespace(session_id=root, _session_db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, root, "cli")
+        agent = SimpleNamespace(session_id=root, _session_db=db, persistence=db)
 
         def build():
             scope = resolve_prompt_cache_scope(agent)
@@ -111,8 +112,8 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
             )
 
         before = build()
-        db.end_session(root, "compression")
-        db.create_session(rotated, source="cli", parent_session_id=root)
+        db.sessions.end(root, "compression")
+        seed_session(db, rotated, "cli", parent_session_id=root)
         agent.session_id = rotated
         after = build()
 

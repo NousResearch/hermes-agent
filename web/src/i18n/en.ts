@@ -124,6 +124,14 @@ export const en: Translations = {
     sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Active memory provider",
+    noProvider: "none — built-in only",
+    builtinLayer: "Built-in layer",
+    builtinNote: "MEMORY.md and USER.md are Hermes's own memory, separate from any external provider. Both load into sessions by default; the config toggles (memory.memory_enabled / memory.user_profile_enabled) turn each off. A provider adds to them; it never replaces them.",
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",

@@ -243,6 +243,10 @@ docs/superpowers/*
 /google_token.json
 /google_oauth_pending.json
 /webhook_subscriptions.json
+/bws_cache.json
+/bws_cache.enc.json
+/op_cache.json
+/photon-sidecar.json
 /channel_directory.json
 /channel_aliases.json
 /feishu_comment_pairing.json

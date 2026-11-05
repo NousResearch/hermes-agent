@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 from gateway.config import Platform
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
@@ -151,7 +151,7 @@ class AuthorityConnection:
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
         from gateway.owner_identity import principal_subject
-        self.actor = Principal(principal_subject(identity),
+        self.actor = SessionActor(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport
@@ -221,7 +221,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
-                    'bot_relay.settle': self.bot_settle,
+                    'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -319,6 +319,7 @@ class AuthorityConnection:
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
         from tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
+            unknown_method_message,
         )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
@@ -343,9 +344,9 @@ class AuthorityConnection:
             # ``_load_gateway_config`` / ``build_policy(get_hermes_home())`` never snapshot the
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
-            from gateway.session_authorities import owner_scope
+            from gateway.session_authorities import async_owner_scope
             from gateway.session_connections import METHODS as CONNECTION_METHODS, session_owned
-            with owner_scope(self.authority):
+            async with async_owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
                 elif method not in handlers or (method in CONNECTION_METHODS and not session_owned(params)):
@@ -353,7 +354,7 @@ class AuthorityConnection:
                     # 4001 'invalid_params' would read as a bad argument on a method that exists.
                     # An account-owned connector call (the Connectors page) keeps its legacy handler.
                     return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                        'code': -32601, 'message': f'unknown method: {method}',
+                        'code': -32601, 'message': unknown_method_message(method),
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
@@ -418,6 +419,10 @@ class AuthorityConnection:
     async def bot_settle(self, ref, params):
         from gateway.session_bot import settle
         return await settle(self, params)
+
+    async def bot_cancel(self, ref, params):
+        from gateway.session_bot_cancel import cancel
+        return await cancel(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request
@@ -626,7 +631,7 @@ class AuthorityConnection:
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import resolve_local_target
+            from gateway.session_local_migration import adopts_client_history, resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
@@ -635,7 +640,8 @@ class AuthorityConnection:
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+            if row and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+                        or adopts_client_history(self.authority, self.actor, row)):
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
             elif row:

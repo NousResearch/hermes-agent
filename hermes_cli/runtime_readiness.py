@@ -33,6 +33,17 @@ def missing_credentials_suffix(provider) -> str:
 _HINT_FAILURES_LOGGED: set[str] = set()
 
 
+def readiness_failure(exc) -> dict:
+    """``setup.runtime_check``'s answer when resolving the runtime raised *exc*.
+
+    ``error_code`` rides along only for a failure provider setup cannot repair, so a client keeps
+    the app open with the error instead of sending the user back through provider sign-in.
+    """
+    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+    code = {'error_code': exc.error_code} if isinstance(exc, LocalRuntimeUnavailableError) else {}
+    return {'ok': False, 'error': str(exc), **code}
+
+
 def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resolve=None):
     """ok/error verdict for the runtime a session would be built with.
 

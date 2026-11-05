@@ -28,11 +28,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: The Desktop's room calls this wire serves; the gateway route serves each (GROUP_METHODS).
-FORWARDED = frozenset({
-    "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.log",
-    "groups.send", "groups.rename", "groups.disband", "groups.stop", "groups.retry",
-    "groups.approve"})
+
+def forwarded() -> frozenset[str]:
+    """Every room method the gateway route serves (its ``GROUP_METHODS``), so a room the gateway
+    owns answers the same calls on this wire; a hand list here fell behind each new verb (#145960)."""
+    from gateway.session_group_controls import GROUP_METHODS
+    return frozenset(GROUP_METHODS)
+
 #: The owner was found but did not answer: a verdict for this call, never a local write instead.
 OWNER_LOST_CODE = 5124
 #: Gateway states with no owner that will import rooms written here later: run the call locally.
@@ -131,8 +133,9 @@ def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
         return server._err(rid, OWNER_LOST_CODE, "The Hermes gateway did not answer. Try again.")
     result = result if isinstance(result, dict) else {}
     if method == "groups.capabilities" and isinstance(result.get("methods"), list):
-        # Advertise only what this wire can carry (attachments and Discard have no contract here).
-        result = {**result, "methods": [name for name in result["methods"] if name in FORWARDED]}
+        # Advertise only what this wire can carry: the room methods it forwards.
+        carried = forwarded()
+        result = {**result, "methods": [name for name in result["methods"] if name in carried]}
     return server._ok(rid, result)
 
 
@@ -144,7 +147,7 @@ def _busy(server, rid, why) -> dict:
 def forward(server, rid, method: str, params: dict) -> dict | None:
     """The owning gateway's answer to ``method`` as this wire's envelope, or ``None`` when the call
     runs locally: no gateway serves the profile, or the room lives only in the standalone store."""
-    if method not in FORWARDED:
+    if method not in forwarded():
         return None
     try:
         home = _home(server, params)

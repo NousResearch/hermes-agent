@@ -385,18 +385,20 @@ def _auth_gate_status() -> dict[str, Any]:
     native-app capability advertisement ``auth_flows`` the desktop reads to pick the
     system-browser + loopback + PKCE flow over the embedded-webview cookie flow. "cookie" is
     always available in gated mode; "native_pkce" when at least one interactive session
-    provider is registered (token-only credentials such as drain don't count). Missing
+    provider is registered (token-only credentials such as drain, and provisioned-credential
+    session providers such as session-token, don't count). Missing
     "native_pkce" ⇒ older gateway ⇒ desktop falls back automatically."""
     auth_required = bool(getattr(app.state, "auth_required", False))
     auth_providers: list[str] = []
     auth_flows: list[str] = []
     try:
         from hermes_cli.dashboard_auth import (
-            list_providers as _list_providers, list_session_providers as _list_session_providers)
+            list_interactive_providers as _list_interactive_providers,
+            list_providers as _list_providers)
         auth_providers = [p.name for p in _list_providers()]
         if auth_required:
             auth_flows.append("cookie")
-            if _list_session_providers():
+            if _list_interactive_providers():
                 auth_flows.append("native_pkce")
     except Exception:
         # Module not importable yet (early startup) — leave as [].
@@ -497,8 +499,37 @@ def _fts_rebuild_status() -> Optional[dict[str, Any]]:
         _sdb.close()
 
 
+#: What the gateway's Webapp answers a caller who has not signed in: liveness, version and the
+#: sign-in shape (the native-app login probe and uptime checks read nothing else). Profile names,
+#: the install id and host figures wait for sign-in, since a Webapp on a wildcard bind is reachable
+#: by everyone on the network. The standalone dashboard keeps its public body: Hermes Cloud reads
+#: the profile list there without a session (#60585).
+_WEBAPP_SIGNED_OUT_STATUS_KEYS = frozenset({
+    "version", "release_date", "gateway_running", "gateway_state", "overall", "components",
+    "auth_required", "auth_providers", "auth_flows"})
+
+
+async def _webapp_caller_signed_out(request: Request) -> bool:
+    """True when this request reached the gateway's Webapp behind its sign-in gate with no
+    session the gate would accept. ``/api/status`` is public, so the gate never verified one."""
+    from hermes_cli.web_server import _require_token
+    from hermes_cli.web_server_surface import surface
+    if request is None or surface(request.app.state) != "webapp" \
+            or not getattr(request.app.state, "auth_required", False):
+        return False
+    if getattr(request.state, "session", None) is None:
+        from hermes_cli.dashboard_auth.middleware import peek_session
+        request.state.session = await run_in_threadpool(peek_session, request)
+    try:
+        _require_token(request)
+    except HTTPException:
+        return True
+    return False
+
+
 @router.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(profile: Optional[str] = None,
+                     request: Request = None):  # type: ignore[assignment]  # None when awaited in-process
     """Public machine-level liveness probe (``PUBLIC_API_PATHS``): version, gateway state,
     active session count and the auth-gate shape — no bodies, no session content, no secrets.
 
@@ -507,8 +538,10 @@ async def get_status(profile: Optional[str] = None):
     process-global skills-module attributes a concurrent request would cross-restore.
     """
     from hermes_cli.web_server import _GATEWAY_HEALTH_URL
+    signed_out = await _webapp_caller_signed_out(request)
     status_scope = None
-    requested_profile = (profile or "").strip()
+    # A signed-out caller's ``?profile=`` is ignored: an unknown name's 404 would tell it which exist.
+    requested_profile = "" if signed_out else (profile or "").strip()
     profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = _resolve_profile_dir(requested_profile)
@@ -594,6 +627,8 @@ async def get_status(profile: Optional[str] = None):
                 "env_path": str(get_env_path()), "gateway_pid": gateway["gateway_pid"],
                 "gateway_health_url": _GATEWAY_HEALTH_URL, "gateways": topology["gateways"]})
 
+        if signed_out:
+            return {key: value for key, value in status.items() if key in _WEBAPP_SIGNED_OUT_STATUS_KEYS}
         return status
     finally:
         if status_scope is not None:

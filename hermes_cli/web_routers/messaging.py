@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -202,9 +203,25 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _relay_disabled_platform_ids(scoped: bool, config_loader) -> frozenset[str]:
+    """Platforms the GATEWAY_RELAY_URL relay-exclusive rule switches off at gateway load
+    (#141175), read from the same load_gateway_config() the unscoped enablement arm uses, so the
+    page can say "Team Gateway" instead of a bare "Disabled" that reverts every restart.
+    Unscoped arm only: profile-scoped status is judged per profile (``_platform_enablement``)."""
+    if scoped:
+        return frozenset()
+    try:
+        platforms = config_loader().platforms
+        return frozenset(p.value for p, cfg in platforms.items() if cfg.disabled_by_relay)
+    except Exception:  # health: allow BLE001 -- advisory label; an unreadable config keeps the plain state
+        _log.debug("relay-disabled platform lookup failed", exc_info=True)
+        return frozenset()
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
+    relay_disabled: frozenset[str] = frozenset(), relay_view: tuple[frozenset[str], bool] = (frozenset(), False),
     *, config_loader,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
@@ -277,6 +294,11 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        "disabled_by_relay": not enabled and platform_id in relay_disabled,
+        # Team Gateway's shared bot carries this platform: setup is linking an account to it, and a
+        # direct bot is switched off at every start when ``relay_exclusive`` (#141546).
+        "relay_fronted": platform_id in relay_view[0],
+        "relay_exclusive": platform_id in relay_view[0] and relay_view[1],
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -305,14 +327,15 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     runtime = served_profile_runtime(own_home, runtime) or runtime
     # Credentials a secret manager supplies have no .env line; only values the profile's enabled
     # sources resolved (into its secret scope, by ``_profile_scope``) count, and an empty one is unset.
-    source_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
+    scoped = scoped_dir is not None
+    source_values = get_secret_source_values(scoped_dir) if scoped else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
 
     @cache
     def request_config():
         # One load per request (failures too), never shared across requests or profiles.
         try:
-            if scoped_dir is not None:
+            if scoped:
                 return load_config()
             from gateway.config import load_gateway_config
 
@@ -320,10 +343,21 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
         except Exception:  # health: allow BLE001 -- an unreadable config must not break the list; rows fall back to env state
             return None  # retried next request
 
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None,
-                                        profile_home=scoped_dir, source_keys=source_keys,
-                                        config_loader=request_config)
+    relay_disabled = _relay_disabled_platform_ids(scoped, request_config)
+    relay_view = _relay_channel_view(own_home)
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
+                                        source_keys=source_keys, relay_disabled=relay_disabled,
+                                        relay_view=relay_view, config_loader=request_config)
             for entry in entries]
+
+
+def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
+    """The relay serves only the gateway's own (launch) profile; other profiles keep direct setup."""
+    if Path(home).resolve() != Path(get_process_hermes_home()).resolve():
+        return frozenset(), False
+    from gateway.relay.link import relay_channel_view
+
+    return relay_channel_view()
 
 
 @contextlib.contextmanager
@@ -451,24 +485,29 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     env = with_hermes_node_path()
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
-    return subprocess.Popen(
+    # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
+    return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
-        cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace", start_new_session=True, env=env,
-        creationflags=windows_hide_flags(),
+        purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(),
     )
 
 
 def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        with contextlib.suppress(Exception):
-            proc.kill()
+    if proc.poll() is None:
+        try:
+            proc.terminate()
             proc.wait(timeout=3)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=3)
+    if proc.poll() is not None:
+        # Stopped; one we failed to stop stays covered by the owner-death supervisor. timeout=0:
+        # callers run on the event loop.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -522,6 +561,7 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                 if record.status not in {"cancelled", "expired"}:
                     _apply_pairing_event(record, payload)
         returncode = proc.wait()
+        release_process_group_once_empty(proc.pid, proc=proc)
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return

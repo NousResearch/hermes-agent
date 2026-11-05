@@ -576,16 +576,16 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 
 
 def _redact_approval_command(cmd: str | None) -> str:
-    """Redact credentials from a command before it goes into an approval prompt.
+    """Redact credentials and surface hidden characters in a command before it goes into an approval prompt.
 
     The gateway approval prompt is built from the raw command string, so a credential-shaped value would
-    otherwise be echoed verbatim to the chat platform (#48456). Uses ``redact_sensitive_text(force=True)`` so
+    otherwise be echoed verbatim to the chat platform (#48456). Uses ``redact_approval_display(force=True)`` so
     the prompt honors redaction even when ``security.redact_secrets`` is off. Module-level so the wiring is
     unit-testable (the call site is a deeply nested gateway closure that cannot be driven directly).
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_approval_display
 
-    return redact_sensitive_text(str(cmd or ""), force=True)
+    return redact_approval_display(cmd, force=True)
 
 
 def _format_exec_approval_fallback(
@@ -1794,7 +1794,7 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
 @_contextmanager
 def _profile_runtime_scope(
     profile_home: Path, prepared_secret_scope: Optional[dict] = None, *,
-    hydrate_secrets: bool = True):
+    hydrate_secrets: bool = True, prepared_terminal_scope: Optional[dict] = None):
     """Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
@@ -1818,7 +1818,7 @@ def _profile_runtime_scope(
         # pinned (first-writer-wins backend leak; #68559).
         from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-        with install_and_reset_profile_terminal_scope(Path(profile_home)):
+        with install_and_reset_profile_terminal_scope(Path(profile_home), prepared=prepared_terminal_scope):
             yield
     finally:
         if secret_token is not None:
@@ -2360,11 +2360,11 @@ def _resolve_gateway_model_context(
     ``route`` (``provider`` / ``base_url`` / ``api_key`` of a session-only /model switch) replaces the
     default runtime credentials so the window is looked up against the endpoint that actually serves
     ``model``; a ``model.context_length`` pin only survives when that route still matches the config.
-    ``context_source`` is ``"default"`` only for a model unknown to the catalog that fell through to
-    ``DEFAULT_FALLBACK_CONTEXT`` — a catalog-listed 256K model is ``"detected"``.
+    ``context_source`` is ``"default"`` only for a model no source knows that fell through to a resolver
+    default (Bedrock's static 128K, or ``DEFAULT_FALLBACK_CONTEXT``) — a catalog-listed model is ``"detected"``.
     """
-    from agent.model_metadata import (
-        DEFAULT_CONTEXT_LENGTHS, DEFAULT_FALLBACK_CONTEXT, _longest_key_match, get_model_context_length)
+    from agent.context_pin import is_fallback_context_length
+    from agent.model_metadata import get_model_context_length
     resolved_model = model or _resolve_gateway_model()
     config_context_length = provider = base_url = api_key = custom_providers = None
     configured_model = configured_provider = configured_base_url = None
@@ -2427,8 +2427,8 @@ def _resolve_gateway_model_context(
         resolved_model, base_url=base_url or "", api_key=api_key or "",
         config_context_length=config_context_length, provider=provider or "",
         custom_providers=custom_providers)
-    fell_through = (context_length == DEFAULT_FALLBACK_CONTEXT
-                    and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, str(resolved_model).lower()) is None)
+    fell_through = is_fallback_context_length(  # Bedrock's static 128K or the generic 256K, unknown model
+        context_length, model=str(resolved_model), provider=provider or "", base_url=base_url or "")
     context_source = ("config" if config_context_length is not None
                       else "default" if fell_through else "detected")
     return _GatewayModelContext(
@@ -3708,12 +3708,6 @@ class GatewayRunner(
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
             active_work=active_work)
 
-    def _persist_active_agents(self) -> None:
-        """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
-        Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
-        would clobber it). Best-effort: a failed write must never disrupt a turn."""
-        _write_runtime_status_quiet(active_agents=self._active_work_count())
-
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
         ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""
@@ -4446,9 +4440,9 @@ def _housekeeping_deferred_fts_retry() -> None:
 
 
 def _housekeeping_memory_trim() -> None:
-    """Messaging-gateway counterpart to the TUI idle reaper; config-gated and rate-limited inside."""
-    from hermes_cli.mem_trim import trim_memory
-    trim_memory(reason="messaging gateway housekeeping")
+    """Messaging-gateway counterpart to the TUI idle reaper; timer lane: full GC only once idle (#139763)."""
+    from hermes_cli.mem_trim import trim_memory_when_idle
+    trim_memory_when_idle(reason="messaging gateway housekeeping")
 
 
 def _housekeeping_checkpoint_prune() -> None:
@@ -5099,6 +5093,7 @@ def main():
     """CLI entry point for the gateway."""
     # Before any config-dependent startup (watchdog, DB opens, provider resolution).
     _guard_corrupt_user_config()
+    from hermes_cli.resource_limits import apply_malloc_arena_max  # runs before any thread (glibc latches)
 
     # Advertise the harness to children (mirrors _advertise_agent_env in hermes_cli/main.py, inlined to
     # avoid its startup side effects). Value must equal registry id ``hermes-agent`` exactly.
@@ -5122,13 +5117,12 @@ def main():
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
 
-    for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
+    for _step in (apply_malloc_arena_max, _register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
-    # pm startup contract (PATH provisioning for the store's tools), then
-    # the post-update bootstrap: the same one-pass record-gated maintenance
-    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
-    # entrypoint bypasses that dispatch, so run it here too. Never raises.
+    # pm startup contract (PATH provisioning for the store's tools), then the post-update bootstrap: the
+    # same one-pass record-gated maintenance registry the CLI dispatch path runs (hermes_cli/main.py) —
+    # this entrypoint bypasses that dispatch, so run it here too. Never raises.
     try:
         from hermes_cli.venv_sync import check_runtime
         from pm.paths import install_root

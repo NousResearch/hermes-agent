@@ -1,0 +1,25 @@
+name: hermes-themes-pack
+title: Hermes Themes Pack
+repo: https://github.com/seppegadeyne/hermes-themes-pack
+sha: c3147a9f08b3d704b706aeed983b0081ce72dbd7
+description: "The 23 Omarchy stock themes (Tokyo Night, Catppuccin, Gruvbox, Nord, Rose Pine, Jade Horse and more) as Hermes skins, with one /theme command that switches the CLI, the TUI and Desktop together. Optionally follows the Omarchy theme. Works without Omarchy. Disclosure — registers only the /theme command (plus a `hermes theme` CLI subcommand under plugins.isolation: in_process); nothing runs at load time. /theme writes the pack's skins and a receipt under the active profile's HERMES_HOME (personal or edited skins of the same name are skipped) and selects one by running `hermes config set display.skin <name>`; it never edits config.yaml itself. It reads the current Omarchy theme from ~/.local/state/omarchy/current/theme.name. Only after /theme follow on does it write one executable hook into $XDG_CONFIG_HOME/omarchy/hooks/theme-set.d/; Omarchy runs it on theme switches and it switches ~/.hermes and every profile under ~/.hermes/profiles that has the pack installed. No network calls, background processes, Hermes tools, hooks or middleware, credentials, telemetry or self-updater."
+maintainer: seppegadeyne
+tier: community
+category: general
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/seppegadeyne/hermes-themes-pack#readme
+version: "1.2.0"
+image: https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/tokyo-night.png
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/jade-horse.png
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/nord.png
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/catppuccin-latte.png
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/gruvbox.png
+  - https://raw.githubusercontent.com/seppegadeyne/hermes-themes-pack/c3147a9f08b3d704b706aeed983b0081ce72dbd7/docs/screenshots/rose-pine.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

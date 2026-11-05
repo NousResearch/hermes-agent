@@ -230,8 +230,9 @@ def _bridge_schema(name: str, description: str, properties: dict[str, Any],
 
 
 _CONNECTIONS_HINT = (
-    " `connectors__` names are tools of the user's app accounts (Gmail, Linear, ...); "
-    "`manage_connections` checks or authorizes an account.")
+    " Searches also cover the user's connected app accounts, whose tools are hosted and so "
+    "never listed here (results named `connectors__<app>__<tool>`); `manage_connections` checks "
+    "or connects an account.")
 
 
 def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,

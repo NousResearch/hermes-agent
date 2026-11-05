@@ -21,6 +21,8 @@ export const enNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.',
+    restoredDraftAttachmentsDropped:
+      "Attachments from your unsent message weren't restored. Attach them again before you send it.",
     mcpReloadDeferred:
       'This chat is busy: the MCP change applies once its turn finishes and MCP reloads again, or when you reopen the chat',
     mcpReloadUnavailable: servers => `Did not connect: ${servers}`,

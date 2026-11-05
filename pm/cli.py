@@ -90,24 +90,9 @@ def _locked_extras(root: Path) -> set[str]:
 
 def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
     """Extras this relock introduced that the default [all] closure does not reach."""
-    import re
-    import tomllib
+    from pm.extras import droppable_extras
 
-    with (root / "pyproject.toml").open("rb") as f:
-        project = tomllib.load(f)["project"]
-    extras = project.get("optional-dependencies", {})
-    self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
-    covered, pending = set(), ["all"]
-    while pending:
-        extra = pending.pop()
-        if extra in covered:
-            continue
-        covered.add(extra)
-        for requirement in extras.get(extra, ()):
-            match = self_ref.match(requirement)
-            if match:
-                pending.extend(part.strip() for part in match.group(1).split(","))
-    return sorted(set(extras) - before - covered)
+    return sorted(set(droppable_extras(root)) - before)
 
 
 @reuse_index_responses()
@@ -285,14 +270,29 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
     if without and (extras or cross_target or args.names):
         return "--without shapes the default closure; it does not take names, --extra, or --target"
     if without:
-        from pm.defaults import canonical_default_name, default_package_names
+        from pm.defaults import default_package_names
+        from pm.extras import droppable_extras
 
-        allowed = default_package_names()
-        unknown = [name for name in without if canonical_default_name(name) not in allowed]
+        unknown = _split_without(without)[2]
         if unknown:
-            return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
+            return (f"--without accepts only optional default packages ({', '.join(default_package_names())}) "
+                    f"or extras outside [all] ({', '.join(droppable_extras(repo_root()))}); "
                     f"not {', '.join(unknown)}")
     return None
+
+
+def _split_without(names) -> tuple[list[str], list[str], list[str]]:
+    """Sort ``--without`` names into (default packages, droppable extras, unknown)."""
+    from pm.defaults import canonical_default_name, default_package_names
+    from pm.extras import droppable_extras
+
+    packages, extras = set(default_package_names()), set(droppable_extras(repo_root()))
+    split: tuple[list[str], list[str], list[str]] = ([], [], [])
+    for name in names:
+        package = canonical_default_name(name)
+        bucket = 0 if package in packages else 1 if name in extras else 2
+        split[bucket].append(package if bucket == 0 else name)
+    return split
 
 
 def _install_defaults(names: list[str], *, verify: bool) -> None:
@@ -308,6 +308,26 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
                   f"`hermes pm install {name}` succeeds", flush=True)
 
 
+def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
+    """``(extras this install's sync requests, the ones it carries)``: the caller's, else ``[all]``.
+
+    Before PM has recorded a selection (a first migration that failed before writing facts),
+    the main-era venv's extras are carried too, minus any dropped with ``--without``, exactly as
+    the launch migration would; otherwise this sync's facts would end the re-scan without them.
+    The carried ones are not a request, so they never opt a declined extra back in.
+    """
+    from pm.environments import runtime_facts_path
+    from pm.extras import legacy_selection
+
+    requested = extras or ["all"]
+    if runtime_facts_path(repo_root()).is_file():
+        return requested, []
+    carried = legacy_selection(repo_root())
+    if carried == ["all"]:
+        return requested, []
+    return sorted(set(carried) | set(extras)), sorted(set(carried) - set(requested))
+
+
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
     """Sync the venv and build the side test environment; return the failure count."""
     failed = 0
@@ -320,7 +340,8 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
             # a fresh bootstrap match what the first update would do.
-            sync_venv(extras or ["all"], explicit=True)
+            selection, carried = _first_selection(extras)
+            sync_venv(selection, explicit=True, **({"automatic": carried} if carried else {}))
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")
@@ -362,10 +383,14 @@ def cmd_install(args) -> int:
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
         from pm.defaults import record_declined
+        from pm.install import decline_extras
 
         # Persisted before anything installs: later bare installs and
-        # `hermes update` read the same record, so the opt-out sticks.
-        record_declined(add=without)
+        # `hermes update` read the same record, so the opt-out sticks. A
+        # dropped extra leaves the recorded selection at this install's sync.
+        declined_packages, declined_extras, _ = _split_without(without)
+        record_declined(add=declined_packages)
+        decline_extras(declined_extras)
     defaults: list[str] = []
     if not (args.names or extras):
         from pm.defaults import default_packages
@@ -425,7 +450,7 @@ def cmd_env(args) -> int:
 
 def cmd_doctor(args) -> int:
     from pm.install import _identity, _installed_location
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     lockfile = _lockfile()
     facts = _facts()
@@ -464,14 +489,47 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
+        if recorded is not None and not digest_matches(entry, recorded):
             # Doctor is the expensive-path tool: re-hash the realized
             # bytes. Boot checks stay O(1) json compares.
             print(f"✗ {name}: realized bytes do not match recorded digest")
             bad += 1
             continue
         print(f"✓ {name} {fact['version']}")
+    bad += _doctor_uv_cache(repair=getattr(args, "repair", False))
     return 1 if bad else 0
+
+
+def _doctor_uv_cache(*, repair: bool) -> int:
+    """Report (and with --repair, remove) uv cache entries an interrupted install corrupted.
+
+    Read-only by default like the rest of doctor. Installs already purge a
+    corrupt entry they trip over; this finds them before an install does.
+    """
+    from pm.environment import managed_environment
+    from pm.packages import uv_cache_path
+    from pm.uv_cache_health import corrupt_cached_packages
+
+    cache = uv_cache_path()
+    corrupt = sorted(corrupt_cached_packages(cache))
+    if not corrupt:
+        print(f"✓ uv cache: no corrupt entries in {cache}")
+        return 0
+    if not repair:
+        print(f"✗ uv cache: corrupt entries for {', '.join(corrupt)} in {cache}; "
+              "run `hermes pm doctor --repair` (installs also remove them when they hit one)")
+        return 1
+    try:
+        managed_environment(cache, cache=cache).purge_cached_packages(corrupt)
+    except InstallError as exc:
+        print(f"✗ uv cache: {exc}")
+        return 1
+    left = sorted(corrupt_cached_packages(cache))
+    if left:
+        print(f"✗ uv cache: still corrupt after cleaning: {', '.join(left)} in {cache}")
+        return 1
+    print(f"✓ uv cache: removed corrupt entries for {', '.join(corrupt)}; they are fetched again on next use")
+    return 0
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -820,6 +878,72 @@ def cmd_repair(args) -> int:
     return 0
 
 
+def _extra_requirements(project: Path, extras: list[str]) -> list[str]:
+    """The pinned requirements of declared extras, self-references expanded.
+
+    Pins, not the whole lock, define the environment: an identity over uv.lock
+    would build a new generation on every Hermes update, and superseded side
+    generations are never reclaimed while a caller may still run from them.
+    """
+    import re
+    import tomllib
+
+    declared = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    name = declared["project"]["name"]
+    table = declared["project"].get("optional-dependencies", {})
+    requirements: list[str] = []
+    pending, seen = list(extras), set()
+    while pending:
+        extra = pending.pop()
+        if extra in seen:
+            continue
+        if extra not in table:
+            raise ValueError(f"{extra!r} is not an extra declared in {project / 'pyproject.toml'}")
+        seen.add(extra)
+        for requirement in table[extra]:
+            own = re.fullmatch(rf"{re.escape(name)}\[([^\]]+)\]", requirement.replace(" ", ""))
+            if own:
+                pending.extend(own.group(1).split(","))
+            else:
+                requirements.append(requirement)
+    return requirements
+
+
+def cmd_environment(args) -> int:
+    """Make a named side environment current and print its interpreter.
+
+    Shell callers (skills) cannot import PM: the terminal's `python` is rarely
+    Hermes's own. Concurrent callers serialize on PM's per-environment lock and
+    a rebuild lands in a new generation, so a running caller keeps its files.
+    """
+    import contextlib
+    import os
+
+    import pm
+
+    if bool(args.extra) == bool(args.requirement):
+        print("hermes pm environment: pass --extra or --requirement (not both)", file=sys.stderr)
+        return 2
+    # stdout carries only the interpreter path, for PY=$(hermes pm environment ...);
+    # progress from PM and its uv children goes to stderr at both levels.
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            requirements = _extra_requirements(repo_root(), args.extra) if args.extra else args.requirement
+            python = pm.ensure_environment(args.name, requirements, explicit=True)
+    except (InstallError, ValueError) as exc:
+        print(f"hermes pm environment: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+    print(python)
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from scripts.bundles.native import stage_native
     return stage_native(args)
@@ -854,8 +978,9 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (chromium, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                   help="leave an optional default package (chromium, cua-driver) or a recorded extra outside "
+                        "[all] (matrix, ...) out of this and every later default install and update; "
+                        "`hermes pm install NAME` / `--extra NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",
@@ -876,10 +1001,23 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
+    p.add_argument("--repair", action="store_true",
+                   help="remove corrupt entries from PM's uv cache so they are fetched again")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")
     p.set_defaults(func=cmd_repair)
+
+    p = sub.add_parser(
+        "environment", help="make a named side environment current and print its python",
+        description="Build or reuse HERMES_HOME/environments/NAME, an isolated venv that never "
+                    "touches Hermes's own: --extra installs the pins of a declared extra, "
+                    "--requirement an ad hoc bounded requirement (both repeatable). "
+                    "Prints only the interpreter path on stdout.")
+    p.add_argument("name")
+    p.add_argument("--extra", action="append", default=[], metavar="EXTRA")
+    p.add_argument("--requirement", action="append", default=[], metavar="REQ")
+    p.set_defaults(func=cmd_environment)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)

@@ -1,0 +1,5 @@
+name: amd-provider
+kind: model-provider
+version: 1.0.0
+description: AMD Radeon open models (developer.amd.com.cn)
+author: Cyrene2008

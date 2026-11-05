@@ -1,6 +1,6 @@
 name: api-architect
 repo: https://github.com/monyinet/api-architect
-sha: "fe3a195002802bcc0a5722938779fc934753f91e"
+sha: "82b054f97bf631cd62f8d7992523f8801e27fcf9"
 description: >-
   Compile API specs into first-class Hermes tools. Takes any OpenAPI 3 / Swagger 2 /
   Postman v2.1 spec by URL, compiles endpoints + params with per-endpoint provenance
@@ -27,7 +27,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/monyinet/api-architect/fe3a195002802bcc0a5722938779fc934753f91e/assets/hero.png"
+image: "https://raw.githubusercontent.com/monyinet/api-architect/82b054f97bf631cd62f8d7992523f8801e27fcf9/assets/hero.png"
 capabilities:
   provides_tools:
   - architect_learn

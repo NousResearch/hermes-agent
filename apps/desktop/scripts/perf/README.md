@@ -68,6 +68,7 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `transcript` | ci | large-transcript mount + paint cost | (new) |
 | `render-churn` | ci | per-component render attribution + store churn while N tabs stream | (new) |
 | `idle-cost` | report | busy-but-silent tiles: idle commit rate, + fps while resizing / typing | (new) |
+| `idle-burn` | report | per-process CPU-time deltas (main / gpu / renderer / …) at quiet and with busy-but-silent tiles (#128134) | (new) |
 | `right-pane` | report | file tree + persistent xterm tabs under chat/terminal output and split dragging | (new) |
 | `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
@@ -98,6 +99,7 @@ better), then register it in `scenarios/index.mjs`. If it's `ci`, add a
 - `lib/stats.mjs` — percentiles, histograms, CPU-profile self-time ranking.
 - `lib/baseline.mjs` — load/compare/update the baseline + regression gate.
 - `lib/launch.mjs` — attach, or spawn a fully isolated instance.
+- `lib/processes.mjs` — per-process CPU sampling via CDP `SystemInfo.getProcessInfo`.
 - `scenarios/` — one module per measurement.
 - `run.mjs` — entrypoint. `serve.mjs` — standalone isolated launcher.
 

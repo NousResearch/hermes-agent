@@ -209,6 +209,10 @@ class RoomHeldGrantsPendingError(HostedRoomError):
     """Retry Disband after revoking grants received since its last sweep."""
     reason = "room_disbanding_retry"
 
+class RoomStopPendingError(HostedRoomError, RuntimeError):
+    """Expected Stop refusal; retain RuntimeError compatibility for direct service callers."""
+    reason = "room_stop_pending"
+
 class RoomProbeUnavailableError(HostedRoomError):
     """Raised when a non-blocking ownership probe cannot read the room store."""
 

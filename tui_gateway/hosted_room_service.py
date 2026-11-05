@@ -973,7 +973,7 @@ class HostedRoomService:
         # Disband waits for every member's Stop, a member on another gateway included: a deferred
         # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
         if require_acknowledged and (pending or unconfirmed):
-            raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
+            raise hosted_rooms.RoomStopPendingError("Group chat work is still stopping; retry deletion after Stop completes.")
         self.runtime.wakeup()
         return len(tasks) - unconfirmed
 

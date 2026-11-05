@@ -111,7 +111,12 @@ def shutdown_memory_and_context(agent: Any, messages: list | None = None) -> Non
         # ingesting half-kill the plugin, so every hard site that can interleave with an eviction
         # (gateway shutdown tail, session expiry, close()) skips the notify. shutdown_context_engine's
         # once-flag below keeps the release itself idempotent either way. (#147087 review finding 3)
-        if getattr(agent, "_context_engine_teardown_claim", None) == "soft_release":
+        # The claim is TAKEN here under the engine's shutdown lock, not read bare: a bare read can
+        # see None a heartbeat before a racing release_clients() claims "soft_release" and shuts the
+        # engine, landing this notify after the shutdown the engine has already stopped ingesting
+        # for. False = the soft release won the claim (it delivered on_session_end itself), so the
+        # notify is skipped. (#147087 review round 2, item 2)
+        if not claim_engine_session_end(agent):
             logger.debug("Skipping context-engine on_session_end for session %s: a soft release "
                          "already shut the engine down.", getattr(agent, "session_id", "") or "")
         else:
@@ -159,6 +164,21 @@ def shutdown_context_engine(agent: Any, *, soft: bool = False) -> None:
                 agent._context_engine_shutdown = True
                 engine = getattr(agent, "context_compressor", None)
     if engine is not None:
+        if soft:
+            # This soft release is the one shutting the engine down — nothing in flight (the
+            # pending latch defers until the last user) and no session-end claim (those skip here).
+            # It takes over the session-end delivery the hard path would otherwise have made, so no
+            # engine ever misses on_session_end for its session: a CLI /model retire soft-releases
+            # while idle and the CLI's exit finalizer then skips the notify via the soft_release
+            # claim, and an engine that stops ingesting after shutdown() keeps the session tail
+            # only if the end was delivered BEFORE it. Later hard sites skip it; a later
+            # on_session_start for the same session is a resume, as after a gateway restart.
+            # (#147087 review round 2, item 1)
+            try:
+                from run_agent import _notify_context_engine_session_end
+                _notify_context_engine_session_end(agent, getattr(agent, "_session_messages", None))
+            except Exception:
+                logger.debug("Soft-release on_session_end delivery failed", exc_info=True)
         try:
             engine.shutdown()
         except Exception:

@@ -311,7 +311,7 @@ def clone_for_agent(self):
 3. update_from_response() — after each API call
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
-6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
+6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown). Cache eviction is a session boundary too: when an eviction's soft release is the one that shuts the engine down (nothing in flight, no pending session-end), the host delivers on_session_end with the agent's live transcript immediately BEFORE shutdown(); a later on_session_start for the same session is a resume, as after a gateway restart.
 7. shutdown() — agent teardown, potentially many times per process or on one shared object: release only instance-opened resources, never a backend shared with the registered instance or other agents' clones. Gateway agent-cache evictions (idle TTL, LRU cap, memory pressure) call it for agent-owned engines via release_clients(); the shared registered instance stays open.
 ```
 

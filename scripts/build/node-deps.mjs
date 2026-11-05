@@ -18,7 +18,16 @@ export function npmCommand({ env = process.env } = {}) {
     for (const name of names) {
       const bin = join(dir, name)
       if (!existsSync(bin)) continue
-      const prefix = dirname(realpathSync(bin))
+      // envfs (NixOS) mounts /bin and /usr/bin and answers existsSync (access)
+      // but not realpathSync (lstat). Skip an entry that cannot be resolved
+      // instead of aborting the whole search; a later PATH dir may hold a real npm.
+      let resolved
+      try {
+        resolved = realpathSync(bin)
+      } catch {
+        continue
+      }
+      const prefix = dirname(resolved)
       const lib = join(prefix, '../lib')
       candidates.push(
         join(prefix, 'node_modules/npm/bin/npm-cli.js'),
@@ -27,7 +36,7 @@ export function npmCommand({ env = process.env } = {}) {
         // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
         ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
           .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
-        realpathSync(bin),
+        resolved,
       )
     }
   }

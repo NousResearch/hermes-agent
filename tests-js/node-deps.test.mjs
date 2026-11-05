@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 import { npmCommand } from '../scripts/build/node-deps.mjs'
@@ -31,6 +31,27 @@ function fixture() {
   execFileSync(node, [npm, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--offline'], { cwd: root, env: { ...process.env, npm_config_cache: join(root, '.npm-cache') }, stdio: 'pipe' })
   return root
 }
+
+test('an unresolvable npm PATH entry does not prevent discovering a working CLI', () => {
+  const [node, installedCli] = npmCommand()
+  const root = mkdtempSync(join(tmpdir(), 'npm unresolvable path-'))
+  roots.push(root)
+  mkdirSync(join(root, 'bin'))
+  mkdirSync(join(root, 'lib'))
+  cpSync(installedCli, join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm'))
+  symlinkSync(dirname(dirname(installedCli)), join(root, 'lib', 'npm'), 'junction')
+  const env = {
+    ...process.env,
+    // /bin is an envfs mount on NixOS: existsSync('/bin/npm') is true while
+    // realpathSync throws ENOENT (lstat). The resolver must skip that entry and
+    // still discover the working CLI earlier in PATH.
+    PATH: `${join(root, 'bin')}${delimiter}/bin`,
+  }
+  delete env.npm_execpath
+  const [selectedNode, cli] = npmCommand({ env })
+  expect(selectedNode).toBe(node)
+  expect(cli).toBe(join(root, 'lib', 'npm', 'bin/npm-cli.js'))
+})
 
 test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_execpath', (directory) => {
   const [node, installedCli] = npmCommand()

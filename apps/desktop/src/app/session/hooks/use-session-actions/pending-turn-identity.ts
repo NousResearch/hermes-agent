@@ -1,6 +1,15 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { chatMessageText, normalizeWs } from '@/lib/chat-messages/parts'
+import { chatMessageText, normalizeWs, textPart } from '@/lib/chat-messages/parts'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+
+export function queuedPromptProjection(sessionId: string, user: string, messageUid?: null | string): ChatMessage {
+  return {
+    id: `user-queued-${sessionId}`,
+    role: 'user',
+    parts: [textPart(user)],
+    ...(messageUid ? { messageUid } : {})
+  }
+}
 
 export function normalizedMessageText(message: ChatMessage): string {
   return normalizeWs(chatMessageText(message))

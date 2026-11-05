@@ -105,6 +105,85 @@ def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_pat
         db.close()
 
 
+def test_live_queue_snapshot_preserves_the_durable_uid_when_text_merges(monkeypatch, tmp_path):
+    # Arrange
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        server._handle_busy_submit("q1", sid, session, "queued text", "ws-1", queued=True)
+        row = _active_rows(db, key)[-1]
+        uid = row["message_uid"]
+        assert uid
+
+        # Act
+        activated = server.handle_request({
+            "id": "a", "method": "session.activate", "params": {"session_id": sid}})
+
+        # Assert
+        assert activated["result"]["queued"] == {"user": "queued text", "message_uid": uid}
+
+        # Act
+        server._handle_busy_submit("q2", sid, session, "second", "ws-1", queued=True)
+        resumed = server.handle_request({
+            "id": "r", "method": "session.resume", "params": {"session_id": key}})
+
+        # Assert
+        assert resumed["result"]["queued"] == {
+            "user": "queued text\n\nsecond", "message_uid": uid}
+        rows = _active_rows(db, key)
+        assert len(rows) == 1
+        assert rows[0]["message_uid"] == uid
+        assert rows[0]["content"] == "queued text\n\nsecond"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_live_queue_snapshot_distinguishes_reaccepted_text_and_allows_legacy_rows(monkeypatch, tmp_path):
+    from tui_gateway.contracts.sessions import QueuedPrompt
+
+    # Arrange
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        server._handle_busy_submit("q1", sid, session, "same text", "ws-1", queued=True)
+        first_uid = _active_rows(db, key)[-1]["message_uid"]
+
+        # Act
+        server._ac_set_queue(session, [])
+        server._handle_busy_submit("q2", sid, session, "same text", "ws-1", queued=True)
+        rows = db.get_messages_as_conversation(key, include_row_ids=True)
+
+        # Assert
+        assert len(rows) == 2
+        second_uid = rows[-1]["message_uid"]
+        assert second_uid and second_uid != first_uid
+
+        # Act
+        resumed = server.handle_request({
+            "id": "r", "method": "session.resume", "params": {"session_id": key, "omit_messages": True}})
+
+        # Assert
+        assert resumed["result"]["queued"] == {"user": "same text", "message_uid": second_uid}
+
+        # Act
+        session["queued_prompt"].pop("_submit_user_row")
+        activated = server.handle_request({
+            "id": "a", "method": "session.activate", "params": {"session_id": sid}})
+
+        # Assert
+        assert activated["result"]["queued"] == {"user": "same text"}
+        assert QueuedPrompt.model_validate({"user": "same text"}).message_uid is None
+        assert QueuedPrompt.model_validate({"user": "same text", "message_uid": None}).message_uid is None
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_queued_turn_replays_as_its_own_turn_after_the_live_turn(monkeypatch, tmp_path):
     """The accept-time row lands BEFORE the in-flight turn's assistant rows (raw [uA, uB, aA]);
     the drain must re-place it at the transcript end, so the repaired projection keeps FOUR

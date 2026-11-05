@@ -853,6 +853,7 @@ export interface SessionResumeResult {
     user?: string
   }
   queued?: null | {
+    message_uid?: null | string
     user?: string
   }
   // The oldest gateway approval still waiting for a response. This is returned

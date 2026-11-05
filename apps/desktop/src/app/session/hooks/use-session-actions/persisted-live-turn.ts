@@ -5,12 +5,39 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
+import { queuedPromptProjection } from './pending-turn-identity'
 import { appendLiveSessionProjection, reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
 const userContent = (row: SessionMessage) => (row.display_content !== undefined ? row.display_content : row.content)
 const userText = (text: unknown) => (typeof text === 'string' ? textWithoutReferenceLines(text).trim() : undefined)
 const hasTools = (row: SessionMessage) => Array.isArray(row.tool_calls) && row.tool_calls.length > 0
+
+function appendDistinctQueuedProjection(messages: ChatMessage[], queued?: ChatMessage): ChatMessage[] {
+  if (!queued) {
+    return messages
+  }
+
+  const ids = new Set([...messages, queued].map(message => message.id))
+
+  const accepted = messages.map((message, index) => {
+    if (message.id !== queued.id) {
+      return message
+    }
+
+    let id = `${message.id}-accepted-${message.rowId ?? index}`
+
+    while (ids.has(id)) {
+      id += '-accepted'
+    }
+
+    ids.add(id)
+
+    return { ...message, id }
+  })
+
+  return [...accepted, queued]
+}
 
 const renderedText = (raw: string) => {
   const part = assistantTextPart(raw)
@@ -211,6 +238,84 @@ function snapshotIntervals(inflight: NonNullable<SessionResumeResult['inflight']
   )
 }
 
+function cachedTurnStart(previous: ChatMessage[], turn: PersistedTurn): number {
+  const durableStart = previous.findIndex(message => message.role === 'user' && message.rowId === turn.prompt.rowId)
+
+  if (durableStart >= 0) {
+    return durableStart
+  }
+
+  const tools = new Set(
+    turn.messages.flatMap(message =>
+      message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    )
+  )
+
+  // Optimistic prompt rows have no durable id yet. Shared tool identity after
+  // the matching prompt can anchor the turn, never the prompt text alone.
+  return previous.findLastIndex(
+    (message, index) =>
+      message.role === 'user' &&
+      userText(chatMessageText(message)) === userText(chatMessageText(turn.prompt)) &&
+      previous
+        .slice(index + 1)
+        .some(row => row.parts.some(part => part.type === 'tool-call' && tools.has(part.toolCallId)))
+  )
+}
+
+function snapshotIntervalProjection(
+  inflight: NonNullable<SessionResumeResult['inflight']>,
+  sessionId: string,
+  text: string,
+  index: number,
+  final: boolean
+): ChatMessage[] {
+  const error = final ? inflight.error?.trim() : undefined
+
+  return text.trim() || final
+    ? [
+        {
+          id: final ? `assistant-stream-${sessionId}` : `inflight-assistant-segment-${index}-${sessionId}`,
+          role: 'assistant',
+          parts: text.trim() ? [assistantTextPart(text)] : [],
+          pending: final && Boolean(inflight.streaming),
+          ...(!final ? { interim: true } : {}),
+          ...(error ? { error, errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined } : {})
+        }
+      ]
+    : []
+}
+
+function reconcileQueuedProjection(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResult, 'queued' | 'session_id'>,
+  turnStart: number
+): ChatMessage[] {
+  if (!projection.queued?.user) {
+    return messages
+  }
+
+  const queued = queuedPromptProjection(projection.session_id, projection.queued.user, projection.queued.message_uid)
+
+  const queuedIndex = messages.findIndex(
+    (message, index) =>
+      index >= turnStart &&
+      message.role === 'user' &&
+      message.id === queued.id &&
+      message.messageUid === queued.messageUid
+  )
+
+  // The anchored turn has one next-turn queue slot. Refresh its projection
+  // in place; equal correction/optimistic user text is a different occurrence.
+  if (queuedIndex >= 0) {
+    messages[queuedIndex] = { ...messages[queuedIndex], parts: queued.parts }
+
+    return messages
+  }
+
+  return appendDistinctQueuedProjection(messages, queued)
+}
+
 /**
  * Reconcile the anchored partial turn before role-ordinal pairing sees it.
  * Missing provenance takes the legacy path without subtracting any snapshot text.
@@ -233,26 +338,7 @@ function reconcileCurrentPersistedLiveTurn(
     return null
   }
 
-  let localStart = previous.findIndex(message => message.role === 'user' && message.rowId === turn.prompt.rowId)
-
-  if (localStart < 0) {
-    const tools = new Set(
-      turn.messages.flatMap(message =>
-        message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
-      )
-    )
-
-    // Optimistic prompt rows have no durable id yet. Shared tool identity after
-    // the matching prompt can anchor the turn, never the prompt text alone.
-    localStart = previous.findLastIndex(
-      (message, index) =>
-        message.role === 'user' &&
-        userText(chatMessageText(message)) === userText(chatMessageText(turn.prompt)) &&
-        previous
-          .slice(index + 1)
-          .some(row => row.parts.some(part => part.type === 'tool-call' && tools.has(part.toolCallId)))
-    )
-  }
+  const localStart = cachedTurnStart(previous, turn)
 
   const stored = splitAtUsers(turn.messages)
   const cached = splitAtUsers(localStart >= 0 ? previous.slice(localStart + 1) : [])
@@ -277,23 +363,7 @@ function reconcileCurrentPersistedLiveTurn(
     const text = unrepresentedText(snapshots[index], raw)
 
     const final = index === snapshots.length - 1
-    const error = final ? inflight.error?.trim() : undefined
-
-    const projected: ChatMessage[] =
-      text.trim() || final
-        ? [
-            {
-              id: final
-                ? `assistant-stream-${projection.session_id}`
-                : `inflight-assistant-segment-${index}-${projection.session_id}`,
-              role: 'assistant',
-              parts: text.trim() ? [assistantTextPart(text)] : [],
-              pending: final && Boolean(inflight.streaming),
-              ...(!final ? { interim: true } : {}),
-              ...(error ? { error, errorSurface: parseErrorSurface(inflight.error_surface) ?? undefined } : {})
-            }
-          ]
-        : []
+    const projected = snapshotIntervalProjection(inflight, projection.session_id, text, index, final)
 
     const local = pairedLocal ? withoutCoveredAssistantPrefix(durable, cached.intervals[index] ?? []) : []
     result.push(...durable, ...mergeLiveAssistantRun(projected, local))
@@ -329,25 +399,7 @@ function reconcileCurrentPersistedLiveTurn(
 
   result.push(...unpairedLocal)
 
-  if (projection.queued?.user) {
-    const id = `user-queued-${projection.session_id}`
-
-    const queuedIndex = result.findIndex(
-      (message, index) => index >= turnStart && message.role === 'user' && message.id === id
-    )
-
-    const parts = [textPart(projection.queued.user)]
-
-    // The anchored turn has one next-turn queue slot. Refresh its projection
-    // in place; equal correction/optimistic user text is a different occurrence.
-    if (queuedIndex >= 0) {
-      result[queuedIndex] = { ...result[queuedIndex], parts }
-    } else {
-      result.push({ id, role: 'user', parts })
-    }
-  }
-
-  return result
+  return reconcileQueuedProjection(result, projection, turnStart)
 }
 
 export function reconcilePersistedLiveTurn(
@@ -367,23 +419,36 @@ export function reconcilePersistedLiveTurn(
   const queuedIds = new Set(queuedRows.map(rowId))
   const queuedMessage = (message: ChatMessage) => message.role === 'user' && queuedIds.has(message.rowId)
   const queuedText = projection.queued?.user
+  const queuedUid = projection.queued?.message_uid || undefined
 
-  const represented = Boolean(queuedText && queuedRows.some(row => userContent(row) === queuedText))
+  const represented = Boolean(
+    queuedText && queuedUid && queuedRows.some(row => row.message_uid === queuedUid && userContent(row) === queuedText)
+  )
 
   const currentProjection = { ...projection, queued: undefined }
 
   const currentMessages = messages.filter(message => !queuedMessage(message))
 
-  const currentPrevious = previous.filter((message, index) => {
-    const queueProjection =
-      queuedText &&
+  const queueProjections = previous.filter(
+    (message, index) =>
       message.role === 'user' &&
       message.rowId === undefined &&
-      message.id === `user-queued-${projection.session_id}` &&
+      message.id.startsWith('user-queued-') &&
+      !message.queuedTurnStarted &&
       !previous.slice(index + 1).some(row => row.role === 'assistant' && !row.hidden)
+  )
 
-    return !queuedMessage(message) && !queueProjection
-  })
+  const currentPrevious = previous.filter(message => !queuedMessage(message) && !queueProjections.includes(message))
+
+  const retainedQueue = queueProjections.filter(
+    message =>
+      !(
+        queuedText &&
+        (message.messageUid
+          ? message.messageUid === queuedUid
+          : !queuedUid && message.id === `user-queued-${projection.session_id}`)
+      ) && !(message.messageUid && queuedRows.some(row => row.message_uid === message.messageUid))
+  )
 
   const currentRows = rows.filter(row => !queuedRows.includes(row))
 
@@ -391,33 +456,11 @@ export function reconcilePersistedLiveTurn(
     reconcileCurrentPersistedLiveTurn(currentMessages, currentPrevious, currentRows, currentProjection) ??
     reconcileDurableHistory(appendLiveSessionProjection(currentMessages, currentProjection), currentPrevious)
 
-  const restored = [...current, ...messages.filter(queuedMessage)]
+  const restored = [...current, ...messages.filter(queuedMessage), ...retainedQueue]
 
   const queued = represented
     ? []
     : appendLiveSessionProjection([], { session_id: projection.session_id, queued: projection.queued })
 
-  if (!queued.length) {
-    return restored
-  }
-
-  const ids = new Set([...restored, ...queued].map(message => message.id))
-
-  const accepted = restored.map((message, index) => {
-    if (message.id !== queued[0].id) {
-      return message
-    }
-
-    let id = `${message.id}-accepted-${message.rowId ?? index}`
-
-    while (ids.has(id)) {
-      id += '-accepted'
-    }
-
-    ids.add(id)
-
-    return { ...message, id }
-  })
-
-  return [...accepted, ...queued]
+  return appendDistinctQueuedProjection(restored, queued[0])
 }

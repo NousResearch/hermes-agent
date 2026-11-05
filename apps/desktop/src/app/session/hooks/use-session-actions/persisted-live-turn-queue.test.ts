@@ -28,7 +28,14 @@ it.each([
   const rows: SessionMessage[] = [
     { id: 1, role: 'user', content: prompt, timestamp: 1 },
     round(2, first),
-    { id: 3, role: 'user', content: next, timestamp: 3, display_metadata: '{"_queued_prompt":true}' },
+    {
+      id: 3,
+      message_uid: 'queue-a',
+      role: 'user',
+      content: next,
+      timestamp: 3,
+      display_metadata: '{"_queued_prompt":true}'
+    },
     round(4, second),
     {
       id: 5,
@@ -42,7 +49,7 @@ it.each([
   const projection = {
     session_id: 'queue-runtime',
     inflight: { user: prompt, assistant: `${first}\n\n${second}`, streaming: true },
-    queued: { user: next }
+    queued: { user: next, message_uid: 'queue-a' }
   }
 
   let current = reconcileAuthoritativeMessages(rows, [], projection)
@@ -76,7 +83,7 @@ it('refreshes changed queue text in the same warm slot beside a durable queued p
   const projection = {
     session_id: 'queue-runtime',
     inflight: { user: prompt, assistant: first, streaming: true },
-    queued: { user: 'Old next slot' }
+    queued: { user: 'Old next slot', message_uid: 'queue-slot' }
   }
 
   // Act
@@ -90,7 +97,7 @@ it('refreshes changed queue text in the same warm slot beside a durable queued p
   ])
 
   // Act
-  const updated = { ...projection, queued: { user: 'Updated next slot' } }
+  const updated = { ...projection, queued: { user: 'Updated next slot', message_uid: 'queue-slot' } }
   const twice = reconcileAuthoritativeMessages(rows, once, updated)
 
   // Assert
@@ -102,6 +109,7 @@ it('refreshes changed queue text in the same warm slot beside a durable queued p
   ])
   expect(twice.find(message => message.rowId === 3)).toEqual(once.find(message => message.rowId === 3))
   expect(twice.find(message => message.id === 'user-queued-queue-runtime')).toMatchObject({
+    messageUid: 'queue-slot',
     role: 'user',
     parts: [{ type: 'text', text: 'Updated next slot' }]
   })
@@ -111,10 +119,17 @@ it('does not re-project an already durable queue after the running turn settles'
   const rows: SessionMessage[] = [
     { id: 1, role: 'user', content: prompt, timestamp: 1 },
     { id: 2, role: 'assistant', content: 'Done.', timestamp: 2 },
-    { id: 3, role: 'user', content: 'Run this next', timestamp: 3, display_metadata: '{"_queued_prompt":true}' }
+    {
+      id: 3,
+      message_uid: 'queue-a',
+      role: 'user',
+      content: 'Run this next',
+      timestamp: 3,
+      display_metadata: '{"_queued_prompt":true}'
+    }
   ]
 
-  const projection = { session_id: 'queue-runtime', queued: { user: 'Run this next' } }
+  const projection = { session_id: 'queue-runtime', queued: { user: 'Run this next', message_uid: 'queue-a' } }
   const once = reconcileAuthoritativeMessages(rows, [], projection)
   const twice = reconcileAuthoritativeMessages(rows, once, projection)
   expect(twice.map(chatMessageText)).toEqual([prompt, 'Done.', 'Run this next'])
@@ -254,3 +269,121 @@ it('preserves a consumed queue occurrence under its own identity when the warm s
     expect(current).toContainEqual(response)
   }
 })
+
+it.each([
+  { rowUid: 'queue-a', projectionUid: 'queue-a', projected: false },
+  { rowUid: 'queue-a', projectionUid: 'queue-b', projected: true },
+  { rowUid: undefined, projectionUid: 'queue-b', projected: true },
+  { rowUid: 'queue-a', projectionUid: undefined, projected: true },
+  { rowUid: undefined, projectionUid: undefined, projected: true },
+  { rowUid: null, projectionUid: null, projected: true },
+  { rowUid: '', projectionUid: '', projected: true }
+])('reconciles equal queue text by occurrence ($rowUid, $projectionUid)', ({ rowUid, projectionUid, projected }) => {
+  // Arrange
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: prompt, timestamp: 1 },
+    round(2, first),
+    {
+      id: 3,
+      message_uid: rowUid,
+      role: 'user',
+      content: 'Run tests',
+      timestamp: 3,
+      display_metadata: '{"_queued_prompt":true}'
+    },
+    round(4, second)
+  ]
+
+  const projection = {
+    session_id: 'queue-runtime',
+    inflight: { user: prompt, assistant: `${first}\n\n${second}`, streaming: true },
+    queued: { user: 'Run tests', message_uid: projectionUid }
+  }
+
+  // Act
+  const once = reconcileAuthoritativeMessages(rows, [], projection)
+  const twice = reconcileAuthoritativeMessages(rows, once, projection)
+
+  // Assert
+  for (const messages of [once, twice]) {
+    const users = messages.filter(message => message.role === 'user')
+
+    expect(users.map(chatMessageText)).toEqual(projected ? [prompt, 'Run tests', 'Run tests'] : [prompt, 'Run tests'])
+    expect(users.filter(message => message.rowId === 3)).toHaveLength(1)
+    expect(users.at(-1)?.messageUid).toBe(projectionUid || undefined)
+    expect(new Set(messages.map(message => message.id)).size).toBe(messages.length)
+  }
+})
+
+it('keeps newly merged queue text visible when the durable row lags the snapshot', () => {
+  // Arrange
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: prompt, timestamp: 1 },
+    round(2, first),
+    {
+      id: 3,
+      message_uid: 'queue-a',
+      role: 'user',
+      content: 'Run tests',
+      timestamp: 3,
+      display_metadata: '{"_queued_prompt":true}'
+    }
+  ]
+
+  const merged = 'Run tests\n\nThen report the result'
+
+  // Act
+  const messages = reconcileAuthoritativeMessages(rows, [], {
+    session_id: 'queue-runtime',
+    inflight: { user: prompt, assistant: first, streaming: true },
+    queued: { user: merged, message_uid: 'queue-a' }
+  })
+
+  // Assert
+  expect(messages.some(message => message.role === 'user' && chatMessageText(message) === merged)).toBe(true)
+})
+
+it.each([false, true])(
+  'preserves an acknowledged warm queue when another equal-text occurrence arrives (durable=$0)',
+  durable => {
+    // Arrange
+    const rows: SessionMessage[] = [{ id: 1, role: 'user', content: prompt, timestamp: 1 }, round(2, first)]
+
+    if (durable) {
+      rows.push({
+        id: 3,
+        message_uid: 'queue-history',
+        role: 'user',
+        content: 'Older queued history',
+        timestamp: 3,
+        display_metadata: '{"_queued_prompt":true}'
+      })
+    }
+
+    const projection = {
+      session_id: 'queue-runtime',
+      inflight: { user: prompt, assistant: first, streaming: true },
+      queued: { user: 'Run tests', message_uid: 'queue-a' }
+    }
+
+    const initial = reconcileAuthoritativeMessages(rows, [], projection)
+
+    // Act
+    const next = { ...projection, queued: { user: 'Run tests', message_uid: 'queue-b' } }
+    const accepted = reconcileAuthoritativeMessages(rows, initial, next)
+    const repeated = reconcileAuthoritativeMessages(rows, accepted, next)
+
+    // Assert
+    for (const messages of [accepted, repeated]) {
+      const users = messages.filter(message => message.role === 'user')
+
+      expect(users.map(chatMessageText)).toEqual(
+        durable ? [prompt, 'Older queued history', 'Run tests', 'Run tests'] : [prompt, 'Run tests', 'Run tests']
+      )
+      expect(
+        users.filter(message => chatMessageText(message) === 'Run tests').map(message => message.messageUid)
+      ).toEqual(['queue-a', 'queue-b'])
+      expect(new Set(messages.map(message => message.id)).size).toBe(messages.length)
+    }
+  }
+)

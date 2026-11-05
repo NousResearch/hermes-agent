@@ -82,6 +82,7 @@ import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   normalizedMessageText,
+  queuedPromptProjection,
   transcriptAnchorMatches,
   transcriptRowIds
 } from './pending-turn-identity'
@@ -1248,11 +1249,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   if (queuedUser) {
-    projected.push({
-      id: `user-queued-${sessionId}`,
-      role: 'user',
-      parts: [textPart(queuedUser)]
-    })
+    projected.push(queuedPromptProjection(sessionId, queuedUser, projection.queued?.message_uid))
   }
 
   if (foldTarget) {

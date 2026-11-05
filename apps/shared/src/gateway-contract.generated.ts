@@ -3241,6 +3241,7 @@ export interface InflightTurn {
 }
 export interface QueuedPrompt {
   user: string
+  message_uid?: string | null
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {

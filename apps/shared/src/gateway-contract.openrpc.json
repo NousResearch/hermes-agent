@@ -32823,6 +32823,18 @@
           "user": {
             "title": "User",
             "type": "string"
+          },
+          "message_uid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message Uid"
           }
         },
         "required": [

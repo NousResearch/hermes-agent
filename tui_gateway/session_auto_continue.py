@@ -600,9 +600,20 @@ def _restore_agent_history_after_turn_error(session: dict, agent) -> bool:
 def _queued_prompt_snapshot(session: dict) -> dict | None:
     """The accepted next-turn prompt without its transport handle, for the live-session projection (Desktop may
     reconnect while it is still queued)."""
+    from agent.message_metadata import MESSAGE_UID
+
     queued = session.get("queued_prompt")
-    user = _inflight_text(queued.get("text")) if isinstance(queued, dict) else ""
-    return {"user": user} if user else None
+    if not isinstance(queued, dict):
+        return None
+    user = _inflight_text(queued.get("text"))
+    if not user:
+        return None
+    snapshot = {"user": user}
+    staged = queued.get("_submit_user_row")
+    message_uid = staged.get(MESSAGE_UID) if isinstance(staged, dict) else None
+    if isinstance(message_uid, str) and message_uid:
+        snapshot[MESSAGE_UID] = message_uid
+    return snapshot
 
 
 def register(server) -> None:

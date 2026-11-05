@@ -336,7 +336,7 @@ def _fit_frame(text, budget):
     return ''.join(kept).removesuffix('\n')
 
 
-async def _rewind_last_turn(connection, ref, taken):
+async def _rewind_last_turn(connection, ref, taken=None):
     """Drop the newest user turn and everything after it (main's full ``/rollback`` restore) via the
     owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn, or when that turn
     ended before the checkpoint taken at ``taken`` (``/undo`` already removed the turn that made it)."""

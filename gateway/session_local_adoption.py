@@ -10,7 +10,7 @@ import asyncio
 import logging
 from functools import partial
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -23,21 +23,30 @@ def on_owner_loop():
     return True
 
 
+def _binding(receipt):
+    """The stored receipt *receipt* as the ``SessionBinding`` the bindings verbs compare."""
+    from persistence.authority.bindings import SessionBinding
+    return SessionBinding(
+        profile_id=receipt['profile_id'], principal_id=receipt['principal_id'], request_id=receipt['request_id'],
+        session_id=receipt['session_id'], route=receipt['route'], entry=receipt['entry'], policy=receipt['policy'],
+        lineage=tuple(receipt.get('lineage', [receipt['session_id']])), legacy_session_id=receipt.get('legacy_session_id'))
+
+
 def _due(authority, sid):
     """*sid*'s stored receipt when a catch-up would commit for it on this owner, else None. Read-only."""
     from gateway.session_local_recovery import owned_receipt
-    from hermes_state_local_lineage import adoptable_compression
+    from gateway.session_persistence import authority_persistence
     try:
         receipt = owned_receipt(authority, sid)[0]
-        with authority.db._read_ctx() as conn:
-            return receipt if adoptable_compression(conn, receipt) is not None else None
+        return receipt if authority_persistence(authority).bindings.compression_adoptable(_binding(receipt)) else None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None  # the restore refuses this receipt and logs the check that failed
 
 
 def _adopt(authority, sid, receipt):
-    from hermes_state_local_lineage import adopt_untracked_compression
-    adopt_untracked_compression(authority.db, epoch=authority.epoch, session_id=sid, expected=receipt)
+    from gateway.session_persistence import authority_persistence
+    authority_persistence(authority).bindings.adopt_untracked_compression(
+        epoch=authority.epoch, session_id=sid, expected=_binding(receipt))
 
 
 async def adopt_before_restore(authority, sid, *, tracked=True):
@@ -54,7 +63,7 @@ async def adopt_before_restore(authority, sid, *, tracked=True):
             await tracked_write(authority, write)
         else:
             await asyncio.to_thread(write)
-    except RuntimeStoreError as exc:  # the restore that follows refuses the receipt and logs it
+    except AuthorityRefusal as exc:  # the restore that follows refuses the receipt and logs it
         logger.warning('Local session %s compression catch-up failed: %s', sid, exc.reason)
 
 
@@ -82,6 +91,6 @@ def schedule_adoption(authority, sid, receipt):
             if not getattr(authority, 'retiring', False):
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(authority, sid)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             logger.warning('Local session %s paused after its compression catch-up: %s', sid, exc.reason)
     pending[sid] = track_mutation(authority, adopt_then_publish())

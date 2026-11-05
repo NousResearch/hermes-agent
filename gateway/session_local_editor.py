@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 def validate_editor(source, editor):
@@ -15,21 +15,21 @@ def validate_editor(source, editor):
     if editor is None:
         return
     if source != 'acp':
-        raise RuntimeStoreError('invalid_params', field='editor',
-                                detail=f'an editor policy is only accepted from an ACP launch, not {source}')
+        raise AuthorityRefusal('invalid_params', field='editor',
+                               detail=f'an editor policy is only accepted from an ACP launch, not {source}')
     if not isinstance(editor, dict):
-        raise RuntimeStoreError('invalid_params', field='editor',
-                                detail=f'must be a mapping, got {type(editor).__name__}')
+        raise AuthorityRefusal('invalid_params', field='editor',
+                               detail=f'must be a mapping, got {type(editor).__name__}')
     unknown = sorted(set(editor) - {'mcp_servers', 'edit_approval_policy'})
     if unknown:
-        raise RuntimeStoreError('invalid_params', field=f'editor.{unknown[0]}',
-                                detail='unknown editor key')
+        raise AuthorityRefusal('invalid_params', field=f'editor.{unknown[0]}',
+                               detail='unknown editor key')
     if editor.get('edit_approval_policy', 'ask') != 'ask':
-        raise RuntimeStoreError('invalid_params', field='editor.edit_approval_policy',
-                                detail="must be 'ask': every edit is approved one at a time")
+        raise AuthorityRefusal('invalid_params', field='editor.edit_approval_policy',
+                               detail="must be 'ask': every edit is approved one at a time")
     if not isinstance(editor.get('mcp_servers', []), list):
-        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'must be a list, got {type(editor.get("mcp_servers")).__name__}')
+        raise AuthorityRefusal('invalid_params', field='editor.mcp_servers',
+                               detail=f'must be a list, got {type(editor.get("mcp_servers")).__name__}')
     from gateway.session_local_mcp import validate_servers
     validate_servers(editor.get('mcp_servers', []))
 

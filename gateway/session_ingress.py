@@ -10,7 +10,8 @@ from gateway.session_envelope import restore_native
 from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ async def admit_message(authority, event):
         receipt = await authority.admit_native(event)
         if committed is not None and not committed.done():
             committed.set_result(None)  # the row is durable (any status): a barrier may go on
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
         if exc.reason == 'invalid_params' and exc.field:
@@ -74,10 +75,10 @@ async def admit_message(authority, event):
         adopters[receipt.admission_id] = event
     # A drain already running can claim, run and settle the row before this caller resumes; one
     # that settled it already sent (or owes) the reply itself and resolves no waiter registered now.
-    from hermes_state_runtime import get_session_admission
-    row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-    status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
-    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))
+    admissions = authority_persistence(authority).admissions
+    row = admissions.get(admission_id=receipt.admission_id)
+    status = 'terminal' if row is None else row.status  # None: deleted with its chat, nothing owed
+    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.outcome)
     if status in ('terminal', 'unknown'):
         authority.native_waiters.discard(receipt.admission_id)
         if authority.waiters.get(receipt.admission_id) is waiter:
@@ -89,9 +90,9 @@ async def admit_message(authority, event):
         accepted.set_result(None)
     try:
         return await asyncio.shield(waiter)
-    except RuntimeStoreError as exc:
-        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-        if row is not None and row['status'] == 'terminal':
+    except AuthorityRefusal as exc:
+        row = admissions.get(admission_id=receipt.admission_id)
+        if row is not None and row.status == 'terminal':
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')

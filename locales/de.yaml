@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Zurückspulen — einen früheren Prompt wählen"
-    keys_hint: "↑/↓ wählen · Enter bearbeiten & erneut senden · f von hier abzweigen · Esc schließen"
+    keys_hint: "↑/↓ wählen · PgUp/PgDn blättern · Enter bearbeiten & erneut senden · f von hier abzweigen · Esc schließen"
     preview_label: "Prompt {number} von {total}:"
-    more_lines: "… ({count} weitere Zeilen)"
+    prompt_label: "Du hast gefragt:"
+    reply_label: "Hermes hat geantwortet:"
+    no_reply: "(keine Antwort)"
+    scroll_hint: "Zeilen {first}–{last} von {total}"
     editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
     edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
     rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."

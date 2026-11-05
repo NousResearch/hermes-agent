@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ إرجاع — اختر موجّهًا سابقًا"
-    keys_hint: "↑/↓ اختيار · Enter تعديل وإعادة الإرسال · f تفريع من هنا · Esc إغلاق"
+    keys_hint: "↑/↓ اختيار · PgUp/PgDn تمرير · Enter تحرير وإعادة الإرسال · f تفرّع من هنا · Esc إغلاق"
     preview_label: "الموجّه {number} من {total}:"
-    more_lines: "… ({count} سطر إضافي)"
+    prompt_label: "سألت:"
+    reply_label: "ردّ Hermes:"
+    no_reply: "(لا يوجد رد)"
+    scroll_hint: "الأسطر {first}–{last} من {total}"
     editing_hint: "↺ تعديل الموجّه {number} — Enter يُرجع إلى هنا ويرسل · Esc Esc للإلغاء"
     edit_cancelled: "↺ أُلغي الإرجاع؛ لم يُحذف أي شيء."
     rewound: "↺ تم الإرجاع إلى الموجّه {number} (أُرشفت {count} رسالة)؛ جارٍ إرسال التعديل."

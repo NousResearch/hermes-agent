@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Athchas — roghnaigh leid níos luaithe"
-    keys_hint: "↑/↓ roghnaigh · Enter cuir in eagar & athsheol · f gabhlaigh ón áit seo · Esc dún"
+    keys_hint: "↑/↓ roghnaigh · PgUp/PgDn scrollaigh · Enter cuir in eagar & athsheol · f gabhlaigh as seo · Esc dún"
     preview_label: "Leid {number} as {total}:"
-    more_lines: "… ({count} líne eile)"
+    prompt_label: "D’fhiafraigh tú:"
+    reply_label: "D’fhreagair Hermes:"
+    no_reply: "(gan freagra)"
+    scroll_hint: "línte {first}–{last} as {total}"
     editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
     edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
     rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."

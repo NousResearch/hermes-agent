@@ -44,6 +44,45 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
   return targets
 }
 
+/** Plain text of an assistant row's content; non-text parts (tool calls, images) are skipped. */
+const assistantText = (content: unknown) =>
+  (typeof content === 'string' ? [content] : Array.isArray(content) ? content : [])
+    .map(part => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
+    .join('')
+    .trim()
+
+/** Each target with `reply`: the assistant text between its prompt and the next user turn, for the
+ * picker's context view (the transcript itself cannot be scrolled in native-scrollback mode). */
+export function withReplies(
+  snapshot: Pick<MutationSnapshot, 'messages' | 'stored_messages'>,
+  targets: RewindTarget[]
+): RewindTarget[] {
+  const byRow = new Map<number, string[]>()
+  let open: null | string[] = null
+
+  for (const row of snapshot.stored_messages ?? snapshot.messages ?? []) {
+    if (isUserTurn(row)) {
+      open = targets.some(target => target.rowId === row.row_id) ? [] : null
+
+      if (open) {
+        byRow.set(row.row_id as number, open)
+      }
+    } else if (open && row.role === 'assistant') {
+      const text = assistantText(row.content)
+
+      if (text) {
+        open.push(text)
+      }
+    }
+  }
+
+  return targets.map(target => {
+    const reply = byRow.get(target.rowId)?.join('\n\n')
+
+    return reply ? { ...target, reply } : target
+  })
+}
+
 export function openRewindPicker(ctx: SlashRunCtx) {
   const sid = ctx.sid
 
@@ -66,7 +105,8 @@ export function openRewindPicker(ctx: SlashRunCtx) {
         return
       }
 
-      const targets = rewindTargets(asRpcResult<MutationSnapshot>(raw) ?? {})
+      const snapshot = asRpcResult<MutationSnapshot>(raw) ?? {}
+      const targets = withReplies(snapshot, rewindTargets(snapshot))
 
       if (!targets.length) {
         return ctx.transcript.sys(t('slashCmd.core.rewind.nothing'))

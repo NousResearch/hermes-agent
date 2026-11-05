@@ -1,6 +1,7 @@
 """Backtrack (/rewind, Esc Esc) in the classic CLI: edit & resend cuts nothing until the edit is
 sent; fork branches before the picked prompt and leaves the parent session's rows active."""
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -103,3 +104,30 @@ def test_fork_branches_before_the_prompt_and_keeps_the_parent(cli):
     assert all(active == 1 for *_x, active in _active(db, parent))
     assert len(_active(db, parent)) == 6
     assert cli._prefill_input_buffer.call_args[0][0] == "BETA"
+
+
+def _panel_text(cli):
+    return "".join(text for _style, text in cli._get_backtrack_display_fragments())
+
+
+def test_picker_shows_the_selected_prompt_with_the_reply_that_followed(cli):
+    # The transcript above is scrollback the CLI cannot scroll: the exchange is brought to the picker.
+    assert cli._open_backtrack_picker()
+    assert "GAMMA" in _panel_text(cli) and "g1" in _panel_text(cli)
+    cli._backtrack_move(1)
+    panel = _panel_text(cli)
+    assert "b1" in panel and "g1" not in panel
+
+
+def test_page_keys_scroll_a_long_reply_and_moving_resets_it(cli, monkeypatch):
+    monkeypatch.setattr("hermes_cli.cli_tui_mixin._term_rows", lambda: 30)
+    cli.conversation_history[-1]["content"] = "\n".join(f"reply row {i}" for i in range(1, 41))
+    assert cli._open_backtrack_picker()
+    assert re.search(r"reply row 1(?!\d)", _panel_text(cli))
+    assert "reply row 40" not in _panel_text(cli)
+    for _ in range(10):
+        cli._backtrack_scroll_context(1)
+    assert "reply row 40" in _panel_text(cli)  # clamped at the end of the reply
+    cli._backtrack_move(1)
+    assert cli._backtrack_state["context_offset"] == 0
+    assert all(active == 1 for *_x, active in _active(cli._session_db, cli.session_id))

@@ -1,6 +1,10 @@
 """Codex-style backtrack for the classic CLI: Esc Esc on an idle, empty composer (or ``/rewind``)
 lists earlier prompts newest first; Enter edits & resends one, ``f`` forks a branch before it.
 
+The transcript above is terminal scrollback that prompt_toolkit cannot scroll, so the picker cannot
+jump there; instead it shows the selected prompt in full with the reply that followed it (PgUp/PgDn
+scroll that context) — the same exchange the transcript holds, brought to the picker.
+
 Edit & resend cuts NOTHING until the edited text is submitted: the submission travels to the
 process loop as a :class:`BacktrackResend`, which re-validates the picked turn and only then runs
 the same durable rewind ``/undo`` uses (``_rewind_to_user_ordinal``). Cancelling (Esc Esc, Ctrl+C,
@@ -13,11 +17,13 @@ cli.py-internal symbols are imported lazily (import cycle).
 
 from __future__ import annotations
 
+import shutil
+
 from agent.i18n import t
 
 _LABEL_CHARS = 72
-_PREVIEW_LINES = 4
-_PREVIEW_CHARS = 80
+_CONTEXT_WIDTH = 84  # wrap width of the context rows; the panel's max inner width is 88
+_CONTEXT_MIN_ROWS = 6
 
 
 class BacktrackResend(str):
@@ -36,8 +42,14 @@ def _one_line(text: str, limit: int) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
+def _context_window(rows: int, total_list: int) -> int:
+    """Context rows for a ``rows``-tall terminal: about half of what the list and chrome leave."""
+    return max(_CONTEXT_MIN_ROWS, (rows - 14 - min(total_list, 8)) // 2)
+
+
 class CLIBacktrackMixin:
-    _backtrack_state = None  # picker: {"entries": [(ordinal, text)], newest first, "selected", "_scroll_offset"}
+    # picker: {"entries": [(ordinal, text)] newest first, "selected", "_scroll_offset", "context_offset"}
+    _backtrack_state = None
     _backtrack_edit = None  # pending edit & resend: {"ordinal", "expected", "session_id", "number"}
     _backtrack_widget = None
 
@@ -55,6 +67,29 @@ class CLIBacktrackMixin:
             prompts.append(self._undo_content_to_text(typed_prompt_content(view.get("content"), history[index])))
         return prompts
 
+    def _backtrack_reply(self, ordinal: int) -> str:
+        """The assistant text that answered user turn ``ordinal`` (everything up to the next turn)."""
+        from hermes_cli.cli_session_mixin import _user_turn_indices
+        history = self.conversation_history or []
+        indices = _user_turn_indices(history)
+        if not 0 <= ordinal < len(indices):
+            return ""
+        end = indices[ordinal + 1] if ordinal + 1 < len(indices) else len(history)
+        texts = [self._undo_content_to_text(m.get("content")).strip() for m in history[indices[ordinal] + 1:end]
+                 if isinstance(m, dict) and m.get("role") == "assistant"]
+        return "\n\n".join(text for text in texts if text)
+
+    def _backtrack_context_rows(self, ordinal: int, text: str, width: int) -> list[str]:
+        """The selected exchange as panel rows: the prompt in full, then the reply that followed."""
+        from cli import _wrap_panel_text
+        rows = [t("cli.backtrack.prompt_label")]
+        rows += [f"  {row}" for row in _wrap_panel_text(text or "", width, keep_ws=True)]
+        reply = self._backtrack_reply(ordinal)
+        rows += ["", t("cli.backtrack.reply_label")]
+        rows += ([f"  {row}" for row in _wrap_panel_text(reply, width, keep_ws=True)] if reply
+                 else [f"  {t('cli.backtrack.no_reply')}"])
+        return rows
+
     def _backtrack_blocked(self) -> bool:
         return bool(self._agent_running or self._command_running or self._clarify_state or self._approval_state
                     or self._sudo_state or self._secret_state or self._connection_state or self._slash_confirm_state
@@ -70,7 +105,8 @@ class CLIBacktrackMixin:
             _cprint(f"  {t('cli.backtrack.nothing')}")
             return False
         self._backtrack_state = {
-            "entries": list(reversed(list(enumerate(prompts)))), "selected": 0, "_scroll_offset": 0}
+            "entries": list(reversed(list(enumerate(prompts)))), "selected": 0, "_scroll_offset": 0,
+            "context_offset": 0}
         self._invalidate(min_interval=0.0)
         return True
 
@@ -85,6 +121,7 @@ class CLIBacktrackMixin:
         return entries[selected] if 0 <= selected < len(entries) else None
 
     def _get_backtrack_display_fragments(self):
+        from hermes_cli.cli_tui_mixin import _term_rows
         state = self._backtrack_state
         if not state:
             return []
@@ -94,11 +131,16 @@ class CLIBacktrackMixin:
         hints = [t("cli.backtrack.keys_hint")]
         if picked is not None:
             ordinal, text = picked
-            lines = (text or "").splitlines() or [""]
-            hints += ["", t("cli.backtrack.preview_label", number=ordinal + 1, total=total)]
-            hints += [f"  {_one_line(line, _PREVIEW_CHARS)}" for line in lines[:_PREVIEW_LINES]]
-            if len(lines) > _PREVIEW_LINES:
-                hints.append(f"  {t('cli.backtrack.more_lines', count=len(lines) - _PREVIEW_LINES)}")
+            term_cols, term_rows = shutil.get_terminal_size((100, 24)).columns, _term_rows()
+            rows = self._backtrack_context_rows(ordinal, text, max(20, min(_CONTEXT_WIDTH, term_cols - 12)))
+            window = _context_window(term_rows, total)
+            offset = max(0, min(state.get("context_offset", 0), len(rows) - window))
+            state["context_offset"] = offset
+            label = t("cli.backtrack.preview_label", number=ordinal + 1, total=total)
+            if len(rows) > window:
+                label += "  " + t("cli.backtrack.scroll_hint", first=offset + 1,
+                                  last=min(len(rows), offset + window), total=len(rows))
+            hints += ["", label, *rows[offset:offset + window]]
         labels = [f"{ordinal + 1:>3}. {_one_line(text, _LABEL_CHARS)}" for ordinal, text in entries]
         return self._render_scroll_list_panel(
             state, t("cli.backtrack.title"), hints, labels, min_width=50, max_width=90, indent="    ")
@@ -107,6 +149,16 @@ class CLIBacktrackMixin:
         state = self._backtrack_state
         if state:
             state["selected"] = max(0, min(len(state["entries"]) - 1, state.get("selected", 0) + delta))
+            state["context_offset"] = 0
+            self._invalidate(min_interval=0.0)
+
+    def _backtrack_scroll_context(self, pages: int) -> None:
+        """PgUp/PgDn: page the selected exchange; the render clamps the offset to its length."""
+        from hermes_cli.cli_tui_mixin import _term_rows
+        state = self._backtrack_state
+        if state:
+            step = max(1, _context_window(_term_rows(), len(state["entries"])) - 1)
+            state["context_offset"] = max(0, state.get("context_offset", 0) + pages * step)
             self._invalidate(min_interval=0.0)
 
     def _backtrack_choose_edit(self) -> None:
@@ -272,6 +324,8 @@ class CLIBacktrackMixin:
         kb.add(Keys.Any, filter=picker)(lambda event: None)
         kb.add("up", filter=picker)(lambda event: self._backtrack_move(-1))
         kb.add("down", filter=picker)(lambda event: self._backtrack_move(1))
+        kb.add("pageup", filter=picker)(lambda event: self._backtrack_scroll_context(-1))
+        kb.add("pagedown", filter=picker)(lambda event: self._backtrack_scroll_context(1))
         kb.add("enter", filter=picker, eager=True)(lambda event: self._backtrack_choose_edit())
         kb.add("f", filter=picker)(lambda event: self._backtrack_choose_fork())
         kb.add("escape", filter=picker, eager=True)(lambda event: self._close_backtrack_picker())

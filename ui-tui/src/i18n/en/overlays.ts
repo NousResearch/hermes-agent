@@ -24,6 +24,11 @@ export const overlaysEn = {
       preview: (turn: string) => `prompt ${turn}`,
       marker: '↺ selected in the rewind picker',
       listHint: '↑/↓ select · Enter edit & resend · f fork from here · Esc close',
+      listHintContext: '↑/↓ select · PgUp/PgDn scroll · Enter edit & resend · f fork from here · Esc close',
+      promptLabel: 'You asked:',
+      replyLabel: 'Hermes replied:',
+      noReply: '(no reply)',
+      contextScroll: (first: string, last: string, total: string) => `lines ${first}–${last} of ${total}`,
       editHint: 'Enter rewind here and send · Esc back to the list'
     },
     clarify: {

@@ -1782,9 +1782,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Rewind — pick an earlier prompt"
-    keys_hint: "↑/↓ choose · Enter edit & resend · f fork from here · Esc close"
+    keys_hint: "↑/↓ choose · PgUp/PgDn scroll · Enter edit & resend · f fork from here · Esc close"
     preview_label: "Prompt {number} of {total}:"
-    more_lines: "… ({count} more lines)"
+    prompt_label: "You asked:"
+    reply_label: "Hermes replied:"
+    no_reply: "(no reply)"
+    scroll_hint: "lines {first}–{last} of {total}"
     editing_hint: "↺ Editing prompt {number} — Enter rewinds here and sends · Esc Esc cancels"
     edit_cancelled: "↺ Rewind cancelled; nothing was removed."
     rewound: "↺ Rewound to prompt {number} ({count} message(s) archived); sending the edit."

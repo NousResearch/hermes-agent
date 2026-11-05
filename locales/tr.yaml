@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Geri sar — önceki bir istemi seç"
-    keys_hint: "↑/↓ seç · Enter düzenle ve yeniden gönder · f buradan çatalla · Esc kapat"
+    keys_hint: "↑/↓ seç · PgUp/PgDn kaydır · Enter düzenle ve yeniden gönder · f buradan dallan · Esc kapat"
     preview_label: "İstem {number} / {total}:"
-    more_lines: "… ({count} satır daha)"
+    prompt_label: "Sorduğunuz:"
+    reply_label: "Hermes'in yanıtı:"
+    no_reply: "(yanıt yok)"
+    scroll_hint: "{total} satırdan {first}–{last}"
     editing_hint: "↺ İstem {number} düzenleniyor — Enter buraya geri sarar ve gönderir · Esc Esc iptal eder"
     edit_cancelled: "↺ Geri sarma iptal edildi; hiçbir şey kaldırılmadı."
     rewound: "↺ İstem {number}'e geri sarıldı ({count} mesaj arşivlendi); düzenleme gönderiliyor."

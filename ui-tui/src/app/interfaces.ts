@@ -322,6 +322,8 @@ export interface OverlayState {
 
 /** One earlier user prompt the rewind picker can return to (`row_id` is its durable message row). */
 export interface RewindTarget {
+  /** The assistant text that answered this prompt (shown in the picker when the transcript cannot scroll). */
+  reply?: string
   rowId: number
   text: string
   /** The last stored row before this prompt (a fork keeps rows through it); absent for the first prompt. */

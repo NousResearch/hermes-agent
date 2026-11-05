@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ 回溯 — 选择之前的提示"
-    keys_hint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
+    keys_hint: "↑/↓ 选择 · PgUp/PgDn 滚动 · Enter 编辑并重新发送 · f 从此处分叉 · Esc 关闭"
     preview_label: "提示 {number} / {total}:"
-    more_lines: "…(还有 {count} 行)"
+    prompt_label: "你的提问："
+    reply_label: "Hermes 的回复："
+    no_reply: "（无回复）"
+    scroll_hint: "第 {first}–{last} 行，共 {total} 行"
     editing_hint: "↺ 正在编辑提示 {number} — Enter 回溯到此处并发送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未删除任何内容。"
     rewound: "↺ 已回溯到提示 {number}(已归档 {count} 条消息);正在发送编辑内容。"

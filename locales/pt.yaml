@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Retroceder — escolha um prompt anterior"
-    keys_hint: "↑/↓ escolher · Enter editar e reenviar · f bifurcar daqui · Esc fechar"
+    keys_hint: "↑/↓ escolher · PgUp/PgDn rolar · Enter editar e reenviar · f ramificar daqui · Esc fechar"
     preview_label: "Prompt {number} de {total}:"
-    more_lines: "… (mais {count} linhas)"
+    prompt_label: "Você perguntou:"
+    reply_label: "Hermes respondeu:"
+    no_reply: "(sem resposta)"
+    scroll_hint: "linhas {first}–{last} de {total}"
     editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
     edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
     rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."

@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Spoel terug — kies 'n vroeëre opdrag"
-    keys_hint: "↑/↓ kies · Enter wysig & stuur weer · f vurk van hier · Esc sluit"
+    keys_hint: "↑/↓ kies · PgUp/PgDn blaai · Enter wysig & stuur weer · f vertak van hier · Esc sluit"
     preview_label: "Opdrag {number} van {total}:"
-    more_lines: "… ({count} meer reëls)"
+    prompt_label: "Jy het gevra:"
+    reply_label: "Hermes het geantwoord:"
+    no_reply: "(geen antwoord)"
+    scroll_hint: "reëls {first}–{last} van {total}"
     editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
     edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
     rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."

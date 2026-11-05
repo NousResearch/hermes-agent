@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ 巻き戻し — 以前のプロンプトを選択"
-    keys_hint: "↑/↓ 選択 · Enter 編集して再送信 · f ここから分岐 · Esc 閉じる"
+    keys_hint: "↑/↓ 選択 · PgUp/PgDn スクロール · Enter 編集して再送信 · f ここから分岐 · Esc 閉じる"
     preview_label: "プロンプト {number} / {total}:"
-    more_lines: "…(さらに {count} 行)"
+    prompt_label: "あなたの質問:"
+    reply_label: "Hermes の返答:"
+    no_reply: "(返答なし)"
+    scroll_hint: "{total} 行中 {first}–{last} 行"
     editing_hint: "↺ プロンプト {number} を編集中 — Enter でここまで巻き戻して送信 · Esc Esc でキャンセル"
     edit_cancelled: "↺ 巻き戻しをキャンセルしました。何も削除されていません。"
     rewound: "↺ プロンプト {number} まで巻き戻しました({count} 件のメッセージをアーカイブ)。編集内容を送信します。"

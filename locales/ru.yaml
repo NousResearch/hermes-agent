@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Откат — выберите более ранний запрос"
-    keys_hint: "↑/↓ выбор · Enter изменить и отправить заново · f ответвиться отсюда · Esc закрыть"
+    keys_hint: "↑/↓ выбор · PgUp/PgDn прокрутка · Enter изменить и отправить заново · f ответвиться отсюда · Esc закрыть"
     preview_label: "Запрос {number} из {total}:"
-    more_lines: "… (ещё строк: {count})"
+    prompt_label: "Вы спросили:"
+    reply_label: "Ответ Hermes:"
+    no_reply: "(нет ответа)"
+    scroll_hint: "строки {first}–{last} из {total}"
     editing_hint: "↺ Редактирование запроса {number} — Enter откатывает сюда и отправляет · Esc Esc отменяет"
     edit_cancelled: "↺ Откат отменён; ничего не удалено."
     rewound: "↺ Откат к запросу {number} (сообщений в архиве: {count}); отправка изменённого запроса."

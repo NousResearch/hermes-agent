@@ -1711,9 +1711,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Відкат — виберіть попередній запит"
-    keys_hint: "↑/↓ вибір · Enter редагувати й надіслати знову · f відгалузитися звідси · Esc закрити"
+    keys_hint: "↑/↓ вибір · PgUp/PgDn прокрутка · Enter змінити й надіслати знову · f відгалузитися звідси · Esc закрити"
     preview_label: "Запит {number} з {total}:"
-    more_lines: "… (ще рядків: {count})"
+    prompt_label: "Ви запитали:"
+    reply_label: "Відповідь Hermes:"
+    no_reply: "(немає відповіді)"
+    scroll_hint: "рядки {first}–{last} з {total}"
     editing_hint: "↺ Редагування запиту {number} — Enter відкочує сюди й надсилає · Esc Esc скасовує"
     edit_cancelled: "↺ Відкат скасовано; нічого не видалено."
     rewound: "↺ Відкочено до запиту {number} (повідомлень в архіві: {count}); надсилання зміненого запиту."

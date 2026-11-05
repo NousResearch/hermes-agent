@@ -1963,9 +1963,12 @@ slash:
 cli:
   backtrack:
     title: "↺ Rembobiner — choisir un prompt précédent"
-    keys_hint: "↑/↓ choisir · Enter modifier et renvoyer · f bifurquer d'ici · Esc fermer"
+    keys_hint: "↑/↓ choisir · PgUp/PgDn défiler · Entrée modifier et renvoyer · f bifurquer d’ici · Échap fermer"
     preview_label: "Prompt {number} sur {total} :"
-    more_lines: "… ({count} lignes de plus)"
+    prompt_label: "Vous avez demandé :"
+    reply_label: "Hermes a répondu :"
+    no_reply: "(aucune réponse)"
+    scroll_hint: "lignes {first}–{last} sur {total}"
     editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
     edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
     rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."

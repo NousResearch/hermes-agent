@@ -450,6 +450,43 @@ def test_update_of_a_recalled_subdir_install_honours_its_allow_removed_exemption
         assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
 
 
+def _enabled_via(surface: str, key: str) -> bool:
+    if surface == "dashboard":
+        return pc.dashboard_set_agent_plugin_enabled(key, enabled=True)["ok"]
+    try:
+        pc.cmd_enable(key)
+    except SystemExit:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("surface", ["dashboard", "cli"])
+@pytest.mark.parametrize("case, refused", [("manifest_recalled", True), ("leaf_install_exempt", True),
+                                           ("leaf_install_recalled", False)])
+def test_enable_judges_a_nested_plugin_by_its_own_manifest_and_dir(world, tmp_path, monkeypatch, surface, case,
+                                                                   refused):
+    """The enable check reads the plugin the load-time gate reads: plugins/obs/zzprobe by its manifest name and
+    its own directory, never by the install record of a top-level plugins/zzprobe sharing its leaf."""
+    nested = world["plugins_dir"] / "obs" / "zzprobe"
+    nested.mkdir(parents=True)
+    (nested / "plugin.yaml").write_text("name: zz-nested\nversion: 1.0.0\ndescription: d\n")
+    (nested / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    recall = pc_cat.RemovedEntry(name="zz-nested", reason="backdoor")
+    if case != "manifest_recalled":
+        _install_url(tmp_path / "flat", "zzprobe", {})
+    if case == "leaf_install_exempt":  # the top-level install bypassed the list; the nested one did not
+        pc._update_install_record("zzprobe", lambda record: {**(record or {}), "allow_removed": True})
+        recall = pc_cat.RemovedEntry(name="zzprobe", reason="backdoor")
+    if case == "leaf_install_recalled":  # only the top-level install's source is recalled
+        recall = pc_cat.RemovedEntry(name="flat-entry", repo=(tmp_path / "flat").as_uri(), reason="backdoor")
+    world["state"]["removed"].append(recall)
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+
+    assert (cat.installed_plugin_removal("zz-nested", nested) is not None) is refused  # the load-time verdict
+    assert _enabled_via(surface, "obs/zzprobe") is not refused
+    assert ("obs/zzprobe" in pc._get_enabled_set()) is not refused
+
+
 _HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
 
 

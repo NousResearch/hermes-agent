@@ -26,6 +26,17 @@ _MODELS_DEV_DIRECT_HOSTS = {
     "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
 }
 
+# Relay routes that serve many vendors' models behind one host and publish NO pricing on
+# their own /models endpoint, but whose per-model rate card models.dev does publish.
+# Keyed billing-route provider -> (models.dev provider id, API domain). Without this the
+# entry lookup returns None and every session on the route is billed cost_status="unknown"
+# with estimated_cost_usd=0 — invisible spend.
+_MODELS_DEV_RELAY_HOSTS = {
+    "opencode": ("opencode", "opencode.ai"),
+    "opencode-zen": ("opencode", "opencode.ai"),
+    "opencode-go": ("opencode", "opencode.ai"),
+}
+
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.
 # Sub-cent cost threshold: below $0.01, render at 4 decimal places so the display is non-zero (e.g. $0.0046
 # instead of $0.00). See #79220.
@@ -563,8 +574,15 @@ def _pricing_entry_from_metadata(
 
 
 def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
-    """models.dev list price for a direct first-party route (see ``_MODELS_DEV_DIRECT_HOSTS``)."""
+    """models.dev list price for a direct first-party route (see ``_MODELS_DEV_DIRECT_HOSTS``)
+    or a pricing-less relay whose per-model rate card models.dev publishes
+    (see ``_MODELS_DEV_RELAY_HOSTS``)."""
     domain = _MODELS_DEV_DIRECT_HOSTS.get(route.provider)
+    catalog_provider = route.provider
+    if not domain:
+        relay = _MODELS_DEV_RELAY_HOSTS.get(route.provider)
+        if relay:
+            catalog_provider, domain = relay
     if not domain or not route.model:
         return None
     if route.base_url:
@@ -573,7 +591,7 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
             return None
     from agent.models_dev import get_model_info
 
-    model_info = get_model_info(route.provider, route.model)
+    model_info = get_model_info(catalog_provider, route.model)
     if model_info is None or not model_info.has_cost_data():
         return None
     return PricingEntry(

@@ -243,7 +243,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `modal`, `daytona`, or `vercel_sandbox` backends (or a container plugin backend such as `singularity` or `sprites`), dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### `execute_code` Scripts {#execute-code-scripts}
@@ -608,6 +608,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **ssh** | Remote machine | ✅ Yes | Running on a separate server |
 | **docker** | Container | ❌ Skipped (container is boundary) | Production gateway |
 | **singularity** (plugin) | Container | ❌ Skipped | HPC environments |
+| **sprites** (plugin) | Cloud microVM | ❌ Skipped | Stateful cloud sandboxes |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |

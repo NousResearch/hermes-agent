@@ -143,6 +143,26 @@ def test_status_less_probe_error_is_never_artifact():
     assert ec._looks_like_overload_probe_error(err) is False
 
 
+def test_wrapped_cause_chain_probe_error_is_artifact():
+    # The wrapper read the status via the module's chain-aware extractor: a 401
+    # hanging on __cause__ (litellm/tenacity wrapping shapes) must reach the veto,
+    # not slip through with a shallow read that sees no status.
+    inner = _FakeHttpError(
+        401, "Incorrect API key provided",
+        {"error": {"message": "The engine is currently overloaded, please try again later"}})
+    err = RuntimeError("call failed")  # no status on the wrapper itself
+    err.__cause__ = inner
+    assert ec._looks_like_overload_probe_error(err) is True
+
+
+def test_retry_wording_without_overload_semantics_is_not_artifact():
+    # Bare auth-failure copy that merely asks to retry ("please retry with a valid
+    # key") carries no overload semantics — removing the bare "please retry" anchor
+    # keeps such genuine failures out of the artifact veto.
+    err = _FakeHttpError(401, "Invalid API key, please retry with a valid key")
+    assert ec._looks_like_overload_probe_error(err) is False
+
+
 def test_body_error_type_reads_nested_and_top_level():
     assert ec._body_error_type({"error": {"type": "Overloaded_Error"}}) == "overloaded_error"
     assert ec._body_error_type({"type": "authentication_error"}) == "authentication_error"
@@ -220,4 +240,5 @@ def test_probe_5xx_and_status_less_keep_original(monkeypatch):
     monkeypatch.setattr(h, "interruptible_api_call", fake_probe_status_less)
     call2 = _make_call({"model": "m", "messages": []})
     assert not _run_handle_stream_error(call2, _StreamErr(500))
-    assert call2.result["error"] is not None and call2.result["error"] is not fake_probe_status_less
+    kept = call2.result["error"]
+    assert isinstance(kept, _StreamErr)  # the 5xx (rebuilt, same type) propagates

@@ -178,8 +178,8 @@ _OVERLOADED_PATTERNS = (
 # same narrow style as _OVERLOADED_PATTERNS — a generic "busy" or "limit" would
 # swallow real auth failures.
 _OVERLOADED_PROBE_PATTERNS = (
-    "overloaded", "server overload", "over capacity", "at capacity", "capacity",
-    "temporarily unavailable", "try again later", "try again in", "please retry",
+    "overloaded", "server overload", "over capacity", "at capacity",
+    "temporarily unavailable", "try again later", "try again in",
     "service is busy", "server is busy", "engine is busy",
     "过载", "超载", "繁忙", "稍后重试", "稍后再试", "负载",
 )
@@ -1587,10 +1587,10 @@ def _looks_like_overload_probe_error(error: Exception) -> bool:
     ``code`` declaration ALWAYS wins over text (checking text first classified every
     artifact as a real auth failure — the author's first attempt, 9/11).
     """
-    status = _status_of(error)
+    status = _extract_status_code(error)
     if status not in (401, 403):
         return False
-    body = _body_of(error)
+    body = _extract_error_body(error)
     if any(t in _AUTH_DECLARED_TYPES for t in _body_error_type_candidates(body)):
         return False
     msg = _build_error_msg(error, body)

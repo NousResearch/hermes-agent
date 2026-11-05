@@ -81,3 +81,34 @@ it('still tells a self-updating app that its window will close', async (): Promi
   expect(screen.getByText(en.updates.applyingClose)).toBeTruthy()
   expect(screen.queryByText(en.updates.applyingStayBackend)).toBeNull()
 })
+
+// Its follower still owns a backend apply in its restart stage: hiding it there keeps that state, and
+// leaves a client apply's state alone too.
+it('hides a backend update during its restart without resetting it or the client state', async (): Promise<void> => {
+  const clientError = { ...applying, applying: false, stage: 'error' as const }
+  $updateApply.set(clientError)
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  $backendUpdateApply.set({ ...applying, stage: 'restart' })
+  await renderOverlay()
+
+  await act(async (): Promise<void> => screen.getByRole('button', { name: /close/i }).click())
+
+  expect($updateOverlayOpen.get()).toBe(false)
+  expect($backendUpdateApply.get()).toMatchObject({ applying: true, stage: 'restart' })
+  expect($updateApply.get()).toEqual(clientError)
+})
+
+it('dismissing a failed backend update clears only the backend state', async (): Promise<void> => {
+  const clientError = { ...applying, applying: false, stage: 'error' as const, message: 'client failed' }
+  $updateApply.set(clientError)
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  $backendUpdateApply.set({ ...clientError, message: 'backend failed' })
+  await renderOverlay()
+
+  await act(async (): Promise<void> => screen.getAllByRole('button', { name: /close/i })[0].click())
+
+  expect($backendUpdateApply.get().stage).toBe('idle')
+  expect($updateApply.get()).toEqual(clientError)
+})

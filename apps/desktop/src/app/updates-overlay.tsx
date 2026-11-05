@@ -168,11 +168,20 @@ function UpdateChangeList({
   )
 }
 
-// A client apply restarts this app, so its progress stays up. A backend apply runs on another
-// machine and this window stays: hiding the progress keeps the chats underneath reachable (the
+// A client apply restarts this app, so its progress stays up. A backend apply restarts the backend,
+// not this window: hiding the progress keeps the chats underneath reachable (the
 // update's drain waits on their approvals and questions), and a failure shows it again.
 function overlayDismissible(phase: ReturnType<typeof overlayPhase>, isBackend: boolean): boolean {
   return phase !== 'applying' || isBackend
+}
+
+// Closing a finished view clears its state. A live backend apply (its restart stage included) is
+// only hidden: its follower still owns that state and reports the outcome.
+function dismissResetsApply(apply: UpdateApplyState): boolean {
+  return (
+    !apply.applying &&
+    (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+  )
 }
 
 function overlayPhase(apply: UpdateApplyState): 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' {
@@ -226,11 +235,8 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (
-      !next &&
-      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
-    ) {
-      resetUpdateApplyState()
+    if (!next && dismissResetsApply(apply)) {
+      resetUpdateApplyState(target)
     }
   }
 

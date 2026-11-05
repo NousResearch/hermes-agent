@@ -317,6 +317,14 @@ def _owner_alive(record: dict[str, Any]) -> bool:
                for pid, create_time in identities.items())
 
 
+def effective_outcome(record: dict[str, Any]) -> Any:
+    """The record's outcome, with a ``running`` run whose processes are gone read as ``interrupted``:
+    what reconcile_interrupted_runs will persist at the next update, answered now so no client
+    follows a killed run as live."""
+    outcome = record.get("outcome")
+    return "interrupted" if outcome == "running" and not _owner_alive(record) else outcome
+
+
 def reconcile_interrupted_runs() -> list[dict[str, Any]]:
     """Mark ``running`` records whose processes are gone as ``interrupted``; returns them.
 

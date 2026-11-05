@@ -1642,7 +1642,7 @@ export interface ActionResponse {
 }
 
 export interface UpdateReceiptSummary {
-  outcome: 'running' | 'success' | 'partial' | 'failed' | 'refused' | string
+  outcome: 'running' | 'interrupted' | 'success' | 'partial' | 'failed' | 'refused' | string
   started_at: string | null
   finished_at: string | null
   pre_sha: string | null

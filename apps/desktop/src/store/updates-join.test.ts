@@ -78,12 +78,14 @@ const {
   $backendUpdateApply,
   $updateOverlayOpen,
   $updateOverlayTarget,
+  applyBackendUpdate,
   joinRunningBackendUpdate,
   startUpdatePoller,
   stopUpdatePoller
 } = await import('./updates')
 
 const { setConnection } = await import('./session')
+const { setApiRequestProfile } = await import('@/api/client')
 
 // A window that connects (or reloads) while its backend is updating joins that update instead of
 // showing a normal app. Split out of updates.test.ts, which sits at its file-size cap.
@@ -169,7 +171,82 @@ describe('joinRunningBackendUpdate', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.useRealTimers()
+  })
+
+  const receiptRunning = (actionId: string) => ({
+    exit_code: null,
+    lines: [],
+    name: 'hermes-update',
+    pid: null,
+    running: false,
+    receipt: { action_id: actionId, outcome: 'running', started_at: new Date().toISOString(), finished_at: null }
+  })
+
+  // After a restart the status's exit code is the dashboard's own last action, maybe another profile's
+  // update: it never decides a run this window joined from its receipt.
+  it.each([0, 1])('a receipt-only join ignores another action exiting %s, and ends on its own outcome', async code => {
+    const joined = 'f'.repeat(32)
+    getActionStatusSpy
+      .mockResolvedValueOnce(receiptRunning(joined))
+      .mockResolvedValueOnce({ ...receiptRunning(joined), exit_code: code, action_id: 'a'.repeat(32) })
+    await joinRunningBackendUpdate()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().applying).toBe(true)
+
+    getActionStatusSpy.mockResolvedValue({
+      ...receiptRunning(joined),
+      exit_code: code,
+      receipt: { ...receiptRunning(joined).receipt, outcome: 'failed', finished_at: new Date().toISOString() }
+    })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().stage).toBe('error')
+  })
+
+  // Its process died: the backend reads the run interrupted, and the follow fails now, not at the deadline.
+  it('fails a followed run the backend reports interrupted', async () => {
+    const joined = 'b'.repeat(32)
+    getActionStatusSpy
+      .mockResolvedValueOnce(receiptRunning(joined))
+      .mockResolvedValue({
+        ...receiptRunning(joined),
+        receipt: { ...receiptRunning(joined).receipt, outcome: 'interrupted' }
+      })
+    await joinRunningBackendUpdate()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('drops an answer that arrives after the window switched profile on the same backend', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    getActionStatusSpy.mockReturnValue(new Promise(resolve => (answer = resolve)))
+
+    const joining = joinRunningBackendUpdate()
+    setApiRequestProfile('work')
+    answer({ exit_code: null, lines: [], name: 'hermes-update', pid: 4, running: true })
+    await joining
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('drops an answer that arrives after the update poller stopped', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    getActionStatusSpy.mockReturnValue(new Promise(resolve => (answer = resolve)))
+
+    const joining = joinRunningBackendUpdate()
+
+    ;(globalThis as unknown as { window: unknown }).window = { removeEventListener: vi.fn() }
+    stopUpdatePoller()
+    delete (globalThis as unknown as { window?: unknown }).window
+    answer({ exit_code: null, lines: [], name: 'hermes-update', pid: 4, running: true })
+    await joining
+
+    expect($updateOverlayOpen.get()).toBe(false)
   })
 
   it('opens the progress overlay on an update a reloaded window finds running, and follows it to the end', async () => {
@@ -314,6 +391,33 @@ describe('joinRunningBackendUpdate', () => {
     await vi.advanceTimersByTimeAsync(1500)
 
     expect($backendUpdateApply.get().stage).toBe('error')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it.each([
+    [
+      'refused',
+      () => updateHermesSpy.mockResolvedValue({ ok: false, name: 'hermes-update', message: 'managed' }),
+      'manual'
+    ],
+    ['rejected', () => updateHermesSpy.mockRejectedValue(new Error('offline')), 'error']
+  ])('shows a hidden Update press again when its start is %s', async (_label, arrange, stage) => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => (release = resolve))
+    arrange()
+    const outcome = updateHermesSpy.getMockImplementation()
+    updateHermesSpy.mockImplementation(async () => {
+      await gate
+
+      return outcome?.()
+    })
+
+    const pressed = applyBackendUpdate()
+    $updateOverlayOpen.set(false) // hidden while the start request is in flight
+    release()
+    await pressed
+
+    expect($backendUpdateApply.get().stage).toBe(stage)
     expect($updateOverlayOpen.get()).toBe(true)
   })
 

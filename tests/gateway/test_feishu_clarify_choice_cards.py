@@ -126,3 +126,37 @@ async def test_choice_picker_applies_the_selection_once_for_an_authorized_operat
         await asyncio.sleep(0)
     assert applied == [(CHAT, "high")]
     assert adapter.send.await_args.args == (CHAT, "set to high")
+
+
+class _Body:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    async def readexactly(self, size: int) -> bytes:
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
+async def _webhook_tap(a, value, open_id="ou_ok"):
+    body = json.dumps({"schema": "2.0", "header": {"event_type": "card.action.trigger"}, "event": {
+        "operator": {"open_id": open_id}, "context": {"open_chat_id": CHAT},
+        "action": {"tag": "button", "value": value}}}).encode()
+    response = await a._handle_webhook_request(
+        SimpleNamespace(remote="127.0.0.1", content_length=None, headers={}, content=_Body(body)))
+    assert response.status == 200
+    return json.loads(response.body)
+
+
+@pytest.mark.asyncio
+async def test_webhook_tap_answers_the_clarify_and_returns_the_settled_card(adapter):
+    adapter._loop = asyncio.get_running_loop()
+    values = await _ask(adapter)
+
+    assert await _webhook_tap(adapter, values[1], open_id="ou_stranger") == {}
+    assert cg.get_pending("c1") is not None
+
+    reply = await _webhook_tap(adapter, values[1])
+    assert reply["card"]["type"] == "raw" and "blue" in reply["card"]["data"]["elements"][0]["content"]
+    assert cg._entries["c1"].response == "blue"
+

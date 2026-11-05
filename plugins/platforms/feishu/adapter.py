@@ -2898,6 +2898,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._clear_webhook_anomaly(remote_ip)
 
         event_type = str((payload.get("header") or {}).get("event_type") or "")
+        if event_type == "card.action.trigger":
+            return web.json_response(self._on_webhook_card_action(payload))
         data = self._namespace_from_mapping(payload)
         if event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
@@ -2915,7 +2917,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         "im.message.message_read_v1": "_on_message_read_event",
         "im.chat.member.bot.added_v1": "_on_bot_added_to_chat",
         "im.chat.member.bot.deleted_v1": "_on_bot_removed_from_chat",
-        "card.action.trigger": "_on_card_action_trigger",
         "drive.notice.comment_add_v1": "_on_drive_comment_event",
         "vc.bot.meeting_invited_v1": "_on_meeting_invited_event",
     }

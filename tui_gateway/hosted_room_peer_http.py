@@ -673,8 +673,15 @@ class PeerRunsHTTPClient:
         record = self._receipt(task_id, execution_generation)
         if record is None:
             return None
-        result = self._post_run_action(
-            record, "stop", body={}, grant=self._require_room_grant(grant))
+        try:
+            result = self._post_run_action(
+                record, "stop", body={}, grant=self._require_room_grant(grant))
+        except PeerRunsHTTPError as exc:
+            if exc.error_code != "unknown_execution":
+                raise
+            # Stop needs fresh confirmation, even while observation is backing off.
+            self._status_cache.pop(str(record["run_id"]), None)
+            return self._poll_receipt(record, grant=grant)
         if result.get("status") in _TERMINAL_RUN_STATES:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result

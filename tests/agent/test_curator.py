@@ -1331,3 +1331,36 @@ def test_hold_lifts_itself_once_the_anomaly_clears(curator_env, monkeypatch):
     counts = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")["auto_transitions"]
     assert counts["held"] == 0
     assert c.get_archive_hold() is None, "a hold with nothing left to withhold is stale state"
+
+
+def test_locked_skill_survives_cap_and_hold_and_is_not_counted_as_held(curator_env, monkeypatch):
+    """AD-HOC CROSS-CHECK (main's per-skill lock x this PR's archive hold): a locked skill is
+    filtered before the cap/hold branch, so neither the cap, the hold, nor --force-archive may
+    archive it, and it must not inflate the ``held`` counter that decides when the hold lifts."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    names = _write_expired_skills(curator_env, 3)
+    locked = names[0]
+    assert u.set_locked(locked, True) is True
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 1})
+
+    first = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+    at = first["auto_transitions"]
+    assert at["archived"] == 1
+    assert at["capped"] == 1, "only the unlocked survivor reaches the cap branch"
+    assert at["held"] == 0
+    assert c.get_archive_hold() is not None, "hitting the ceiling must persist a hold"
+    assert u.load_usage()[locked]["state"] != u.STATE_ARCHIVED
+
+    second = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+    at2 = second["auto_transitions"]
+    assert at2["archived"] == 0
+    assert at2["held"] == 1, "a locked skill must not be counted as withheld"
+    assert u.load_usage()[locked]["state"] != u.STATE_ARCHIVED
+
+    forced = c.run_curator_review(
+        synchronous=True, consolidate=False, trigger="manual", force_archive=True)
+    assert forced["auto_transitions"]["archived"] == 1
+    assert u.load_usage()[locked]["state"] != u.STATE_ARCHIVED, \
+        "explicit force-archive still must not touch a locked skill"
+    assert c.get_archive_hold() is None

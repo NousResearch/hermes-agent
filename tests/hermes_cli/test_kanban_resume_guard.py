@@ -1,6 +1,6 @@
 """Kanban worker transcripts must not resume as ordinary write-capable sessions (#68779).
 
-Behaviour tests for the centralized guard (`hermes_cli/kanban_resume_guard.py`) and the three
+Behaviour tests for the centralized guard (`hermes_cli/kanban_resume_guard.py`) and the two
 CLI resume surfaces it protects: startup `--resume` (`_preload_resumed_session`) and mid-chat
 `/resume`. The gateway surface is covered in `tests/tui_gateway/test_kanban_resume_guard.py`.
 """

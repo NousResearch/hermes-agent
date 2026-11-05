@@ -303,6 +303,24 @@ def test_llms_full_document_links_become_published_urls(mini_docs, tmp_path):
     assert "[gone](./missing.md)" in full
 
 
+def test_llms_full_rewrites_links_whose_text_wraps_a_line(mini_docs, tmp_path):
+    """Hard-wrapped prose splits link text across lines; the target still resolves."""
+    content = tmp_path / "content" / "en"
+    (content / "user-guide" / "cli.md").write_text(
+        "---\n"
+        "title: CLI\n"
+        "---\n"
+        "\n"
+        "See the [multi-gateway\n"
+        "guide](./other.md#setup) for more.\n",
+        encoding="utf-8",
+    )
+    full = mini_docs.emit_llms_full()
+
+    assert "[multi-gateway\nguide](https://hermes-agent.nousresearch.com/docs/user-guide/other#setup)" in full
+    assert "./other.md" not in full
+
+
 def test_llms_full_drops_heading_ids_and_mdx_comments_from_prose(mini_docs, tmp_path):
     """Heading `[#id]` suffixes and `{/* ... */}` comments are authoring syntax;
     the same text inside code stays verbatim."""

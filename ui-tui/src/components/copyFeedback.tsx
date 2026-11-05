@@ -24,7 +24,7 @@ export function CopyFeedback() {
 
   return (
     <Box flexShrink={1} justifyContent="flex-end" minWidth={0}>
-      <Text color="blueBright" wrap="truncate-end">
+      <Text color="ansi:blueBright" wrap="truncate-end">
         {delivery === 'terminal' ? T.composer.copySentToTerminal : T.slashCmd.core.copy.copied}
       </Text>
     </Box>

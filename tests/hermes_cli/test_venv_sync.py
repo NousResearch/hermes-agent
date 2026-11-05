@@ -179,3 +179,54 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+class _Relaunched(SystemExit):
+    pass
+
+
+def _record_relaunch(monkeypatch):
+    calls: list[list[str]] = []
+
+    def execv(path, command):
+        calls.append(command)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(venv_sync.subprocess, "call", lambda command: calls.append(command) or 7)
+    monkeypatch.setattr(venv_sync.os, "execv", execv)
+    return calls
+
+
+def test_relaunch_if_needed_reenters_the_prepared_interpreter(monkeypatch, tmp_path):
+    calls = _record_relaunch(monkeypatch)
+    monkeypatch.setattr(venv_sync, "prepare_launch", lambda root, argv: tmp_path / "python")
+
+    with pytest.raises(SystemExit) as info:
+        venv_sync.relaunch_if_needed(tmp_path, exit_type=_Relaunched)
+
+    assert calls and calls[0][0] == str(tmp_path / "python")
+    if venv_sync.os.name == "nt":
+        assert isinstance(info.value, _Relaunched) and info.value.code == 7
+
+
+def test_relaunch_if_needed_is_a_no_op_for_the_current_interpreter(monkeypatch, tmp_path):
+    calls = _record_relaunch(monkeypatch)
+    monkeypatch.setattr(venv_sync, "prepare_launch", lambda root, argv: None)
+
+    venv_sync.relaunch_if_needed(tmp_path, exit_type=_Relaunched)
+
+    assert calls == []
+
+
+def test_relaunch_if_needed_degrades_when_preparation_fails(monkeypatch, tmp_path, capsys):
+    calls = _record_relaunch(monkeypatch)
+
+    def failing(root, argv):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(venv_sync, "prepare_launch", failing)
+
+    venv_sync.relaunch_if_needed(tmp_path, exit_type=_Relaunched)
+
+    assert calls == []
+    assert "source-update completion failed: offline" in capsys.readouterr().err

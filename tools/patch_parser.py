@@ -510,7 +510,8 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free, removed)
             # Already-applied hunks are a no-op; only reached when no site of the search text remains.
             consumed_differently = any(
-                wrote != replacement and any(_consumed(line, [old]) for line in pattern.split('\n') if line.strip())
+                (wrote != replacement or not _consumed(pattern, [old]))
+                and any(_consumed(line, [old]) for line in pattern.split('\n') if line.strip())
                 for old, wrote in landed)
             error = (None if not error or (not consumed_differently and is_already_applied(content, pattern, replacement)) else
                      f"{label} not found — {error}" + _no_match_hint(error, pattern, content))

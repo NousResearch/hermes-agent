@@ -25,7 +25,7 @@ import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
-import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import { $newSessionTabAction, $newSessionTileAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
@@ -1029,6 +1029,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     return () => $newSessionTabAction.set(null)
   }, [openNewSessionTab])
+
+  // Plugins' "new chat in a tile" (host.layout.newChatTile): the edge-drop
+  // create path, so an edge lists the session and a center drop stays a draft tab.
+  useEffect(() => {
+    $newSessionTileAction.set(
+      ({ pane, pos }) => void openNewSessionTile(pos, { anchor: pane, listed: pos === 'center' ? false : undefined })
+    )
+
+    return () => $newSessionTileAction.set(null)
+  }, [openNewSessionTile])
 
   // The MAIN tab's Close. The workspace pane can't leave the tree, so its
   // closer empties it instead: the next stacked session shifts in, else main

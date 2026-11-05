@@ -309,6 +309,21 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
   )
 }
 
+/**
+ * One rebindable shortcut, for any registered action (built-in or a plugin's
+ * contributed one): the same caps, capture, conflict warning and reset as
+ * Settings ▸ Keybinds, writing the same overrides. Plugins put it on their own
+ * settings page (SDK `KeybindEditor`) so their shortcuts are editable where
+ * their other options live; `label` overrides the panel's label there (a
+ * plugin's own page needn't repeat its prefix). Renders nothing for an unknown id.
+ */
+export function KeybindEditor({ actionId, label }: { actionId: string; label?: string }) {
+  const contributions = useContributions(KEYBINDS_AREA)
+  const action = allKeybindActions(contributions).find(a => a.id === actionId)
+
+  return action ? <KeybindRow action={label ? { ...action, label } : action} /> : null
+}
+
 // Fixed shortcut: same layout as KeybindRow but the caps aren't interactive and
 // the trailing reset slot stays empty (spacer keeps the columns aligned).
 function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {

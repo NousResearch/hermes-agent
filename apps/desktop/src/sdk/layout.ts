@@ -2,7 +2,9 @@
  * Session tiling surface for plugins: a READ-ONLY projection of the pane tree
  * (`host.state.sessionLayout`), the sidebar's pinned ids
  * (`host.state.pinnedSessionIds`), and a few layout verbs (`host.layout`).
- * Placing a NEW tile is `host.openSession(id, { intent: 'tab', dock })`.
+ * Placing a NEW tile is `host.openSession(id, { intent: 'tab', dock })`, or
+ * `host.layout.newChatTile(dock)` for a fresh chat; `host.layout.arrangeSessions`
+ * re-tiles every open chat at once (a tiling plugin's layouts).
  *
  * The verbs are thin doors over the writers the app's own sash drags, tab
  * strip and ⌘W use, so a plugin action and a hand gesture can never disagree.
@@ -11,10 +13,12 @@
  */
 import { computed, type ReadableAtom } from 'nanostores'
 
-import type { LayoutNode, Orientation } from '@/components/pane-shell/tree/model'
+import type { ChatArrangement, LayoutNode, Orientation } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
+  $newSessionTileAction,
+  arrangeTreeChat,
   closeTabPane,
   commitTreeSplitWeights,
   setTreeSplitOrientation,
@@ -30,6 +34,10 @@ import { TILE_PANE_PREFIX } from '@/store/session-focus'
 export type PluginLayoutNode =
   | { type: 'split'; id: string; orientation: Orientation; weights: number[]; children: PluginLayoutNode[] }
   | { type: 'group'; id: string; panes: string[]; active: string; minimized: boolean }
+
+/** `host.layout.arrangeSessions` input. */
+export type PluginChatArrangement =
+  { pane: string } | { children: PluginChatArrangement[]; orientation: Orientation; weights?: number[] }
 
 export interface PluginSessionLayout {
   root: null | PluginLayoutNode
@@ -99,6 +107,29 @@ export const layoutHost = {
     }
 
     swapTreePanes(a, b)
+
+    return true
+  },
+
+  /** Re-tile the chat area: leaves name chat panes (`{ pane }`, whose whole
+   *  zone moves, tabs and all), splits are `{ orientation, children, weights? }`.
+   *  Must name every chat zone exactly once. Sidebar, rails and any zone the user
+   *  docked between chats are never moved; false (nothing changes) when the
+   *  spec doesn't fit. Persisted. */
+  arrangeSessions: (spec: PluginChatArrangement): boolean => arrangeTreeChat(spec as ChatArrangement, isChatPaneId),
+
+  /** Open a fresh chat as a new tile at `dock` (default: right of main). False
+   *  when this window can't create sessions yet (still connecting). */
+  newChatTile: (dock: { pane?: string; pos?: 'bottom' | 'center' | 'left' | 'right' | 'top' } = {}): boolean => {
+    const open = $newSessionTileAction.get()
+    const pane = dock.pane ?? 'workspace'
+    const pos = dock.pos ?? 'right'
+
+    if (!open || !isChatPaneId(pane) || !['bottom', 'center', 'left', 'right', 'top'].includes(pos)) {
+      return false
+    }
+
+    open({ pane, pos })
 
     return true
   },

@@ -112,4 +112,45 @@ describe('host.state.sessionLayout / host.layout', () => {
     expect(host.layout.closePane('sessions')).toBe(false)
     expect(host.layout.swapPanes('sessions', 'workspace')).toBe(false)
   })
+  it('re-tiles the chat area through arrangeSessions, and refuses a spec that misses a chat', async () => {
+    const { host, store } = await setup()
+
+    expect(
+      host.layout.arrangeSessions({
+        orientation: 'column',
+        children: [{ pane: 'session-tile:a' }, { pane: 'workspace' }]
+      })
+    ).toBe(true)
+
+    const root = store.$layoutTree.get()
+
+    expect(root?.type === 'split' && root.orientation).toBe('column')
+    expect(host.state.sessionLayout.get().root).toMatchObject({
+      type: 'split',
+      children: [{ panes: ['session-tile:a'] }, { panes: ['workspace'] }]
+    })
+
+    const before = store.$layoutTree.get()
+
+    expect(host.layout.arrangeSessions({ orientation: 'row', children: [{ pane: 'workspace' }] })).toBe(false)
+    expect(store.$layoutTree.get()).toBe(before)
+  })
+
+  it('opens a fresh chat tile through the wired create path, and reports false until wired', async () => {
+    const { host, store } = await setup()
+
+    expect(host.layout.newChatTile()).toBe(false)
+
+    const calls: unknown[] = []
+
+    store.$newSessionTileAction.set(placement => void calls.push(placement))
+
+    expect(host.layout.newChatTile({ pane: 'session-tile:a', pos: 'bottom' })).toBe(true)
+    expect(host.layout.newChatTile()).toBe(true)
+    expect(host.layout.newChatTile({ pane: 'terminal' })).toBe(false)
+    expect(calls).toEqual([
+      { pane: 'session-tile:a', pos: 'bottom' },
+      { pane: 'workspace', pos: 'right' }
+    ])
+  })
 })

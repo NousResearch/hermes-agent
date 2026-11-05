@@ -21,6 +21,8 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 import {
   allPaneIds,
   anchorsFirst,
+  arrangeChatGroups,
+  type ChatArrangement,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -812,6 +814,17 @@ export function treePanesWithPrefix(prefix: string): string[] {
  *  generic renderer stays session-agnostic; null until wired (the "+" hides).
  *  An atom so the strip re-renders when the action becomes available. */
 export const $newSessionTabAction = atom<(() => void) | null>(null)
+
+/** Where a new chat tile lands: an edge (or the center, as a tab) of a pane. */
+export interface NewSessionTilePlacement {
+  pane: string
+  pos: 'bottom' | 'center' | 'left' | 'right' | 'top'
+}
+
+/** Open a fresh chat as a tile at `placement`: the same create path a
+ *  new-session drag onto a pane edge uses. The app wiring registers it, like
+ *  `$newSessionTabAction`; null until wired. */
+export const $newSessionTileAction = atom<((placement: NewSessionTilePlacement) => void) | null>(null)
 
 /**
  * Keyboard slots (⌘1…⌘9, ⌃Tab) must index the SAME tabs the strip paints —
@@ -2216,6 +2229,24 @@ export function swapTreePanes(a: string, b: string) {
   if (tree) {
     commit(swapPanesOp(tree, a, b))
   }
+}
+
+/** Rebuild the chat area as `spec` (see `arrangeChatGroups`). False, and the
+ *  tree untouched, when the spec doesn't name every chat zone exactly once or
+ *  a user-placed zone sits between chats. */
+export function arrangeTreeChat(spec: ChatArrangement, isChat: (paneId: string) => boolean): boolean {
+  const tree = $layoutTree.get()
+  const next = tree ? arrangeChatGroups(tree, spec, isChat) : null
+
+  if (!next) {
+    return false
+  }
+
+  if (next !== tree) {
+    commit(next)
+  }
+
+  return true
 }
 
 /** Child count of split `splitId`, or null when the tree has no such split. */

@@ -126,7 +126,7 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
-export type { PluginLayoutNode, PluginSessionLayout } from './layout'
+export type { PluginChatArrangement, PluginLayoutNode, PluginSessionLayout } from './layout'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
 
@@ -1674,6 +1674,7 @@ export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
  *  never an Off/On pill pair. Use them for preference rows in plugin panes and
  *  dialogs so they line up with core Settings. */
+export { KeybindEditor } from '@/app/settings/keybind-settings'
 export { ListRow, ToggleRow } from '@/app/settings/primitives'
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-

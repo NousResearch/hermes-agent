@@ -625,6 +625,135 @@ export function swapPanes(root: LayoutNode, a: string, b: string): LayoutNode {
   return walk(root)
 }
 
+/** A requested arrangement of the chat area. A leaf names a pane, and that
+ *  pane's whole zone moves (stacked tabs and all); a split carries an
+ *  orientation and optional weights (default: equal). */
+export type ChatArrangement =
+  { pane: string } | { children: ChatArrangement[]; orientation: Orientation; weights?: number[] }
+
+const groupsOf = (n: LayoutNode): GroupNode[] => (n.type === 'group' ? [n] : n.children.flatMap(groupsOf))
+
+/**
+ * Rebuild the chat area as `spec`, leaving every other zone exactly where it
+ * is. A chat zone is a group whose panes all satisfy `isChat`; the chat area
+ * is the contiguous run of children, under the lowest split holding every
+ * chat zone, whose subtrees hold only chat zones. The run is replaced by the
+ * arrangement and keeps its combined weight, so the sidebar and tool rails
+ * never move or resize.
+ *
+ * Returns null (keep the tree) unless `spec` names every chat zone exactly
+ * once and nothing else, or when a non-chat zone sits between chat zones (a
+ * terminal docked between two chats): the user placed it there, and an
+ * arrangement must not evict it.
+ */
+export function arrangeChatGroups(
+  root: LayoutNode,
+  spec: ChatArrangement,
+  isChat: (paneId: string) => boolean
+): LayoutNode | null {
+  const isChatZone = (g: GroupNode) => g.panes.length > 0 && g.panes.every(isChat)
+  const zones = groupsOf(root).filter(isChatZone)
+
+  if (zones.length === 0 || groupsOf(root).some(g => !isChatZone(g) && g.panes.some(isChat))) {
+    return null
+  }
+
+  const used = new Set<string>()
+
+  const build = (s: ChatArrangement): LayoutNode | null => {
+    if (!s || typeof s !== 'object') {
+      return null
+    }
+
+    if ('pane' in s) {
+      const zone = typeof s.pane === 'string' ? zones.find(g => g.panes.includes(s.pane)) : undefined
+
+      if (!zone || used.has(zone.id)) {
+        return null
+      }
+
+      used.add(zone.id)
+
+      return zone
+    }
+
+    const { children, orientation, weights } = s
+
+    if ((orientation !== 'row' && orientation !== 'column') || !Array.isArray(children) || children.length === 0) {
+      return null
+    }
+
+    const kids = children.map(build)
+
+    if (kids.some(k => !k)) {
+      return null
+    }
+
+    const fair =
+      Array.isArray(weights) &&
+      weights.length === kids.length &&
+      weights.every(w => typeof w === 'number' && Number.isFinite(w) && w > 0)
+
+    return split(orientation, kids as LayoutNode[], fair ? [...weights] : undefined)
+  }
+
+  const built = build(spec)
+
+  if (!built || used.size !== zones.length) {
+    return null
+  }
+
+  if (zones.length === 1) {
+    return root
+  }
+
+  const ids = new Set(zones.map(z => z.id))
+  const chatIn = (n: LayoutNode) => groupsOf(n).filter(g => ids.has(g.id)).length
+
+  // Lowest split holding every chat zone.
+  let lca: LayoutNode = root
+
+  for (;;) {
+    if (lca.type !== 'split') {
+      return null
+    }
+
+    const all: LayoutNode | undefined = lca.children.find(c => chatIn(c) === zones.length)
+
+    if (!all) {
+      break
+    }
+
+    lca = all
+  }
+
+  const host = lca as SplitNode
+  const holds = host.children.map(c => chatIn(c) > 0)
+  const first = holds.indexOf(true)
+  const last = holds.lastIndexOf(true)
+  const run = host.children.slice(first, last + 1)
+
+  if (run.some(c => groupsOf(c).some(g => !ids.has(g.id)))) {
+    return null
+  }
+
+  const runWeight = host.weights.slice(first, last + 1).reduce((a, b) => a + b, 0) || 1
+
+  const replaced: LayoutNode =
+    run.length === host.children.length
+      ? { ...built, id: built.type === 'split' && built.orientation === host.orientation ? host.id : built.id }
+      : {
+          ...host,
+          children: [...host.children.slice(0, first), built, ...host.children.slice(last + 1)],
+          weights: [...host.weights.slice(0, first), runWeight, ...host.weights.slice(last + 1)]
+        }
+
+  const walk = (n: LayoutNode): LayoutNode =>
+    n === host ? replaced : n.type === 'split' ? { ...n, children: n.children.map(walk) } : n
+
+  return normalize(walk(root))
+}
+
 // ---------------------------------------------------------------------------
 // Validation (persisted trees are untrusted)
 // ---------------------------------------------------------------------------

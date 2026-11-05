@@ -1459,6 +1459,8 @@ host.layout.setSplitWeights(splitId, weights) // resize a split: one weight > 0 
 host.layout.setSplitOrientation(splitId, o)   // 'row' (side by side) | 'column' (stacked) → boolean
 host.layout.swapPanes(paneA, paneB)        // chat panes only (workspace, session-tile:*) → boolean
 host.layout.closePane(paneId)              // chat panes only; like the tab's ✕, the sibling takes the space → boolean
+host.layout.arrangeSessions(spec)          // re-tile every chat zone at once; sidebar and rails stay put → boolean
+host.layout.newChatTile({ pane?, pos? })   // fresh chat as a new tile (default right of main) → boolean
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -1655,6 +1657,38 @@ export function openBeside(storedSessionId) {
 
 Feature-detect with `host.state.sessionLayout` before relying on any of it:
 older Desktop builds ignore `dock` and open a stacked tab.
+
+A tiling layout (a grid, a master and stack) re-tiles all chats at once with
+`host.layout.arrangeSessions(spec)`. A leaf `{ pane }` names a chat pane, and
+its whole zone moves with its tabs. A split is `{ orientation, children,
+weights? }`, with equal weights when `weights` is omitted. The spec must name
+every chat zone exactly once. Only the chat area is rebuilt: the sidebar, tool
+rails and their sizes stay where they are, and the call returns `false` without
+changing anything when the spec doesn't fit or the user docked a non-chat zone
+between two chats.
+
+```js
+// Four chats as an even 2×2 grid.
+host.layout.arrangeSessions({
+  orientation: 'column',
+  children: [
+    { orientation: 'row', children: [{ pane: 'workspace' }, { pane: 'session-tile:a' }] },
+    { orientation: 'row', children: [{ pane: 'session-tile:b' }, { pane: 'session-tile:c' }] }
+  ]
+})
+```
+
+`host.layout.newChatTile({ pane, pos })` opens a fresh chat as a tile, using the
+same create path as dragging "New session" onto a pane's edge.
+
+To make a plugin's shortcuts editable on its own settings page, render
+`KeybindEditor` for each `KEYBINDS_AREA` action id. It shows the same row as
+Settings ▸ Keybinds (caps, capture, conflict warning, reset) and writes the
+same overrides:
+
+```js
+jsx(KeybindEditor, { actionId: 'my-plugin.focus-left' })
+```
 
 ### Files — `ctx.files` {#plugin-files}
 

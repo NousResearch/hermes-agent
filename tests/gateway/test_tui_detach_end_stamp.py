@@ -8,6 +8,8 @@ picker's live feed drops a closed, idle, unviewed session into the stored (resum
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 async def _owner(tmp_path, monkeypatch):
@@ -19,11 +21,11 @@ async def _owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
-    return store._db, authority
+    return store.persistence, authority
 
 
 def _native(authority, tmp_path):
@@ -42,13 +44,12 @@ async def _call(conn, method, **params):
 @pytest.mark.parametrize('reason', ['tui_close', 'tui_shutdown'])
 async def test_tui_detach_stamps_end_reason_and_moves_row_to_resumable(tmp_path, monkeypatch, reason):
     db, authority = await _owner(tmp_path, monkeypatch)
-    db.create_session('old-tui', source='tui', model='fake-model', cwd=str(tmp_path))
-    db.append_message('old-tui', 'user', 'q')
-    db.append_message('old-tui', 'assistant', 'a')
+    seed_session(db, 'old-tui', 'tui', model='fake-model', cwd=str(tmp_path))
+    seed_messages(db, 'old-tui', {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'a'})
     viewer = _native(authority, tmp_path)
     resumed = await _call(viewer, 'session.resume', session_id='old-tui')
     # Opening a closed chat reopens it only on the first turn; reopen to model an active session.
-    db.reopen_session('old-tui')
+    db.sessions.reopen('old-tui')
     live = await _call(viewer, 'session.list')
     assert [(r['id'], r['model']) for r in live['sessions']] == [('old-tui', 'fake-model')]
 
@@ -58,11 +59,11 @@ async def test_tui_detach_stamps_end_reason_and_moves_row_to_resumable(tmp_path,
     out = await _call(viewer, 'session.detach', session_id='old-tui',
                       subscription_id=resumed['subscription_id'], end_reason=reason)
     assert out['detached'] is True
-    assert db.get_session('old-tui')['end_reason'] is None
+    assert session_row(db, 'old-tui')['end_reason'] is None
 
     await _call(other, 'session.detach', session_id='old-tui',
                 subscription_id=second['subscription_id'], end_reason=reason)
-    row = db.get_session('old-tui')
+    row = session_row(db, 'old-tui')
     assert (row['end_reason'], row['ended_at'] is not None, row['source']) == (reason, True, 'tui')
 
     fresh = _native(authority, tmp_path)
@@ -74,12 +75,12 @@ async def test_tui_detach_stamps_end_reason_and_moves_row_to_resumable(tmp_path,
 @pytest.mark.asyncio
 async def test_plain_detach_never_stamps(tmp_path, monkeypatch):
     db, authority = await _owner(tmp_path, monkeypatch)
-    db.create_session('old-tui', source='tui', model='fake-model', cwd=str(tmp_path))
-    db.append_message('old-tui', 'user', 'q')
+    seed_session(db, 'old-tui', 'tui', model='fake-model', cwd=str(tmp_path))
+    seed_messages(db, 'old-tui', {'role': 'user', 'content': 'q'})
     viewer = _native(authority, tmp_path)
     resumed = await _call(viewer, 'session.resume', session_id='old-tui')
     await _call(viewer, 'session.detach', session_id='old-tui', subscription_id=resumed['subscription_id'])
-    assert db.get_session('old-tui')['end_reason'] is None
+    assert session_row(db, 'old-tui')['end_reason'] is None
 
 
 @pytest.mark.asyncio
@@ -90,7 +91,7 @@ async def test_a_closed_session_stays_in_the_stored_picker_after_a_restart(tmp_p
     viewer = _native(authority, tmp_path)
     sid = create_local_session(authority, viewer.actor, {
         'request_id': 'r1', 'source': 'tui', 'cwd': str(tmp_path), 'model': 'm', 'toolsets': []}).session_id
-    db.append_message(sid, 'user', 'q')
+    seed_messages(db, sid, {'role': 'user', 'content': 'q'})
     resumed = await _call(viewer, 'session.resume', session_id=sid)
     await _call(viewer, 'session.detach', session_id=sid, subscription_id=resumed['subscription_id'],
                 end_reason='tui_close')

@@ -6,7 +6,6 @@ import hashlib
 import logging
 import re
 from contextlib import nullcontext
-from pathlib import Path
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -379,23 +378,7 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
                 continue
             row.update((key, value) for key, value in outcome.as_row_annotation().items() if value is not None)
     else:
-        # A ``SessionDB`` passed as ``session_db=`` raises its own classes; raise them as the contract's, so the
-        # rescue and the compression adoption in ``_db_flush_failed`` fire on either store. The agent resolves the
-        # tip itself (``_db_flush_adopt_compression_tip``), so the closed session stands in for it here.
-        from hermes_state_errors import (
-            CompressionSessionClosedError, DeletedWalGenerationError, StateDbCorruptError, StateDbReplacedError,
-        )
-        from persistence import CompressionClosed, DeletedWalGeneration, StoreQuarantined, StoreReplaced
-        try:
-            agent._session_db.append_messages_batch(session_id=agent.session_id, messages=batch_rows, **guards)
-        except DeletedWalGenerationError as exc:
-            raise DeletedWalGeneration(str(exc)) from exc
-        except StateDbReplacedError as exc:
-            raise StoreReplaced(str(exc)) from exc
-        except StateDbCorruptError as exc:
-            raise StoreQuarantined(str(exc)) from exc
-        except CompressionSessionClosedError as exc:
-            raise CompressionClosed(exc.session_id, exc.session_id) from exc
+        agent._session_db.append_messages_batch(session_id=agent.session_id, messages=batch_rows, **guards)
     sync_flushed_message_markers(batch_msgs, batch_rows)
     _db_flush_store_uids(agent).update(uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
@@ -497,13 +480,11 @@ def _db_flush_failed(agent, e: Exception, batch_rows: list[dict[str, Any]], adop
     if isinstance(e, (StoreReplaced, StoreQuarantined)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk, beside its store.
         try:
-            store = agent_interface(agent)
-            profile_dir = store.scope.profile_dir if store is not None else Path(agent._session_db.db_path).parent
             # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
                                             [{k: v for k, v in r.items() if k not in REPAIR_BOOKKEEPING_FIELDS}
                                              for r in batch_rows],
-                                            sessions_dir=profile_dir / "sessions")
+                                            sessions_dir=agent_interface(agent).scope.profile_dir / "sessions")
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)

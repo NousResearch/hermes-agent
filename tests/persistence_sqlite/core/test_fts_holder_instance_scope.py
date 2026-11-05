@@ -28,7 +28,7 @@ import os
 
 import pytest
 
-import hermes_state_holders as state_holders
+from persistence.sqlite._state import holders as state_holders
 
 # Capture the pristine stdlib functions at import time: monkeypatched calls
 # re-enter these closures, and re-capturing ``os.listdir`` after a previous

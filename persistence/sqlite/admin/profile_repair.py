@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Literal, Mapping, Optional
 
-from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
+from persistence.sqlite._state.common import _id_chunks, _placeholders as _session_ids_placeholders
 from persistence import SessionLedgered
 from persistence.conversation.sessions import MAX_TITLE_LENGTH
 from persistence.core.keys import session_key_profile

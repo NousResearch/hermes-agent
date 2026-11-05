@@ -10,7 +10,7 @@ from contextlib import closing
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import classify_persistence_error
+from persistence.sqlite._state.errors import classify_persistence_error
 from persistence.sqlite.authority._admission_store import (
     admit_session_input, claim_session_input, settle_session_input,
 )

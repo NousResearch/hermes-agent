@@ -10,29 +10,22 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_state_dbfile import collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders
-from hermes_state_holders import describe_holder_pid, foreign_state_db_holders, held_store_refusal, read_only_db_uri
-from hermes_state_repair import HealthCheckUnavailable as _ProbeUnavailable, _db_opens_cleanly as _repair_opens_cleanly
-from hermes_state_repair import (
-    _exclusive_repair_db_guard, _live_writer_holds_db, repair_state_db_schema, state_db_has_structural_damage,
-)
-from hermes_state_wal import (
-    _on_disk_journal_mode, _path_on_cross_vm_fs, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable,
+from persistence.sqlite._state.dbfile import collect_state_db_stats, count_db_holders, iter_deleted_sqlite_sidecar_holders
+from persistence.sqlite._state.holders import describe_holder_pid, foreign_state_db_holders, held_store_refusal, read_only_db_uri
+from persistence.sqlite._state.repair import (
+    _db_opens_cleanly, _exclusive_repair_db_guard, _live_writer_holds_db, repair_state_db_schema,
+    state_db_has_structural_damage,
 )
 from persistence import PermanentStoreError, StoreContention
-from persistence.core.admin import WRITE_PROBE_SKIPPED, HealthCheckUnavailable, RepairGuard
+from persistence.core.admin import WRITE_PROBE_SKIPPED, RepairGuard
+from sqlite_support import (
+    _on_disk_journal_mode, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable, path_on_cross_vm_fs,
+)
 
 from .._backend import translated
 from ._base import AdminFile
 
 logger = logging.getLogger("gateway.lifecycle_ledger")
-
-
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
-    """The repair probe's reason *db_path* does not open cleanly, else None; a probe that could not run is the
-    interface's ``HealthCheckUnavailable``."""
-    reason = _repair_opens_cleanly(db_path)
-    return HealthCheckUnavailable(reason) if isinstance(reason, _ProbeUnavailable) else reason
 
 # Above this the snapshot copy a held store needs costs more than the probe is worth; should_fix still probes.
 _WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
@@ -265,7 +258,7 @@ class DoctorAdmin(AdminFile):
         if current == target:
             return current, current
         refusal = _refusal(
-            target, current, on_cross_vm_fs=target == "wal" and _path_on_cross_vm_fs(str(db_path))
+            target, current, on_cross_vm_fs=target == "wal" and path_on_cross_vm_fs(str(db_path))
         )
         if refusal:
             raise PermanentStoreError(f"Refusing to change the journal mode of {db_path}: {refusal}")

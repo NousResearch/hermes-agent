@@ -67,7 +67,8 @@ const {
   $updateOverlayOpen,
   $updateOverlayTarget,
   applyBackendUpdate,
-  applyUpdates
+  applyUpdates,
+  resetUpdateApplyState
 } = await import('./updates')
 
 // A backend update runs while this window stays: the person may hide its progress to keep using
@@ -207,6 +208,43 @@ describe('hidden backend update progress', () => {
     }
 
     expect($updateOverlayTarget.get()).toBe('backend')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it.each([
+    ['restarting into the new version', { applying: false, stage: 'restart' as const }],
+    ['showing its own failure', { applying: false, stage: 'error' as const }]
+  ])('a backend failure waits while the client update is %s, and shows when that view closes', async (_l, client) => {
+    const { pressed } = await pressAndHide()
+    $updateApply.set({ ...idle, ...client })
+    $updateOverlayTarget.set('client')
+    $updateOverlayOpen.set(true)
+
+    getActionStatusSpy.mockResolvedValue({ exit_code: 1, lines: [], name: 'hermes-update', pid: 4, running: false })
+    await vi.advanceTimersByTimeAsync(1500)
+    await pressed
+
+    expect($updateOverlayTarget.get()).toBe('client')
+
+    // The person closes the client's view (the overlay's own close path).
+    $updateOverlayOpen.set(false)
+    resetUpdateApplyState('client')
+
+    expect($updateOverlayTarget.get()).toBe('backend')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it("a hidden backend update that succeeds leaves a running client update's progress open", async () => {
+    const { pressed } = await pressAndHide()
+    $updateApply.set({ ...idle, applying: true, stage: 'prepare' })
+    $updateOverlayTarget.set('client')
+    $updateOverlayOpen.set(true)
+
+    getActionStatusSpy.mockResolvedValue({ exit_code: 0, lines: [], name: 'hermes-update', pid: 4, running: false })
+    await vi.advanceTimersByTimeAsync(1500)
+    await pressed
+
+    expect($updateOverlayTarget.get()).toBe('client')
     expect($updateOverlayOpen.get()).toBe(true)
   })
 

@@ -157,7 +157,7 @@ class TestUpdateStatusReadsReceipt:
         data = client.get("/api/actions/hermes-update/status").json()
 
         assert data["receipt"]["outcome"] == shown
-        assert data["exit_code"] is None  # the outcome is still unproven: clients keep polling
+        assert data["exit_code"] is None  # no exit code from the receipt alone; the outcome says it died
 
     def test_non_update_actions_untouched(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)

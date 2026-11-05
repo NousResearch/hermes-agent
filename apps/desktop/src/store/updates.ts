@@ -84,13 +84,25 @@ export const resetUpdateApplyState = (target?: UpdateTarget) => {
   if (target !== 'client') {
     $backendUpdateApply.set(IDLE)
   }
+
+  // The client's view has ended: a backend outcome that waited behind it shows now.
+  if (target === 'client' && backendOutcomeWaiting()) {
+    showBackendProgress()
+  }
+}
+
+// A client update owns the overlay from its first progress until its view is dismissed: while it
+// applies, while it restarts or hands off (no longer `applying`), and while its error or manual
+// step is on screen. A backend outcome never replaces it.
+function clientHoldsOverlay(): boolean {
+  return $updateOverlayTarget.get() === 'client' && $updateApply.get().stage !== 'idle'
 }
 
 // The progress view may have been hidden while the backend updated: an outcome that needs the
-// person (a failure, a manual step) shows it again. A client apply owns the overlay until it ends,
-// so the backend outcome waits in its own state and shows when the client finishes in place.
+// person (a failure, a manual step) shows it again, or waits in its own state while the client
+// holds the overlay and shows when the client's view ends.
 function showBackendProgress(): void {
-  if ($updateApply.get().applying) {
+  if (clientHoldsOverlay()) {
     return
   }
 
@@ -819,16 +831,10 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
       if (result?.ok) {
         // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
         // the overlay and let the user know the new version loads next launch
-        // rather than stranding them on an un-closeable spinner.
-        // The client's own state: a hidden backend update keeps running under it, and a backend
-        // outcome that waited behind this apply shows now.
+        // rather than stranding them on an un-closeable spinner. Only the
+        // client's state resets: a hidden backend update keeps running under it.
+        setUpdateOverlayOpen(false)
         resetUpdateApplyState('client')
-
-        if (backendOutcomeWaiting()) {
-          showBackendProgress()
-        } else {
-          setUpdateOverlayOpen(false)
-        }
 
         if (result.updateAvailable === false) {
           return result
@@ -919,7 +925,12 @@ function finishBackendApply(
 ): DesktopUpdateApplyResult {
   if (returned) {
     $backendUpdateApply.set(IDLE)
-    setUpdateOverlayOpen(false)
+
+    // A client update holding the overlay keeps it; only the backend's own progress closes.
+    if (!clientHoldsOverlay()) {
+      setUpdateOverlayOpen(false)
+    }
+
     void checkBackendUpdates({ force: true })
     // The update restarted the gateway process, which strands this window's
     // WebSocket: over SSH/tailscale tunnels the old TCP connection often dies

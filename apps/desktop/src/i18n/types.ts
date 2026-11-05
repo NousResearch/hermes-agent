@@ -2916,6 +2916,7 @@ export interface Translations extends NoticeTranslations {
 
   composer: {
     message: string
+    promptSuggestionsLabel: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

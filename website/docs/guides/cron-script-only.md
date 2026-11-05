@@ -28,7 +28,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 
 - **No LLM call.** Zero tokens, zero agent loop, zero model spend.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.
-- **Bash or Python.** `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash`; any other extension runs under the current Python interpreter. A Python script can also pin a **user-managed venv** via `--interpreter` (see [Using your own Python environment](#using-your-own-python-environment)). Paths must resolve inside `~/.hermes/scripts/` (relative, absolute, or `~` forms are OK if they stay in that directory). Cron scripts do **not** inherit provider credentials from the Hermes process environment.
+- **Bash or Python.** `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash`. `.py`, `.pyw`, and extensionless files run under the current Python interpreter. Known non-Python extensions (`.ps1`, `.js`, `.cjs`, `.mjs`, `.ts`, `.rb`, `.pl`, `.lua`, `.zsh`, `.fish`) are refused at create, edit, dashboard, `cron doctor`, and run time. A Python script can also pin a **user-managed venv** via `--interpreter` (see [Using your own Python environment](#using-your-own-python-environment)). Paths must resolve inside `~/.hermes/scripts/` (relative, absolute, or `~` forms are OK if they stay in that directory). Cron scripts do **not** inherit provider credentials from the Hermes process environment.
 - **Same scheduler.** Lives in `cronjob` alongside LLM jobs — pausing, resuming, listing, logs, and delivery targeting all work the same way.
 
 ## When to Use It
@@ -158,7 +158,9 @@ Interpreter choice is by file extension:
 | Extension | Interpreter |
 |-----------|-------------|
 | `.sh`, `.bash` | `bash` from `PATH` (fallback `/bin/bash`) |
-| anything else | `sys.executable` (current Python), or a [configured interpreter](#using-your-own-python-environment) |
+| `.py`, `.pyw`, no extension | `sys.executable` (current Python), or a [configured interpreter](#using-your-own-python-environment) |
+| `.ps1`, `.js`, `.cjs`, `.mjs`, `.ts`, `.rb`, `.pl`, `.lua`, `.zsh`, `.fish` | refused (wrap the real program in a `.sh`) |
+| any other extension | `sys.executable` (current Python), or a configured interpreter |
 
 We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
 

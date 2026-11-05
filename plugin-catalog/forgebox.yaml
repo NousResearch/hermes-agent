@@ -1,0 +1,25 @@
+name: forgebox
+repo: https://github.com/nosliwhtes/forgebox
+sha: b294cbe6354a28c9cc29e60af2f56e4a30e6e960
+description: >-
+  Transactional try-then-commit execution backend for Hermes Agent. Forgebox
+  snapshots a dirty working tree into an ephemeral detached worktree, sandboxes
+  the agent's shell writes inside it (pathlike arguments are anchored into the
+  worktree; anything outside is blocked and the command is aborted), journals
+  every command with its exit code, and applies the result to the real
+  repository only after an explicit, conflict-checked approval — or discards
+  it. Runs locally; no data leaves the machine. Requires the git CLI on PATH.
+maintainer: nosliwhtes
+tier: community
+category: tools
+docs_url: https://github.com/nosliwhtes/forgebox#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

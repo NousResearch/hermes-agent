@@ -128,8 +128,11 @@ class GatewayTurnPrepareMixin:
                 )
             }
             override_runtime["capabilities"] = dict(override_runtime["capabilities"] or {})
+            # An alias credential (key_env) is re-read every turn and never paired with the provider pool.
+            from gateway.run_agent_cache import apply_override_key_env
+            apply_override_key_env(override_runtime, override)
             if override_runtime.get("api_key"):
-                if override_runtime.get("credential_pool") is None:
+                if override_runtime.get("credential_pool") is None and not override_runtime.get("api_key_env"):
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -230,6 +233,9 @@ class GatewayTurnPrepareMixin:
         }
         runtime["args"] = list(runtime["args"] or [])
         runtime["capabilities"] = dict(runtime["capabilities"] or {})
+        if runtime_kwargs.get("api_key_env"):
+            # The alias credential's var; without it the agent's refresh re-resolves the provider default.
+            runtime["api_key_env"] = runtime_kwargs["api_key_env"]
         base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
         route = {
             "model": model,

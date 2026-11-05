@@ -315,6 +315,15 @@ def direct_alias_api_key(alias: DirectAlias) -> str:
     return _scoped_key_env((alias.key_env or "").strip())
 
 
+def _alias_key_env_name(alias: DirectAlias) -> str:
+    """Env var name behind the alias credential (same precedence as :func:`direct_alias_api_key`);
+    "" for a literal ``api_key`` — there is no variable to re-read."""
+    raw = (alias.api_key or "").strip()
+    if raw.startswith("${") and raw.endswith("}"):
+        return raw[2:-1].strip()
+    return "" if raw else (alias.key_env or "").strip()
+
+
 def direct_alias_runtime_request(alias: DirectAlias) -> tuple[str, Optional[str]]:
     """``(requested_provider, explicit_api_key)`` for resolving *alias*.
 
@@ -462,6 +471,9 @@ class ModelSwitchResult:
     usage_notice: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
+    # Env var the alias's own credential came from (``key_env`` / ``api_key: "${VAR}"``). Callers carry it to
+    # the agent so per-request credential refresh re-reads THIS var, never the provider default.
+    key_env: str = ""
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
@@ -1165,6 +1177,7 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     same_host = _may_reuse_session_credential(st.base_url, da.base_url)
     if alias_key:
         st.base_url, st.api_key = da.base_url, alias_key
+        st.key_env = _alias_key_env_name(da)
     elif st.api_key and st.api_key != "no-key-required" and same_host:
         # Same origin: the key is host-appropriate and re-resolving would only repeat the work.
         st.base_url = da.base_url
@@ -1231,6 +1244,7 @@ class _Switch:
     alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
+    key_env: str = ""
     base_url: str = ""
     api_mode: str = ""
     validation_headers: dict = field(default_factory=dict)
@@ -1782,7 +1796,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
+        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias,
+        key_env=st.key_env, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
         model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)

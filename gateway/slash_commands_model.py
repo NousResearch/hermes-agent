@@ -198,6 +198,7 @@ class GatewayModelCommandsMixin:
                 new_model=result.new_model, new_provider=result.target_provider,
                 api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
                 capabilities=getattr(result, "runtime_capabilities", None),
+                api_key_env=getattr(result, "key_env", "") or "",
             )
         except Exception as exc:
             logger.warning(
@@ -251,6 +252,8 @@ class GatewayModelCommandsMixin:
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
+            # Alias credential's env var NAME; persisted so a restart re-reads it (gateway/session.py).
+            "key_env": getattr(result, "key_env", "") or "",
         }
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later

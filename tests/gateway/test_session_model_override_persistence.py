@@ -215,6 +215,35 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
     assert bool(runner._pre_agent_fallback_notice) is (codex_on_turn == "still_unavailable")
 
 
+def test_alias_key_env_override_survives_restart_on_its_own_key(store_factory, tmp_path, monkeypatch):
+    """A ``model_aliases`` pick with ``key_env`` persists the variable NAME (never its value); after a
+    restart the turn sends that variable's key with no provider pool, and hands the name to the agent so
+    its per-request refresh re-reads it. Re-resolving by provider bills ANTHROPIC_API_KEY's account."""
+    alias_key, default_key = "sk-ant-api03-alias-account-AAAA", "sk-ant-api03-default-account-ZZZZ"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", default_key)
+    monkeypatch.setenv("ANTHROPIC_API_KEY_ALT", alias_key)
+    store = store_factory()
+    session_key = store.get_or_create_session(_make_source()).session_key
+    store.set_model_override(session_key, {
+        "model": "claude-opus-5-5", "provider": "anthropic", "base_url": "https://api.anthropic.com/v1",
+        "api_key": alias_key, "api_mode": "anthropic_messages", "key_env": "ANTHROPIC_API_KEY_ALT"})
+    assert alias_key not in _sessions_json(tmp_path)
+
+    default_pool = object()
+    default_runtime = {"provider": "anthropic", "api_key": default_key, "api_mode": "anthropic_messages",
+                       "base_url": "https://api.anthropic.com", "credential_pool": default_pool}
+    runner = _make_runner(store_factory())  # simulated restart
+    with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider", return_value=dict(default_runtime)), \
+         patch("gateway.run._credential_pool_for_provider", return_value=default_pool):
+        model, runtime = runner._resolve_session_agent_runtime(
+            session_key=session_key, user_config={"model": {"default": "global-model"}})
+        agent_kwargs = runner._resolve_turn_agent_config("", model, runtime)["runtime"]
+
+    assert model == "claude-opus-5-5"
+    assert (agent_kwargs["api_key"], agent_kwargs["credential_pool"], agent_kwargs.get("api_key_env")) == (
+        alias_key, None, "ANTHROPIC_API_KEY_ALT")
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

@@ -136,12 +136,56 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
 
 
+def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
+    """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
+    fallback attaches its own pool, which would trip the provider-mismatch guard on the next
+    401/429: reload the primary pool, else clear it. The snapshot api_key may be stale after
+    rotation; re-select the pool's best entry, keeping the snapshot key when none is usable."""
+    from agent.credential_key_env import drop_pool_if_key_env_bound
+    if drop_pool_if_key_env_bound(agent):
+        # Alias-bound credential (restored from the snapshot): pool entries are provider-default
+        # keys for a different account, so no pool and no re-select.
+        return
+    pool = getattr(agent, "_credential_pool", None)
+    pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+    if pool is not None and pool_provider and not matches_primary(pool):
+        agent._credential_pool = None
+        agent._credential_pool_entry_id = None
+        try:
+            # Reuse the pool the reset-aware gate already loaded (avoids a second auth.json read).
+            agent._credential_pool = prefetched_pool if prefetched else load_primary_pool()
+        except Exception as exc:
+            logger.warning(
+                "Restore could not reload primary credential pool for %s: %s", primary_provider, exc
+            )
+    agent._credential_pool_entry_id = None
+    pool = getattr(agent, "_credential_pool", None)
+    entry = pool.select(model=primary_model or None) if pool is not None and pool.has_available(model=primary_model or None) else None
+    if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
+        return
+    if matches_primary(entry):
+        # _swap_credential rebuilds the client and reapplies base-url-scoped headers.
+        # ``_swap_credential`` rebuilds the OpenAI/Anthropic client, reapplies base-url-scoped headers, and
+        # carries the accumulated base_url / OAuth-detection fixes (#33163).
+        agent._swap_credential(entry)
+        logger.info(
+            "Restore re-selected pool entry %s (%s)",
+            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+        )
+    else:
+        logger.info(
+            "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
+            getattr(entry, "id", "?"), getattr(entry, "label", "?"),
+            str(getattr(entry, "provider", "") or "").strip().lower() or "?",
+            primary_provider or "?",
+        )
+
+
 def reinstall_primary_runtime(
     agent: Any, rt: dict[str, Any], primary_provider: str, primary_model: str, matches_primary,
     load_primary_pool, prefetched_pool=None, prefetched: bool = False,
 ) -> None:
     """Put ``agent`` back on its ``_primary_runtime`` snapshot ``rt`` and clear the fallback state."""
-    from agent.agent_runtime_helpers import _rebind_primary_credential_pool
     reinstall_runtime_snapshot(agent, rt)
     _rebind_primary_credential_pool(
         agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched

@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.credential_key_env import bind_api_key_env, default_token_chain_allowed
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
@@ -672,8 +673,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-    _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if default_token_chain_allowed(agent, agent.provider) else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -2142,7 +2142,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
-    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None, api_key_env: str = "",
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2186,7 +2186,7 @@ def init_agent(
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
     }
-    agent._credential_pool = credential_pool
+    agent._credential_pool = credential_pool = bind_api_key_env(agent, api_key_env, credential_pool)
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)

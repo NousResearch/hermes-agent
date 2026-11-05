@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_api_key_env")
 
 
 def _runtime_fields(cli) -> dict:
@@ -605,6 +605,7 @@ class CLIModelSwitchMixin:
             # _ensure_runtime_credentials for the restored one. api_key is never persisted to
             # the session DB — runtime provider resolution owns credentials.
             self._explicit_api_key = None
+            self._api_key_env = ""
             self._explicit_base_url = stored_base_url
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -824,6 +825,8 @@ class CLIModelSwitchMixin:
         # (e.g. Ollama api_key/base_url) don't leak into the next resolution.
         self._explicit_api_key = result.api_key
         self._explicit_base_url = result.base_url
+        # Alias key_env binding survives agent rebuilds (/reasoning, /fast, ... set self.agent = None).
+        self._api_key_env = getattr(result, "key_env", "") or ""
         if result.api_key:
             self.api_key = result.api_key
         if result.base_url:
@@ -841,6 +844,10 @@ class CLIModelSwitchMixin:
                 if getattr(self, "_model_switch_one_turn", False):
                     # The CLI and agent show the resolved model; the admission sends the alias.
                     fields.update(once=True, alias=getattr(result, "resolved_via_alias", "") or "")
+                from hermes_cli.gateway_agent import GatewayAgent
+                if not isinstance(self.agent, GatewayAgent):
+                    # In-process agent: bind the alias credential's var (a gateway-owned session re-resolves on its owner).
+                    fields["api_key_env"] = self._api_key_env
                 if self.agent.switch_model(**fields) is False:
                     # Declined at the gateway owner's guard prompt: nothing was committed.
                     for _k, _v in _cli_snapshot.items():

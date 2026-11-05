@@ -7,6 +7,7 @@ import pytest
 
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 MEMBERS = [{"kind": "bot", "id": "planner"}]
 
@@ -39,9 +40,10 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     its replay page, as a replicating client would fetch via groups.log."""
     from gateway import hosted_rooms as rooms
 
-    db = tmp_path / "remote-authority.db"
+    db = storage_handle(tmp_path / "remote-authority")
     rooms.create_room(
         db,
+        placement="profile",
         room_id="room-1",
         name="Field Room",
         members=MEMBERS,
@@ -50,6 +52,7 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     for index in range(n):
         rooms.append_event(
             db,
+            placement="profile",
             room_id="room-1",
             event_id=f"e{index}",
             kind="message.user",
@@ -58,7 +61,7 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
             authority_gateway_id=gateway_id,
             authority_epoch=1,
         )
-    return rooms.read_events(db, room_id="room-1", since_seq=0, limit=100)
+    return rooms.read_events(db, placement="profile", room_id="room-1", since_seq=0, limit=100)
 
 
 
@@ -164,8 +167,8 @@ def test_replicate_rejects_gapped_page(home, tmp_path):
     from gateway import hosted_rooms as rooms
 
     _authority_page(tmp_path, n=5)
-    db = tmp_path / "remote-authority.db"
-    gapped = rooms.read_events(db, room_id="room-1", since_seq=2, limit=100)
+    db = storage_handle(tmp_path / "remote-authority")
+    gapped = rooms.read_events(db, placement="profile", room_id="room-1", since_seq=2, limit=100)
     envelope = srv._methods["groups.replicate"](
         1,
         {

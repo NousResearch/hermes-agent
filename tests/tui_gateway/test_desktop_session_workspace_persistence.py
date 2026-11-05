@@ -9,12 +9,12 @@ actually adopted it, and a launch-dir fallback still persists nothing.
 
 import os
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from tui_gateway import server
 
 
 def _gateway_with_db(monkeypatch, tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
@@ -46,7 +46,7 @@ def test_desktop_explicit_cwd_persists_when_local_probe_cannot_see_it(monkeypatc
         assert session["explicit_cwd"] is True
 
         assert server._persist_session_row_for_submit("rid", session) is None
-        assert db.get_session(stored_id)["cwd"] == str(workspace)
+        assert db.sessions.get(stored_id).cwd == str(workspace)
     finally:
         if sid:
             server._sessions.pop(sid, None)
@@ -77,7 +77,7 @@ def test_desktop_inherited_cwd_persists_only_when_the_resolution_adopted_it(
         assert session["explicit_cwd"] is True
 
         assert server._persist_session_row_for_submit("rid", session) is None
-        assert db.get_session(stored_id)["cwd"] == container_cwd
+        assert db.sessions.get(stored_id).cwd == container_cwd
     finally:
         if sid:
             server._sessions.pop(sid, None)
@@ -104,7 +104,7 @@ def test_desktop_launch_fallback_cwd_still_persists_nothing(monkeypatch, tmp_pat
         assert session["explicit_cwd"] is False
 
         assert server._persist_session_row_for_submit("rid", session) is None
-        assert db.get_session(stored_id)["cwd"] is None
+        assert db.sessions.get(stored_id).cwd is None
     finally:
         if sid:
             server._sessions.pop(sid, None)

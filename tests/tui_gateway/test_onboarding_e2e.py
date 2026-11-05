@@ -14,8 +14,9 @@ import pytest
 from agent import onboarding_record
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from agent.onboarding import observe_tool_result
-from agent.onboarding_flow import Facts
+from session_rules.onboarding_flow import Facts
 from hermes_cli.config import read_user_config_raw
+from persistence.conversation.sessions import NewSession
 from tui_gateway import server, server_requests
 
 SID, STORED = "ui-onboarding", "onboarding-chat"
@@ -31,11 +32,12 @@ def chat(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
     db = server._get_db()
-    db.create_session(STORED, "desktop")
-    onboarding_record.start(db, STORED, FACTS)
+    db.sessions.create(NewSession(session_id=STORED, source="desktop"))
+    onboarding_record.start(db, STORED, FACTS, persistence=db)
     monkeypatch.setitem(server._sessions, SID, {"session_key": STORED, "source": "desktop"})
     ended = []
-    agent = SimpleNamespace(_session_db=db, session_id=STORED, valid_tool_names={"setup_beat", "set_theme"},
+    agent = SimpleNamespace(_session_db=db, persistence=db, session_id=STORED,
+                            valid_tool_names={"setup_beat", "set_theme"},
                             setup_beat_callback=server._agent_cbs(SID)["setup_beat_callback"],
                             interrupt=lambda **kw: ended.append(kw), _gateway_turn_context_notes="")
     desktop = SimpleNamespace(cards=[], replies=[])
@@ -89,7 +91,7 @@ def test_every_beat_from_the_name_card_to_done(chat):
         "name", "theme", "layout", "connectors", "plugins", "tour", "build"]
     assert chat.desktop.cards[3]["card"] == {"suggested": ["slack", "outlook"]}
     assert [row["id"] for row in chat.desktop.cards[6]["card"]["options"]][:1] == ["games"]
-    record = onboarding_record.load(chat.db, STORED)
+    record = onboarding_record.load(chat.db, STORED, persistence=chat.db)
     assert record["phase"] == "complete" and record["picks"]["layout"] == "terminal-deck"
     onboarding = read_user_config_raw(chat.home / "config.yaml")["onboarding"]
     assert onboarding["run"] is False and onboarding["seen"]["profile_build_offered"] is True
@@ -123,4 +125,4 @@ def test_skip_setup_on_the_card_ends_onboarding(chat, monkeypatch):
     skipped = beat(chat, beat="next")
 
     assert skipped["skipped_all"] is True and "stop guiding" in skipped["reminder"]
-    assert onboarding_record.load(chat.db, STORED)["phase"] == "skipped"
+    assert onboarding_record.load(chat.db, STORED, persistence=chat.db)["phase"] == "skipped"

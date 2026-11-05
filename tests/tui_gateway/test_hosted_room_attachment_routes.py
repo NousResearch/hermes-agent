@@ -29,6 +29,8 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
 from tui_gateway.hosted_room_driver import HostedRoomRuntime
 from tui_gateway.hosted_room_peer_transport import PeerHostedRoomTransport, PeerMemberRoute
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from persistence.gateway.hosted_rooms import HostedTaskIdentity, TERMINAL_STATUSES
+from persistence_assembly import open_persistence, profile_scope
 
 
 ATTACHMENTS = [{
@@ -41,11 +43,19 @@ ATTACHMENTS = [{
 }]
 
 
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
 @pytest.fixture
-def db(tmp_path: Path) -> Path:
+def db(tmp_path: Path, store) -> Path:
     path = tmp_path / "state.db"
     hosted_rooms.create_room(
-        path,
+        store, placement="profile",
         room_id=ROOM_ID,
         name="Release room",
         members=[{"profile": PROFILE, "handle": PROFILE}],
@@ -55,7 +65,7 @@ def db(tmp_path: Path) -> Path:
     return path
 
 
-def _admit(db: Path, *, attachments=None) -> state.TaskIdentity:
+def _admit(store, *, attachments=None, placement="profile") -> HostedTaskIdentity:
     identity = _identity()
     payload = {
         "target_profile": PROFILE,
@@ -65,19 +75,19 @@ def _admit(db: Path, *, attachments=None) -> state.TaskIdentity:
     }
     if attachments is not None:
         payload["attachments"] = attachments
-    state.admit_task(db, identity, payload=payload, clock=time.time)
+    state.admit_task(store, identity, placement=placement, payload=payload, clock=time.time)
     return identity
 
 
-def _run_until_settled_or_error(runtime: HostedRoomRuntime, db: Path, identity) -> dict:
+def _run_until_settled_or_error(runtime: HostedRoomRuntime, store, identity) -> dict:
     runtime.start()
     try:
         _wait_for(lambda: (
-            state.get_task(db, identity)["status"] in state.TERMINAL_STATUSES
+            state.get_task(store, identity, placement=runtime.placement)["status"] in TERMINAL_STATUSES
             or runtime.status()["last_error"] is not None))
     finally:
         assert runtime.stop(timeout=5.0)
-    return state.get_task(db, identity)
+    return state.get_task(store, identity, placement=runtime.placement)
 
 
 def _server_module():
@@ -107,9 +117,9 @@ def _server_module():
     return server, submits
 
 
-def _legacy_runtime(db: Path, rpc: HostedRoomServerRPC) -> HostedRoomRuntime:
+def _legacy_runtime(store, rpc: HostedRoomServerRPC, placement="profile") -> HostedRoomRuntime:
     return HostedRoomRuntime(
-        db_path=db, rooms=[BINDING], rpc=rpc, turn_lock=RecordingTurnLocks(),
+        store=store, placement=placement, rooms=[BINDING], rpc=rpc, turn_lock=RecordingTurnLocks(),
         lease_ttl_seconds=0.4, poll_interval_seconds=0.01)
 
 
@@ -136,7 +146,7 @@ class DispatchingPeerClient:
         return {"status": "stopping"}
 
 
-def _peer_runtime(db: Path, client: DispatchingPeerClient) -> HostedRoomRuntime:
+def _peer_runtime(store, client: DispatchingPeerClient) -> HostedRoomRuntime:
     route = PeerMemberRoute(
         home_install_id="install-home", member_id="member-ops", target_install_id="install-peer",
         target_profile=PROFILE, capability_digest="a" * 64, execution_policy_digest="b" * 64,
@@ -150,7 +160,7 @@ def _peer_runtime(db: Path, client: DispatchingPeerClient) -> HostedRoomRuntime:
             execution_generation=int(task["execution_generation"]))
 
     return HostedRoomRuntime(
-        db_path=db, rooms=[BINDING], transport_resolver=resolve, turn_lock=RecordingTurnLocks(),
+        store=store, placement="profile", rooms=[BINDING], transport_resolver=resolve, turn_lock=RecordingTurnLocks(),
         lease_ttl_seconds=0.4, poll_interval_seconds=0.01)
 
 
@@ -161,46 +171,46 @@ def _assert_refused_as_proven_failure(task: dict, runtime: HostedRoomRuntime) ->
     assert runtime.status()["blocked_rooms"] == ()
 
 
-def test_legacy_route_refuses_a_turn_with_a_file_before_submitting(db: Path):
-    identity = _admit(db, attachments=ATTACHMENTS)
+def test_legacy_route_refuses_a_turn_with_a_file_before_submitting(db: Path, store):
+    identity = _admit(store, attachments=ATTACHMENTS)
     server, submits = _server_module()
-    runtime = _legacy_runtime(db, HostedRoomServerRPC(server))
+    runtime = _legacy_runtime(store, HostedRoomServerRPC(server))
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     _assert_refused_as_proven_failure(task, runtime)
     assert submits == []
 
 
-def test_legacy_route_still_runs_a_turn_without_a_file(db: Path):
-    identity = _admit(db)
+def test_legacy_route_still_runs_a_turn_without_a_file(db: Path, store):
+    identity = _admit(store)
     server, submits = _server_module()
-    runtime = _legacy_runtime(db, HostedRoomServerRPC(server))
+    runtime = _legacy_runtime(store, HostedRoomServerRPC(server))
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     assert task["status"] == "settled", runtime.status()["last_error"]
     assert task["result"]["text"] == "Read it."
     assert [s["_hosted_task"]["member_id"] for s in submits] == ["member-ops"]
 
 
-def test_peer_route_refuses_a_turn_with_a_file_before_dispatching(db: Path):
-    identity = _admit(db, attachments=ATTACHMENTS)
+def test_peer_route_refuses_a_turn_with_a_file_before_dispatching(db: Path, store):
+    identity = _admit(store, attachments=ATTACHMENTS)
     client = DispatchingPeerClient()
-    runtime = _peer_runtime(db, client)
+    runtime = _peer_runtime(store, client)
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     _assert_refused_as_proven_failure(task, runtime)
     assert client.dispatches == []
 
 
-def test_peer_route_still_runs_a_turn_without_a_file(db: Path):
-    identity = _admit(db)
+def test_peer_route_still_runs_a_turn_without_a_file(db: Path, store):
+    identity = _admit(store)
     client = DispatchingPeerClient()
-    runtime = _peer_runtime(db, client)
+    runtime = _peer_runtime(store, client)
 
-    task = _run_until_settled_or_error(runtime, db, identity)
+    task = _run_until_settled_or_error(runtime, store, identity)
 
     assert task["status"] == "settled", runtime.status()["last_error"]
     assert task["result"]["text"] == "Read it."

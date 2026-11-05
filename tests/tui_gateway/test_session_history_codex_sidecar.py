@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import threading
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
-def test_session_history_preserves_codex_message_items(tmp_path):
+def test_session_history_preserves_codex_message_items(tmp_path, monkeypatch):
     message_items = [
         {
             "type": "message",
@@ -17,16 +18,16 @@ def test_session_history_preserves_codex_message_items(tmp_path):
             "content": [{"type": "output_text", "text": "Persisted answer"}],
         }
     ]
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("stored-session", source="desktop")
-    db.append_message(
-        "stored-session",
-        "assistant",
-        "",
-        codex_message_items=message_items,
-        reasoning="Thinking before the tool",
-        tool_calls=[{"id": "call-1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
-    )
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "stored-session", "desktop")
+    seed_messages(db, "stored-session", {
+        "role": "assistant",
+        "content": "",
+        "codex_message_items": message_items,
+        "reasoning": "Thinking before the tool",
+        "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+    })
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     previous_db = server._db
     server._db = db
     server._sessions["runtime-session"] = {

@@ -12,6 +12,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from tui_gateway.hosted_room_peer_http import (
     MAX_PEER_ERROR_RESPONSE_BYTES,
@@ -195,11 +196,11 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
 
 
 def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     first = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     dispatch = _dispatch(source_event_seq=17)
     accepted = first.dispatch(dispatch=dispatch, grant="signed.room.grant")
@@ -207,7 +208,7 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     restarted = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     restarted.bind_room_scope(
         room_id="room-1",
@@ -231,11 +232,11 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
 
 
 def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     old = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
     old._request = lambda *_args, **_kwargs: {
         "run_id": "run-old",
@@ -251,7 +252,7 @@ def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
     current = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=db,
+        receipt_store=db, receipt_placement="profile",
     )
 
     def admit_current(path, **kwargs):
@@ -272,7 +273,7 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     requests = []
 
@@ -299,7 +300,7 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     restarted = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     restarted._request = lambda *_args, **_kwargs: pytest.fail(
         "durable receipt should avoid another admission"
@@ -314,7 +315,7 @@ def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
         poll_min_seconds=0.1,
         poll_max_seconds=0.4,
         clock=lambda: now[0],
@@ -469,7 +470,7 @@ def test_capability_mismatch_requires_reauthorization_without_retry(tmp_path):
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     admission_attempts = []
 
@@ -669,7 +670,7 @@ def test_peer_approval_sends_the_exact_request_id(peer_server, tmp_path):
     client = PeerRunsHTTPClient(
         base_url=peer_server,
         api_key="",
-        receipt_db_path=tmp_path / "state.db",
+        receipt_store=storage_handle(tmp_path), receipt_placement="profile",
     )
     client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
 

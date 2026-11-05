@@ -11,9 +11,28 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_state_registry as registry
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from persistence.conversation.messages import NewMessage
+from persistence.conversation.sessions import NewSession
+from persistence_assembly import close_all_stores, live_stores, open_persistence, profile_scope, store_location
 from tui_gateway import server
+
+
+def _store_file(handle):
+    """The file holding the store ``handle`` is bound to."""
+    return store_location(handle.scope).resolve()
+
+
+def _open_store_count() -> int:
+    """How many stores this process holds open."""
+    with live_stores() as handles:
+        return len(handles)
+
+
+def _close_launch_handle():
+    """Release the launch handle a test opened through ``_get_db``."""
+    if server._db is not None:
+        server._db.close()
 
 
 @pytest.fixture()
@@ -30,7 +49,8 @@ def launch_db_env(monkeypatch, tmp_path):
     try:
         yield launch_home, foreign_home
     finally:
-        registry.close_all()
+        _close_launch_handle()
+        close_all_stores()
 
 
 def test_get_db_first_touch_under_foreign_override_uses_launch_path(launch_db_env):
@@ -39,7 +59,7 @@ def test_get_db_first_touch_under_foreign_override_uses_launch_path(launch_db_en
     try:
         db = server._get_db()
         assert db is not None
-        assert db.db_path.resolve() == (launch_home / "state.db").resolve()
+        assert _store_file(db) == (launch_home / "state.db").resolve()
         assert not (foreign_home / "state.db").exists()
         assert server._get_db() is db
     finally:
@@ -58,9 +78,10 @@ def test_get_db_follows_a_process_home_redirected_after_import(monkeypatch, tmp_
     try:
         db = server._get_db()
         assert db is not None
-        assert db.db_path.resolve() == (redirected / "state.db").resolve()
+        assert _store_file(db) == (redirected / "state.db").resolve()
     finally:
-        registry.close_all()
+        _close_launch_handle()
+        close_all_stores()
 
 
 def test_insights_get_reads_the_requested_profile_store_not_the_launch_handle(launch_db_env, monkeypatch, tmp_path):
@@ -74,15 +95,14 @@ def test_insights_get_reads_the_requested_profile_store_not_the_launch_handle(la
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: profiles_root / name)
     monkeypatch.setattr(server, "_canonical_profile_request", lambda name: name or None)
 
-    seeded = registry.acquire(work / "state.db")
-    seeded.create_session("work-only", source="tui", model="m")
-    registry.release(seeded)
+    with open_persistence(profile_scope(home=work)) as seeded:
+        seeded.sessions.create(NewSession(session_id="work-only", source="tui", model="m"))
 
     result = server._methods["insights.get"]("rid", {"profile": "work", "days": 30})
 
     assert result["result"]["sessions"] == 1
-    assert server._get_db().db_path.resolve() == (launch_home / "state.db").resolve()
-    assert server._get_db().get_session("work-only") is None
+    assert _store_file(server._get_db()) == (launch_home / "state.db").resolve()
+    assert server._get_db().sessions.get("work-only") is None
 
 
 def test_background_side_agent_persists_into_the_parent_agent_store(launch_db_env, monkeypatch):
@@ -99,21 +119,21 @@ def test_background_side_agent_persists_into_the_parent_agent_store(launch_db_en
     assert server._background_agent_kwargs(agent, "bg_1")["session_db"] is parent_db
 
 
-def test_background_side_agent_holds_its_own_registry_reference(launch_db_env, tmp_path):
-    """The parent releases its registry reference from ``AIAgent.close()``; a side agent sharing
-    that object without its own reference had its store torn down under a live background turn.
-    ``prompt.background`` must acquire (and release) a separate reference on the same file."""
+def test_background_side_agent_holds_its_own_store_reference(launch_db_env, tmp_path):
+    """The parent releases its store reference from ``AIAgent.close()``; a side agent sharing
+    that object without its own reference had its store closed under a live background turn.
+    ``prompt.background`` must open (and release) a separate reference on the same store."""
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    parent_db = registry.acquire(profile_home / "state.db")
+    parent_db = open_persistence(profile_scope(home=profile_home), eager=True)
 
     with server._side_agent_session_db(parent_db) as side_db:
-        assert side_db.db_path == parent_db.db_path
-        registry.release_or_close(parent_db)  # parent closes mid-turn
-        assert registry.stats()["live_generations"] == 1
-        assert side_db._conn is not None
-        side_db.create_session("bg_1", source="tui", model="m")
-    assert registry.stats()["live_generations"] == 0  # side agent's reference released on exit
+        assert side_db is not parent_db
+        assert _store_file(side_db) == _store_file(parent_db)
+        parent_db.close()  # parent closes mid-turn
+        assert _open_store_count() == 1
+        side_db.sessions.create(NewSession(session_id="bg_1", source="tui", model="m"))
+    assert _open_store_count() == 0  # side agent's reference released on exit
 
 
 def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, monkeypatch):
@@ -123,7 +143,7 @@ def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, m
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    parent_db = registry.acquire(profile_home / "state.db")
+    parent_db = open_persistence(profile_scope(home=profile_home), eager=True)
     parent = type("Parent", (), {"model": "m", "provider": "p", "_fallback_chain": [], "_session_db": parent_db})()
     session = {"agent": parent, "session_key": "k", "profile_home": None}
     seen = {}
@@ -133,11 +153,11 @@ def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, m
             seen["db"] = kwargs["session_db"]
 
         def run_conversation(self, **_kw):
-            registry.release_or_close(parent_db)  # parent closes / resets mid-turn
-            # Still registry-owned and open: the side agent's own reference kept the generation alive
-            # (no #94736 emergency reopen of a torn-down connection).
-            seen["still_shared"] = seen["db"]._shared_registry_owned and seen["db"]._conn is not None
-            seen["db"].create_session("bg_1", source="tui", model="m")
+            parent_db.close()  # parent closes / resets mid-turn
+            # Still the one shared store, and open: the side agent's own reference kept it alive
+            # (no #94736 emergency reopen of a closed store).
+            seen["still_shared"] = seen["db"] is not parent_db and _open_store_count() == 1
+            seen["db"].sessions.create(NewSession(session_id="bg_1", source="tui", model="m"))
             return {"final_response": "ok"}
 
     class InlineThread:
@@ -159,10 +179,10 @@ def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, m
             patch("tui_gateway.server._emit"):
         server._methods["prompt.background"]("rid", {"text": "hi", "session_id": "ui1"})
 
-    # The registry lends ONE shared object per path; the side agent's own refcount is what kept it open.
-    assert seen["db"].db_path == parent_db.db_path
+    # Every handle on one profile shares ONE store; the side agent's own reference is what kept it open.
+    assert _store_file(seen["db"]) == _store_file(parent_db)
     assert seen["still_shared"] is True
-    assert registry.stats()["live_generations"] == 0
+    assert _open_store_count() == 0
 
 
 def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_store(launch_db_env, tmp_path):
@@ -171,19 +191,18 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
     the fail-closed owner gate silently dropped every post-compression notification."""
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    db = registry.acquire(profile_home / "state.db")
-    db.create_session("parent", source="tui", model="m")
-    db.append_message("parent", "user", "hello")
-    db.end_session("parent", "compression")
-    db.create_session("child", source="tui", model="m", parent_session_id="parent")
-    db.append_message("child", "user", "later")
-    registry.release(db)
+    with open_persistence(profile_scope(home=profile_home)) as db:
+        db.sessions.create(NewSession(session_id="parent", source="tui", model="m"))
+        db.messages.append("parent", NewMessage(role="user", content="hello"))
+        db.sessions.end("parent", "compression")
+        db.sessions.create(NewSession(session_id="child", source="tui", model="m", parent_session_id="parent"))
+        db.messages.append("child", NewMessage(role="user", content="later"))
 
     session = {"profile_home": str(profile_home), "session_key": "child", "agent": None}
     evt = {"type": "async_delegation", "session_key": "parent"}
 
     assert server._session_owns_notification_event("ui1", session, evt) is True
-    assert server._get_db().get_session("parent") is None  # never looked up through the launch store
+    assert server._get_db().sessions.get("parent") is None  # never looked up through the launch store
 
 
 def test_restored_delegation_requires_a_live_notification_consumer():
@@ -208,11 +227,10 @@ def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_li
     a_home, b_home = tmp_path / "profiles" / "a", tmp_path / "profiles" / "b"
     a_home.mkdir(parents=True)
     b_home.mkdir(parents=True)
-    db = registry.acquire(a_home / "state.db")
-    db.create_session("parent", source="tui", model="m")
-    db.end_session("parent", "compression")
-    db.create_session("child", source="tui", model="m", parent_session_id="parent")
-    registry.release(db)
+    with open_persistence(profile_scope(home=a_home)) as db:
+        db.sessions.create(NewSession(session_id="parent", source="tui", model="m"))
+        db.sessions.end("parent", "compression")
+        db.sessions.create(NewSession(session_id="child", source="tui", model="m", parent_session_id="parent"))
 
     def _sess(home, key):
         return {"profile_home": str(home), "session_key": key, "agent": None,

@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
 
 LAUNCH = {'model': 'm', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}
 STALE = [{'role': 'user', 'content': 'DAEMON_START'}]
@@ -176,7 +177,7 @@ async def test_prefill_is_read_when_the_session_is_created_and_dropped_with_it(t
         assert ref.session_id not in owner._local_prefill
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def test_bg_side_agent_uses_the_sessions_provider_routing(tmp_path):
@@ -219,7 +220,7 @@ def test_bg_side_agent_uses_the_sessions_provider_routing(tmp_path):
         finally:
             connection.subscriptions.clear()
             await connection.close()
-            owner.db.close()
+            close_stores_under(owner.persistence.scope.profile_dir)
     with pytest.MonkeyPatch.context() as monkeypatch:
         asyncio.run(probe(monkeypatch))
     assert (built['providers_allowed'], built['provider_sort']) == (['Fresh'], 'price'), built
@@ -232,10 +233,9 @@ CONFIG = ('platform_toolsets: {cli: []}\n'
 def _create(owner, connection, home, request_id):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     ref = create_local_session(owner, connection.actor, {'request_id': request_id, 'source': 'cli',
                                                          'cwd': str(home), 'toolsets': []})
-    return ref, restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+    return ref, restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
 
 
 async def _prefill_owner(tmp_path, monkeypatch):
@@ -258,8 +258,8 @@ def _stage(owner, connection, cwd, request_id):
 def _commit(owner, staged):
     """The off-loop commit and publication every async create runs after staging."""
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state_local import commit_local_session
-    commit_local_session(owner.db, epoch=owner.epoch, receipt=staged)
+    from gateway.session_local import commit_local_session
+    commit_local_session(owner.persistence, epoch=owner.epoch, receipt=staged)
     return restore_local_session(owner, staged['session_id'])
 
 
@@ -272,7 +272,7 @@ async def test_the_prefill_file_is_read_by_the_off_loop_commit_not_while_staging
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_runtime_workers import tracked_write
     from hermes_cli import cli_config_load
-    from hermes_state_local import commit_local_session
+    from gateway.session_local import commit_local_session
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
     readers, real = [], cli_config_load._load_prefill_messages
     monkeypatch.setattr(cli_config_load, '_load_prefill_messages',
@@ -280,21 +280,20 @@ async def test_the_prefill_file_is_read_by_the_off_loop_commit_not_while_staging
     try:
         staged = _stage(owner, connection, home, 'slow-mount')
         assert readers == []
-        await tracked_write(owner, partial(commit_local_session, owner.db, epoch=owner.epoch, receipt=staged))
+        await tracked_write(owner, partial(commit_local_session, owner.persistence, epoch=owner.epoch, receipt=staged))
         assert len(readers) == 1 and readers[0] != threading.get_ident()
         restore_local_session(owner, staged['session_id'])
         assert _seen(owner, monkeypatch, staged['session_id']) == 'FIRST' and len(readers) == 1
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def _seen(owner, monkeypatch, sid):
     """The prefill a managed worker and an in-process build of ``sid`` get (they must agree)."""
     from gateway.session_policy import restore_policy
     from gateway.session_worker_construct import construct_inputs
-    from hermes_state_local import local_receipt
-    policy = restore_policy(local_receipt(owner.db, sid)['policy'])
+    policy = restore_policy(owner.persistence.bindings.receipt(sid).policy)
     worker = construct_inputs(owner, policy, sid)['prefill_messages'][0]['content']
     assert _in_process_prefill(owner, policy, monkeypatch, sid)[0]['content'] == worker
     return worker
@@ -319,26 +318,26 @@ async def test_overlapping_exact_creates_keep_the_committed_attempts_prefill(tmp
         assert list(owner._local_prefill) == [refs[0].session_id]
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_a_conflicting_losing_create_never_replaces_the_winners_prefill(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
     try:
         winner = _stage(owner, connection, home, 'conflict')
         loser = _stage(owner, connection, tmp_path, 'conflict')  # same identity, different request
         ref = _commit(owner, winner)
         _prefill(home, 'prefill.json', 'LOSER')
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             _commit(owner, loser)
         assert refused.value.reason == 'invalid_params'
         assert _seen(owner, monkeypatch, ref.session_id) == 'FIRST'
         assert list(owner._local_prefill) == [ref.session_id]
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -346,22 +345,21 @@ async def test_a_create_refused_by_a_retirement_tombstone_holds_no_prefill(tmp_p
     """Retrying the create of a deleted session is refused at commit (``not_found``); the attempt
     must not leave a snapshot behind for a session that cannot exist."""
     from gateway.session_mutations import mutate_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
-    owner.runner.session_store._db = owner.db  # one routing store: the delete's live guard requires it
     try:
         ref, _policy = _create(owner, connection, home, 'gone')
         await mutate_session(owner, connection.actor, ref, dict(
             session_id=ref.session_id, request_id='delete', expected_revision=0, expected_generation=0,
             operation='delete', payload={}))
         assert ref.session_id not in owner._local_prefill
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             _create(owner, connection, home, 'gone')
         assert refused.value.reason == 'not_found'
         assert ref.session_id not in owner._local_prefill
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -395,4 +393,4 @@ async def test_retried_restored_and_branched_sessions_load_prefill_once_and_keep
         assert _seen(owner, monkeypatch, ref.session_id) == 'RESTORED'
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)

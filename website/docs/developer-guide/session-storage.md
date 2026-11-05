@@ -59,7 +59,9 @@ Retries through either root or tip reload the complete record under the member l
 partial donor retirement cannot shorten the completion denominator. Record lookup or
 validation failures stop adoption. A different store, missing member, unsupported
 record, or unverified ended copy requires explicit recovery rather than automatic
-ownership adjudication. Both managed stores must share one home; mixed managed and
+ownership adjudication. Profile resume continues only a saved default-store transfer that requested donor retirement;
+copy-only intent is retained, and eligibility is checked again under the member locks.
+Both managed stores must share one home; mixed managed and
 standalone pairs are refused. Standalone-only calls retain their existing unfenced
 compatibility behavior.
 

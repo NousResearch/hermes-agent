@@ -21,8 +21,8 @@ def test_record_write_failure_rolls_back_target_rows_and_membership(home, monkey
         _seed_compression_lineage(donor, "atomic-root", "atomic-tip")
         original = records.insert
 
-        def failed_insert(conn, manifest):
-            original(conn, manifest)
+        def failed_insert(conn, manifest, **options):
+            original(conn, manifest, **options)
             raise ValueError("injected record failure")
 
         monkeypatch.setattr(records, "insert", failed_insert)

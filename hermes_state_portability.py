@@ -402,7 +402,8 @@ class SessionPortabilityMixin:
         return [{**session, "messages": messages_by_session[session["id"]],
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
-    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
+    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True,
+                                   _pending_only: bool = False) -> dict[str, Any]:
         """Copy a complete lineage, durably retaining membership for retirement retries.
 
         Copies and immutable membership commit together. Same-home member locks remain
@@ -415,7 +416,7 @@ class SessionPortabilityMixin:
             return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
         try:
             for _attempt in range(3):
-                outcome = self._attempt_lineage_adoption(donor_db, session_id, retire_donor=retire_donor)
+                outcome = self._attempt_lineage_adoption(donor_db, session_id, retire_donor=retire_donor, pending_only=_pending_only)
                 if outcome is not None:
                     return outcome
         except AdoptionConflict as exc:
@@ -434,10 +435,12 @@ class SessionPortabilityMixin:
             raise AdoptionConflict("Saved adoption donor member is missing; recover the complete transfer")
         return segments
 
-    def _attempt_lineage_adoption(self, donor_db: Any, session_id: str, *, retire_donor: bool):
+    def _attempt_lineage_adoption(self, donor_db: Any, session_id: str, *, retire_donor: bool, pending_only: bool):
         from hermes_state_adoption_records import find, ownership, validate_fresh, validate_members, validate_handles
         validate_handles(self, donor_db)
         record = find(self, session_id, donor_db)
+        if pending_only and (record is None or record["status"] != "pending"):
+            return {"ok": False, "adopted": False, "donor_retired": False, "retry_skipped": True}
         segments = self._adoption_segments(donor_db, session_id, record)
         if not segments:
             return {"ok": False, "adopted": False, "donor_retired": False,
@@ -453,6 +456,8 @@ class SessionPortabilityMixin:
             # the bounded outer loop discovers/reacquires any expanded membership.
             validate_handles(self, donor_db)
             current = find(self, session_id, donor_db)
+            if pending_only and (current is None or current["status"] != "pending"):
+                return {"ok": False, "adopted": False, "donor_retired": False, "retry_skipped": True}
             if (current is None) != (record is None):
                 return None
             if current is not None and current["manifest"] != record["manifest"]:
@@ -469,7 +474,7 @@ class SessionPortabilityMixin:
             else:
                 validate_members(self, donor_db, current)
             return self._adopt_lineage_segments_locked(
-                donor_db, session_id, refreshed, retire_donor=retire_donor, record=current)
+                donor_db, session_id, refreshed, retire_donor=retire_donor, record=current, pending_only=pending_only)
 
     def _validate_adoption_inventory(self, snapshot, donor_path, ids) -> None:
         if snapshot is None:
@@ -483,8 +488,8 @@ class SessionPortabilityMixin:
                    and not _same_file(row.store_path, self.db_path) for row in rows):
                 raise SessionLineageAmbiguousError("Adoption has a third store copy; adjudicate its ownership first")
 
-    def _adoption_import_and_record(self, donor_db, segments, record):
-        from hermes_state_adoption_records import AdoptionConflict, build_manifest, find_in, insert, validate_handles
+    def _adoption_import_and_record(self, donor_db, segments, record, *, retire_donor, pending_only):
+        from hermes_state_adoption_records import AdoptionConflict, build_manifest, find_in, insert, set_retirement_intent, validate_handles
         normalized, errors = self._validate_import_payload(segments)
         if errors:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}, record
@@ -493,20 +498,25 @@ class SessionPortabilityMixin:
         def write(conn):
             validate_handles(self, donor_db)
             current = find_in(conn, first_id, donor_db, self)
+            if pending_only and (current is None or current["status"] != "pending"):
+                return {"ok": False, "imported": 0, "skipped": 0, "retry_skipped": True}, current
             if (current is None) != (record is None):
                 raise AdoptionConflict("Adoption record appeared or disappeared; retry with its complete membership")
             if current is not None and current["manifest"] != record["manifest"]:
                 raise AdoptionConflict("Adoption membership changed; inspect the saved transfer")
             result = self._import_sessions_locked(conn, normalized)
-            if result.get("ok") and current is None:
-                insert(conn, build_manifest(self, donor_db, segments, conn))
+            if result.get("ok"):
+                if current is None:
+                    insert(conn, build_manifest(self, donor_db, segments, conn), retire_donor=retire_donor)
+                else:
+                    set_retirement_intent(conn, current, retire_donor)
                 current = find_in(conn, first_id, donor_db, self)
             return result, current
 
         return self._execute_write(write)
 
     def _adopt_lineage_segments_locked(self, donor_db: Any, session_id: str, segments: list[dict[str, Any]],
-                                       *, retire_donor: bool, record=None) -> dict[str, Any]:
+                                       *, retire_donor: bool, record=None, pending_only: bool = False) -> dict[str, Any]:
         from hermes_state_adoption_records import mark_complete
         members = [segment["id"] for segment in segments]
         donor_ahead = any(
@@ -515,7 +525,7 @@ class SessionPortabilityMixin:
             for segment in segments)
         if donor_ahead:
             logger.warning("adoption divergence: donor %s has newer messages; leaving it unretired", session_id)
-        result, saved = self._adoption_import_and_record(donor_db, segments, record)
+        result, saved = self._adoption_import_and_record(donor_db, segments, record, retire_donor=retire_donor, pending_only=pending_only)
         adopted = result.get("ok", False) and (result.get("imported", 0) + result.get("skipped", 0)) == len(members)
         donor_retired = False
         pending = list(members)

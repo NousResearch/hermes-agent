@@ -104,7 +104,7 @@ def _decode_record(rows, donor_db, target_db):
                     first[5], FORMAT, first[7] if order == 0 else None)
         if tuple(row) != expected:
             raise AdoptionConflict("Inconsistent adoption record; inspect the complete saved transfer")
-    if first[5] not in {"pending", "complete"}:
+    if first[5] not in {"copied", "pending", "complete"}:
         raise AdoptionConflict("Invalid adoption progress state")
     return {"transfer_id": expected_id, "member_ids": ids, "manifest": manifest, "status": first[5]}
 
@@ -186,16 +186,17 @@ def ensure_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_adoption_transfers_member ON adoption_transfers(member_id, target_store)")
 
 
-def insert(conn, manifest):
+def insert(conn, manifest, *, retire_donor=True):
     """Membership is immutable; transaction callers verify an existing operation first."""
     ensure_schema(conn)
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     identity = transfer_id(manifest)
     now = time.time()
+    status = "pending" if retire_donor else "copied"
     conn.executemany(
         "INSERT INTO adoption_transfers (transfer_id,member_id,member_order,donor_store,target_store,"
-        "status,format_version,manifest_json,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?,?,?)",
-        [(identity, member["id"], order, manifest["donor"][0], manifest["target"][0], FORMAT,
+        "status,format_version,manifest_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [(identity, member["id"], order, manifest["donor"][0], manifest["target"][0], status, FORMAT,
           encoded if order == 0 else None, now, now)
          for order, member in enumerate(manifest["members"])],
     )
@@ -250,3 +251,26 @@ def mark_complete(db, record, donor_db):
         conn.execute("UPDATE adoption_transfers SET status='complete', updated_at=? WHERE transfer_id=?",
                      (time.time(), record["transfer_id"]))
     db._execute_write(write)
+
+
+def set_retirement_intent(conn, record, requested):
+    if record["status"] != "complete":
+        conn.execute("UPDATE adoption_transfers SET status=?, updated_at=? WHERE transfer_id=?",
+                     ("pending" if requested else "copied", time.time(), record["transfer_id"]))
+
+
+def retirement_pending_source(db, session_id):
+    """A hint only: adoption revalidates the complete record and intent under locks."""
+    with db._read_ctx() as conn:
+        if not _table_exists(conn):
+            return None
+        rows = conn.execute(
+            "SELECT DISTINCT transfer_id,donor_store FROM adoption_transfers"
+            " WHERE member_id=? AND target_store=? AND status='pending'",
+            (session_id, str(db.db_path.resolve(strict=True))),
+        ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise AdoptionConflict("Several pending adoptions claim this session; inspect the complete transfer records")
+    return rows[0][1]

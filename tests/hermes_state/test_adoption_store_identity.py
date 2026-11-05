@@ -35,6 +35,7 @@ def test_changed_database_generation_cannot_reuse_an_old_record(tmp_path, monkey
         donor.create_session("generation-bound", "tui")
         donor.append_message("generation-bound", "user", "original generation")
         assert target.adopt_session_lineage_from(donor, "generation-bound", retire_donor=False)["adopted"]
+        saved_status = target._read_one("SELECT status FROM adoption_transfers")[0]
         generation = donor._read_one("PRAGMA application_id")[0]
         donor.close()
         inode = donor_path.stat().st_ino
@@ -46,7 +47,7 @@ def test_changed_database_generation_cannot_reuse_an_old_record(tmp_path, monkey
         refused = target.adopt_session_lineage_from(donor, "generation-bound")
         assert refused.get("adopted") is False
         assert donor.get_session("generation-bound")["end_reason"] is None
-        assert target._read_one("SELECT status FROM adoption_transfers")[0] == "pending"
+        assert target._read_one("SELECT status FROM adoption_transfers")[0] == saved_status
     finally:
         donor.close()
         target.close()

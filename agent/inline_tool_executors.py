@@ -17,13 +17,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from tools.arg_coercion import coerce_tool_args
 
 
-def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
+def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str], dispatch_turn_id: Optional[str] = None) -> dict[str, str]:
     """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
     return {
         "task_id": effective_task_id or "",
         "session_id": getattr(agent, "session_id", "") or "",
         "tool_call_id": tool_call_id or "",
-        "turn_id": getattr(agent, "_current_turn_id", "") or "",
+        "turn_id": str((getattr(agent, "_current_turn_id", "") if dispatch_turn_id is None else dispatch_turn_id) or ""),
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
     }
 
@@ -36,6 +36,7 @@ def emit_terminal_post_tool_call(
     result: Any,
     effective_task_id: str,
     tool_call_id: Optional[str],
+    dispatch_turn_id: Optional[str] = None,
     duration_ms: int = 0,
     status: Optional[str] = None,
     error_type: Optional[str] = None,
@@ -45,11 +46,13 @@ def emit_terminal_post_tool_call(
     """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
     try:
         from model_tools import _emit_post_tool_call_hook
+        ids = tool_hook_ids(agent, effective_task_id, tool_call_id, dispatch_turn_id)
+        ids["turn_id"] = dispatch_turn_id if dispatch_turn_id is not None else ids["turn_id"]
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
             result=result,
-            **tool_hook_ids(agent, effective_task_id, tool_call_id),
+            **ids,
             duration_ms=duration_ms,
             status=status,
             error_type=error_type,

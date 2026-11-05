@@ -5,6 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import store_location
+from tests.fixtures.storage_holder import policy_key, raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
 
 @pytest.mark.asyncio
 async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_path, monkeypatch):
@@ -14,8 +21,7 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     # A code folder under focus: the row's saved cwd must not adopt it into the coding posture.
@@ -23,41 +29,40 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     config = {'platform_toolsets': {'cli': []}, 'agent': {'coding_context': 'focus'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     # The old CLI persisted these columns, not a fabricated canonical receipt.
-    db.create_session('old-cli', source='cli', model='old-model', cwd=str(tmp_path))
-    db.set_session_title('old-cli', 'My retained work')
-    db.append_message('old-cli', role='user', content='OLD_QUESTION')
-    db.append_message('old-cli', role='assistant', content='OLD_ANSWER')
-    db.end_session('old-cli', 'cli_exit')
-    original = db.get_session('old-cli')
+    seed_session(db, 'old-cli', 'cli', model='old-model', cwd=str(tmp_path), title='My retained work')
+    seed_messages(db, 'old-cli', {'role': 'user', 'content': 'OLD_QUESTION'},
+                  {'role': 'assistant', 'content': 'OLD_ANSWER'})
+    db.sessions.end('old-cli', 'cli_exit')
+    original = session_row(db, 'old-cli')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
     caps = frozenset({'session:create', 'session:read', 'session:submit', 'session:control'})
     remote = SessionActor('remote', str(tmp_path), caps, 'remote-socket')
     native = SessionActor('native', str(tmp_path), caps, 'native-socket')
     authority._native_legacy_transports = {native.transport_id: native}
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         resolve_titled_session(authority, remote, 'My retained work')
     from gateway.session_mutations import mutate_session
     from gateway.session_contract import SessionRef
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await mutate_session(authority, remote, SessionRef(authority.profile_id, 'old-cli'),
             {'session_id': 'old-cli', 'request_id': 'steal', 'expected_revision': original['runtime_revision'],
              'operation': 'rename', 'payload': {'title': 'stolen'}})
-    assert db.get_session('old-cli') == original
+    assert session_row(db, 'old-cli') == original
     ref = resolve_titled_session(authority, native, 'My retained work')
     assert ref == resolve_titled_session(authority, native, 'old-cli')
     snapshot = await authority.attach(native, ref)
     assert [m['content'] for m in snapshot.history] == ['OLD_QUESTION', 'OLD_ANSWER']
-    receipt = local_receipt(db, ref.session_id)
+    receipt = db.bindings.receipt(ref.session_id)
     assert ref.session_id == 'old-cli'
-    assert receipt['entry']['session_id'] == 'old-cli'
+    assert receipt.entry['session_id'] == 'old-cli'
     # Adoption is a mount: main's end stamp and source label stay until the first admitted turn.
-    assert (db.get_session('old-cli')['ended_at'], db.get_session('old-cli')['end_reason']) == (original['ended_at'], 'cli_exit')
-    assert db.get_session('old-cli')['source'] == 'cli'
-    assert db.get_session('old-cli')['title'] == original['title']
-    assert db.get_session('old-cli')['parent_session_id'] == original['parent_session_id']
+    assert (session_row(db, 'old-cli')['ended_at'], session_row(db, 'old-cli')['end_reason']) == (original['ended_at'], 'cli_exit')
+    assert session_row(db, 'old-cli')['source'] == 'cli'
+    assert session_row(db, 'old-cli')['title'] == original['title']
+    assert session_row(db, 'old-cli')['parent_session_id'] == original['parent_session_id']
     policy = runner.adapters[Platform.LOCAL].policies[ref.session_id]
     assert policy.model == 'old-model' and policy.cwd == str(tmp_path)
     assert not policy.coding_posture and 'coding' not in policy.toolsets
@@ -69,26 +74,27 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     # Compression runs inside a turn, and the first admitted turn reopens the adopted row.
     from gateway.session_local_recovery import reopen_local_session
     reopen_local_session(authority, ref)
-    assert db.get_session('old-cli')['end_reason'] is None
-    assert db.try_acquire_compression_lock(ref.session_id, 'fixture')
+    assert session_row(db, 'old-cli')['end_reason'] is None
+    assert db.coordination.try_acquire_compression_lock(session_id=ref.session_id, holder='fixture')
     try:
-        db.publish_compression_child(parent_session_id=ref.session_id, child_session_id='compressed',
-            source='cli', messages=history, compression_lock_holder='fixture')
+        db.lineage.publish_compression_child(ref.session_id, CompressionChild(session_id='compressed', source='cli'),
+            [NewMessage.from_live(m) for m in history], compression_lock_holder='fixture')
     finally:
-        db.release_compression_lock(ref.session_id, 'fixture')
+        db.coordination.release_compression_lock(session_id=ref.session_id, holder='fixture')
     snapshot = await authority.attach(native, ref)
     assert [m['content'] for m in snapshot.history if not m.get('archived')] == ['COMPRESSED', 'RETAINED']
     assert [m['content'] for m in snapshot.history if m.get('archived')] == ['OLD_QUESTION', 'OLD_ANSWER']
     assert resolve_titled_session(authority, native, 'old-cli') == ref
-    assert local_receipt(db, ref.session_id)['policy'] == receipt['policy']
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    assert db.bindings.receipt(ref.session_id).policy == receipt.policy
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await authority.attach(remote, ref)
     foreign = SessionActor(native.subject, '/foreign', caps, native.transport_id)
-    with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+    with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
         await authority.attach(foreign, ref)
-    db._write_sql('UPDATE state_meta SET value=? WHERE key=?', ('{}', 'gateway.local_policy.v1:' + ref.session_id))
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        'UPDATE state_meta SET value=? WHERE key=?', ('{}', policy_key(ref.session_id))))
     authority.sessions.clear()
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         resolve_titled_session(authority, native, 'old-cli')
 
 
@@ -101,39 +107,37 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
     from hermes_cli.active_sessions import try_acquire_active_session, release_active_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    db.create_session('old-live', source='cli', model='old', cwd=str(tmp_path))
-    db.create_session('foreign', source='cli', model='old', cwd=str(tmp_path), profile_name='other')
+    db = store.persistence
+    seed_session(db, 'old-live', 'cli', model='old', cwd=str(tmp_path))
+    seed_session(db, 'foreign', 'cli', model='old', cwd=str(tmp_path), profile_name='other')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
     native = SessionActor('native', str(tmp_path), frozenset({'session:read', 'session:create'}), 'socket')
     authority._native_legacy_transports = {native.transport_id: native}
-    lease, refusal = try_acquire_active_session(session_id='old-live', surface='cli', registry_home=Path(db.db_path).parent, config={})
+    lease, refusal = try_acquire_active_session(session_id='old-live', surface='cli', registry_home=Path(store_location(db.scope)).parent, config={})
     assert lease is not None, refusal
     from hermes_cli.active_sessions import active_session_liveness_guard
-    with active_session_liveness_guard('old-live', registry_home=Path(db.db_path).parent) as active:
+    with active_session_liveness_guard('old-live', registry_home=Path(store_location(db.scope)).parent) as active:
         assert active
     try:
-        with pytest.raises(RuntimeStoreError, match='runtime_coordination_required'):
+        with pytest.raises(AuthorityRefusal, match='runtime_coordination_required'):
             resolve_titled_session(authority, native, 'old-live')
-        with pytest.raises(RuntimeStoreError, match='not_found'):
+        with pytest.raises(AuthorityRefusal, match='not_found'):
             resolve_titled_session(authority, native, 'foreign')
-        with db._read_ctx() as conn:
-            assert not conn.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
+        with raw_holder(db)._read_ctx() as conn:
+            assert not conn.execute("SELECT 1 FROM state_meta WHERE key LIKE ?", (policy_key() + '%',)).fetchall()
     finally:
         release_active_session(lease)
     ref = resolve_titled_session(authority, native, 'old-live')
-    db.set_session_title(ref.session_id, 'Bot Chat')
-    from hermes_state_local_lineage import reset_local_target
-    from hermes_state_local import local_receipt
-    receipt = local_receipt(db, ref.session_id)
-    entry = dict(receipt['entry'], session_id='reset-tip')
-    reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
+    db.sessions.set_title(ref.session_id, 'Bot Chat')
+    receipt = db.bindings.receipt(ref.session_id)
+    entry = dict(receipt.entry, session_id='reset-tip')
+    db.bindings.reset_target(epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
     from gateway.session_bot import _target
     submitter = SessionActor(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
     assert (await _target(authority, submitter))[2].session_id == 'reset-tip'
@@ -153,12 +157,11 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     for sid, source in (('old-oneshot', 'oneshot'), ('old-tool', 'tool')):
-        db.create_session(sid, source=source, model='old-model', cwd=str(tmp_path))
-        db.set_session_title(sid, sid + ' title')
-        db.append_message(sid, role='user', content=sid.upper())
-        db.end_session(sid, 'cli_exit')
+        seed_session(db, sid, source, model='old-model', cwd=str(tmp_path), title=sid + ' title')
+        seed_messages(db, sid, {'role': 'user', 'content': sid.upper()})
+        db.sessions.end(sid, 'cli_exit')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -173,7 +176,7 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
     # Every turn refreshes the routing peer through the transport (``local``); the adopted label survives it.
     source = authority.sessions['old-oneshot'].source
     store._record_gateway_session_peer('old-oneshot', authority.sessions['old-oneshot'].route, source)
-    assert {db.get_session(s)['source'] for s in ('old-oneshot', 'old-tool')} == {'oneshot', 'tool'}
+    assert {session_row(db, s)['source'] for s in ('old-oneshot', 'old-tool')} == {'oneshot', 'tool'}
     listed = await native.dispatch({'id': 3, 'method': 'session.list', 'params': {}})
     assert listed['result']['sessions'] == [], listed
 
@@ -193,12 +196,12 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account'),
                          ('old-desktop-remote', 'basic:hermes')):
-        db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
-        db.append_message(sid, role='user', content=sid.upper())
-        db.end_session(sid, 'session_switch')
+        seed_session(db, sid, 'desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
+        seed_messages(db, sid, {'role': 'user', 'content': sid.upper()})
+        db.sessions.end(sid, 'session_switch')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -228,9 +231,9 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.
     for sid, source, user_id in (('old-desktop-foreign', 'desktop', 'telegram:42'),
                                  ('old-cli-account', 'cli', 'nous:account')):
-        db.create_session(sid, source=source, model='old-model', cwd=str(tmp_path), user_id=user_id)
-        db.append_message(sid, role='user', content=sid.upper())
-        db.end_session(sid, 'session_switch')
+        seed_session(db, sid, source, model='old-model', cwd=str(tmp_path), user_id=user_id)
+        seed_messages(db, sid, {'role': 'user', 'content': sid.upper()})
+        db.sessions.end(sid, 'session_switch')
         refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert 'error' in refused, refused
-        assert db.get_session(sid)['user_id'] == user_id
+        assert session_row(db, sid)['user_id'] == user_id

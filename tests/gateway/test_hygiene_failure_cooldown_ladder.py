@@ -18,6 +18,8 @@ streak is always 0 there. These tests pin the streak to ``PersistentState``
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.run import (
@@ -75,35 +77,35 @@ class TestCooldownLadder:
         ]
         assert seen == [BASE * m for m in _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS]
 
-    def test_consecutive_failures_escalate_across_gateway_restart(self, tmp_path):
-        from hermes_state import SessionDB
+    def test_consecutive_failures_escalate_across_gateway_restart(self, tmp_path, monkeypatch):
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        store = open_persistence(profile_scope(home=tmp_path))
+        monkeypatch.setattr(GatewayRunner, "persistence", store)
         try:
-            db.create_session("before-rotation", "telegram", session_key=KEY)
+            seed_session(store, "before-rotation", "telegram", session_key=KEY)
             first_runner = _Runner()
-            first_runner._session_db = db
             assert _hygiene_cooldown_for_failure(first_runner, KEY, BASE) == BASE
 
-            db.create_session(
+            seed_session(
+                store,
                 "after-rotation",
                 "telegram",
                 session_key=KEY,
                 parent_session_id="before-rotation",
             )
             restarted_runner = _Runner()
-            restarted_runner._session_db = db
             assert _hygiene_cooldown_for_failure(
                 restarted_runner, KEY, BASE
             ) == BASE * 3
 
             other_chat_runner = _Runner()
-            other_chat_runner._session_db = db
             assert _hygiene_cooldown_for_failure(
                 other_chat_runner, "agent:main:telegram:private:999", BASE
             ) == BASE
         finally:
-            db.close()
+            store.close()
 
     def test_ladder_saturates_at_the_top_rung(self):
         """A permanently un-compactable session must not grow without bound."""
@@ -124,23 +126,22 @@ class TestCooldownLadder:
         assert runner._session_state(KEY).persistent.hygiene_failure_streak == 0
         assert _hygiene_cooldown_for_failure(runner, KEY, BASE) == BASE
 
-    def test_reset_returns_restarted_gateway_to_first_rung(self, tmp_path):
-        from hermes_state import SessionDB
+    def test_reset_returns_restarted_gateway_to_first_rung(self, tmp_path, monkeypatch):
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        store = open_persistence(profile_scope(home=tmp_path))
+        monkeypatch.setattr(GatewayRunner, "persistence", store)
         try:
             runner = _Runner()
-            runner._session_db = db
             assert _hygiene_cooldown_for_failure(runner, KEY, BASE) == BASE
             _reset_hygiene_failure_streak(runner, KEY)
 
             restarted_runner = _Runner()
-            restarted_runner._session_db = db
             assert _hygiene_cooldown_for_failure(
                 restarted_runner, KEY, BASE
             ) == BASE
         finally:
-            db.close()
+            store.close()
 
     def test_streaks_are_per_session(self):
         """One wedged session must not penalize every other chat."""
@@ -210,7 +211,7 @@ class TestDegradedRunners:
 # ---------------------------------------------------------------------------
 
 class TestFailureReasonForwarded:
-    """`record_compression_failure_cooldown` writes compression_failure_error
+    """`record_compression_cooldown` writes compression_failure_error
     UNCONDITIONALLY, so omitting the reason clobbers to NULL whatever the
     in-conversation path recorded — and readers then show the user
     "unknown error". Matters more now that a cooldown can last an hour."""
@@ -218,12 +219,12 @@ class TestFailureReasonForwarded:
     def _capture(self, *args):
         seen = {}
 
-        class _DB:
-            def record_compression_failure_cooldown(self, sid, until, error=None):
+        class _Messages:
+            def record_compression_cooldown(self, sid, until, error=None):
                 seen.update(sid=sid, until=until, error=error)
 
         class _GW:
-            _session_db = _DB()
+            persistence = SimpleNamespace(messages=_Messages())
 
         _record_hygiene_cooldown(_GW(), "sid-1", 300.0, *args)
         return seen
@@ -344,12 +345,12 @@ class TestRecordedCooldownEscalates:
         def __init__(self):
             self.calls = []
 
-        def record_compression_failure_cooldown(self, sid, until, error=None):
+        def record_compression_cooldown(self, sid, until, error=None):
             self.calls.append((sid, until))
 
     class _GW:
         def __init__(self, db):
-            self._session_db = db
+            self.persistence = SimpleNamespace(messages=db)
             self._sessions = {}
 
         def _session_state(self, session_key):

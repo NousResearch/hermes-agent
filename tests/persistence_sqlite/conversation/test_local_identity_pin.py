@@ -4,7 +4,7 @@ legacy store's ``hermes_state_keys.local_identity``, for the same profile, princ
 
 from __future__ import annotations
 
-import hermes_state_keys
+from persistence.sqlite._state import keys as hermes_state_keys
 from persistence import SessionId
 from persistence.authority.bindings import local_session_id
 from tests.contracts.authority.test_bindings_contract import assert_refusal, make_binding

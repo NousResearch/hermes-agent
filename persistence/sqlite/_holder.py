@@ -27,29 +27,36 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar, cast
 
 from hermes_constants import mkdir_under_hermes_home
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
-from hermes_state_holders import read_only_db_uri
-from hermes_state_health import (
+from persistence.sqlite._state.common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from persistence.sqlite._state.holders import read_only_db_uri
+from persistence.sqlite._state.health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
-from hermes_state_errors import (
-    _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY, _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError, StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error, is_malformed_schema_error, is_sqlite_lock_error,
+from persistence.sqlite._state.errors import (
+    _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
+    _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
+    StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_schema_error,
 )
-from hermes_state_guard import (
-    _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root, _register_test_instance,
+from persistence.sqlite._state.guard import (
+    _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
+    _register_test_instance,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
-import hermes_state_holders as _state_holders
-import hermes_state_lockguard as _lockguard
-from hermes_state_lockowners import log_write_lock_holders
-from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement, _read_sqlite_application_id, _stat_sqlite_sidecar_identity, _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, quarantine_cross_process_lock, quarantine_invalid_state_db, RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
+from persistence.sqlite._state.readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from persistence.sqlite._state import holders as _state_holders
+from persistence.sqlite._state import lockguard as _lockguard
+from persistence.sqlite._state.lockowners import log_write_lock_holders
+from persistence.sqlite._state.dbfile import (
+    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
+    _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, quarantine_cross_process_lock,
+    quarantine_invalid_state_db,
+    RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
-from hermes_state_wal import _on_disk_journal_mode, apply_wal_with_fallback
-from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from persistence.sqlite._state.repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from persistence.conversation.messages import ReadCheck
 from persistence.core.errors import CompressionInProgress
-from hermes_state_wal import apply_database_pragmas
+from sqlite_support import _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback
+from storage_errors import is_malformed_db_error, is_sqlite_lock_error
 from storage_user_copy import set_last_init_error
 
 from ._schema import (

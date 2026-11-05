@@ -21,8 +21,8 @@ from persistence import DeletedWalGeneration
 from persistence.sqlite import _registry
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import retry_deferred_fts_recovery
-import hermes_state_wal as state_wal
-from hermes_state_errors import DeletedWalGenerationError
+import sqlite_support
+from persistence.sqlite._state.errors import DeletedWalGenerationError
 from persistence.sqlite.admin import SQLiteStoreAdmin
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session
@@ -32,11 +32,11 @@ from persistence.sqlite.conversation._store.sessions import create_session
 def force_wal(monkeypatch):
     """Pin WAL so this host's vulnerable SQLite still matches production topology."""
     monkeypatch.setattr(
-        state_wal,
+        sqlite_support,
         "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
-    monkeypatch.setattr(state_wal, "resolve_journal_mode", lambda: "wal")
+    monkeypatch.setattr(sqlite_support, "resolve_journal_mode", lambda: "wal")
 
 
 def _make_db(path: Path, session_id: str, content: str) -> StoreHolder:

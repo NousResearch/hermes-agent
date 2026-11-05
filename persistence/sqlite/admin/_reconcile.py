@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 import hermes_constants
 
-from hermes_state_dbfile import _connect_tracked_db
+from persistence.sqlite._state.dbfile import _connect_tracked_db
 from persistence.core.admin import BROWSE_RECONCILE_BUDGET_S, BROWSE_RECONCILE_PURPOSE
 from persistence.core.errors import CorruptStoreError, DeclarativeDrift
 
@@ -35,7 +35,7 @@ def schema_drift_reason(path: Path):
             for statement in schema_read_probe_statements(path.parent):
                 conn.execute(statement).fetchone()
         except sqlite3.OperationalError as exc:
-            from hermes_state_repair import _schema_not_built
+            from persistence.sqlite._state.repair import _schema_not_built
             if _schema_not_built(exc):
                 return str(exc)
             raise
@@ -43,8 +43,9 @@ def schema_drift_reason(path: Path):
 
 
 def _reconcile_snapshot(path, guard):
-    from hermes_state_repair import (
-        _copy_database_snapshot, _db_opens_cleanly, _repair_conn, _repair_scratch_space_error, _unlink_db_triple,
+    from persistence.sqlite._state.repair import (
+        _copy_database_snapshot, _db_opens_cleanly, _repair_conn,
+        _repair_scratch_space_error, _unlink_db_triple,
     )
 
     scratch = path.with_name(path.name + '.reconcile-scratch')
@@ -76,8 +77,9 @@ def _require_history_tables(conn):
 
 
 def _reconcile_locked(path, backup, report):
-    from hermes_state_repair import (
-        _backup_db_file, _db_opens_cleanly, _exclusive_repair_db_guard, _live_writer_holds_db,
+    from persistence.sqlite._state.repair import (
+        _backup_db_file, _db_opens_cleanly, _exclusive_repair_db_guard,
+        _live_writer_holds_db,
     )
 
     if _live_writer_holds_db(path):
@@ -213,7 +215,7 @@ def _lockless_gateway_holder(path: Path) -> str | None:
     multiplexer serves named profiles without reserving their per-profile lock, so the lock alone
     misses it. Only holders whose command line is a Hermes ``gateway`` run count; plain readers
     (Desktop, sibling browses, CLI reads) are not owners. Returns a description, else None."""
-    from hermes_state_holders import _looks_like_hermes, _read_proc_argv, describe_holder_pid, foreign_state_db_holders
+    from persistence.sqlite._state.holders import _looks_like_hermes, _read_proc_argv, describe_holder_pid, foreign_state_db_holders
     for pid, _target in foreign_state_db_holders(path):
         if pid <= 0:
             continue
@@ -270,7 +272,7 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
     idempotent. The declared shape is verified inside the transaction before COMMIT: a column
     the shared reconciler could not add (it logs and continues) or an expired budget rolls the
     store back to exactly what it was, never a partial upgrade."""
-    from hermes_state_repair import _reapply_durability_barriers, _schema_not_built
+    from persistence.sqlite._state.repair import _reapply_durability_barriers, _schema_not_built
 
     budget = budget or _Budget(BROWSE_RECONCILE_BUDGET_S)
     budget.check()
@@ -325,7 +327,7 @@ def _integrity_problem(path: Path, budget: _Budget):
     except sqlite3.DatabaseError as exc:
         if budget.expired:
             raise BrowseBudgetExceeded('integrity check exceeded the browse time budget') from exc
-        from hermes_state_errors import is_malformed_db_error
+        from storage_errors import is_malformed_db_error
         if is_malformed_db_error(exc):
             return str(exc)
         raise
@@ -413,7 +415,7 @@ def _verify_clean_before_lock(path: Path, too_slow):
     the scan vouches for. Raises :class:`CorruptStoreError` for a damaged store (latched, so polls do
     not rescan it) and ``too_slow()`` when the scan cannot finish in its budget (remembered for the
     same signature, so a polling sidebar does not rescan a multi-GB file every few seconds)."""
-    from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
+    from persistence.sqlite._state.health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
     if storage_state(path) == STORAGE_CORRUPT:
         raise _LaggingStoreDamaged(storage_corrupt_reason(path) or 'latched corrupt')
     key = str(path.resolve())
@@ -541,7 +543,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
 def repair_declarative_schema(path: Path, *, backup: bool = True):
     """Reuse repair's snapshot/SQLite exclusion beneath the runtime owner lock."""
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
-    from hermes_state_repair import _cross_process_repair_lock
+    from persistence.sqlite._state.repair import _cross_process_repair_lock
 
     report = {'repaired': False, 'strategy': None, 'backup_path': None, 'error': None}
     try:

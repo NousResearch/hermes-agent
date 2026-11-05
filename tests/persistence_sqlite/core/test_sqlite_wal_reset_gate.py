@@ -16,14 +16,14 @@ import time
 
 import pytest
 
-import hermes_state_wal as wal_module
-from hermes_state_wal import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
+import sqlite_support
+from sqlite_support import apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable
 
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
-    wal_module._wal_reset_bug_warned_paths.clear()
+    sqlite_support._wal_reset_bug_warned_paths.clear()
     yield
-    wal_module._wal_reset_bug_warned_paths.clear()
+    sqlite_support._wal_reset_bug_warned_paths.clear()
 
 class TestIsSqliteWalResetVulnerable:
     @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ class TestIsSqliteWalResetVulnerable:
 class TestApplyWalWalResetGate:
     def test_fresh_db_uses_delete_when_vulnerable(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
         with caplog.at_level("WARNING", logger="hermes_state"):
@@ -66,7 +66,7 @@ class TestApplyWalWalResetGate:
     ):
         """Already-WAL DBs must not be live-downgraded under concurrent openers."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         path = tmp_path / "prior_wal.db"
         seed = sqlite3.connect(str(path))
@@ -119,7 +119,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
 
         All blocked-state assertions run WHILE the holder owns the DB."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         db = tmp_path / "live_wal.db"
         seed = sqlite3.connect(str(db))
@@ -183,7 +183,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         as 'not WAL' and flipping anyway (the incident's exact confusion).
         Assertions run WHILE the holder's exclusive lock is live."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         db = tmp_path / "locked_wal.db"
         seed = sqlite3.connect(str(db))
@@ -234,7 +234,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         """No concurrent openers → the vulnerable-SQLite DELETE gate still
         applies exactly as before."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "exclusive.db"))
         try:
@@ -255,7 +255,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
         between probe and flip), the gate returns the observed mode instead of
         raising or waiting the lock out."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
 
         class _FlipLockedConnection(sqlite3.Connection):
@@ -284,10 +284,10 @@ class TestNoDowngradeUnderConcurrentOpeners:
         refuse to downgrade when the mode probe is blocked by a concurrent
         opener's exclusive lock: raise, never flip blind."""
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable",
+            sqlite_support, "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
-        monkeypatch.setattr(wal_module, "resolve_journal_mode", lambda: "delete")
+        monkeypatch.setattr(sqlite_support, "resolve_journal_mode", lambda: "delete")
         db = tmp_path / "cfg_delete.db"
         seed = sqlite3.connect(str(db))
         try:
@@ -328,10 +328,10 @@ class TestNoDowngradeUnderConcurrentOpeners:
         import logging
 
         monkeypatch.setattr(
-            wal_module, "is_sqlite_wal_reset_vulnerable",
+            sqlite_support, "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
-        wal_module._wal_probe_unknown_paths.clear()
+        sqlite_support._wal_probe_unknown_paths.clear()
 
         class _LockedProbeConnection(sqlite3.Connection):
             def execute(self, sql, *args, **kwargs):  # type: ignore[override]
@@ -346,7 +346,7 @@ class TestNoDowngradeUnderConcurrentOpeners:
             str(tmp_path / "nfs.db"), factory=_LockedProbeConnection
         )
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_state_wal"):
+            with caplog.at_level(logging.WARNING, logger="sqlite_support"):
                 result = apply_wal_with_fallback(conn, db_label="nfs.db")
             # The set-pragma never ran (it would have raised "locking
             # protocol" above); the configured WAL mode is assumed instead.

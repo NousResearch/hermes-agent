@@ -6,7 +6,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import hermes_state_repair
+from persistence.sqlite._state import repair as hermes_state_repair
 from hermes_cli.doctor_report import Finding
 from hermes_cli.doctor_state import _state_db_wal
 
@@ -74,7 +74,7 @@ def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_pat
     """`hermes doctor` (no --fix) on a large WAL while Desktop/gateway hold the DB must say it is normal and
     order "stop" before any `--fix` — the bare "run 'hermes doctor --fix'" nudge is how users became the
     second writer (#110054)."""
-    import hermes_state_holders
+    from persistence.sqlite._state import holders as hermes_state_holders
 
     monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *a, **k: True)
     finding = Finding()
@@ -84,7 +84,7 @@ def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_pat
 
 
 def test_large_wal_warning_without_a_holder_still_orders_stop_before_fix(tmp_path, monkeypatch):
-    import hermes_state_holders
+    from persistence.sqlite._state import holders as hermes_state_holders
 
     monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *a, **k: False)
     finding = Finding()

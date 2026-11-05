@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-from hermes_state_keys import prefix_range
+from persistence.sqlite._state.keys import prefix_range
 from session_rules.media import hosted_document_references
 
 __all__ = [

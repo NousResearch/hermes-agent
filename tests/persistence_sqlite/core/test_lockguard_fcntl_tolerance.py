@@ -20,14 +20,14 @@ import pytest
 
 def _reimport_with_fcntl(monkeypatch, stub: types.ModuleType | None):
     """Import the guard fresh with ``fcntl`` replaced (or absent), leaving sys.modules clean."""
-    monkeypatch.delitem(sys.modules, "hermes_state_lockguard", raising=False)
+    monkeypatch.delitem(sys.modules, "persistence.sqlite._state.lockguard", raising=False)
 
     if stub is None:
         monkeypatch.setitem(sys.modules, "fcntl", None)  # import fcntl -> ImportError
     else:
         monkeypatch.setitem(sys.modules, "fcntl", stub)
 
-    return importlib.import_module("hermes_state_lockguard")
+    return importlib.import_module("persistence.sqlite._state.lockguard")
 
 
 def _windows_fcntl_lookalike() -> types.ModuleType:

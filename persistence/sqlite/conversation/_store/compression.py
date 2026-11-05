@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import time
 from typing import Any, Optional
-from hermes_state_common import _BOUNDARY_END_REASONS, _ended_by_compression, is_automatic_end_reason
+from persistence.sqlite._state.common import _BOUNDARY_END_REASONS, _ended_by_compression, is_automatic_end_reason
 from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
 from persistence.sqlite.conversation._store.core import _session_row_dict
 from persistence.sqlite.conversation._store.messages import _carry_parent_timestamps, _clone_message_rows, _execute_transcript_write, _insert_message_rows, _is_explicit_fork_child_row, _tail_rows_after_watermark
@@ -374,7 +374,7 @@ def _publish_compression_child_on_conn(
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
     """:meth:`publish_compression_child` on the caller's write transaction (never commits). The
     owner and the worker/canonical-mutation verbs share this one body so they cannot drift."""
-    from hermes_state_errors import CompressionSessionBusyError
+    from persistence.sqlite._state.errors import CompressionSessionBusyError
     from persistence.sqlite.conversation._store.sessions import _unarchive_auto_archived_lineage
     if require_lease_refresh and compression_lock_holder:
         conn.execute(

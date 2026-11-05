@@ -18,13 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_dbfile import (
+from persistence.sqlite._state.dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
 )
 from persistence.sqlite import _holder
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._registry import release_or_close
-from hermes_state_errors import DeletedWalGenerationError
+from persistence.sqlite._state.errors import DeletedWalGenerationError
 from persistence.sqlite.conversation._store.messages import append_message
 from tests.persistence_sqlite.core._wal_generation import (
     gateway_writer, integrity_ok_conn, lose_sidecars, make_db, pin_wal, require_wal, write_second_generation,

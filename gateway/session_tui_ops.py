@@ -301,6 +301,8 @@ async def undo_files(connection, ref, params):
     sessions = {ref.session_id, physical_target(authority, ref)}
     from gateway.run import _checkpoint_agent_kwargs
     kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
+    if not kwargs['checkpoints_enabled']:
+        return {'enabled': False}  # nothing to revert, so nothing a running turn could race
     terminal = json.loads(policy.terminal_json)
     # Held across the scan and restore: a turn claims under this lock, so none can start (and write
     # files the revert would then sweep up) between the idle check and the last restored file.

@@ -85,9 +85,13 @@ async def _rewind(view, turns_back, *, retry=False, revert_files=False):
     view.undo_file_lines = []
     target_id = (result.get("target_message") or {}).get("id")
     if revert_files and type(target_id) is int:
-        files = await view.client.rpc("rollback.undo_files", session_id=view.session_id,
-                                      target_message_id=target_id)
-        view.undo_file_lines = list((files or {}).get("lines") or ())
+        try:
+            files = await view.client.rpc("rollback.undo_files", session_id=view.session_id,
+                                          target_message_id=target_id)
+            view.undo_file_lines = list((files or {}).get("lines") or ())
+        except GatewayClientError as exc:  # the transcript rewind already committed: report, keep going
+            from agent.i18n import t
+            view.undo_file_lines = [t("checkpoints.undo.failed", error=str(exc))]
     # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
     # deriving a new target from the already-shortened transcript (which would drop the turn before).
     snapshot = await view.client.rpc("session.resume", session_id=view.session_id)

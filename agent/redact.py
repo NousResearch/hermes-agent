@@ -752,6 +752,9 @@ _BASIC_PAIR_ASSIGN_RE = re.compile(
 # ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
 # — long and letter-bearing enough to pass the floor, yet never a credential.
 _VERSION_TAG_RE = re.compile(r"^[vV]?\d+(\.\d+)+")
+# ``nginx:stable-alpine`` / ``myrepo:latest-release``: lower-case words joined by ``-``/``.``
+# are image tags and labels; a password carries a digit, a capital or a symbol.
+_WORD_TAG_RE = re.compile(r"[a-z]++(?:[.\-][a-z]++)*+")
 
 # ``CHECKSUM=sha256:1234…`` digest labels: the hex body is long and letter-bearing, but a hash
 # algorithm name as the ``user`` half marks the pair as an algorithm:digest, not a credential
@@ -763,7 +766,7 @@ _HASH_ALGO_NAMES = frozenset({
 
 def _is_basic_pair_password(password: str) -> bool:
     """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
-    if _VERSION_TAG_RE.search(password):
+    if _VERSION_TAG_RE.search(password) or _WORD_TAG_RE.fullmatch(password):
         return False
     return len(password) >= 8 and any(c.isalpha() for c in password)
 
@@ -1292,6 +1295,8 @@ def _redact_userinfo_passwords(text: str, code_file: bool) -> str:
         user, sep, password = m.group(2).partition(":")
         if not sep or (code_file and password.startswith("{") and password.endswith("}")):
             return m.group(0)
+        if not password or _DSN_PW_PLACEHOLDER_RE.fullmatch(password):  # ``user:${TOKEN}@`` docs sample
+            return m.group(0)
         return f"{m.group(1)}{user}:***@"
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
@@ -1535,6 +1540,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             # A pure ``{...}`` password is an f-string template reference, not a literal
             # credential — same #33801 rule _redact_userinfo_passwords applies below.
             if code_file and password.startswith("{") and password.endswith("}"):
+                return m.group(0)
+            if _DSN_PW_PLACEHOLDER_RE.fullmatch(password):
                 return m.group(0)
             return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)

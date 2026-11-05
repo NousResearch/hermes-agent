@@ -1731,6 +1731,15 @@ class TestFlagAndKeyShapedCredentials:
         assert self.SECRET not in out
         assert '"region": "eu-west-1"' in out
 
+    @pytest.mark.parametrize(("text", "masked"), [
+        ('{"signing_key": "<hunter2>"}', True),
+        ("private_key: <p@ss>", True),
+        ('{"private_key": "<your key>"}', False),
+        ("signing_key: <api_key>", False),
+    ])
+    def test_only_a_word_shaped_bracket_under_a_qualified_key_is_a_sample(self, text, masked):
+        assert (redact_sensitive_text(text, force=True) != text) is masked
+
     @pytest.mark.parametrize("command,secret", [
         ("mysql -h db --password=S3cretPassw0rd!x", "S3cretPassw0rd!x"),
         ("vault login --token=S3cretPassw0rd!x", "S3cretPassw0rd!x"),
@@ -1741,6 +1750,8 @@ class TestFlagAndKeyShapedCredentials:
         ("tool --password correct_horse_battery_staple", "correct_horse_battery_staple"),
         ("tool --password my_bank_password", "my_bank_password"),
         ("tool --token correctHorseBatteryStaple", "correctHorseBatteryStaple"),
+        ('tool --password "' + "x " * 300 + 'S3cretPassw0rd!x"', "S3cretPassw0rd!x"),
+        ('tool --password "abc S3cretPassw0rd!x', "S3cretPassw0rd!x"),
     ])
     def test_a_secret_passed_as_a_flag_is_masked(self, command, secret):
         out = redact_sensitive_text(command, force=True)

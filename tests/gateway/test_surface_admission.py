@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.fixtures.storage_seed import seed_session
 
 
 async def _authority(tmp_path, monkeypatch, answer):
@@ -21,10 +22,10 @@ async def _authority(tmp_path, monkeypatch, answer):
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
-    store._db.create_session('s', source='telegram')
+    seed_session(authority.persistence, 's', 'telegram')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c'), 's')
     return authority
 
@@ -33,7 +34,6 @@ async def _authority(tmp_path, monkeypatch, answer):
 async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_surface import surface_turn_note
-    from hermes_state_runtime import list_session_admissions
     from tools.voice_live import VOICE_LIVE_TURN_NOTE
 
     seen = []
@@ -60,10 +60,10 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
     finally:
         await connection.close()
 
-    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
-    assert rows['spoken']['payload']['surface_v1'] == {
+    rows = {row.request_id: row for row in authority.persistence.admissions.list(session_id='s', pending_only=False)}
+    assert rows['spoken'].payload['surface_v1'] == {
         'surface': 'voice-live', 'voice_context': "Voice assistant: Hi\nUser: what's the weather"}
-    assert 'surface_v1' not in rows['typed']['payload'] and 'smuggled' not in rows
+    assert 'surface_v1' not in rows['typed'].payload and 'smuggled' not in rows
     (spoken_text, spoken_note), (typed_text, typed_note) = seen
     assert spoken_text == "what's the weather", 'the persisted user row stays the words the user said'
     assert spoken_note.startswith(VOICE_LIVE_TURN_NOTE) and "User: what's the weather" in spoken_note
@@ -77,7 +77,6 @@ async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monke
     that runs on ``auxiliary.voice_chat``; the next typed turn stays on the main model."""
     from gateway.session_controls import AuthorityConnection
     from gateway.session_surface import surface_turn_note, surface_voice_turn
-    from hermes_state_runtime import list_session_admissions
 
     seen = []
     async def answer(event):
@@ -98,9 +97,9 @@ async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monke
     finally:
         await connection.close()
 
-    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
-    assert rows['spoken']['payload']['surface_v1'] == {'voice_turn': True}
-    assert 'surface_v1' not in rows['typed']['payload'] and 'bad' not in rows
+    rows = {row.request_id: row for row in authority.persistence.admissions.list(session_id='s', pending_only=False)}
+    assert rows['spoken'].payload['surface_v1'] == {'voice_turn': True}
+    assert 'surface_v1' not in rows['typed'].payload and 'bad' not in rows
     assert seen == [('spoken', True, ''), ('typed', False, '')]
 
 def _admissions(home):

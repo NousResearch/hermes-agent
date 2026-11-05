@@ -6,7 +6,8 @@ import pytest
 
 from gateway import hosted_room_driver as driver, hosted_rooms
 from gateway.run import _profile_runtime_scope
-from hermes_state_runtime import list_session_admissions
+from gateway.session_authority import admission_row
+from gateway.session_persistence import authority_persistence
 from tests.gateway.test_api_unknown_resolution import (
     _AUTH_HEADERS, _close_fixture, _restarted_api_runs,
 )
@@ -16,6 +17,12 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
 gateway, linked_peer = peers.gateway, peers.linked_peer
+
+
+def list_session_admissions(authority, *, session_id, pending_only=True):
+    """The session's admission rows, as the member's store lists them."""
+    return [admission_row(row) for row in authority_persistence(authority).admissions.list(
+        session_id=session_id, pending_only=pending_only)]
 
 
 @pytest.mark.asyncio
@@ -30,21 +37,22 @@ async def test_restart_stop_requires_the_members_exact_confirmation(
     """
     _, url, catalog, room = linked_peer
     assert (await peers._seat(gateway, room, url, catalog))[1]['registered']
-    service, db = gateway.service, gateway.db.db_path
+    service, db = gateway.service, gateway.db
     assert (await peers.call(gateway.owner, 'groups.send', room_id='linked', event_id='ask',
                             payload={'text': '@reviewer review', 'thread_id': 'thread'}))['accepted']
-    task, = driver.list_tasks(db, room_id='linked', status='queued')
+    task, = driver.list_tasks(db, placement='profile', room_id='linked', status='queued')
     identity, binding = task['identity'], service.bindings()[0]
     now = [100.0]
     service.runtime.clock = lambda: now[0]
-    lease = driver.acquire_lease(db, room_id='linked', gateway_id=binding.gateway_id,
+    lease = driver.acquire_lease(db, placement='profile', room_id='linked', gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch, process_generation='earlier-home',
         ttl_seconds=1, clock=service.runtime.clock)
-    driver.start_task(db, identity, lease, expected_cancel_generation=0, clock=service.runtime.clock)
+    driver.start_task(db, identity, lease, placement='profile', expected_cancel_generation=0,
+                      clock=service.runtime.clock)
     now[0] = 102.0
     lease = service.runtime._ensure_lease(binding)
-    driver.recover_room(db, lease, clock=service.runtime.clock)
-    driver.defer_indeterminate_task(db, identity, lease, expected_execution_generation=1,
+    driver.recover_room(db, lease, placement='profile', clock=service.runtime.clock)
+    driver.defer_indeterminate_task(db, identity, lease, placement='profile', expected_execution_generation=1,
         expected_cancel_generation=0, reason='member_unavailable', clock=service.runtime.clock)
     peer, route = service.peer_clients[('linked', 'reviewer')], service.peer_routes[('linked', 'reviewer')]
     dispatch = build_member_dispatch(binding=binding, route=route, room_id='linked',
@@ -108,9 +116,9 @@ async def test_restart_stop_requires_the_members_exact_confirmation(
             result = str(exc)
         if fault != 'none':
             assert not isinstance(result, dict), result
-            assert driver.get_task(db, identity)['status'] == 'deferred'
-            assert hosted_rooms.room_state(db, room_id='linked').get('disbanded_at') is None
-            rows = list_session_admissions(owner.db, session_id='api-session')
+            assert driver.get_task(db, identity, placement='profile')['status'] == 'deferred'
+            assert hosted_rooms.room_state(db, placement='profile', room_id='linked').get('disbanded_at') is None
+            rows = list_session_admissions(owner, session_id='api-session')
             assert [row['status'] for row in rows] == ['unknown', 'queued']
             assert executed == []
             if fault == 'run_id':
@@ -119,14 +127,14 @@ async def test_restart_stop_requires_the_members_exact_confirmation(
             result = await peers.call(gateway.owner, 'groups.' + operation, **params)
         assert isinstance(result, dict), result
         assert result.get('discarded') if operation == 'discard' else 'tombstone' in result
-        settled = driver.get_task(db, identity)
+        settled = driver.get_task(db, identity, placement='profile')
         assert (settled['status'], settled['execution_generation']) == ('cancelled', 1)
         assert (identity.task_id, 1) in peer._terminal_receipts
         await async_wait_until(lambda: all(row['status'] == 'terminal' for row in
-            list_session_admissions(owner.db, session_id='api-session', pending_only=False)),
+            list_session_admissions(owner, session_id='api-session', pending_only=False)),
             what='member follower completes after unknown acknowledgement')
         assert executed == ['FOLLOWER']
-        rows = list_session_admissions(owner.db, session_id='api-session', pending_only=False)
+        rows = list_session_admissions(owner, session_id='api-session', pending_only=False)
         assert {row['admission_id'] for row in rows} == {unknown['admission_id'], follower['admission_id']}
         assert not any(path == '/v1/runs' for _, path, _ in requests)
         assert gateway.adapter._run_statuses == {}

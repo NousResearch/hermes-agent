@@ -8,8 +8,10 @@ import time
 import pytest
 
 from gateway import hosted_room_links, hosted_rooms
+from persistence.gateway import hosted_rooms as contract
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from tests.gateway.test_hosted_room_disband_publication import _surface
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_hosted_room_owed_revoke_cap import _fill
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, invite, _grant_error,
@@ -20,11 +22,11 @@ gateway, linked_peer = gateway_fixture, linked_peer_fixture
 
 
 def _held(service):
-    return {row['grant'] for row in hosted_rooms.held_room_grant_revokes(service.db_path, room_id='linked')}
+    return {row['grant'] for row in hosted_rooms.held_room_grant_revokes(service.store, placement=service.placement, room_id='linked')}
 
 
 def _due(service):
-    return {row['grant'] for row in hosted_rooms.due_room_grant_revokes(service.db_path, limit=10)}
+    return {row['grant'] for row in hosted_rooms.due_room_grant_revokes(service.store, placement=service.placement, limit=10)}
 
 
 async def _register(request, url, catalog, grant):
@@ -56,7 +58,7 @@ async def test_grant_arriving_after_sweep_is_durable(gateway, linked_peer, monke
             raise PeerRunsHTTPError('member unavailable', retryable=True)
 
     def refuse_tombstone(*args, **kwargs):
-        raise hosted_rooms.RoomConflictError('tombstone refused')
+        raise contract.RoomConflictError('tombstone refused')
 
     monkeypatch.setattr(PeerRunsHTTPClient, 'revoke_grant', pause_after_revoke)
     if outcome in {'tombstone_refused', 'restart'}:
@@ -81,10 +83,10 @@ async def test_grant_arriving_after_sweep_is_durable(gateway, linked_peer, monke
         assert 'tombstone' not in result
         if outcome in {'member_refused', 'second_pass_unreachable'}:
             assert 'peer_unreachable' in str(result)
-        assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
+        assert hosted_rooms.room_state(service.store, placement=service.placement, room_id='linked').get('disbanded_at') is None
         assert _held(service) == {fresh} and _due(service) == set()
         assert await _grant_error(url, fresh) is None
-        links = hosted_room_links.load_room_links(service.db_path)
+        links = hosted_room_links.load_room_links(service.store, placement=service.placement)
         assert len(links) == (1 if outcome == 'member_refused' else 0)
         if outcome == 'restart':
             # Nothing in the former service can carry the obligation across this restart.
@@ -117,7 +119,7 @@ async def test_registration_after_tombstone_while_fenced_is_owed(gateway, linked
     request = _surface(gateway, monkeypatch, surface)
     assert await asyncio.to_thread(service.retry_owed_revokes) == 0  # park idle maintenance before the hold
     with service.disbanding('linked'):
-        hosted_rooms.disband_room(service.db_path, room_id='linked',
+        hosted_rooms.disband_room(service.store, placement=service.placement, room_id='linked',
             expected_gateway_id=room['authority_gateway_id'], expected_epoch=room['authority_epoch'])
         grant = (await invite(gateway, room))['grant']
         assert 'room_disbanding_retry' in str(await _register(request, url, catalog, grant))
@@ -139,7 +141,7 @@ async def test_unprobed_grant_must_name_this_group(gateway, linked_peer, monkeyp
     foreign = (await invite(gateway, other))['grant']
     grant = foreign if token == 'other_group' else 'unreadable'
     if phase == 'ended':
-        hosted_rooms.disband_room(service.db_path, room_id='linked',
+        hosted_rooms.disband_room(service.store, placement=service.placement, room_id='linked',
             expected_gateway_id=room['authority_gateway_id'], expected_epoch=room['authority_epoch'])
     with service.disbanding('linked') if phase == 'disbanding' else nullcontext():
         refused = await _register(request, url, catalog, grant)
@@ -173,7 +175,7 @@ async def test_hold_capacity_failure_is_reported(gateway, linked_peer, monkeypat
     first, fresh = [(await invite(gateway, room))['grant'] for _ in range(2)]
     with gateway.service.disbanding('linked'):
         assert 'room_disbanding_retry' in str(await _register(request, url, catalog, first))
-        monkeypatch.setattr(hosted_rooms, limit, 1)
+        monkeypatch.setattr(contract, limit, 1)
         result = await _register(request, url, catalog, fresh)
     assert ('invalid_params' if surface == 'canonical' else 'too many') in str(result), result
     assert _held(gateway.service) == {first} and _due(gateway.service) == set()
@@ -189,10 +191,10 @@ async def test_tombstoned_hold_at_capacity_revokes_outside_locks(
     _, url, catalog, room = linked_peer
     service = gateway.service
     request = _surface(gateway, monkeypatch, surface)
-    hosted_rooms.disband_room(service.db_path, room_id='linked',
+    hosted_rooms.disband_room(service.store, placement=service.placement, room_id='linked',
         expected_gateway_id=room['authority_gateway_id'], expected_epoch=room['authority_epoch'])
     fresh = (await invite(gateway, room))['grant']
-    _fill(service.db_path, expires_at=time.time() + 3600)
+    _fill(service.store, expires_at=time.time() + 3600)
     reached, release = threading.Event(), threading.Event()
     revoke = PeerRunsHTTPClient.revoke_grant
 
@@ -227,7 +229,7 @@ async def test_replacement_at_capacity_still_revokes_the_new_grant(gateway, link
     request = _surface(gateway, monkeypatch, surface)
     prior, _ = await _seat(gateway, room, url, catalog, ttl_seconds=86400)
     fresh = (await invite(gateway, room))['grant']
-    _fill(gateway.service.db_path, expires_at=time.time() + 3600)
+    _fill(gateway.service.store, expires_at=time.time() + 3600)
     assert 'registered' not in str(await _register(request, url, catalog, fresh))
     for grant in (prior, fresh):
         assert await _grant_error(url, grant) == 'room_reauthorization_required'
@@ -236,25 +238,23 @@ async def test_replacement_at_capacity_still_revokes_the_new_grant(gateway, link
 @pytest.mark.asyncio
 @pytest.mark.parametrize('expired', [False, True])
 async def test_tombstone_checks_held_grants_in_its_transaction(gateway, linked_peer, expired):
-    import sqlite3
-
     _, url, _, room = linked_peer
     service = gateway.service
-    hosted_rooms.hold_room_grant_revoke(service.db_path, room_id='linked', member_id='reviewer',
+    hosted_rooms.hold_room_grant_revoke(service.store, placement=service.placement, room_id='linked', member_id='reviewer',
         target_url=url, grant='late-grant', expires_at=100, now=50)
-    with sqlite3.connect(service.db_path) as conn:
+    with raw_holder(service.store)._read_ctx() as conn:
         before = list(conn.iterdump())
     args = dict(room_id='linked', expected_gateway_id=room['authority_gateway_id'],
                 expected_epoch=room['authority_epoch'], now=101 if expired else 99)
     if expired:
-        assert hosted_rooms.disband_room(service.db_path, **args)['disbanded_at'] == 101
-        assert hosted_rooms.disband_room(service.db_path, **args)['idempotent']
-        assert not hosted_rooms.owes_room_grant_revokes(service.db_path)
+        assert hosted_rooms.disband_room(service.store, placement=service.placement, **args)['disbanded_at'] == 101
+        assert hosted_rooms.disband_room(service.store, placement=service.placement, **args)['idempotent']
+        assert not hosted_rooms.owes_room_grant_revokes(service.store, placement=service.placement)
     else:
-        with pytest.raises(hosted_rooms.RoomHeldGrantsPendingError) as caught:
-            hosted_rooms.disband_room(service.db_path, **args)
+        with pytest.raises(contract.RoomHeldGrantsPendingError) as caught:
+            hosted_rooms.disband_room(service.store, placement=service.placement, **args)
         assert caught.value.reason == 'room_disbanding_retry'
-        with sqlite3.connect(service.db_path) as conn:
+        with raw_holder(service.store)._read_ctx() as conn:
             assert list(conn.iterdump()) == before
 
 
@@ -278,7 +278,7 @@ async def test_disband_bounds_repeated_late_grants(gateway, linked_peer, monkeyp
     result = await request('groups.disband', room_id='linked')
     assert 'room_disbanding_retry' in str(result)
     assert len(passes) == 3 and _held(service) == {grants[-1]} and _due(service) == set()
-    assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
+    assert hosted_rooms.room_state(service.store, placement=service.placement, room_id='linked').get('disbanded_at') is None
     monkeypatch.setattr(hosted_rooms, 'disband_room', tombstone)
     assert 'tombstone' in await request('groups.disband', room_id='linked')
     assert _held(service) == set()
@@ -300,5 +300,5 @@ async def test_metadata_disband_cannot_release_a_hold_after_its_read(gateway, li
     monkeypatch.setattr(hosted_rooms, 'room_has_peer_obligations', hold_after_read)
     request = _surface(gateway, monkeypatch, 'canonical')
     assert await request('groups.disband', room_id='linked') == 'runtime_coordination_required'
-    assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
+    assert hosted_rooms.room_state(service.store, placement=service.placement, room_id='linked').get('disbanded_at') is None
     assert _held(service) == {grant} and _due(service) == set()

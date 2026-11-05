@@ -11,14 +11,15 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import build_policy, rebind_launch_key
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 _CFG = {'platform_toolsets': {'cli': ['terminal']}}
 
 
 def _refusal(params, cfg=None, **kwargs):
-    """The ``RuntimeStoreError`` a real ``build_policy`` raises for *params*."""
-    with pytest.raises(RuntimeStoreError) as caught:
+    """The ``AuthorityRefusal`` a real ``build_policy`` raises for *params*."""
+    with pytest.raises(AuthorityRefusal) as caught:
         build_policy(params, cfg if cfg is not None else dict(_CFG), **kwargs)
     return caught.value
 
@@ -87,7 +88,7 @@ def test_an_explicit_pick_of_a_configured_mcp_server_builds_before_it_connects(t
 
 def test_a_rebound_launch_key_names_api_key():
     """``session.resume`` re-supplying a launch key refuses before it touches the authority."""
-    with pytest.raises(RuntimeStoreError) as caught:
+    with pytest.raises(AuthorityRefusal) as caught:
         rebind_launch_key(object(), object(), '   ')
     assert (caught.value.field, caught.value.reason) == ('api_key', 'invalid_params')
 
@@ -100,7 +101,7 @@ def test_a_clean_launch_still_builds(tmp_path):
 
 def test_the_reason_code_is_unchanged_on_the_wire():
     """Callers compare ``str(exc)`` to reason codes; naming may not move it."""
-    exc = RuntimeStoreError('invalid_params', field='cwd', detail='nope')
+    exc = AuthorityRefusal('invalid_params', field='cwd', detail='nope')
     assert str(exc) == 'invalid_params' and exc.reason == 'invalid_params'
 
 
@@ -113,7 +114,7 @@ def test_the_profile_in_the_log_line_is_a_name_not_a_home_path(tmp_path, caplog)
     assert _profile_label(str(tmp_path)) == 'default'
     with caplog.at_level('WARNING', logger='gateway.session_controls'):
         _log_refusal(str(tmp_path), 'session.create',
-                     RuntimeStoreError('invalid_params', field='cwd', detail='not a directory'))
+                     AuthorityRefusal('invalid_params', field='cwd', detail='not a directory'))
     line = caplog.records[-1].getMessage()
     assert 'profile=default' in line and str(tmp_path) not in line, line
 
@@ -123,20 +124,19 @@ async def test_the_frame_carries_the_field_and_the_gateway_logs_it(tmp_path, cap
     """What a report can quote: the JSON-RPC ``error.data`` and one gateway log line."""
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
 
     detail = "unknown or invalid toolset name: 'gone_plugin'"
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
-                                     db=db, epoch=epoch)
+                                     persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
 
         class Connection(AuthorityConnection):
             def handlers(self):
                 async def probe(ref, params):
-                    raise RuntimeStoreError('invalid_params', field='toolsets', detail=detail)
+                    raise AuthorityRefusal('invalid_params', field='toolsets', detail=detail)
                 return {'session.policy_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
@@ -156,19 +156,18 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
     """A retrying client must not be able to flood the log: only a named refusal is a warning."""
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
+    from persistence_assembly import open_persistence, profile_scope
 
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = open_persistence(profile_scope(home=tmp_path))
     try:
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
-                                     db=db, epoch=epoch)
+                                     persistence=storage_handle(db.scope.profile_dir), epoch=epoch)
 
         class Connection(AuthorityConnection):
             def handlers(self):
                 async def probe(ref, params):
-                    raise RuntimeStoreError('permission_denied')
+                    raise AuthorityRefusal('permission_denied')
                 return {'session.unnamed_probe': probe}
 
         connection = Connection(authority, object(), {'user_id': 'human'})
@@ -208,7 +207,7 @@ def test_a_bypass_launch_without_a_model_names_the_model():
     """`--ignore-user-config` has no profile to inherit a model from: the refusal says so."""
     from gateway.session_local import _bypass_policy
 
-    with pytest.raises(RuntimeStoreError) as caught:
+    with pytest.raises(AuthorityRefusal) as caught:
         _bypass_policy({'source': 'cli'}, private_secrets=None)
     assert (caught.value.field, caught.value.reason) == ('model', 'invalid_params')
 

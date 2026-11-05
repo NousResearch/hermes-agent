@@ -1,7 +1,7 @@
 name: wheelspin
 repo: https://github.com/mchevatheachiever/hermes-wheelspin
 sha: d7d3768d547c0830f750c13bded33dc0ef2aa1b4
-description: "Spin a real wheel: any list becomes a weighted, animated Desktop wheel that lands on an answer in chat, with hidden jackpots and a slot-machine reveal."
+description: "Spin a real wheel: any list becomes a weighted, animated Desktop wheel that lands on an answer in chat, with hidden jackpots and a slot-machine reveal. Disclosure — by default each Desktop spin posts \"The wheel says: <winner>\" into the active chat as a user message, which starts a model turn (toggle in the pane); stores wheels and spin history in plugin-data/wheelspin/."
 maintainer: mchevatheachiever
 tier: community
 category: desktop

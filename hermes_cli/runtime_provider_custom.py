@@ -388,6 +388,38 @@ def routed_custom_identity(base_url: Optional[str], model: Optional[str],
             or (url and _find_custom_identity(on_url, config)) or None)
 
 
+def _serving_custom_identity(base_url: Optional[str], model: Optional[str]) -> Optional[str]:
+    """The ``custom:<name>`` entry declaring *model*, the one on *base_url* first. Unlike
+    :func:`routed_custom_identity`, a shared URL alone names nothing: this picks where a request and
+    its key are sent, and an entry that never declared the model may not host it."""
+    target, url = _clean(model).lower(), _route_key(base_url)
+    if not target:
+        return None
+
+    def serves(entry: dict[str, Any]) -> bool:
+        return _entry_serves_model(entry, target)
+    return ((url and _find_custom_identity(lambda e: serves(e) and _route_key(_entry_url(e)) == url))
+            or _find_custom_identity(serves))
+
+
+def heal_keyless_bare_custom(explicit_api_key: Optional[str], target_model: Optional[str]) -> Optional[dict[str, Any]]:
+    """Runtime for a bare ``custom`` request that fell through the ladder keyless, through the named
+    entry declaring its model: the route-key and metadata seams heal the bare class the same way, and
+    the refusal this precedes tells the user to do it by hand. None leaves that refusal standing, both
+    when no entry declares the model and when the entry names a credential that resolved to nothing,
+    since the ``no-key-required`` placeholder is only right for an entry naming none (#145614)."""
+    rp = _rp()
+    model_cfg = rp._get_model_config()
+    named = _serving_custom_identity(model_cfg.get("base_url"), target_model or model_cfg.get("default"))
+    if not named:
+        return None
+    runtime = rp.resolve_runtime_provider(requested=named, explicit_api_key=explicit_api_key, target_model=target_model)
+    if (runtime.get("api_key") in (None, "", "no-key-required")
+            and entry_declares_credential(rp._get_named_custom_provider(named, resolve_credentials=False))):
+        return None
+    return runtime
+
+
 def _endpoint_identity(base_url: str) -> Optional[str]:
     """The menu identity that owns ``base_url``: a configured entry, else the managed server."""
     identity = find_custom_provider_identity(base_url)

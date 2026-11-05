@@ -299,8 +299,8 @@ async def execute(authority, ref, row, policy):
         from cron.cancellation import CancelRequest, _CombinedCancelEvent
 
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        from agent.runtime_scope import bind_turn
-        with _profile_runtime_scope(db_path.parent), bind_turn(ref.session_id, row['admission_id']):
+        from agent.runtime_scope import bind_turn, claim_fence
+        with _profile_runtime_scope(db_path.parent), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
             # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
             # first: a stopped agent run reports "cancelled on request", not a lost fire claim.
             stop = _CombinedCancelEvent(CancelRequest(execution_id), cancel)

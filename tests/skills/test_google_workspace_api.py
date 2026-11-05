@@ -136,6 +136,30 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert params["calendarId"] == "primary"
 
 
+@pytest.mark.parametrize("hermes_token", [True, False])
+def test_gws_credentials_follow_hermes_token(api_module, monkeypatch, hermes_token):
+    """With a Hermes token gws is pinned to it; without one gws runs on its own
+    `gws auth login`, even if the parent env carries a credentials-file override."""
+    if hermes_token:
+        _write_token(api_module.TOKEN_PATH)
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/credentials.json")
+    api_module._ensure_authenticated = MagicMock(side_effect=SystemExit(1))
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    args = api_module.argparse.Namespace(
+        start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
+    )
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list(args)
+
+    expected = str(api_module.TOKEN_PATH) if hermes_token else None
+    assert captured["env"].get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE") == expected
+
+
 
 
 

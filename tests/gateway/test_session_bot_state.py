@@ -1,6 +1,6 @@
 """The live state a ``message_agent`` sender hears about its teammate's Bot Chat.
 
-Real owner pieces (``SessionAuthority`` over a real ``SessionDB``, the real claim and the real
+Real owner pieces (``SessionAuthority`` over a real store, the real claim and the real
 approval/clarify registration paths); only the gateway runner is a stand-in for its drain flag.
 """
 from types import SimpleNamespace
@@ -9,37 +9,37 @@ import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_bot_state import bot_chat_state
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from persistence_assembly import open_persistence, profile_scope
 from tools import approval, clarify_gateway
 from tools.approval_gateway_wait import _ApprovalEntry
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture()
 def owner(tmp_path):
-    with SessionDB(db_path=tmp_path / 'state.db') as db:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='current')
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='current')
         authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='bot',
-                                     instance_id='current', db=db, epoch=epoch)
+                                     instance_id='current', persistence=db, epoch=epoch)
         yield SimpleNamespace(authority=authority, db=db, epoch=epoch)
 
 
 def _start_turn(owner):
     owner.authority.sessions['s'] = LiveSession(None, 'route')
-    admit_session_input(owner.db, epoch=owner.epoch, principal_id='bot:alpha', session_id='s',
-                        request_id='dm', payload={'text': 'Message from alpha: status?'})
-    return claim_session_input(owner.db, epoch=owner.epoch, session_id='s')['generation']
+    owner.db.admissions.admit(epoch=owner.epoch, principal_id='bot:alpha', session_id='s',
+                              request_id='dm', payload={'text': 'Message from alpha: status?'})
+    return owner.db.admissions.claim(epoch=owner.epoch, session_id='s').generation
 
 
 def test_idle_until_a_turn_runs_then_working(owner):
     assert bot_chat_state(owner.authority, 's') == 'idle'  # no live session on this owner yet
     owner.authority.sessions['s'] = LiveSession(None, 'route')
     assert bot_chat_state(owner.authority, 's') == 'idle'  # open, nothing claimed
-    admit_session_input(owner.db, epoch=owner.epoch, principal_id='bot:alpha', session_id='s',
-                        request_id='dm', payload={'text': 'queued behind nothing'})
+    owner.db.admissions.admit(epoch=owner.epoch, principal_id='bot:alpha', session_id='s',
+                              request_id='dm', payload={'text': 'queued behind nothing'})
     assert bot_chat_state(owner.authority, 's') == 'idle'  # queued is not running
-    claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
+    owner.db.admissions.claim(epoch=owner.epoch, session_id='s')
     assert bot_chat_state(owner.authority, 's') == 'working'
 
 

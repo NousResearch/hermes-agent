@@ -121,6 +121,13 @@ def _build_runner(gateway_run, adapter, fake_db):
     return runner
 
 
+def _install_handle(monkeypatch, gateway_run, handle):
+    """The runner's storage interface handle: the hygiene agent's store; cooldown and failure-streak writes land on it."""
+    handle.messages.read_compression_cooldown.return_value = None
+    monkeypatch.setattr(gateway_run.GatewayRunner, "persistence", handle)
+    return handle
+
+
 def _make_event():
     return MessageEvent(
         text="hello",
@@ -179,7 +186,7 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
 
         def __init__(self, **kwargs):
             self.session_id = kwargs.get("session_id", "sess-97963")
-            self._session_db = kwargs.get("session_db")
+            self._session_db = kwargs.get("persistence")
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
                 bind_session_state=MagicMock(),
@@ -231,6 +238,7 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
 
     adapter = _CaptureAdapter()
     runner = _build_runner(gateway_run, adapter, fake_db)
+    handle = _install_handle(monkeypatch, gateway_run, fake_db)
 
     started = time.monotonic()
     result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
@@ -245,7 +253,7 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
     # (b) NO retry-after was armed while the attempt is still running —
     # arming it would block the agent-side preflight from adopting the
     # finished summary ("same-session cooldown active", #97963).
-    assert not fake_db.record_compression_failure_cooldown.called, (
+    assert not handle.messages.record_compression_cooldown.called, (
         "keep-admission path must not arm the retry-after while the "
         "detached attempt is still running"
     )
@@ -269,8 +277,8 @@ async def test_turn_hold_keeps_admission_and_adopts_watermark_fenced_summary(
 
     # Successful adoption resets the hygiene failure streak and still never
     # advances it (the deferral is not a failure).
-    assert not fake_db.increment_hygiene_failure_streak.called
-    assert fake_db.reset_hygiene_failure_streak.called
+    assert not handle.coordination.increment_hygiene_failure_streak.called
+    assert handle.coordination.reset_hygiene_failure_streak.called
     # Deferral notice still reaches the user.
     sent = [m["content"] for m in adapter.sent]
     assert any(
@@ -295,7 +303,7 @@ async def test_turn_hold_kept_admission_arms_flat_retry_only_when_nothing_commit
     class FencedNoCommitAgent:
         def __init__(self, **kwargs):
             self.session_id = kwargs.get("session_id", "sess-97963")
-            self._session_db = kwargs.get("session_db")
+            self._session_db = kwargs.get("persistence")
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
                 bind_session_state=MagicMock(),
@@ -327,34 +335,35 @@ async def test_turn_hold_kept_admission_arms_flat_retry_only_when_nothing_commit
 
     adapter = _CaptureAdapter()
     runner = _build_runner(gateway_run, adapter, fake_db)
+    handle = _install_handle(monkeypatch, gateway_run, fake_db)
 
     result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
     assert result == "ok"
     assert worker_started.is_set()
     # While the attempt still runs: no cooldown, so preflight adoption
     # stays possible.
-    assert not fake_db.record_compression_failure_cooldown.called
+    assert not handle.messages.record_compression_cooldown.called
 
     release_worker.set()
     await _drain_deferred(runner)
     # Let the done-callback fire.
     for _ in range(100):
-        if fake_db.record_compression_failure_cooldown.called:
+        if handle.messages.record_compression_cooldown.called:
             break
         await asyncio.sleep(0.05)
 
     # Nothing committed → flat retry-after restored (spacing), streak intact.
-    assert fake_db.record_compression_failure_cooldown.called, (
+    assert handle.messages.record_compression_cooldown.called, (
         "a kept-admission attempt that ends without committing must restore "
         "the flat turn-hold retry-after spacing"
     )
-    args = fake_db.record_compression_failure_cooldown.call_args[0]
+    args = handle.messages.record_compression_cooldown.call_args[0]
     retry = args[1] - time.time()
     assert retry <= 120, (
         f"retry-after must stay flat (~60s), got {retry:.0f}s"
     )
     assert "turn-hold" in (args[2] or "")
-    assert not fake_db.increment_hygiene_failure_streak.called, (
+    assert not handle.coordination.increment_hygiene_failure_streak.called, (
         "turn-hold deferral must never advance the failure streak"
     )
 
@@ -377,7 +386,7 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
     class UnfencedStreamingAgent:
         def __init__(self, **kwargs):
             self.session_id = kwargs.get("session_id", "sess-97963")
-            self._session_db = kwargs.get("session_db")
+            self._session_db = kwargs.get("persistence")
             self._last_compaction_in_place = False
             self.context_compressor = SimpleNamespace(
                 bind_session_state=MagicMock(),
@@ -417,6 +426,7 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
 
     adapter = _CaptureAdapter()
     runner = _build_runner(gateway_run, adapter, fake_db)
+    handle = _install_handle(monkeypatch, gateway_run, fake_db)
 
     result = await asyncio.wait_for(runner._handle_message(_make_event()), timeout=15)
     assert result == "ok"
@@ -428,5 +438,5 @@ async def test_turn_hold_without_watermark_fence_still_cancels(
     # The unfenced late commit was refused — discard as before the fix.
     fake_db.archive_and_compact.assert_not_called()
     # Legacy path still records the flat retry-after immediately.
-    assert fake_db.record_compression_failure_cooldown.called
-    assert not fake_db.increment_hygiene_failure_streak.called
+    assert handle.messages.record_compression_cooldown.called
+    assert not handle.coordination.increment_hygiene_failure_streak.called

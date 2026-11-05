@@ -414,6 +414,8 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
+    # Not compiled: DANGEROUS_PATTERNS_COMPILED swaps in _PipeRemoteToShellMatcher for this description;
+    # the string only feeds the legacy approval-key alias below, so editing it changes no verdict.
     (rf'\b(curl|wget)\b.*(?:\|&?\s*{_PIPE_WRAPPERS_RE}|>\(\s*){_PIPE_SHELL_TOKEN_RE}', "pipe remote content to shell"),
     (rf'(?<![\w.-])(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),

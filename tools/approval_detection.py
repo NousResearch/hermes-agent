@@ -242,35 +242,50 @@ _PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$
 
 _WMIC_SHADOW_DELETE_DESCRIPTION = "delete volume shadow copies (wmic)"
 _WMIC_DELETE_IN_SEGMENT_RE = re.compile(r"\sshadowcopy\b.*\sdelete\b", re.IGNORECASE | re.DOTALL)
+# Leading switches of a carrier before its script: cmd /s /q /c, start /b "title", pwsh -NoProfile
+# -ExecutionPolicy Bypass -Command, doas -u x, ssh -i k -p 22 host. Option values are taken only for
+# the options known to take one, so `powershell -NoProfile wmic ...` keeps wmic as the script.
+_CARRIER_SWITCHES_RE = re.compile(
+    r"""(?:\s*+(?:/\w++(?::\S*+)?|-(?:ExecutionPolicy|ep|ex|WindowStyle|w|Version|v|WorkingDirectory|wd"""
+    r"""|ConfigurationName|config|SettingsFile|settings|OutputFormat|of|InputFormat|inp|if|u|p|i|o|l|J|F)"""
+    r"""\s++[^\s;&|]++|-\w++|"[^"\\\n]*+"(?=\s*+["\w\\/])))*+""",
+    re.IGNORECASE,
+)
 
 
 class _WmicShadowDeleteMatcher:
     """`wmic ... shadowcopy ... delete` run as a command: the program word (bare, a full path, behind
-    sudo/env/nohup..., or the script of cmd /c / pwsh / powershell) is wmic, and its own command carries
-    shadowcopy and then delete. Linear in the command: one walk of the command-position words."""
+    sudo/env/nohup...) is wmic and its own command carries shadowcopy and then delete. The script of a
+    carrier (cmd /c, pwsh, powershell, start, call, doas, wsl, xargs, ssh host) is walked the same way,
+    so `cmd /c "echo hi & wmic shadowcopy delete"` counts. Nesting is capped, so the scan stays linear."""
 
-    _CARRIERS = frozenset({"cmd", "pwsh", "powershell"})
+    _CARRIERS = frozenset({"cmd", "pwsh", "powershell", "start", "call", "doas", "wsl", "xargs", "ssh"})
+    _MAX_DEPTH = 3
 
-    def search(self, text: str):
+    def search(self, text: str, depth: int = 0):
         if "wmic" not in text.lower():
             return None
-        for start, end, word in _iter_shell_command_word_spans(text):
-            name = os.path.basename(_deobfuscate_shell_word_for_detection(word).replace("\\", "/")).lower()
-            name = name.removesuffix(".exe")
+        for _, end, word in _iter_shell_command_word_spans(text):
+            # Split the path before deobfuscating: the shell reading drops the backslashes of C:\...\wmic.
+            name = _deobfuscate_shell_word_for_detection(re.split(r"[\\/]", word)[-1]).strip("\"'").lower().removesuffix(".exe")
             if name == "wmic":
-                segment = _shell_command_segment(text, end)
-            elif name in self._CARRIERS:
-                segment = _shell_command_segment(text, end)
-                inner = re.match(r"(?:\s*(?:/[ck]|-\S+))*\s*[\"']?\s*(?:[^\s;&|\"']*[\\/])?wmic(?:\.exe)?(?=\s)",
-                                 segment, re.IGNORECASE)
-                if not inner:
-                    continue
-                segment = segment[inner.end():]
-            else:
-                continue
-            if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + segment):
-                return match
+                if match := _WMIC_DELETE_IN_SEGMENT_RE.search(" " + _shell_command_segment(text, end)):
+                    return match
+            elif name in self._CARRIERS and depth < self._MAX_DEPTH:
+                if match := self.search(self._carrier_script(name, _shell_command_segment(text, end)), depth + 1):
+                    return match
         return None
+
+    @staticmethod
+    def _carrier_script(name: str, rest: str) -> str:
+        rest = _CARRIER_SWITCHES_RE.sub("", rest, count=1).lstrip()
+        if name == "ssh":  # the first word after the options is the host
+            rest = re.sub(r"^[^\s;&|]+", "", rest, count=1).lstrip()
+        rest = re.sub(r"^-(?:Command|c)\b\s*", "", rest, flags=re.IGNORECASE)
+        if rest[:1] in ("'", '"'):
+            closing = rest.rfind(rest[0])
+            rest = rest[1:closing if closing > 0 else None]
+        return rest.replace('\\"', '"')
 
 
 class _PipeRemoteToShellMatcher:

@@ -139,6 +139,12 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"wmic shadowcopy delete",
         r"C:\Windows\System32\wbem\WMIC.exe shadowcopy delete",
         "sudo wmic shadowcopy delete",
+        # wmic as the script of a carrier, also after other commands inside it.
+        'cmd /s /c "wmic shadowcopy delete"',
+        'cmd /c "echo hi & wmic shadowcopy delete"',
+        "start /b wmic shadowcopy delete",
+        "powershell.exe -ExecutionPolicy Bypass wmic shadowcopy delete",
+        "ssh -i k host wmic shadowcopy delete",
         # The script anchor still holds behind a launcher, a path prefix or an outer separator.
         r'sudo pwsh -c "gci | ri"',
         r'cmd /c powershell "gci C:\data | ri -r"',
@@ -180,6 +186,8 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"Stop-Process -Name idleproc",
         r"Stop-Service -Name spooler",
         r"wmic shadowcopy list brief",
+        "wmic shadowcopy list && rm x -- delete",
+        "cmd /c echo wmic shadowcopy delete",
         "cat access.log | grep -i remove-item",
         # A hyphenated word is not the alias.
         "echo hi | ri-tool -fo",

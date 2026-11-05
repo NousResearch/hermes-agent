@@ -1,7 +1,7 @@
 name: agent-si
 repo: https://github.com/joelbrilliant/hermes-agent-si
-sha: 06dbe19b7c9cb3e91a5a31a4bc349c30f1b941a2
-version: "0.1.0"
+sha: adf7abc1d89b1e1ea686ac2fd29e2b95b454f4fe
+version: "0.1.1"
 description: "Sourced, model-free memory: a brain of facts that cite sources and quotes, plus search over past Hermes, Claude Code, Codex and Grok sessions on this machine, in one ranked list. No model, no key, no network, no dependencies. Refuses to store words the user didn't say; says when sources disagree. Disclosure: reads Hermes' state.db in the active home and the session files of Claude Code (~/.claude/projects), Codex (~/.codex/sessions) and Grok (~/.grok/sessions) when present (index_sessions: no turns this off); writes only inside the active Hermes home; one background thread refreshes the index after each turn; the engine and the session index are vendored from the author's public repositories (vendor/VENDORED.md)."
 maintainer: joelbrilliant
 tier: community

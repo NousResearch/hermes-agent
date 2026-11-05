@@ -36,26 +36,28 @@ from tests.conformance.persistence._harness import (
 ROTATOR = r"""
 import json, sys
 from pathlib import Path
-from hermes_state import SessionDB
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 db_path = Path({db_path!r})
 journal = Path({journal!r})
-db = SessionDB(db_path=db_path)
+db = open_persistence(profile_scope(home=db_path.parent))
 
 i = 0
 with journal.open("a", buffering=1) as j:
     while True:
         parent = f"parent-{{i}}"
         child = f"child-{{i}}"
-        db.create_session(parent, source="conformance")
-        db.append_message(parent, "user", content="pre-rotation turn")
+        seed_session(db, parent, "conformance")
+        seed_messages(db, parent, {{"role": "user", "content": "pre-rotation turn"}})
         holder = f"cell3:pid={{__import__('os').getpid()}}"
-        assert db.try_acquire_compression_lock(parent, holder)
-        db.publish_compression_child(
-            parent_session_id=parent,
-            child_session_id=child,
-            source="conformance",
-            messages=[{{"role": "user", "content": "compacted handoff"}}],
+        assert db.coordination.try_acquire_compression_lock(session_id=parent, holder=holder)
+        db.lineage.publish_compression_child(
+            parent,
+            CompressionChild(session_id=child, source="conformance"),
+            [NewMessage.from_live({{"role": "user", "content": "compacted handoff"}})],
             compression_lock_holder=holder,
         )
         j.write(json.dumps({{"i": i}}) + "\n")
@@ -86,7 +88,7 @@ def test_rotation_is_atomic_under_sigkill(tmp_path, requested_mode):
     child_env = {}
     if requested_mode is not None:
         # Steer the CHILD's own resolver via an isolated HERMES_HOME config:
-        # pre-seeding the file alone is not enough — SessionDB.__init__ runs
+        # pre-seeding the file alone is not enough — the store's open runs
         # apply_wal_with_fallback(), which upgrades a non-WAL file to WAL
         # whenever the configured mode says so (the resolver's downgrade
         # gates may still refuse; effective_mode_or_skip audits post-run).

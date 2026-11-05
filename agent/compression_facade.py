@@ -221,9 +221,25 @@ def _rebind_caller_session_context(agent) -> None:
         logger.debug("post-compression session ContextVar rebind failed", exc_info=True)
 
 
+def _with_engine_request(fn):
+    """Review round 2 (#147087): a compression attempt is a context-engine user. The Codex
+    /compress handler and the gateway hygiene compaction call ``_compress_context`` straight
+    from executors, outside the turn facade's request scope; they must count like a turn so a
+    soft eviction that lands mid-compaction defers instead of shutting a live engine.
+    (A timeout-detached worker is fenced off the commit by the progress timeout, so it cannot
+    publish into the engine after the counter drops.)"""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        from agent.context_engine import engine_request
+        with engine_request(self):
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class CompressionFacadeMixin:
     """``_compress_context`` (see module docstring)."""
 
+    @_with_engine_request
     def _compress_context(
         self, messages: list, system_message: str, *, approx_tokens: int | None = None, task_id: str = "default",
         focus_topic: str | None = None, force: bool = False, bypass_cooldown: bool = False,

@@ -1175,54 +1175,66 @@ def _run_review_fork(
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
-    _track_review_fork(agent, st.review_agent, register=True)
-    from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
-    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
-    extra_list = ", ".join(sorted(configured_extra_tools))
-    deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
-    prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
-    # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
-    # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
-    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
-    set_thread_tool_whitelist(
-        review_whitelist,
-        deny_msg_fmt=(
-            "Background review denied non-whitelisted tool: "
-            "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
-            + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
-        ),
-    )
-    with suppress(Exception):
-        from tools.skill_manager_guards import _reset_background_review_read_marks
-
-        _reset_background_review_read_marks()
+    # Review round 2 (#147087): from the moment the fork joins the parent's _active_children it is
+    # a context-engine user, not only from its first run_conversation. Without the begin here a soft
+    # parent eviction landing in the join -> first-request window would shut the engine the fork is
+    # about to open; with it, that release is latched pending on the fork.
+    from agent.context_engine import begin_engine_request, end_engine_request
+    _fork_engine_user = st.review_agent
+    begin_engine_request(_fork_engine_user)
     try:
-        if review_run is None or review_run.begin_request(st.review_agent):
-            # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
-                user_message=(
-                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
-                    "at runtime — do not attempt them." + prompt_extra
-                ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
-            )
+        _track_review_fork(agent, st.review_agent, register=True)
+        from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+        review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
+        extra_list = ", ".join(sorted(configured_extra_tools))
+        deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
+        prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
+        # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
+        # tell the model that memory is available, or it will burn iterations on denied calls.
+        memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
+        memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
+        set_thread_tool_whitelist(
+            review_whitelist,
+            deny_msg_fmt=(
+                "Background review denied non-whitelisted tool: "
+                "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
+                "skill_manage(action='patch'|...) to change skills"
+                + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
+            ),
+        )
+        with suppress(Exception):
+            from tools.skill_manager_guards import _reset_background_review_read_marks
+
+            _reset_background_review_read_marks()
+        try:
+            if review_run is None or review_run.begin_request(st.review_agent):
+                # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
+                st.review_agent.run_conversation(
+                    user_message=(
+                        prompt + "\n\nYou can only call " + memory_phrase_prompt +
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them." + prompt_extra
+                    ),
+                    conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                )
+        finally:
+            clear_thread_tool_whitelist()
+            # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
+            # survive teardown, and in this finally so a fork that consumed tokens then raised is
+            # still attributed. The recorder never raises.
+            if st.review_agent is not None:
+                st.review_usage.update(_snapshot_review_usage(st.review_agent))
+                _record_review_usage_to_parent(agent, st.review_usage)
+            # Publish completion as soon as the provider-capable phase has returned or startup
+            # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
+            _track_review_fork(agent, st.review_agent, register=False)
+            finish_background_review_run(agent, review_run)
+        st.review_messages = list(getattr(st.review_agent, "_session_messages", []))
+        _release_fork_clients(st.review_agent)
     finally:
-        clear_thread_tool_whitelist()
-        # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
-        # survive teardown, and in this finally so a fork that consumed tokens then raised is
-        # still attributed. The recorder never raises.
-        if st.review_agent is not None:
-            st.review_usage.update(_snapshot_review_usage(st.review_agent))
-            _record_review_usage_to_parent(agent, st.review_usage)
-        # Publish completion as soon as the provider-capable phase has returned or startup
-        # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).
-        _track_review_fork(agent, st.review_agent, register=False)
-        finish_background_review_run(agent, review_run)
-    st.review_messages = list(getattr(st.review_agent, "_session_messages", []))
-    _release_fork_clients(st.review_agent)
+        # Balances the begin above AFTER _release_fork_clients: a soft release that landed in the
+        # join window sits pending on the fork, and this last end plays it out exactly once.
+        end_engine_request(_fork_engine_user)
     st.review_agent = None
 
 

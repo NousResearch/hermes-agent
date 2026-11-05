@@ -5,7 +5,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_removed_workspace_reads_and_moves_but_refuses_a_turn(tmp_path, monkeypatch):
     from gateway.session_policy import policy_for_source, policy_scope
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from tests.gateway.test_session_policy_verbs import _mutation, _owner
 
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, None)
@@ -17,7 +17,7 @@ async def test_removed_workspace_reads_and_moves_but_refuses_a_turn(tmp_path, mo
                                         'params': {'session_id': ref.session_id}})
         assert 'result' in resumed, resumed
         policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-        with pytest.raises(RuntimeStoreError, match='workspace_unavailable'):
+        with pytest.raises(AuthorityRefusal, match='workspace_unavailable'):
             with policy_scope(policy, authority=authority):
                 pass
         moved = await owner.dispatch(_mutation(db, ref, 'mv', 'workspace', {'cwd': str(target)}))

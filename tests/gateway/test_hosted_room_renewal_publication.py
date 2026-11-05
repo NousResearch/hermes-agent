@@ -50,13 +50,13 @@ async def test_renewal_save_cannot_overwrite_registration_or_disband(gateway, mo
             assert 'tombstone' in await call(gateway.owner, 'groups.disband', room_id='linked')
         release.set()  # Without serialization, let renewal save after its competitor finishes.
         await renewal
-        links = hosted_room_links.load_room_links(service.db_path)
+        links = hosted_room_links.load_room_links(service.store, placement=service.placement)
         if operation == 'register':
             assert service.peer_routes[key].grant == links[0].grant == replacement
         else:
             assert key not in service.peer_routes and links == ()
             with pytest.raises(hosted_rooms.HostedRoomError):
                 service._rotate_route_grant(*key, 'late-renewal', previous=original)
-            assert hosted_room_links.load_room_links(service.db_path) == ()
+            assert hosted_room_links.load_room_links(service.store, placement=service.placement) == ()
     finally:
         release.set()

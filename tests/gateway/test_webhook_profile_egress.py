@@ -147,13 +147,13 @@ async def test_retained_destination_keeps_profile_and_freezes_its_home(profile_h
 
 def test_destination_missing_profile_home_does_not_borrow_default(profile_homes):
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from gateway.platforms.webhook_delivery import snapshot_destination, validate_destination
 
     (get_hermes_home() / "profiles" / "sec" / "config.yaml").write_text("platforms: {}\n")
     adapter = _webhook(_Runner({}, {}, profile_homes))
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         snapshot_destination(adapter, {"deliver": "slack", "deliver_extra": {}, "profile": "sec"})
     for profile in ([], {}, 1):
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             validate_destination({"deliver": "log", "deliver_extra": {}, "profile": profile})

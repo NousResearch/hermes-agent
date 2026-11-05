@@ -11,10 +11,21 @@
 #
 # When HERMES_DASHBOARD IS enabled and the run script later exits or
 # is killed, we want s6-supervise to restart it (the whole point of
-# supervised lifecycle). So we exit non-125 in that case.
+# supervised lifecycle) — UNLESS the dashboard exited with EX_CONFIG
+# (78, the gateway's fatal-configuration marker; see gateway/restart.py).
+# 78 means a permanent refusal (e.g. the auth gate refusing a non-loopback
+# bind with no provider registered, #49567): every restart would fail
+# identically, so park the slot like the disabled case: exit 125 tells
+# s6-supervise "permanent failure, do not restart" and s6-svstat reports
+# the slot as down. The refusal message itself is on the dashboard's
+# stderr, which s6 forwards to `docker logs`.
 
 # Arguments passed to a finish script: $1=run-exit-code, $2=signal-num,
 # $3=service-dir-name, $4=run-pgid. See servicedir(7).
+if [ "${1:-}" = 78 ]; then
+    # Fatal configuration error — another identical startup is pointless.
+    exit 125
+fi
 
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)

@@ -56,7 +56,10 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             if response.status_code >= 400:
                 return search_fail(f"Keenable search failed: {http_status_detail(response)}")
             return search_ok([
-                web_hit(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
+                web_hit(
+                    r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1,
+                    published_date=r.get("published_at"), crawl_date=r.get("acquired_at"),
+                )
                 for i, r in enumerate(response.json().get("results") or [])
             ])
 

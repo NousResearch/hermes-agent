@@ -131,14 +131,21 @@ class VisionMessagePrepMixin:
         return note
 
     def _model_supports_vision(self) -> bool:
-        """True if the active provider+model reports native vision (config override
-        > models.dev; see ``image_routing._supports_vision_override``)."""
+        """True if image parts may reach the active provider+model natively: config override
+        > models.dev (see ``image_routing._supports_vision_override``). An explicit
+        ``agent.image_input_mode: native`` answers True on its own — inbound routing already
+        attached pixels on that word alone, so a capability miss here would replace them with
+        an auxiliary description (or tell the model a stripped tool image is in its context)."""
         try:
             from hermes_cli.config import load_config
-            from agent.image_routing import _lookup_supports_vision
+            from agent.image_routing import _coerce_mode, _lookup_supports_vision
+            cfg = load_config()
+            agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+            if isinstance(agent_cfg, dict) and _coerce_mode(agent_cfg.get("image_input_mode")) == "native":
+                return True
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            return _lookup_supports_vision(provider, model, load_config()) is True
+            return _lookup_supports_vision(provider, model, cfg) is True
         except Exception:
             return False
 

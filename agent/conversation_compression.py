@@ -1487,6 +1487,11 @@ def _rebind_session_context(session_id: str) -> None:
         set_session_context(session_id)
 
 
+def context_engine_persistence(hook, persistence):
+    """``{"persistence": persistence}`` for a context engine hook that accepts that keyword, else ``{}``."""
+    return {"persistence": persistence} if _accepts_keyword_argument(hook, "persistence") else {}
+
+
 def context_engine_session_db(agent, session_db):
     """The ``session_db`` the agent's context engine binds. The built-in compressor takes the agent's store; a plugin
     engine is outside code written against ``SessionDB``, so over a storage interface handle it takes the deprecated
@@ -1571,23 +1576,22 @@ def _adopt_live_compression_child(
     agent._last_flushed_db_idx = len(recovered)
     agent._flushed_db_message_session_id = child_session_id
     agent._flushed_db_message_ids = {id(message) for message in recovered if isinstance(message, dict)}
-    from agent.context_compressor import ContextCompressor
     on_session_start = getattr(agent.context_compressor, "on_session_start", None)
     if callable(on_session_start):
         with _swallow('context engine compression-child adoption failed: %s'):
-            # The built-in compressor also takes the store's interface handle; a plugin engine takes its SessionDB.
-            handle = {"persistence": store} if isinstance(agent.context_compressor, ContextCompressor) else {}
             on_session_start(
                 child_session_id, boundary_reason="compression", old_session_id=parent_session_id,
                 session_db=context_engine_session_db(agent, session_db),
                 platform=getattr(agent, "platform", None) or "cli",
-                conversation_id=getattr(agent, "_gateway_session_key", None), **handle,
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+                **context_engine_persistence(on_session_start, store),
             )
     else:
         bind_state = getattr(agent.context_compressor, "bind_session_state", None)
         if callable(bind_state):
             with contextlib.suppress(Exception):
-                bind_state(session_db=context_engine_session_db(agent, session_db), session_id=child_session_id)
+                bind_state(session_db=context_engine_session_db(agent, session_db), session_id=child_session_id,
+                           **context_engine_persistence(bind_state, store))
     with _swallow('memory manager compression-child adoption failed: %s'):
         if agent._memory_manager:
             agent._memory_manager.on_session_switch(

@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from persistence.sqlite._state.health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 from persistence import StorageProbe, StorageState
 

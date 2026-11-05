@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_dbfile as dbfile_module
+from persistence.sqlite._state import dbfile as dbfile_module
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session
 

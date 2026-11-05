@@ -24,8 +24,8 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-import hermes_state_repair as repair_module
-from hermes_state_repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _backup_db_file, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _prune_malformed_backups, _record_repair_outcome, _repair_ledger_path, repair_state_db_schema
+from persistence.sqlite._state import repair as repair_module
+from persistence.sqlite._state.repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _backup_db_file, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _prune_malformed_backups, _record_repair_outcome, _repair_ledger_path, repair_state_db_schema
 
 
 def _make_unrepairable_db(tmp_path: Path) -> Path:

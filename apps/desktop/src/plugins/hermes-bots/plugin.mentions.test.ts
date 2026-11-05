@@ -19,7 +19,7 @@
  * composes no CLI handoff and delivers nothing itself.
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
 
@@ -27,6 +27,7 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  handles?: string[]
 }
 
 interface ComposerDraft {
@@ -366,6 +367,49 @@ describe('@-mention completions', () => {
     const result = await handler({ text: '@cos-bot status?' })
     expect(result.text).toMatch(/message_agent target: "default@vps"/)
   })
+
+  it('claims the raw profile name of a local row so the popover drops its gateway twin', async () => {
+    // `john-2` titled `John ♥` tags as @john; the live gateway lists the same
+    // backend profile by raw name (@john-2). The contributed row claims that
+    // name — one row per bot, under the tag the user actually typed.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [
+        { name: 'default' },
+        { name: 'john-2', ui_meta: { 'hermes-bots': { title: 'John ♥' } } },
+        { name: 'eva-2', ui_meta: { 'hermes-bots': { title: 'Eva 🌥' } } }
+      ]
+    })
+
+    const john = provide('john').find(item => item.insert === '@john')
+    const eva = provide('eva').find(item => item.insert === '@eva')
+
+    expect(john?.handles).toEqual(['@john-2'])
+    expect(eva?.handles).toEqual(['@eva-2'])
+  })
+
+  it('claims its own text when a bot tags as its raw profile name', async () => {
+    // No title on the profile, so the mention tag IS the profile name. The
+    // picker still needs the claim (it retires the gateway's twin row for
+    // that name), and the merge treats a handle matching the row's own text
+    // as naming no alias — so this shape must keep offering the bot.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [{ name: 'curio' }, { name: 'default' }]
+    })
+
+    const curio = provide('cur').find(item => item.insert === '@curio')
+
+    expect(curio?.handles).toEqual(['@curio'])
+  })
+
+  it("never claims a remote row's name — the local gateway's twin is a different bot", async () => {
+    const { provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
+
+    const contributed = provide('cos').find(item => item.insert === '@cos-bot')
+
+    expect(contributed?.handles).toBeUndefined()
+  })
 })
 
 describe('the mention middleware', () => {
@@ -493,5 +537,48 @@ describe('the mention middleware', () => {
     const untouched = 'mail user@example.com and ping @nosuchbot'
 
     expect((await handler({ text: untouched })).text).toBe(untouched)
+  })
+})
+
+describe('the local default when a real hermes profile exists', () => {
+  const RAW = ['default', 'hermes', 'researcher'].map(name => ({
+    connectionId: 'local',
+    connectionKind: 'local',
+    connectionLabel: 'This device',
+    name
+  }))
+
+  afterEach(() => {
+    hostMock.request.mockImplementation(async () => ({}))
+  })
+
+  it.each([
+    ['a warm roster cache', 'warm'],
+    ['a cold cache primed from the raw backend rows', 'cold']
+  ])('hands the agent a target that reaches the profile the user tagged (%s)', async (_label, cache) => {
+    if (cache === 'cold') {
+      // What the backend's profiles.list and Electron's union roster report: raw names, bare handles.
+      hostMock.request.mockImplementation(async () => ({ profiles: RAW }))
+      hostMock.agents.mockResolvedValueOnce({
+        agents: RAW.map(({ name, ...row }) => ({ ...row, handle: name, profile: name, targetProfile: name })),
+        sources: [{ connectionId: 'local', kind: 'local' }]
+      })
+    }
+
+    const { claimDefaultHandles } = await import('./data')
+
+    const { handler } = await contributions({
+      focused: 'researcher',
+      profiles: cache === 'warm' ? (claimDefaultHandles(RAW as RosterRow[]) as never) : null
+    })
+
+    const toDefault = (await handler({ text: 'please ask @default to review' })).text
+    const toHermes = (await handler({ text: 'please ask @hermes to review' })).text
+
+    // message_agent maps 'hermes' to the real hermes profile, so the default must never be handed it.
+    expect(toDefault).toMatch(/@default = agent profile "default"/)
+    expect(toDefault).not.toMatch(/message_agent target: "hermes"/)
+    expect(toHermes).toMatch(/@hermes = agent profile "hermes"/)
+    expect(toHermes).not.toMatch(/agent profile "default"/)
   })
 })

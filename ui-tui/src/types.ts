@@ -1,5 +1,7 @@
 import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
+import type { SharedControl } from './canonicalGateway.js'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -96,7 +98,8 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  sharedControl?: SharedControl
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
@@ -115,7 +118,7 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyBatchQuestion {
+export interface ClarifyQuestion {
   choices: string[] | null
   multiSelect?: boolean
   qid: string
@@ -123,20 +126,33 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
-  choices: string[] | null
-  question: string
+  sharedControl?: SharedControl
   requestId: string
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyBatchQuestion[]
+  questions: ClarifyQuestion[]
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
 }
 
+/** A collapsed paste in a sent user message: the chip shown and the text the model got. */
+export interface PasteSection {
+  label: string
+  text: string
+}
+
 export interface Msg {
   info?: SessionInfo
-  kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'event' | 'image' | 'intro' | 'panel' | 'slash' | 'trail'
+  // Local image paths shown inline under the row: a user turn's attachments,
+  // or (kind 'image') the picture a tool call produced or looked at.
+  images?: string[]
+  // Tells two pictures at one image path apart (a re-screenshot, a re-attached
+  // file overwritten in place): the tool call id that produced a kind 'image'
+  // row, or a per-turn id for a user turn's attachments.
+  imageRevision?: string
   panelData?: PanelData
+  /** Payloads behind this user row's paste chips, expandable in the transcript. */
+  pastes?: PasteSection[]
   role: Role
   text: string
   // Unix seconds the message was authored (persisted transcript timestamp on
@@ -183,8 +199,24 @@ export interface McpServerStatus {
   transport: string
 }
 
-/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
-export type SessionInfo = SessionLiveInfo
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
+ *  plus the canonical-authority fields the legacy contract does not carry yet
+ *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
+export interface SessionInfo extends SessionLiveInfo {
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
+  install_warning?: string
+  pending_submissions?: Array<{
+    admission_id: string
+    input_id?: string
+    target_session_id: string
+    target_profile_home: string
+    status: string
+    user: string
+    outcome?: string | null
+  }>
+}
 export type { ProjectInfo }
 
 export interface SudoReq {
@@ -202,6 +234,24 @@ export interface VaultUnlockReq {
   backend: string
   displayName: string
   requestId: string
+}
+
+/**
+ * `vault.save_login` server→client request — save a new website login from a
+ * browser sign-in page. Two-step capture (identifier shown, password masked);
+ * the answer goes only to the encrypted vault, never to the model.
+ */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
+/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
+export interface VaultCodeReq {
+  hint: string
+  requestId: string
+  site: string
 }
 
 export interface PanelData {

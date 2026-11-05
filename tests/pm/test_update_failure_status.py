@@ -54,7 +54,7 @@ def test_failed_resolution_stops_every_apply_path(tmp_path, monkeypatch, capsys,
     packages = [failed, healthy] if mixed else [failed]
     lock = prepare(tmp_path, monkeypatch, packages)
     before = lock.path.read_bytes()
-    args = Namespace(names=[p.name for p in packages], target=None, check=check, uv=True, npm=True, termux=False)
+    args = Namespace(names=[p.name for p in packages], target=None, skip_target=[], check=check, uv=True, npm=True, termux=False)
     assert cli.cmd_update(args) == 1
     assert "fixture index unavailable" in capsys.readouterr().out
     assert lock.path.read_bytes() == before
@@ -69,7 +69,7 @@ def test_current_and_manual_results_are_successful_without_writes(tmp_path, monk
     lock = prepare(tmp_path, monkeypatch, [package])
     before = lock.path.read_bytes()
     for check in (True, False):
-        args = Namespace(names=[package.name], target=None, check=check, uv=False, npm=False, termux=False)
+        args = Namespace(names=[package.name], target=None, skip_target=[], check=check, uv=False, npm=False, termux=False)
         assert cli.cmd_update(args) == 0
     assert lock.path.read_bytes() == before
     assert not (tmp_path / "tools").exists()

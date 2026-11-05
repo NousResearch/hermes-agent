@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 
+from agent.i18n import t
 from hermes_cli.cli_render import (
     _chrome_floor,
     _hold_paints,
@@ -53,6 +54,12 @@ def _run_on_app_loop(app, fn) -> None:
         except Exception:
             pass
     fn()
+
+
+def _tmux_passthrough(seq: str) -> str:
+    """*seq* in tmux's DCS passthrough wrapper: tmux forwards it to the outer terminal only with
+    ``allow-passthrough on`` and swallows it otherwise."""
+    return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
 
 
 def _write_terminal_sequence(app, seq: str) -> None:
@@ -592,7 +599,7 @@ class CLITerminalMixin:
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
         seq = f"\x1b]52;c;{payload}\x07"
         if os.environ.get("TMUX"):
-            seq = "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+            seq = _tmux_passthrough(seq)
         elif os.environ.get("STY"):
             seq = "\x1bP" + seq + "\x1b\\"
         _write_terminal_sequence(getattr(self, "_app", None), seq)
@@ -626,9 +633,7 @@ class CLITerminalMixin:
         logger.warning("Recovered terminal input modes after leak: %s", reason)
         if not self._input_mode_recovery_notice_shown:
             self._input_mode_recovery_notice_shown = True
-            _cprint(
-                f"  {_DIM}Recovered terminal input modes after leaked mouse reports. "
-                f"If this repeats, run /new or restart this tab.{_RST}")
+            _cprint(f"  {_DIM}{t('cli.terminal.recovered_mouse_modes')}{_RST}")
 
     def _check_termios_drift(self) -> None:
         """Idle watchdog: heal a tty that drifted back to cooked mode (a lost
@@ -666,6 +671,4 @@ class CLITerminalMixin:
                 pass
             if not self._termios_drift_notice_shown:
                 self._termios_drift_notice_shown = True
-                _cprint(
-                    f"  {_DIM}Recovered terminal from cooked-mode drift "
-                    f"(input should respond normally again).{_RST}")
+                _cprint(f"  {_DIM}{t('cli.terminal.recovered_cooked_mode')}{_RST}")

@@ -97,7 +97,7 @@ def fake_clock(monkeypatch):
     """
     import time as real_time
 
-    import tools.voice_mode as voice_mode
+    from tools import voice_mode
 
     clock = _FakeTime(real_time)
     monkeypatch.setattr(voice_mode, "time", clock)
@@ -252,6 +252,28 @@ class TestDetectAudioEnvironment:
 # check_voice_requirements
 # ============================================================================
 
+class TestNativeSttLabelSync:
+    """Every native STT built-in must have a CLI voice-gate label.
+
+    ``BUILTIN_STT_PROVIDERS`` and ``agent.transcription_registry._BUILTIN_NAMES``
+    are kept in sync by TestBuiltinSync, but ``tools.voice_mode._NATIVE_STT_LABELS``
+    is a third copy of the same list; without this test a new built-in transcribes
+    fine on the gateway while the CLI voice gate reports it as MISSING.
+    """
+
+    def test_every_native_stt_builtin_has_voice_mode_label(self):
+        from tools.transcription_common import BUILTIN_STT_PROVIDERS
+        from tools.voice_mode import _NATIVE_STT_LABELS
+
+        missing = BUILTIN_STT_PROVIDERS - set(_NATIVE_STT_LABELS)
+        assert not missing, (
+            "tools.voice_mode._NATIVE_STT_LABELS is missing labels for native "
+            f"STT built-ins: {sorted(missing)} — the CLI voice gate would "
+            "report these providers as MISSING while the gateway transcribes "
+            "with them fine."
+        )
+
+
 class TestCheckVoiceRequirements:
     def test_all_requirements_met(self, monkeypatch):
         monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
@@ -340,6 +362,46 @@ class TestAudioRecorder:
         assert recorder.is_recording is True
         mock_sd.InputStream.assert_called_once()
         mock_stream.start.assert_called_once()
+
+    def test_ensure_stream_rebuilds_inactive_stream(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        inactive_stream = MagicMock()
+        inactive_stream.active = False
+        inactive_stream.stop.side_effect = RuntimeError("stream already stopped")
+        replacement_stream = MagicMock()
+        mock_sd.InputStream.return_value = replacement_stream
+        recorder._stream = inactive_stream
+
+        recorder._ensure_stream()
+
+        inactive_stream.close.assert_called_once_with()
+        replacement_stream.start.assert_called_once_with()
+        assert recorder._stream is replacement_stream
+
+    def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
+        from tools.voice_mode import AudioRecorder
+
+        class BrokenStream:
+            stop = MagicMock()
+            close = MagicMock()
+
+            @property
+            def active(self):
+                raise RuntimeError("CoreAudio stream state unavailable")
+
+        recorder = AudioRecorder()
+        broken_stream = BrokenStream()
+        replacement_stream = MagicMock()
+        mock_sd.InputStream.return_value = replacement_stream
+        recorder._stream = broken_stream
+
+        recorder._ensure_stream()
+
+        broken_stream.close.assert_called_once_with()
+        replacement_stream.start.assert_called_once_with()
+        assert recorder._stream is replacement_stream
 
 class TestAudioRecorderStop:
     def test_stop_writes_wav_file(self, mock_sd, temp_voice_dir):

@@ -109,7 +109,7 @@ node scripts/build/desktop.mjs --source /work/source \
 
 | Builder | Required CLI arguments | Additional CLI arguments | Product contents |
 |---|---|---|---|
-| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js` and `package.json` with `type: module` |
+| `tui.mjs` | `--source`, `--out` | None | `dist/entry.js`, gateway/clipboard Python helpers in `dist/scripts/`, and `package.json` with `type: module` |
 | `web.mjs` | `--source`, `--out`, `--icons` | None | `index.html`, Vite assets, and public assets |
 | `desktop.mjs` | `--source`, `--out`, `--icons`, `--stamp`, `--native-deps` | `--typecheck`, `--platform` | Renderer assets, `electron-main.mjs`, `electron-preload.js`, and native `node_modules` |
 
@@ -122,12 +122,23 @@ Each compiler publishes `hermes-build.json` inside its output (inside `dist/`
 for TUI). `freshness.mjs` owns this receipt and all source input selection.
 TUI inputs are its source tree, the Ink source alias, shared sources, their
 manifests and TypeScript configuration, dependency locks, and its compiler and
-shared compiler helpers. Tests, workspace documentation, dependency-provider
+shared compiler helpers, plus the shipped Python runtime helpers. Tests, workspace documentation, dependency-provider
 recipes, and other products' compiler recipes do not invalidate the TUI.
 It records product/host identity, content hashes of workspace/shared sources and
 build inputs, and the exact supplied icon directory, desktop install stamp, and
-native-dependency tree. Inputs are checked again before publication: a concurrent
-input change fails the build and preserves the previous output. Output validation
+native-dependency tree. The desktop stamp is hashed as its provenance identity
+rather than its raw bytes: `write-build-stamp.mjs` rewrites the `builtAt` clock on
+every build, so hashing it byte-for-byte let a second build racing this one kill
+it with "inputs changed" for a difference the build machinery itself made
+(#123308). The clock is not dropped, only excluded from that comparison: the
+receipt records it as `stampClock`, the value the bake actually embedded, because
+packaging copies the live stamp file into the bundle *after* the receipt is
+written. A product whose packaged clock disagrees with the clock baked into its
+main process must not be reported current — `detectBundleSwap` would otherwise
+offer a relaunch for a bundle that was never replaced. A receipt predating the
+field is compared by hash alone until the next build rewrites it. Inputs are
+checked again before publication: a concurrent provenance change fails the build
+and preserves the previous output. Output validation
 checks renderer/main/preload/public bytes and the native file inventory; native
 bytes may change through signing after compilation. Native ABI verification remains
 with the native provider and desktop compiler.
@@ -279,8 +290,8 @@ cache. `scripts.bundles.stage --cache PATH` (or `hermes pm bundle --cache PATH`)
 selects the persistent cache explicitly. Direct staging also accepts the
 provider's `UV_CACHE_DIR`; otherwise it uses the output parent's `.uv-cache`.
 The PM runtime and application dependency builds receive this same cache.
-General PM staging uses `setup-pm` and `save-pm-cache` to restore and save it
-after the build, including failures, under its v2 namespace. Desktop composition
+General PM staging uses `setup-pm`, which restores and saves it automatically on
+success. Desktop composition
 instead prepares the full dependency set before its single dependency snapshot
 save. The packaged `uv-cache/` is a copy, not the writable build cache.
 

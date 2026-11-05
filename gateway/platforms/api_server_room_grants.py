@@ -14,7 +14,7 @@ class RoomGrantReauthorizationRequired(ValueError):
     """A validly signed room grant was revoked or superseded."""
 
 
-def _json_error(_openai_error, message: str, *, status: int, **error_kwargs) -> "web.Response":
+def _json_error(_openai_error, message: str, *, status: int, **error_kwargs) -> web.Response:
     """JSON error response built with the injected ``_openai_error`` envelope builder."""
     return web.json_response(_openai_error(message, **error_kwargs), status=status)
 
@@ -25,7 +25,7 @@ def _require_unchanged_execution_policy(claims: dict[str, Any], execution_policy
         raise RoomGrantReauthorizationRequired("room execution policy changed")
 
 
-def _room_grant_error_response(exc: Optional[Exception] = None, *, _openai_error) -> "web.Response":
+def _room_grant_error_response(exc: Optional[Exception] = None, *, _openai_error) -> web.Response:
     """401 invalid grant, or 403 reauthorization-required for a revoked/superseded grant."""
     if isinstance(exc, RoomGrantReauthorizationRequired):
         message, code, status = "Room authorization needs to be renewed.", "room_reauthorization_required", 403
@@ -78,7 +78,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/room-members/grants/revoke", self._handle_room_member_grant_revoke)]
 
 
-def _room_grant_token(request: "web.Request") -> str:
+def _room_grant_token(request: web.Request) -> str:
     scheme, separator, token = str(request.headers.get("Authorization") or "").partition(" ")
     return token.strip() if separator and scheme.lower() == "hermesroom" else ""
 
@@ -88,7 +88,7 @@ def _room_grant_secret(self) -> bytes:
     return gateway_room_grant_secret()
 
 
-def _decode_request_grant(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _decode_request_grant(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     """Signature/scope/horizon check only (no revocation lookup)."""
     from gateway.hosted_room_peer import decode_room_grant
     token = self._room_grant_token(request)
@@ -97,7 +97,7 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
     return decode_room_grant(self._room_grant_secret(), token, permission=permission)
 
 
-def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
+def _room_grant_claims(self, request: web.Request, *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
     db_path = hosted_rooms.default_db_path()
@@ -109,7 +109,7 @@ def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict
 
 
 async def _handle_room_member_invitation(
-    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    self, request: web.Request, *, _openai_error, _api_request_profile) -> web.Response:
     """Mint a short-lived room/profile grant for a trusted home gateway."""
     auth_err = self._check_auth(request)
     if auth_err:
@@ -153,7 +153,7 @@ async def _handle_room_member_invitation(
 
 
 async def _handle_room_member_capabilities(
-    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    self, request: web.Request, *, _openai_error, _api_request_profile) -> web.Response:
     """Verify a scoped grant and return this target's live room catalog."""
     try:
         claims = self._room_grant_claims(request, permission="status")
@@ -167,7 +167,7 @@ async def _handle_room_member_capabilities(
 
 
 async def _handle_room_member_grant_refresh(
-    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    self, request: web.Request, *, _openai_error, _api_request_profile) -> web.Response:
     """Refresh dispatch access without a Desktop or broad gateway key."""
     body, error = await self._read_json_body(request)
     if error:
@@ -206,7 +206,7 @@ async def _handle_room_member_grant_refresh(
 
 
 async def _handle_room_member_grant_revoke(
-    self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
+    self, request: web.Request, *, _openai_error, _api_request_profile) -> web.Response:
     """Revoke exactly the scoped grant authenticating this request."""
     body, error = await self._read_json_body(request)
     if error:

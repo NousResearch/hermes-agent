@@ -63,9 +63,6 @@ function Installed($Side) {
     if (-not (Test-Path -LiteralPath $exe)) { throw 'Installed executable missing' }
     return @{ package=$pkg; exe=$exe; stamp=$stamp }
 }
-function Main-Processes([string]$Exe) {
-    return @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Exe -and $_.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)' })
-}
 $Feed = Join-Path $Work 'feed'
 New-Item -ItemType Directory -Path $Feed | Out-Null
 Copy-Item -LiteralPath $m.old.artifact.path -Destination (Join-Path $Feed 'old.msixbundle')

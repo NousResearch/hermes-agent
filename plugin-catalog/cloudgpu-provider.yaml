@@ -1,0 +1,19 @@
+name: cloudgpu-provider
+repo: https://github.com/mrhy7176/hermes-cloudgpu
+sha: 8094603d776e185cfe362618d353841e6b453189
+subdir: model-providers/cloudgpu
+title: "CloudGPU"
+description: "cloudgpu.app models (DeepSeek, Kimi, GLM, MiniMax) via the OpenAI-compatible API at cloudgpu.app/v1: live model list from the public /v1/models, DeepSeek V4.1 Flash as the default. Disclosure — model provider; prompts, tool schemas and CLOUDGPU_API_KEY go to cloudgpu.app (or to CLOUDGPU_BASE_URL when the user sets it)."
+maintainer: mrhy7176
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/mrhy7176/hermes-cloudgpu#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CLOUDGPU_API_KEY

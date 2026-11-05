@@ -34,14 +34,17 @@ export function ExternalOpenFailedDialog() {
     return null
   }
 
+  // A missing file and a missing URL handler are different failures with
+  // different remedies; main tags the payload so copy stays localized.
   const copy = t.externalOpenFailed
+  const header = failure?.code === 'missing-file' ? copy.missing : copy
 
   return (
     <Dialog onOpenChange={open => (!open ? setFailure(null) : undefined)} open={Boolean(failure)}>
       <DialogContent className="max-w-[30rem]" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.message}</DialogDescription>
+          <DialogTitle>{header.title}</DialogTitle>
+          <DialogDescription>{header.message}</DialogDescription>
         </DialogHeader>
         <div className="max-h-40 overflow-auto break-all rounded-md border bg-muted p-3 select-all">{failure?.url}</div>
         <DialogFooter>

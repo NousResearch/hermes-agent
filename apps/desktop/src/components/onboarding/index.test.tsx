@@ -92,6 +92,23 @@ describe('onboarding Picker', () => {
     expect(window.localStorage.getItem('hermes-onboarding-skipped-v1')).toBe('1')
   })
 
+  it('keeps Nous Portal on top of the key form when the provider list failed to load', () => {
+    // A failed/empty OAuth list drops the picker onto the key form with no way back.
+    setProviders([])
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), mode: 'apikey' })
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.getByText('Nous Portal')).toBeTruthy()
+    expect(screen.getByText('Recommended')).toBeTruthy()
+    expect(screen.getByText('Fireworks AI')).toBeTruthy()
+    cleanup()
+
+    // The custom-endpoint form is a deliberate destination: no Nous row there.
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), localEndpoint: true })
+    render(<Picker ctx={ctx} />)
+    expect(screen.queryByText('Nous Portal')).toBeNull()
+  })
+
   it('hides "choose later" in manual (add-provider) mode', () => {
     setProviders([makeOAuthProvider('nous', 'Nous Portal')])
     $desktopOnboarding.set({ ...$desktopOnboarding.get(), manual: true })
@@ -107,7 +124,15 @@ describe('ApiKeyForm manual local-model fallback', () => {
     // for a manual model name instead of dead-ending. Second Connect: the typed
     // name is forwarded as the 5th onSave argument.
     const onSave = vi
-      .fn<(envKey: string, value: string, name: string, apiKey?: string, modelName?: string) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>>()
+      .fn<
+        (
+          envKey: string,
+          value: string,
+          name: string,
+          apiKey?: string,
+          modelName?: string
+        ) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>
+      >()
       .mockResolvedValueOnce({
         ok: false,
         needsModelInput: true,
@@ -115,14 +140,7 @@ describe('ApiKeyForm manual local-model fallback', () => {
       })
       .mockResolvedValueOnce({ ok: true })
 
-    render(
-      <ApiKeyForm
-        canGoBack={false}
-        initialEnvKey="OPENAI_BASE_URL"
-        onBack={() => undefined}
-        onSave={onSave}
-      />
-    )
+    render(<ApiKeyForm canGoBack={false} initialEnvKey="OPENAI_BASE_URL" onBack={() => undefined} onSave={onSave} />)
 
     fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8000/v1'), {
       target: { value: 'https://api.cohere.ai/compatibility/v1' }

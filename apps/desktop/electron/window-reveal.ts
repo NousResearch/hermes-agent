@@ -163,14 +163,11 @@ export function wireWindowReveal(
   win.on('closed', controller.dispose)
 
   if (onRevealFailed) {
-    win.webContents.on(
-      'did-fail-load',
-      (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
-        if (isMainFrame) {
-          controller.fail(`main frame failed to load (${errorCode}: ${errorDescription})`)
-        }
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+      if (isMainFrame) {
+        controller.fail(`main frame failed to load (${errorCode}: ${errorDescription})`)
       }
-    )
+    })
 
     win.webContents.on('render-process-gone', (_event, details) => {
       controller.fail(`render process gone (${details?.reason ?? 'unknown'})`)

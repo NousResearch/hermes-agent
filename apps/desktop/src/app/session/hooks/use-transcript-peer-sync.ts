@@ -44,12 +44,7 @@ export function useTranscriptPeerSync({
         const selected = selectedStoredSessionIdRef.current
         const runtimeId = activeSessionIdRef.current
 
-        if (
-          !cancelled &&
-          selected === storedSessionId &&
-          runtimeId &&
-          !busyRef.current
-        ) {
+        if (!cancelled && selected === storedSessionId && runtimeId && !busyRef.current) {
           await hydrateStoredSessionTranscript({
             attempts: 1,
             runtimeSessionId: runtimeId,

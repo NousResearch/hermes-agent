@@ -26,6 +26,9 @@ test('mac extendInfo declares a usage string for every TCC-gated desktop service
   for (const [key, service] of MAC_USAGE_STRINGS) {
     const value = extendInfo[key]
 
-    assert.ok(typeof value === 'string' && value.trim().length > 0, `mac.extendInfo.${key} must be a non-empty usage string; without it macOS denies ${service} access without showing a TCC prompt (#59482)`)
+    assert.ok(
+      typeof value === 'string' && value.trim().length > 0,
+      `mac.extendInfo.${key} must be a non-empty usage string; without it macOS denies ${service} access without showing a TCC prompt (#59482)`
+    )
   }
 })

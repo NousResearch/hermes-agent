@@ -128,7 +128,7 @@ class TestWriteQueue:
         return _WriteQueue(client, db_path), client, db_path
 
     def test_flush_deletes_row_on_success(self, tmp_path):
-        q, client, db_path = self._make_queue(tmp_path)
+        q, _client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
         q.shutdown()  # blocks until drain
         # Row should be gone
@@ -266,9 +266,15 @@ class TestPrefetch:
         p.initialize("test-session", hermes_home=str(hermes_home))
         return p
 
-    def test_queue_prefetch_skips_without_client(self):
+    def test_queue_prefetch_skips_without_client(self, monkeypatch):
+        spawned = []
+        monkeypatch.setattr(
+            "plugins.memory.retaindb.spawn_context_thread",
+            lambda *a, **k: spawned.append(k.get("name")),
+        )
         p = RetainDBMemoryProvider()
-        p.queue_prefetch("test")  # Should not raise
+        p.queue_prefetch("test")
+        assert spawned == []
 
     def test_prefetch_returns_empty_when_nothing_cached(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)

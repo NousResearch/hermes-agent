@@ -33,3 +33,7 @@ optional_env:
     description: "Display name for the Telegram home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TELEGRAM_WEBHOOK_SECRET
+    description: "Secret token Telegram sends with each webhook update (required with TELEGRAM_WEBHOOK_URL)"
+    prompt: "Webhook secret"
+    password: true

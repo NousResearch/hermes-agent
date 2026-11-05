@@ -168,7 +168,7 @@ describe('external writes into a member session', () => {
     data.$lastRoster.set([{ name: 'research' }] as never)
     data.$botMeta.set({ research: { groups: ['Room'] } } as never)
 
-    view.openGroupChat('Room')
+    view.openGroupChat('Room', 'name')
     await drain(() => texts(room).length < 6)
 
     expect(texts(room)).toEqual([

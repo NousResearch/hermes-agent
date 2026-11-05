@@ -251,6 +251,10 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                       "compression_count": getattr(compressor, "compression_count", 0) if compressor is not None else 0,
                       "runtime": "codex_app_server", "thread_id": thread_id, "turn_id": turn_id,
                   }))
+    if not force:
+        # Hermes-forced compactions are recorded by their compress_context attempt; this one Codex ran alone.
+        from agent.compaction_events import publish_provider_native
+        publish_provider_native(agent)
     return True
 
 
@@ -259,7 +263,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
 
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
-# so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
+# so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
 # handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).
@@ -534,7 +538,65 @@ def _start_codex_thread(agent) -> str:
         return agent._codex_session.ensure_started()
 
 
-def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
+def _codex_model_provider(agent) -> str | None:
+    """codex's ``[model_providers.<id>]`` for a named custom provider (``providers.<name>``); None means codex's
+    own provider. Only the stable id is sent and codex resolves base_url/env_key itself, so Hermes' credential
+    never enters the JSON-RPC payload (#75186)."""
+    if str(getattr(agent, "provider", "") or "").strip().lower() != "custom":
+        return None
+    from hermes_cli.runtime_provider_custom import codex_model_provider_id
+    return codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+
+
+def _codex_wire_model(agent, model_provider: str | None) -> str | None:
+    """The slug codex should run. ``-900k`` picker variants are Hermes-side aliases the backend rejects
+    ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
+    to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
+    as for openai-codex; a named custom provider's model ids are its own and pass through."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+    model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+    if model and model_provider is None:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        model = normalize_model_for_provider(model, "openai-codex")
+    return model
+
+
+def _codex_turn_effort(agent, model: str | None) -> str | None:
+    """``turn/start.effort``: only an explicit Hermes reasoning setting overrides codex's own default, clamped
+    to the route's vocabulary like the Responses path (a level the model lacks fails the turn with 400
+    "Unsupported value"). ``ultra`` stays ``ultra`` where the model reaches ``max``: codex runs it as its
+    harness mode. Disabled reasoning goes out as ``none`` where the route accepts it."""
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    # Guard first: _resolve_reasoning fills an unset config with "medium", which would override codex's default.
+    if not isinstance(reasoning_config, dict) or not (
+            reasoning_config.get("enabled") is False or reasoning_config.get("effort")):
+        return None
+    from agent.codex_responses_adapter import classify_responses_route
+    from agent.reasoning_effort import route_supported_efforts
+    from agent.transports.codex import _resolve_reasoning
+    route = classify_responses_route(agent)
+    effort, _enabled = _resolve_reasoning(model or "", {
+        "reasoning_config": reasoning_config, "provider": getattr(agent, "provider", None),
+        "base_url": getattr(agent, "base_url", None), "is_codex_backend": route.is_codex_backend,
+        "is_xai_responses": route.is_xai_responses,
+    })
+    # ``ultra`` is codex's harness mode, not an inference level: keep it where the route accepts it
+    # instead of the ``max`` the Responses clamp maps it to.
+    if effort == "max" and reasoning_config.get("effort") == "ultra" and "ultra" in route_supported_efforts(
+            getattr(agent, "provider", None), model, "codex_app_server"):
+        return "ultra"
+    return effort
+
+
+def _codex_turn_service_tier(agent) -> str | None:
+    """``turn/start.serviceTier``: the tier Hermes' own Responses path would request this turn (a static
+    ``/fast`` tier pinned in request_overrides, or an open ``auto``/``cold`` window), in codex's words: the
+    OpenAI ``priority`` tier is codex's ``fast``. A tier codex has no word for (``ultrafast``) is not sent."""
+    from agent.fast_mode import CODEX_TIER_WORDS, effective_request_overrides
+    return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
+
+
+def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
     or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
@@ -542,10 +604,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
     developer_instructions = _codex_developer_instructions(agent)
+    model_provider = _codex_model_provider(agent)
     if getattr(agent, "_codex_session", None) is not None:
         # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
+        # in-place switch to or from a named custom provider retires the thread too.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or recorded == developer_instructions:
+        if recorded is None or (recorded == developer_instructions
+                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
             return
         _close_codex_session(agent)
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
@@ -553,11 +619,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
-    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
+    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
+    # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
     with suppress(Exception):
+        from tools.approval_context import _no_user_can_answer
         from tools.terminal_tool import _get_approval_callback
-        approval_callback = _get_approval_callback()
+        if not _no_user_can_answer():
+            approval_callback = _get_approval_callback()
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
     # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False
@@ -578,27 +647,23 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     # once, so a /model switch into codex or a retired thread does not start blind (#74712, #26035).
     # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
     agent._codex_session_prompt = developer_instructions
+    agent._codex_session_model_provider = model_provider
     from agent.codex_runtime_history_seed import render_history_seed
     history_seed = render_history_seed(messages) or None
-    # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
-    # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
-    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
-    model_provider = None
-    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
-        from hermes_cli.runtime_provider_custom import codex_model_provider_id
-        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+    # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
+    # so omitting it ran codex's own default instead of the selection.
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
-        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
+        model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
+def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
 
@@ -632,9 +697,10 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     return flush_ok is True
 
 
-def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
+def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
+                       should_review_memory: bool, final_response: Any) -> dict[str, Any]:
+    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
+    ``final_response`` is the reply after ``transform_llm_output``: memory keeps what the user got."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
@@ -647,7 +713,7 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
@@ -657,20 +723,47 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     return usage_result
 
 
-def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
+def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
+    """Run ``transform_llm_output`` on a codex reply before its rows are persisted, as
+    ``finish_text_response`` does on the generic loop: the user and the stored row get the rewrite.
+    A turn that failed after an agentMessage completed still delivers that text, so it is rewritten
+    too; a held turn rewrites even an interrupted one, and its earlier agentMessages (commentary the
+    user never saw) are typed hidden for every history load."""
+    held = getattr(agent, "_hold_stream", False)
+    if not turn.final_text or (turn.interrupted and not held):
+        return {"final_response": turn.final_text}
+    from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
+    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
+    rows = [m for m in turn.projected_messages or [] if m.get("role") == "assistant" and m.get("content")]
+    final_row = next((m for m in reversed(rows) if m.get("content") == turn.final_text), None)
+    if transformed and final_row is not None:
+        final_row["content"] = final
+    for message in rows if held else ():
+        if message is not final_row and not message.get("display_kind"):
+            message["display_kind"] = "hidden"
+    return {"final_response": final, "response_transformed": transformed,
+            "pre_transform_response": public_pre_transform(agent, pre_transform)}
+
+
+def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
+                              effective_task_id: str, should_review_memory: bool = False,
+                              turn_id: Any = None) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
     # api_mode is mutable. Explicit-True check matches compress_context().
     if getattr(agent, "compression_checkpoint_required", False) is True:
-        from agent.conversation_compression import _checkpoint_blocked
+        from agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
     try:
         _start_codex_thread(agent)
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
+            service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
@@ -684,23 +777,24 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
+    reply = _transform_codex_reply(agent, turn, turn_id)
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        final_response=reply["final_response"],
     )
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
     )
 
 
-def _turn_result(interrupt: tuple[bool, Any], messages: List[Dict[str, Any]], *, api_calls: int, completed: bool,
-                 error: Any, final_response: Any, **extra: Any) -> Dict[str, Any]:
+def _turn_result(interrupt: tuple[bool, Any], messages: list[dict[str, Any]], *, api_calls: int, completed: bool,
+                 error: Any, final_response: Any, **extra: Any) -> dict[str, Any]:
     """Result shape shared with the chat_completions path (``partial`` == ``not completed``)."""
     user_interrupted, interrupt_message = interrupt
     return {
@@ -779,7 +873,7 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` are read from the terminal frame — never ``response.output``. Output
+    Only ``usage`` / ``status`` / ``id`` / ``service_tier`` are read from the terminal frame — never ``response.output``. Output
     items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
@@ -790,21 +884,28 @@ class _CodexResponseAssembler:
     active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
+    terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    # An assistant answer message item was announced (output_item.added, not commentary/analysis): its text deltas
+    # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
+    saw_answer_item_added = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
-        self.output_items: List[Any] = []
+        self.output_items: list[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
         self.text_deltas, self.commentary_text_deltas = [], []
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
-        self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
-        self.announced_output_order: Dict[str, tuple] = {}
+        self.pending_function_calls: dict[str, dict[str, Any]] = {}
+        self.announced_output_order: dict[str, tuple] = {}
+        # Phase per announced message item id: a delta that names its item keeps that item's phase even after a
+        # later item (a function call) was announced, so commentary is never fused into the answer text.
+        self.message_phases: dict[str, str | None] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -813,11 +914,15 @@ class _CodexResponseAssembler:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
+        if item_type == "message" and self.active_message_phase not in ("commentary", "analysis"):
+            self.saw_answer_item_added = True
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
+        if item_id and item_type == "message":
+            self.message_phases[item_id] = self.active_message_phase
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
@@ -836,12 +941,13 @@ class _CodexResponseAssembler:
             return
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
+        phase = self.message_phases.get(str(_event_field(event, "item_id", "") or ""), self.active_message_phase)
+        if phase == "commentary":
             self.commentary_text_deltas.append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -861,9 +967,21 @@ class _CodexResponseAssembler:
         if isinstance(refusal_text, str) and refusal_text:
             self.text_deltas.append(refusal_text)
 
+    def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
+        if item_id in self.pending_function_calls:
+            return item_id
+        # Some Responses backends rotate opaque item IDs between SSE events. The response-local
+        # output_index still identifies the call, including index zero.
+        if output_index is not None:
+            return next((key for key, pending in self.pending_function_calls.items()
+                         if pending["output_index"] == output_index), None)
+        return None
+
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        key = self._pending_function_key(str(_event_field(event, "item_id", "")),
+                                         _event_field(event, "output_index"))
+        pending = self.pending_function_calls.get(key)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -894,12 +1012,39 @@ class _CodexResponseAssembler:
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        pending_keys = []
+        if "function_call" in str(_event_field(done_item, "type", "")):
+            done_call_id = _event_field(done_item, "call_id", "")
+            if isinstance(done_call_id, str) and done_call_id.strip():
+                # A stable call_id is exclusive: conflicting item/index identities
+                # must not evict unrelated calls, even when no alias matches.
+                pending_keys = [key for key, pending in self.pending_function_calls.items()
+                                if _event_field(pending["item"], "call_id") == done_call_id]
+                # An announcement that carried no call_id cannot contradict this one, so the
+                # positional match argument events use is the only evidence left for it.
+                if not pending_keys:
+                    pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                    if pending_key is not None and not _event_field(
+                            self.pending_function_calls[pending_key]["item"], "call_id"):
+                        pending_keys = [pending_key]
+                announced_sequence, announced_index = None, None
+            else:
+                # Without a stable call_id, retain item-id then index association,
+                # as used by argument events (which never carry a call_id).
+                pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                if pending_key is not None:
+                    pending_keys = [pending_key]
+            if pending_keys:
+                announced_alias = min((self.pending_function_calls[key] for key in pending_keys),
+                                      key=lambda pending: pending["sequence"])
+                announced_sequence, announced_index = announced_alias["sequence"], announced_alias["output_index"]
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(done_id, None)
+        # The done payload is authoritative for every pending alias of this call.
+        for pending_key in pending_keys:
+            self.pending_function_calls.pop(pending_key, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:
@@ -911,6 +1056,7 @@ class _CodexResponseAssembler:
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            self.terminal_service_tier = _event_field(resp_obj, "service_tier")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -942,7 +1088,7 @@ class _CodexResponseAssembler:
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
-    def _settled_output(self) -> List[Any]:
+    def _settled_output(self) -> list[Any]:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
         for pending in self.pending_function_calls.values():
@@ -963,22 +1109,31 @@ class _CodexResponseAssembler:
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
-        # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
-        if not output and self.text_deltas and not self.has_tool_calls:
+        # Successful completion orders all output, even when no calls remain pending.
+        # Done items stay authoritative; only successful streams settle missing done events.
+        output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
+        # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
+        # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
+        # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
+        # The recovery needs a terminal frame: a stream cut mid-turn (no terminal, a call still pending) must raise
+        # below and retry, never end the turn on the cut-off sentence with the call silently lost.
+        if self.text_deltas and (
+                (not output and not self.has_tool_calls)
+                or (self.saw_terminal and self.saw_answer_item_added and not any(
+                    _event_field(item, "type", "") == "message"
+                    and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
-        # Done items stay authoritative; settlement only fills the gap left by backends that omit
-        # per-item done events on a successful completion.
-        if self.pending_function_calls and self.saw_response_completed:
-            output = self._settled_output()
+            message = SimpleNamespace(type="message", role="assistant", status="completed", content=content)
+            first_call = next((i for i, item in enumerate(output)
+                               if "function_call" in str(_event_field(item, "type", ""))), len(output))
+            output.insert(first_call, message)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error)
+            error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 
 def _consume_codex_event_stream(
@@ -1152,42 +1307,70 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             attempt + 1, max_stream_retries + 1, model)
 
     def _drain_for_finalizer(event_stream: Any) -> None:
-        # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
-        # here must NOT discard the completed, already-billed response.
+        # The final response is already assembled. Keep the finalizer drain on THIS owner thread:
+        # moving the reader to a daemon thread and later closing from here releases the FD under that
+        # thread's SSL BIO (#127390, same class as #29507). A tiny watchdog may only shutdown() the
+        # socket; shutdown wakes this owner-thread read without releasing the descriptor.
         budget = _stream_drain_timeout()
         if budget <= 0:
-            return  # the ``finally`` below closes the stream
-        drained = threading.Event()
+            return
+        from agent.agent_runtime_helpers import _socket_from_response
 
-        def _drain() -> None:
-            try:
-                for _ignored in event_stream:
-                    pass
-            except (*transport_errors, _APIConnectionError) as exc:
+        # Only the raw SDK stream carries ``.response``; any lookup failure means "not interruptible".
+        try:
+            sock = _socket_from_response(getattr(writer_token.get("raw_stream"), "response", None))
+        except Exception:
+            sock = None
+        if sock is None:
+            # Without a shutdown-capable socket a synchronous drain could become unbounded. The drain
+            # is only for Relay's finalizer, so skip it and let the owner-thread finally close below.
+            logger.debug("Codex post-terminal drain skipped: no interruptible stream socket found. %s",
+                         agent._client_log_context())
+            return
+
+        timed_out = threading.Event()
+
+        def _wake_owner() -> None:
+            timed_out.set()
+            # FD-safe from a stranger thread: never close here. The owner continues the iteration,
+            # observes EOF/error, and performs the real close from the same thread that was reading.
+            from agent.agent_runtime_helpers import _shutdown_socket
+            _shutdown_socket(sock)
+
+        watchdog = threading.Timer(budget, _wake_owner)
+        watchdog.name = "codex-post-terminal-watchdog"
+        watchdog.daemon = True
+        try:
+            watchdog.start()
+            for _ignored in event_stream:
+                pass
+        except (*transport_errors, _APIConnectionError) as exc:
+            # A timeout-triggered shutdown is the expected wakeup, not another provider failure. Other
+            # transport failures still get the old diagnostic, but none may discard the completed response.
+            if not timed_out.is_set():
                 if not isinstance(exc, transport_errors):
                     _log_failure(exc)
-                logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
-                               "received; returning the completed response instead of retrying. %s error=%s",
-                               agent._client_log_context(), exc)
-            except Exception:
-                logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
-            finally:
-                drained.set()
+                logger.warning(
+                    "Codex Responses stream transport finalization failed after a terminal response was already "
+                    "received; returning the completed response instead of retrying. %s error=%s",
+                    agent._client_log_context(), exc,
+                )
+        except Exception:
+            logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
+        finally:
+            # cancel() wins if the budget has not fired; join() also waits for an already-running shutdown
+            # callback, preserving shutdown-before-close ordering at the exact timeout boundary. A failed
+            # or interrupted start() leaves no thread (ident None) to join.
+            watchdog.cancel()
+            if watchdog.ident is not None:
+                watchdog.join()
 
-        threading.Thread(target=_drain, name="codex-post-terminal-drain", daemon=True).start()
-        if drained.wait(budget):
-            return
-        logger.warning(
-            "Codex Responses stream remained open %.1fs after a terminal response (agent.stream_drain_timeout); "
-            "closing it and returning the completed response instead of retrying. %s",
-            budget, agent._client_log_context(),
-        )
-        # Under a live Relay loop the managed wrapper's close() cannot reach the provider response
-        # (the loop is still running the drain); close the raw stream captured at stream creation too.
-        raw_stream = writer_token.get("raw_stream")
-        if raw_stream is not None and raw_stream is not event_stream:
-            _close_event_stream(raw_stream)
-        _close_event_stream(event_stream)
+        if timed_out.is_set():
+            logger.warning(
+                "Codex Responses stream remained open %.1fs after a terminal response "
+                "(agent.stream_drain_timeout); shut down its socket and completed cleanup on the owner thread. %s",
+                budget, agent._client_log_context(),
+            )
 
     def _close_event_stream(event_stream: Any) -> None:
         close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
@@ -1282,28 +1465,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:
-            _close_event_stream(event_stream)
+            # relay_llm.stream is ManagedLlmStream, whose close() always owns the provider stream; only
+            # when construction itself failed (event_stream None) may a raw stream be left to close here.
+            if event_stream is None:
+                _close_event_stream(writer_token.get("raw_stream"))
+            else:
+                _close_event_stream(event_stream)
 
 
 __all__ = [
-    "run_codex_app_server_turn", "run_codex_stream",
-    "_consume_codex_event_stream", "make_codex_app_server_event_bridge",
+    "_consume_codex_event_stream",
+    "make_codex_app_server_event_bridge",
+    "run_codex_app_server_turn",
+    "run_codex_stream",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):
-    """Backward-compatible alias for the unified event-driven path.
-
-    Historically this was the fallback when the SDK's high-level
-    ``responses.stream(...)`` helper raised on shape drift.  The primary
-    path now does exactly what the fallback did, so this just forwards.
-    Kept as a public symbol because tests and a small number of call sites
-    still reference it by name.
-    """
-    return run_codex_stream(agent, api_kwargs, client=client)
-# ---- END PLUGIN-COMPAT ----

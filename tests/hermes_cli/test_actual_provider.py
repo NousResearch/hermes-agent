@@ -500,7 +500,7 @@ def test_actual_oneshot_reasoning_override_reaches_agent(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **_kwargs: {

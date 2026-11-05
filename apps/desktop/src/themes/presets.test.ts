@@ -29,10 +29,13 @@ describe('theme typography emoji fallback (#40364)', () => {
 describe('theme typography Latin Extended fallback (#61392)', () => {
   const monoStacks: Array<[string, string]> = [
     ['DEFAULT_TYPOGRAPHY.fontMono', DEFAULT_TYPOGRAPHY.fontMono],
-    ...BUILTIN_THEME_LIST.map(theme => [
-      `${theme.name}.effectiveFontMono`,
-      theme.typography?.fontMono ?? nousTheme.typography?.fontMono ?? DEFAULT_TYPOGRAPHY.fontMono
-    ] as [string, string])
+    ...BUILTIN_THEME_LIST.map(
+      theme =>
+        [
+          `${theme.name}.effectiveFontMono`,
+          theme.typography?.fontMono ?? nousTheme.typography?.fontMono ?? DEFAULT_TYPOGRAPHY.fontMono
+        ] as [string, string]
+    )
   ]
 
   it.each(monoStacks)('%s falls back to bundled JetBrains Mono before generic fonts', (_label, stack) => {

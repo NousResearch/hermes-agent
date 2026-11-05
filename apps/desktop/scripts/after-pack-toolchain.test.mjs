@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vitest'
 import afterPack from './after-pack.mjs'
+import { resolvePackagedAsarPath } from './backend-ready-artifact.mjs'
 
 // This is the Linux afterPack path on a real Linux host, not a fake host flag.
 // macOS adds Developer ID signing; its native release lane owns that proof.
@@ -18,6 +19,17 @@ test.runIf(process.platform === 'linux')('afterPack uses the provisioned Python 
   const identity = 'import json,os,sys; print(json.dumps(os.path.realpath(sys.executable)))'
   const expected = JSON.parse(execFileSync(python, ['-c', identity], { encoding: 'utf8' }))
   try {
+    // afterPack asserts the packaged readiness parser before any platform work
+    // (#60772); seed the app.asar mirror the guard reads so this fixture keeps
+    // exercising the payload-link repair below.
+    const asarPath = resolvePackagedAsarPath({ appOutDir: directory, electronPlatformName: process.platform })
+    mkdirSync(path.dirname(asarPath), { recursive: true })
+    writeFileSync(asarPath, 'stub archive')
+    mkdirSync(path.join(`${asarPath}.unpacked`, 'dist'), { recursive: true })
+    writeFileSync(
+      path.join(`${asarPath}.unpacked`, 'dist', 'electron-main.mjs'),
+      'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
+    )
     // Record the interpreter that actually executes the relocation script.
     writeFileSync(path.join(directory, 'sitecustomize.py'), `import json,os,sys\nfrom pathlib import Path\nPath(${JSON.stringify(observed)}).write_text(json.dumps(os.path.realpath(sys.executable)), encoding="utf-8")\n`)
     process.env.PYTHONPATH = directory

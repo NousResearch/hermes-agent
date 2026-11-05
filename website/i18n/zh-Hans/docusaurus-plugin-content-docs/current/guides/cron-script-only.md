@@ -158,9 +158,40 @@ hermes cron run <job_id>    # 触发一次以测试
 | 扩展名 | 解释器 |
 |-----------|-------------|
 | `.sh`、`.bash` | `/bin/bash` |
-| 其他任意扩展名 | `sys.executable`（当前 Python） |
+| 其他任意扩展名 | `sys.executable`（当前 Python），或一个[自定义解释器](#使用你自己的-python-环境) |
 
 我们有意**不**遵循 `#!/...` shebang——保持解释器集合明确且精简，可减少调度器信任的攻击面。
+
+### 使用你自己的 Python 环境
+
+默认情况下，Python cron 脚本运行在 Hermes 自身的 Python 环境中，该环境只包含 Hermes 自身的依赖——因此如果你的脚本 `import openpyxl`、数据库驱动或任何其他你安装的包，会因 `ModuleNotFoundError` 而失败。
+
+你可以通过 `--interpreter` 让任务指向一个**用户自管的 venv**：
+
+```bash
+# 1. 创建一个属于你自己的 venv——它在 Hermes 重装/重建后依然保留。
+uv venv ~/venvs/hermes-reporting --python 3.11
+uv pip install --python ~/venvs/hermes-reporting/bin/python openpyxl
+
+# 2. 用该解释器调度任务。
+hermes cron create "0 8 * * *" \
+  --no-agent \
+  --script daily-report.py \
+  --interpreter ~/venvs/hermes-reporting/bin/python \
+  --deliver telegram
+```
+
+与 `--model` 一样，这是用户自有的设置：通过 `hermes cron create/edit` 设置；agent 的 `cronjob` 工具无法设置它。
+
+规则：
+
+- 该 venv 是**用户自管**的。Hermes 不会创建、冻结、恢复或向其中安装包——它只是调用你指定的路径。
+- 路径必须是**绝对路径或以 `~` 开头**（例如 `~/venvs/reporting/bin/python3`）。像 `python3` 这样的裸名会被拒绝，因为它们在 `PATH` 变化时并不稳定。
+- 必须是 **Python 可执行文件**（`python`、`python3`、`python3.12` 等），符号链接的目标同样要求如此——`/bin/bash` 或其他解释器会被拒绝。
+- 仅对 **Python 脚本**生效。`.sh` / `.bash` 始终用 bash 运行，不受影响。
+- 这是任务级设置；当 `script` 或 `monitor_script` 是 Python 文件时都会使用它。
+- 解释器在**运行时**校验，而非创建时——cron 任务是长期存在的，venv 可能在你创建任务和它真正触发之间被重建或移动。缺失或不可执行的解释器会产生一个清晰的脚本失败，像其他错误一样被投递。
+- 之后想清除它：`hermes cron edit <job_id> --interpreter ""`。
 
 ## 计划语法
 

@@ -85,6 +85,37 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
     assert len([key for key in mixed if key.upper() == "HERMES_RUNTIME_DIR"]) == 1
 
 
+def test_rust_sdists_build_outside_the_nested_uv_cache(tmp_path):
+    # Windows link.exe has no long-path support: target/ inside uv's sdist entry
+    # under the cache exceeded MAX_PATH (LNK1104) when obstore compiled cold.
+    from scripts.bundles.desktop_toolchain import bootstrap_environment
+
+    source, work, cache = (tmp_path / name for name in ("source", "work", "cache"))
+    env = bootstrap_environment(source, work, cache, {"CARGO_TARGET_DIR": str(cache / "python/runtime/x")})
+    target = Path(env["CARGO_TARGET_DIR"])
+    assert target.parent == work.resolve()
+    assert not target.is_relative_to(cache.resolve())
+
+
+@pytest.mark.platforms("windows")
+def test_windows_uv_cache_is_a_short_junction_into_the_transported_cache(tmp_path):
+    # uv nests sdist builds ~200 characters below its root; under the deep transported
+    # cache, setuptools/maturin link outputs passed MAX_PATH (LNK1104) on win32-x64/arm64.
+    from scripts.bundles.desktop_toolchain import short_alias
+
+    first, second = tmp_path / "desktop-inputs/python/runtime/a", tmp_path / "desktop-inputs/python/runtime/b"
+    first.mkdir(parents=True)
+    (first / "wheel").write_text("kept", encoding="utf-8")
+    link = tmp_path / "work" / "uv"
+    link.parent.mkdir()
+    assert short_alias(first, link) == link
+    (link / "built").write_text("cached", encoding="utf-8")
+    assert (first / "built").read_text(encoding="utf-8") == "cached"
+    short_alias(second, link)  # Re-preparing re-points the alias; cached bytes stay put.
+    assert link.resolve() == second.resolve()
+    assert (first / "wheel").read_text(encoding="utf-8") == "kept"
+
+
 @pytest.mark.parametrize("exit_code", [0, 7])
 @pytest.mark.platforms("linux", "macos", "windows")
 def test_run_preparation_bootstraps_before_worker_in_isolated_child(tmp_path, monkeypatch, exit_code):
@@ -205,7 +236,10 @@ def test_prepare_tools_uses_pm_native_pins_and_separate_cache(tmp_path, monkeypa
     assert prepared["HERMES_PYTHON"] == str(python)
     assert prepared["HERMES_NODE"] == str(node)
     assert prepared["PATH"] == "pm-tools"
-    assert Path(prepared["UV_CACHE_DIR"]) == cache / "python/runtime/native-identity"
+    uv_cache = Path(prepared["UV_CACHE_DIR"])
+    assert uv_cache.resolve() == (cache / "python/runtime/native-identity").resolve()
+    if os.name == "nt":  # builds run under the short job-local junction (MAX_PATH)
+        assert uv_cache == work.resolve() / "uv"
     assert dict(os.environ) == before
     if pm.current_target() == "win32-arm64":
         assert len(native_calls) == 1
@@ -295,3 +329,42 @@ def test_native_cache_leaves_room_for_sdist_compiler_outputs(tmp_path, monkeypat
                   / f"build/temp.{architecture}-cpython-314/Release/src/SKP_SILK_SRC"
                   / "SKP_Silk_NLSF_VQ_rate_distortion_FIX.obj")
         assert len(str(output)) < 260, str(output)
+
+
+@pytest.mark.platforms("windows")
+def test_native_cache_is_stable_without_a_developer_environment(tmp_path, monkeypatch):
+    """win32-x64 never runs VsDevCmd, so VCToolsVersion is unset there. Its built
+    wheels must still land in one partition per toolchain, not a fresh one per run."""
+    from scripts.bundles import desktop_toolchain
+
+    install = tmp_path / "vs"
+    version_file = install / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_text("\ufeff14.44.35207\n", encoding="utf-8")  # Visual Studio writes a BOM
+    vswhere = json.dumps([{"installationPath": str(install), "installationVersion": "17.14.1"}])
+    # vswhere is never on PATH; hermes_platform finds it in the installer directory.
+    installer = tmp_path / "Program Files (x86)/Microsoft Visual Studio/Installer"
+    installer.mkdir(parents=True)
+    (installer / "vswhere.exe").write_bytes(b"")
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "Program Files (x86)"))
+    monkeypatch.setenv("PATH", "")
+
+    def probe(command, **kwargs):
+        # The resolver joins its known dir with mixed separators; compare as paths.
+        stdout = vswhere if Path(command[0]) == installer / "vswhere.exe" else "rustc 1.98.0"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    # Release builds hand the provider's OpenSSL in (vcpkg's static libs on arm64, where
+    # identity without it is deliberately incomplete); supply one so both arches agree.
+    openssl = tmp_path / "openssl"
+    for name in ("include/openssl/opensslv.h", "lib/libcrypto.lib"):
+        (openssl / name).parent.mkdir(parents=True, exist_ok=True)
+        (openssl / name).write_bytes(name.encode())
+
+    desktop_toolchain.platform.platform()
+    monkeypatch.setattr(desktop_toolchain.subprocess, "run", probe)
+    cache, env = tmp_path / "cache", {"PATH": os.defpath, "OPENSSL_DIR": str(openssl)}
+    first = desktop_toolchain.native_cache_path(cache, env)
+    assert desktop_toolchain.native_cache_path(cache, env) == first
+    version_file.write_text("14.45.0\n", encoding="utf-8")
+    assert desktop_toolchain.native_cache_path(cache, env) != first

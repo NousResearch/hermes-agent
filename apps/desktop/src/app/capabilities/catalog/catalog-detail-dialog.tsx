@@ -34,6 +34,7 @@ export function CatalogDetailDialog({
     if (!pageable) {
       return
     }
+
     const index = order.findIndex(entry => entry.id === selectedId)
     onSelect(order[(index + delta + order.length) % order.length].id)
   }
@@ -58,7 +59,7 @@ export function CatalogDetailDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         aria-describedby={undefined}
-        bodyClassName="gap-5"
+        bodyClassName="gap-5 p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         chrome={
           pageable && (
             <>
@@ -82,6 +83,7 @@ export function CatalogDetailDialog({
           ) {
             return
           }
+
           event.preventDefault()
           step(event.key === 'ArrowLeft' ? -1 : 1)
         }}

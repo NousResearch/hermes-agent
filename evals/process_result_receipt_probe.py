@@ -43,7 +43,7 @@ def run(code, *args, profile=None):
         child_env['HERMES_HOME'] = str(out / profile)
     result = subprocess.run([sys.executable, '-c', code, *args], cwd=repo,
                             env=child_env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, encoding='utf-8', timeout=45)
+                            capture_output=True, text=True, encoding='utf-8', timeout=45, check=False)
     if result.returncode:
         raise RuntimeError(result.stdout + result.stderr)
     return json.loads(result.stdout.splitlines()[-1])

@@ -6,6 +6,7 @@ import {
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+import { scheduleStreamWork } from '@/lib/stream-work-clock'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -41,9 +42,10 @@ const MAX_TEXT_PART_CHARS = 64 * 1024
 const MAX_METADATA_CHARS = 2 * 1024
 const MAX_USER_ATTACHMENT_REFS = 256
 const MAX_USER_ATTACHMENT_REF_CHARS = 64 * 1024
-/** Streaming repaints arrive every ~33ms; localStorage writes are synchronous.
- *  Trailing-edge throttle keeps the journal off the hot path — a crash costs at
- *  most this much of the newest tail. */
+/** Streaming commits arrive every ~33ms; localStorage writes are synchronous.
+ *  Coalesce writes for 400ms, with incoming commits draining overdue timers.
+ *  A native fallback keeps quiet tails independent of hidden paint/timer throttling;
+ *  blocked event loops and OS sleep still prevent a hard crash-loss bound. */
 const PERSIST_THROTTLE_MS = 400
 
 // A renderer can accumulate one entry per session over its lifetime. Sweep the
@@ -901,13 +903,13 @@ export function mergeInFlightMessages(
   }
 }
 
-const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const persistTimers = new Map<string, { cancel: () => void; dueAt: number }>()
 const persistLatest = new Map<string, JournalableSessionState>()
 
 /** @internal Test-only reset for module-scoped throttles and sweep state. */
 export function resetInFlightTurnJournalStateForTests(): void {
   for (const timer of persistTimers.values()) {
-    clearTimeout(timer)
+    timer.cancel()
   }
 
   persistTimers.clear()
@@ -1008,13 +1010,22 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
 
   persistLatest.set(storedSessionId, state)
 
-  if (persistTimers.has(storedSessionId)) {
+  const pending = persistTimers.get(storedSessionId)
+
+  if (pending) {
+    if (performance.now() >= pending.dueAt) {
+      pending.cancel()
+      persistTimers.delete(storedSessionId)
+      persistLatest.delete(storedSessionId)
+      writeSnapshot(storedSessionId, state)
+    }
+
     return
   }
 
-  persistTimers.set(
-    storedSessionId,
-    setTimeout(() => {
+  persistTimers.set(storedSessionId, {
+    dueAt: performance.now() + PERSIST_THROTTLE_MS,
+    cancel: scheduleStreamWork(() => {
       persistTimers.delete(storedSessionId)
       const latest = persistLatest.get(storedSessionId)
 
@@ -1024,7 +1035,7 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
         writeSnapshot(storedSessionId, latest)
       }
     }, PERSIST_THROTTLE_MS)
-  )
+  })
 }
 
 export function readInFlightTurnJournal(storedSessionId: null | string): InFlightTurnSnapshot | null {
@@ -1079,11 +1090,96 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
   const timer = persistTimers.get(storedSessionId)
 
   if (timer) {
-    clearTimeout(timer)
+    timer.cancel()
     persistTimers.delete(storedSessionId)
   }
 
   persistLatest.delete(storedSessionId)
 
   removeSnapshot(storedSessionId)
+}
+
+/** Purge journaled in-flight tails for a deleted session.
+ *
+ *  Deleting a session removes its authoritative history, but the journal
+ *  kept the deleted turn's user prompt and tool calls in localStorage until
+ *  the entry aged out — the delete gesture did not reach the local copy (the
+ *  sibling `composer-queue` store was already cleared on delete; this one
+ *  was missed, which is the #77486 journal requirement).
+ *
+ *  A session has more than one id, so callers pass every id they hold: the
+ *  stored tip, the durable lineage root, and (the sidebar delete) the closing
+ *  runtime id. The store keys on the stored id, so each id drains its own key
+ *  in a single pass; entries under a stored id NO live path can still name
+ *  are NOT reachable this way — those age out under `MAX_AGE_MS`, which is
+ *  the retention floor this file already documents. Rotation closes that gap:
+ *  `migrateInFlightTurnJournal` re-keys an entry the moment its stored id
+ *  rotates, so a mid-lineage tip cannot strand its journal key. */
+function migrateSnapshot(store: Storage, oldKey: string, newKey: string, raw: string): void {
+  // Copy first, delete second. A crash between the two writes leaves BOTH
+  // keys holding the same recoverable tail — resume folds either one — and
+  // the old key is still reachable by the id the deleter holds (tip, lineage
+  // root, runtime id), so nothing escapes the delete gesture. Deleting first
+  // would instead trade recovery for a crash window.
+  if (readRaw(store, newKey) === null && !writeRaw(store, newKey, raw)) {
+    return
+  }
+
+  removeRaw(store, oldKey)
+}
+
+/** Re-key a journaled in-flight tail when its session's stored id rotates
+ *  (e.g. auto-compression forks a continuation: tip A -> tip B).
+ *
+ *  The old stored id leaves every live index (`runtimeIdByStoredSessionId`,
+ *  tiles, lineage resolution to the tip), so the key under it would otherwise
+ *  be unreachable by a later permanent delete and simply age out after
+ *  MAX_AGE_MS — a sensitive prompt tail surviving its session's delete.
+ *  Move the entry to the new id so recovery keeps working and deletion by
+ *  the new id reaches it. A null/cleared new id is a detach, not a rotation —
+ *  the old id remains the session's live tip, so its key stays reachable and
+ *  is left alone. */
+export function migrateInFlightTurnJournal(oldStoredSessionId: string, newStoredSessionId: null | string): void {
+  if (!oldStoredSessionId || !newStoredSessionId || oldStoredSessionId === newStoredSessionId) {
+    return
+  }
+
+  const store = storage()
+  const oldKey = sessionStorageKey(oldStoredSessionId)
+  const newKey = sessionStorageKey(newStoredSessionId)
+
+  if (!store || !oldKey || !newKey) {
+    return
+  }
+
+  const raw = readRaw(store, oldKey)
+
+  if (raw === null) {
+    return
+  }
+
+  // A tombstone or expired entry carries nothing recoverable — retire it.
+  const snapshot = raw === DISCARDED_SNAPSHOT_RAW ? null : parseSnapshot(raw)
+
+  if (!snapshot || isExpired(snapshot)) {
+    removeRaw(store, oldKey)
+
+    return
+  }
+
+  migrateSnapshot(store, oldKey, newKey, raw)
+}
+
+export function purgeInFlightTurnJournals(sessionIds: readonly (null | string | undefined)[]): void {
+  const store = storage()
+
+  if (!store) {
+    return
+  }
+
+  for (const storedSessionId of sessionIds) {
+    if (storedSessionId) {
+      clearInFlightTurnJournal(storedSessionId)
+    }
+  }
 }

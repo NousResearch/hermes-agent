@@ -7,7 +7,9 @@ function statusContext(text: string, kind = 'lifecycle') {
   const updateSessionState = vi.fn((_id: string, updater: (state: { messages: unknown[] }) => unknown) =>
     updater({ messages: [] })
   )
+
   const payload = { kind, text } as GatewayEventContext['payload']
+
   const ctx: GatewayEventContext = {
     deps: {
       compactedTurnRef: { current: new Set<string>() },
@@ -33,7 +35,9 @@ function statusContext(text: string, kind = 'lifecycle') {
 
 function systemText(updateSessionState: ReturnType<typeof statusContext>['updateSessionState']): string {
   const updater = updateSessionState.mock.calls[0]?.[1]
-  const next = updater?.({ messages: [] }) as { messages: Array<{ parts: Array<{ text?: string }>; role: string }> } | undefined
+
+  const next = updater?.({ messages: [] }) as
+    { messages: Array<{ parts: Array<{ text?: string }>; role: string }> } | undefined
 
   return next?.messages.find(message => message.role === 'system')?.parts[0]?.text ?? ''
 }
@@ -44,7 +48,9 @@ afterEach(() => {
 
 describe('desktop fallback switch', () => {
   it('shows a model fallback switch in the transcript', () => {
-    const notice = '⚠️ Model fallback: wan2.7-image-pro via alibaba-token-plan unavailable (bad request); using qwen3.8-max via alibaba-token-plan.'
+    const notice =
+      '⚠️ Model fallback: wan2.7-image-pro via alibaba-token-plan unavailable (bad request); using qwen3.8-max via alibaba-token-plan.'
+
     const { ctx, updateSessionState } = statusContext(notice)
 
     expect(handleStatusEvent(ctx)).toBe(true)

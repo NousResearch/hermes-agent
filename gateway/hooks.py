@@ -76,11 +76,11 @@ class HookRegistry:
     """Discovers, loads, and fires event hooks."""
 
     def __init__(self):
-        self._handlers: Dict[str, List[Callable]] = {}  # event_type -> handlers
-        self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._handlers: dict[str, list[Callable]] = {}  # event_type -> handlers
+        self._loaded_hooks: list[dict] = []  # metadata for listing
 
     @property
-    def loaded_hooks(self) -> List[dict]:
+    def loaded_hooks(self) -> list[dict]:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
@@ -110,7 +110,7 @@ class HookRegistry:
             )
             print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
-    def _resolve_handlers(self, event_type: str) -> List[Callable]:
+    def _resolve_handlers(self, event_type: str) -> list[Callable]:
         """Exact-match handlers first, then ``<base>:*`` wildcards.  A bare base type
         ("agent") does NOT fire for "agent:start" — only exact matches and explicit wildcards."""
         handlers = list(self._handlers.get(event_type, []))
@@ -118,16 +118,16 @@ class HookRegistry:
             handlers.extend(self._handlers.get(f"{event_type.split(':')[0]}:*", []))
         return handlers
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def emit(self, event_type: str, context: Optional[dict[str, Any]] = None) -> None:
         """Fire all handlers for an event, discarding return values."""
         await self.emit_collect(event_type, context)
 
-    async def emit_collect(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+    async def emit_collect(self, event_type: str, context: Optional[dict[str, Any]] = None) -> list[Any]:
         """Fire handlers and return their non-None return values in order (decision-style
         hooks, e.g. ``command:<name>`` policies).  A failing handler is logged, not fatal."""
         if context is None:
             context = {}
-        results: List[Any] = []
+        results: list[Any] = []
         for fn in self._resolve_handlers(event_type):
             try:
                 result = fn(event_type, context)
@@ -151,7 +151,7 @@ class ProfileHookRegistries:
     """
 
     def __init__(self):
-        self._by_home: Dict[str, HookRegistry] = {}
+        self._by_home: dict[str, HookRegistry] = {}
         self._lock = threading.Lock()
 
     def _active(self) -> HookRegistry:
@@ -167,15 +167,15 @@ class ProfileHookRegistries:
         return registry
 
     @property
-    def loaded_hooks(self) -> List[dict]:
+    def loaded_hooks(self) -> list[dict]:
         return self._active().loaded_hooks
 
     def discover_and_load(self) -> None:
         """Load the active home's hooks now (startup, or a secondary profile's scoped startup)."""
         self._active()
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def emit(self, event_type: str, context: Optional[dict[str, Any]] = None) -> None:
         await self._active().emit(event_type, context)
 
-    async def emit_collect(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+    async def emit_collect(self, event_type: str, context: Optional[dict[str, Any]] = None) -> list[Any]:
         return await self._active().emit_collect(event_type, context)

@@ -206,7 +206,7 @@ class GatewayRoomCatalog:
     transport_security: TransportSecurity | None = None
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "GatewayRoomCatalog":
+    def from_mapping(cls, value: Mapping[str, Any]) -> GatewayRoomCatalog:
         _exact_fields(value, required=_CATALOG_FIELDS, optional={"endpoint"}, label="capability catalog")
         installation_id = _identifier(value["installation_id"], field="installation_id")
         versions = tuple(_protocol_versions(_non_empty_list(value["protocol_versions"], field="protocol_versions")))
@@ -379,7 +379,7 @@ class HostedMemberDispatch:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
+    def from_mapping(cls, value: Mapping[str, Any]) -> HostedMemberDispatch:
         _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
@@ -493,57 +493,3 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
-
-@dataclass(frozen=True)
-class RoomLinkProbe:
-    """One gateway-verified route candidate."""
-
-    mode: LinkMode
-    verified: bool
-    encrypted: bool
-    latency_ms: float
-
-_LINK_PRIORITY = {
-    "direct": 0,
-    "overlay": 1,
-    "relay": 2,
-    "pull": 3,
-    "desktop": 4,
-}
-
-def select_room_link(
-    probes: Iterable[RoomLinkProbe],
-    *,
-    desktop_available: bool,
-) -> RoomLinkProbe | None:
-    """Choose the fastest safe route without weakening encryption."""
-    candidates = [
-        probe
-        for probe in probes
-        if probe.verified
-        and probe.encrypted
-        and probe.mode != "desktop"
-        and math.isfinite(probe.latency_ms)
-        and probe.latency_ms >= 0
-    ]
-    if candidates:
-        return min(
-            candidates,
-            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
-        )
-    if desktop_available:
-        return RoomLinkProbe(
-            mode="desktop",
-            verified=True,
-            encrypted=True,
-            latency_ms=0,
-        )
-    return None
-# ---- END PLUGIN-COMPAT ----

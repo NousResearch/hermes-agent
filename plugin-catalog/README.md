@@ -10,6 +10,7 @@ Curated, Nous-approved Hermes plugins. Each YAML file in this directory
 Presence in this directory **is** the trust signal. The rules that keep it
 meaningful:
 
+<!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/website/test_catalog_rules_mirror.py keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
    `hermes-agent` repository, reviewed and merged by a maintainer. There is
    no self-serve registry, no automated ingestion.
@@ -47,17 +48,39 @@ meaningful:
 8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
    in the Desktop renderer with the app's full authority (the loader isolates
    errors, not capabilities), so a listed one may only use the plugin SDK:
-   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no prototype patching of renderer or browser objects (`Storage.prototype.y =`,
+   `Object.defineProperty(...prototype`), which reviewers check by hand (the
+   lint does not); a bundled library setting fields on classes it declares
+   itself (three.js and the like) is fine,
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
-   injection, no reaching into the app's internal stores. `hermes plugins
-   validate` refuses these at admission (`desktop surface` check); a plugin
-   that needs a capability the SDK lacks asks for an SDK hook instead of
-   patching around it.
-9. **Dependency security policy is the plugin's.** Hermes's 14-day
-   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
-   `python_dependencies` / `pyproject.toml` install under the plugin's policy
-   (no quarantine, still inside Hermes's core constraints). Reviewers read the
+   injection, no reaching into the app's internal stores or its own markup
+   (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
+   elements from `document`, or a `document.body` MutationObserver, to restyle,
+   hide, click or rewrite core UI). `hermes plugins validate` refuses these at
+   admission (`desktop surface` check) and warns, for the reviewer, on raw
+   `window.hermesDesktop` bridge calls and on the app's markup selected any
+   other way (`[data-slot]`, `[data-tree-*]` in CSS text or `closest()`); a
+   plugin that needs a capability the SDK lacks asks for an SDK hook instead
+   of patching around it.
+9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
+   through public surfaces: hooks, middleware, provider profiles and the
+   other `register_*` APIs, and Desktop SDK slots and routes. It must not
+   replace, wrap or rebind core functions, methods, module attributes or
+   private dicts in place (`AIAgent.<method> = ...`, `setattr(server, ...)`,
+   `sys.modules[...]`, writes into a core module's tables). Two plugins
+   patching the same seam silently break each other, and every core release
+   can break both. `hermes plugins validate` refuses these at admission (`no
+   core override` check), and warns (without failing) on each import of an
+   undocumented core module and each call to a private method of a core
+   object it is handed (`db._execute_write(...)`), by file and line. If the hook you need does not
+   exist, open an issue describing it: we would rather add the seam than list
+   a patch.
+10. **Dependency security policy is the plugin's.** Hermes's 3-day
+   `exclude-newer` release-age check covers Hermes's own dependencies only, at
+   the time Hermes locks them; a plugin's `python_dependencies` /
+   `pyproject.toml` install under the plugin's policy (no age check), inside
+   Hermes's core constraints: Hermes's exact pins cannot move. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly
@@ -65,19 +88,109 @@ meaningful:
    their CI) — see the developer guide's *Dependency security policy*. A
    recent floor alone is not grounds to hold an entry.
 
+11. **Credentials come through Hermes, never from files.** A plugin gets
+   secrets only through Hermes's routes. Its declared `requires_env` and
+   `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
+   which honours the active profile (a bare `os.environ` read can pick up another
+   profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
+   today) is used only through `credentialed_provider_request` with
+   `requires_auth`, so Hermes attaches the token and the plugin never holds it. An
+   OAuth client for a third-party API (the user's own Google Cloud client, for
+   example) is declared under `oauth:` in `plugin.yaml`, signed in with
+   `hermes auth add <plugin>:<id>` and used through the same helper; Hermes
+   stores and refreshes that token too. Its `authorize_url`, `token_url` and
+   `hosts` are `https` only, and its `hosts` belong to the API the scopes are for. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   vendor CLI's token file, a browser profile, a keychain) or any other
+   credential store directly, and never refreshes, rotates or writes OAuth tokens
+   or presents itself as another vendor's client. If Hermes has no route for a
+   credential a plugin needs, ask for one in a Hermes issue or PR; the plugin
+   does not work around it.
+12. **Approvals and unattended runs are respected.** A plugin never routes around
+   Hermes's approval system: no auto-approving, no disabling guards, and no
+   spawning Hermes or shell children that inherit YOLO or non-interactive mode
+   to run commands nobody approved. Anything that waits for a person (a prompt,
+   an OAuth browser flow) fails cleanly or times out under cron, the messaging
+   gateway and other unattended runs instead of hanging the agent.
+13. **Risky behaviour is disclosed.** What a user would want to know before
+   installing goes in the PR description and the plugin's README: network calls
+   to third-party services, reads outside the plugin's own data, shell commands,
+   long-running background processes, stored credentials. Telemetry and usage
+   reporting are opt-in. Reviewers summarise these as disclosure lines on the
+   entry PR; undisclosed behaviour found in review is a request for changes.
+14. **Compatibility metadata is truthful.** `requires_hermes` is a SemVer floor
+   (`">=0.21.5"`), never a CalVer date, and never newer than the current release.
+   The entry's `requires_hermes` is enforced: an install by catalog name refuses
+   on a Hermes it rejects, and `hermes plugins update` keeps an installed plugin
+   at its current pin until Hermes is updated. Declare the same floor in
+   `plugin.yaml` as well, because older Hermes versions enforce only that one
+   (the loader skips the plugin when it does not match). A portable package
+   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
+   `requires_hermes` is its only floor: set one when the package needs a recent
+   Hermes (a server declaration key an older release ignores). `version` matches the
+   pinned code, and Python dependencies resolve under Hermes's core constraints
+   (`hermes plugins validate --install-deps` is what CI runs).
+15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
+   PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins
+   are not listed under Nous branding.
+16. **One listing per plugin lineage.** A fork of a listed community plugin is
+   listed only when it is materially different from the original: a different
+   transport or architecture, or capability the original lacks and its author
+   declined or has not answered a PR for 30 days. Improvements to a listed plugin
+   go upstream as a PR to its author. A fork that renames, rebrands or adds small
+   changes is declined in favour of the original. A listed fork names its origin
+   in its disclosure line (`Derived from <entry>`).
+17. **No unscannable executable payloads.** Everything a reviewer and the
+   install scanner read at the pinned commit must be source they can read. A
+   plugin must not ship a compiled binary (a native executable or library of
+   any OS — detected by file header, not extension: ELF, Mach-O, PE/`MZ`,
+   WebAssembly), committed Python bytecode (`.pyc`/`.pyo`, including sourceless
+   or hash-forged caches that run instead of the `.py` beside them), or an
+   archive whose members are not themselves reviewable source. A plain-text
+   source bundle (a `.tar.gz` of `.py`/`.ts`/`.md` the plugin unpacks) is read
+   like any other source; a bundle hiding a binary is not. The scanner cannot
+   read machine code, and a checksum committed in the same commit only proves
+   the file was not changed after that commit, not where it came from. If a
+   plugin genuinely needs a native component, the binary must be built by the
+   plugin repository's own public GitHub Actions from source in that repository
+   and carry a GitHub build attestation (`actions/attest-build-provenance`) tying
+   it to that workflow and commit; the gate verifies the attestation against the
+   pinned commit (`gh attestation verify --repo <owner/repo> --source-digest
+   <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
+   only from the upstream tool's official source, pinned by checksum, and
+   disclosed (rule 13) — never bundled and never from an unofficial mirror.
+18. **Password managers come from their vendor.** A plugin that registers a
+   `browser_vault` login backend (`ctx.register_login_backend`) is listed only at
+   `tier: verified`, submitted from the password-manager vendor's own repository
+   by that vendor, or at `tier: official` when Nous maintains it. Community-tier,
+   fork and third-party listings of a login backend are declined. Hermes enforces
+   the same rule when the plugin loads: a login backend is accepted only from a
+   plugin bundled with Hermes or installed from this catalog at `verified` or
+   `official` tier and at the reviewed pin, as recorded in Hermes's own install
+   record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
+   `--allow-removed`, project and pip installs are refused, and no setting
+   relaxes it.
+<!-- admission-rules:end -->
+
+The step-by-step submission guide, with the same rules and what reviewers check,
+lives at
+[Submitting to the plugin catalog](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission).
+
 ## Entry schema
 
 ```yaml
 name: example-plugin        # [a-z0-9_-]{1,64}, the catalog key
 repo: https://github.com/owner/repo   # https:// only
 sha: <40-hex commit sha>    # mandatory exact pin
-subdir: ""                  # optional path within the repo
+subdir: ""                  # optional; plain relative path inside the repo
+                            # ([A-Za-z0-9._/-]+ only: no '..', '.', empty
+                            # segments, absolute, or backslash forms)
 description: One-line description.
 maintainer: OwnerName
-tier: official              # official | community (default community)
+tier: community             # official | verified | community (default community);
+                            # official and verified are set by Nous maintainers only
 category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
                             # (default desktop) — the shelf the entry sits on at /docs/plugins
-requires_hermes: ">=0.19"   # optional
+requires_hermes: ">=0.19"   # optional; enforced at install and update (also declare it in plugin.yaml)
 docs_url: ""                # optional
 version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
@@ -85,12 +198,22 @@ image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1
 screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
 readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
+title: ""                   # optional human name on cards ("NVIDIA App"); default = name
+onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
+known_issues: []            # optional strings shown at the install prompt; informational, never blocks
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
 ```
+
+`tier` says who stands behind an entry. `official`: maintained by NousResearch.
+`verified`: verified by the Nous team to come from the company that makes what
+the plugin integrates into Hermes, and that company is well known or reputable.
+`community`: everything else. Only Nous maintainers set `official` or
+`verified`; a contributor PR that sets either is changed to `community` in
+review (maintainer review is the gate; no CI check inspects the tier value).
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the
@@ -115,11 +238,16 @@ When an entry is pulled from the catalog for security or policy reasons, it
 is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
-removal. Removals, like additions, land via reviewed PRs.
+removal. A plugin that lands on the list after a user installed it stops
+updating, cannot be enabled and is refused at load time. Removals, like
+additions, land via reviewed PRs.
 
-Delisting is different from removal: an entry that is merely unmaintained, superseded, or
-squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
-users who already installed it are unaffected) and is welcome back under a distinct name.
+Delisting is different from removal: an entry that is unmaintained, superseded, squatting a
+name it is not affiliated with, or no longer meets a rule is deleted from the catalog (plain
+file removal, users who already installed it are unaffected). It is welcome back once the
+problem is fixed; a name squatter comes back under a distinct name. When a new rule affects
+entries that are already listed, their authors get an issue on their repository explaining
+the change and time to update before anything is delisted.
 
 ## Names
 

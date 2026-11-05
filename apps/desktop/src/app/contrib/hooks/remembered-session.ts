@@ -20,5 +20,5 @@ export async function resolveRememberedSessionId(
 ): Promise<null | string> {
   const session = await getSession(id)
 
-  return session.source === 'subagent' ? session.parent_session_id ?? null : session.id
+  return session.source === 'subagent' ? (session.parent_session_id ?? null) : session.id
 }

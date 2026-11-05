@@ -5,6 +5,10 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _start_turn_thread
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -968,8 +972,7 @@ def _(rid, params: dict) -> dict:
             hosted_images),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    _start_turn_thread(session, run_thread)
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

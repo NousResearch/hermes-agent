@@ -103,10 +103,15 @@ def _report_database_holders(name: str, db_path: Path) -> None:
     """Name the processes holding ``db_path`` (or a WAL sidecar) so the operator knows what to stop before the
     offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
     an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
-    from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin
+    from sqlite_support import describe_holder_pid
+    admin = open_store_admin(db_path)
+    if isinstance(admin, AdminUnsupported):
+        return
     unknown: list[str] = []
     by_pid: dict[int, set[str]] = {}
-    for pid, target in foreign_state_db_holders(db_path):
+    for pid, target in admin.foreign_holders():
         if pid <= 0 or target.startswith("uninspectable"):
             unknown.append(target)
         else:
@@ -124,8 +129,8 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
     """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
     ``database.journal_mode: delete`` that never took effect."""
     from hermes_cli.doctor import HERMES_HOME
-    from hermes_state_wal import (
-        _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
+    from sqlite_support import (
+        is_sqlite_wal_reset_vulnerable, path_on_cross_vm_fs, resolve_journal_mode, wal_reset_repair_hint,
     )
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
     configured = resolve_journal_mode()
@@ -159,7 +164,7 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
                 check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
             else:
                 check_info(f"{name}: journal mode could not be read ({error})")
-        elif mode == "wal" and _path_on_cross_vm_fs(str(path)):
+        elif mode == "wal" and path_on_cross_vm_fs(str(path)):
             # #110848: WAL shared-memory is not coherent across a virtiofs/9p bind mount; startup only refuses WAL
             # for FRESH databases, so an existing WAL file here keeps corrupting until the operator converts it.
             # Checked before the WAL-reset exposure: active cross-VM corruption outranks a latent bug class.
@@ -177,7 +182,7 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
     if exposed:
-        check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
+        check_info(f"To clear the exposure: {wal_reset_repair_hint()}")
 
 
 def _check_s6_supervision(issues: list[str]) -> None:
@@ -440,7 +445,7 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # python-build-standalone can keep a vulnerable SQLite across upgrades).
     with warn_on_error("SQLite version probe failed: {e}", ""):
         import sqlite3
-        from hermes_state_wal import is_sqlite_wal_reset_vulnerable, sqlite_source_id
+        from sqlite_support import is_sqlite_wal_reset_vulnerable, sqlite_source_id
         src = sqlite_source_id()
         # Warn-only: Hermes already refuses WAL on fresh DBs and runtime repair is best-effort.
         check_bool(not is_sqlite_wal_reset_vulnerable(), f"SQLite {sqlite3.sqlite_version}",

@@ -118,30 +118,23 @@ def cmd_tools(args):
 
 
 def cmd_insights(args):
-    db = None
     try:
-        from hermes_state import SessionDB
         from agent.insights import InsightsEngine
         from hermes_cli.config import get_hermes_home
-        path = get_hermes_home() / "state.db"
-        if not path.exists():
+        from persistence_assembly import open_persistence_reader, profile_scope, store_location
+        path = store_location(profile_scope(home=get_hermes_home()))
+        if path is None or not path.exists():
             from agent.i18n import t
             print(f"  {t('cli.insights.no_session_data')}")
             return
-        db = SessionDB(db_path=path, read_only=True)
-        engine = InsightsEngine(db)
-        report = engine.generate(days=args.days, source=args.source)
-        print(engine.format_terminal(report))
+        with open_persistence_reader(path) as reader:
+            engine = InsightsEngine(None, persistence=reader)
+            report = engine.generate(days=args.days, source=args.source)
+            print(engine.format_terminal(report))
     except Exception as e:
         # Interactive /insights delegates here, so keep main's localized error line.
         from agent.i18n import t
         print(t("gateway.insights.error", error=str(e)))
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
 
 
 def _dict_or_empty(value) -> dict:

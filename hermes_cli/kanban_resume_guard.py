@@ -13,8 +13,9 @@ a resumed session WRITE-CAPABLE asks this guard before loading history:
 - gateway ``session.resume`` — Desktop session history and the TUI picker
   (``tui_gateway/methods_session.py``).
 
-Detection is persisted provenance (``SessionDB.is_kanban_owned_session``: the session row's
-``kanban`` source, checked across the compression lineage a resume would materialize) plus
+Detection is persisted provenance (``sessions.is_kanban_owned``, or a store client's
+``is_kanban_owned_session``: the session row's ``kanban`` source, checked across the compression
+lineage a resume would materialize) plus
 dispatch-time env for the exemption: a process that itself holds ``HERMES_KANBAN_TASK`` is a
 dispatcher-owned run — the one legitimate supervised continuation — and may proceed.
 """
@@ -37,30 +38,31 @@ def _dispatcher_owned_run() -> bool:
     return bool(str(get_session_env("HERMES_KANBAN_TASK", "") or "").strip())
 
 
-def kanban_resume_refusal(db, session_id: str):
+def kanban_resume_refusal(db, session_id: str, *, persistence=None):
     """Human-readable refusal reason when ``session_id`` is a Kanban-owned session that must
     NOT resume as an ordinary write-capable session, or ``None`` when the resume may proceed.
 
-    Fails open ONLY for a store that cannot classify at all (a probe error must never block
-    an ordinary session); a POSITIVE kanban-provenance match always refuses. Read failures
-    are logged, not surfaced to the user as success.
+    With *persistence* the storage interface classifies and *db* is not read; otherwise *db*'s
+    ``is_kanban_owned_session`` does. Fails open ONLY for a store that cannot classify at all (a
+    probe error must never block an ordinary session); a POSITIVE kanban-provenance match always
+    refuses. Read failures are logged, not surfaced to the user as success.
     """
     if not session_id:
         return None
     if _dispatcher_owned_run():
         return None
-    probe = getattr(db, "is_kanban_owned_session", None)
-    if probe is None:  # lightweight adaptor DB without the method — cannot classify
+    probe = getattr(db, "is_kanban_owned_session", None) if persistence is None else None
+    if persistence is None and probe is None:  # lightweight adaptor DB without the method — cannot classify
         return None
     try:
-        owned = probe(session_id)
+        owned = probe(session_id) if probe is not None else persistence.sessions.is_kanban_owned(session_id)
     except Exception:
         # Deliberate fail-open boundary: an ordinary session must never be blocked by a
         # broken probe, so classify as unknown and log the full traceback for diagnosis.
         logger.warning("kanban resume probe failed for %s (proceeding unclassified)",
                        session_id, exc_info=True)
         return None
-    # Strict True: SessionDB answers a real bool; anything else (a test double, an adaptor
+    # Strict True: the store answers a real bool; anything else (a test double, an adaptor
     # quirk) is treated as unclassified, keeping the guard open for every non-worker store.
     if owned is not True:
         return None

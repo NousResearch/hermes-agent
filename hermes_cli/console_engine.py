@@ -10,11 +10,10 @@ import importlib
 import io
 import json
 import sys
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Iterable, Literal, NoReturn, Sequence
+from typing import Any, Callable, Iterable, Literal, NoReturn, Sequence
 
 from tools.ansi_strip import strip_ansi as _strip_ansi
 
@@ -128,15 +127,17 @@ def _contains_shell_syntax(line: str, tokens: Sequence[str]) -> bool:
         or any(ch in line for ch in "|<>;"))
 
 
-def _format_sessions(sessions: Sequence[dict]) -> str:
+def _format_sessions(sessions: Sequence[Any]) -> str:
+    """One line per listing entry (``SessionListEntry``)."""
     if not sessions:
         return "No sessions found."
     lines = [f"{'ID':<32} {'Source':<12} {'Msgs':>5}  Title / Preview", "-" * 82]
-    for session in sessions:
-        sid = str(session.get("id") or "")[:32]
-        source = str(session.get("source") or "-")[:12]
-        messages = session.get("message_count") or 0
-        title = str(session.get("title") or session.get("preview") or "").replace("\n", " ")[:60]
+    for entry in sessions:
+        session = entry.session
+        sid = str(session.session_id or "")[:32]
+        source = str(session.source or "-")[:12]
+        messages = session.message_count or 0
+        title = str(session.title or entry.preview or "").replace("\n", " ")[:60]
         lines.append(f"{sid:<32} {source:<12} {messages:>5}  {title}")
     return "\n".join(lines)
 
@@ -583,39 +584,43 @@ def _logs(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _session_db(*, read_only: bool = True):
-    """``with _session_db() as db:`` — SessionDB closed on exit.
+    """``with _session_db() as store:``: a storage interface handle on this profile's store, closed on exit.
 
     The console runs inside the dashboard process, which already owns a handle on state.db;
     reads attach ``read_only`` so they never add a writer connection beside it (#100896).
     Mutating commands pass ``read_only=False``.
     """
-    from hermes_state import SessionDB
-    return closing(SessionDB(read_only=read_only))
+    from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+    if read_only:
+        return open_persistence_reader(profile_scope().profile_dir)
+    return open_persistence(profile_scope())
 
 
 def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("sessions list", args, (("--limit",), dict(type=int, default=20)))
     if ns.limit < 1 or ns.limit > 200:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-    with _session_db() as db:
-        sessions = db.list_sessions_rich(
-            exclude_sources=list(INTERNAL_LISTING_SOURCES), limit=ns.limit, order_by_last_active=True)
+    from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES, SessionOrder, SessionQuery, SessionWindow
+    with _session_db() as store:
+        sessions = store.sessions.list_sessions(
+            SessionQuery(exclude_sources=INTERNAL_LISTING_SOURCES, order=SessionOrder.LAST_ACTIVE),
+            SessionWindow(limit=ns.limit))
     return _format_sessions(sessions)
 
 
 def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
-    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-    with _session_db() as db:
-        total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=list(INTERNAL_LISTING_SOURCES))
+    from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES, SessionCountQuery
+    with _session_db() as store:
+        total = store.sessions.count_sessions()
+        listable = store.sessions.count_sessions(
+            SessionCountQuery(exclude_children=True, exclude_sources=INTERNAL_LISTING_SOURCES))
         lines = [
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",
-            f"Total messages: {db.message_count()}"]
+            f"Total messages: {store.messages.count_all()}"]
         for source in ["cli", "tui", "telegram", "discord", "slack", "cron"]:
-            count = db.session_count(source=source)
+            count = store.sessions.count_sessions(SessionCountQuery(sources=(source,)))
             if count:
                 lines.append(f"  {source}: {count}")
         return "\n".join(lines)
@@ -647,33 +652,38 @@ def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
         print(f"Warning: {warning}")
 
 
-def _guard_exports(db, session_ids: list[str]) -> None:
+def _guard_exports(store, session_ids: list[str]) -> None:
     """Per-session export budget: only an individual runaway transcript trips it; 0 disables."""
-    from hermes_state import SessionExportTooLargeError
+    from hermes_cli.session_export import assert_exports_safe
+    from persistence.core.errors import ExportTooLarge
     try:
-        db.assert_exports_safe(session_ids)
-    except SessionExportTooLargeError as exc:
+        assert_exports_safe(store, session_ids)
+    except ExportTooLarge as exc:
         raise ConsoleCommandError(str(exc)) from exc
 
 
 @_captured
 def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    from hermes_cli.session_export import export_projection
+    from hermes_cli.session_export import export_projection, to_legacy_export_dict
+    from persistence.conversation.sessions import SessionWindow
 
     ns = _parse("sessions export", args, "output", "--source", "--session-id")
-    with _session_db() as db:
+    with _session_db() as store:
         if ns.session_id:
-            resolved_session_id = db.resolve_session_id(ns.session_id)
+            resolved_session_id = store.sessions.resolve_id(ns.session_id)
             if not resolved_session_id:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
-            _guard_exports(db, [resolved_session_id])
-            rows = [db.export_session(resolved_session_id, **export_projection(False))]
-            if not rows[0]:
+            _guard_exports(store, [resolved_session_id])
+            export = store.maintenance.export_session(resolved_session_id, **export_projection(False))
+            if export is None:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
+            rows = [to_legacy_export_dict(export)]
         else:
-            found = db.search_sessions(source=ns.source, limit=100000)
-            _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source, **export_projection(False))
+            found = store.sessions.search_sessions(
+                sources=[ns.source] if ns.source else None, window=SessionWindow(limit=100000))
+            _guard_exports(store, [entry.session.session_id for entry in found])
+            rows = [to_legacy_export_dict(export)
+                    for export in store.maintenance.export_all(source=ns.source, **export_projection(False))]
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"
@@ -687,10 +697,10 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
 @_captured
 def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
     ns = _parse("sessions rename", args, "session_id", (("title",), dict(nargs="+")))
-    with _session_db(read_only=False) as db:
-        resolved_session_id = db.resolve_session_id(ns.session_id)
+    with _session_db(read_only=False) as store:
+        resolved_session_id = store.sessions.resolve_id(ns.session_id)
         title = " ".join(ns.title)
-        if not resolved_session_id or not db.set_session_title(resolved_session_id, title):
+        if not resolved_session_id or not store.sessions.set_title(resolved_session_id, title):
             raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         print(f"Session '{resolved_session_id}' renamed to: {title}")
 
@@ -700,13 +710,15 @@ def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
     # --force is parsed HERE: the refusal below points at it, and a hint the surface cannot
     # accept would make this command refuse forever whenever a gateway is running.
     ns = _parse("sessions optimize", args, (("--force",), dict(action="store_true")))
-    with _session_db(read_only=False) as db:
-        from hermes_state_holders import held_store_refusal
-        refusal = None if ns.force else held_store_refusal(
-            db.db_path, command="optimize", force_hint="`sessions optimize --force`")
-        if refusal:
-            raise ConsoleCommandError(refusal)
-        print(f"Optimized {db.vacuum()} FTS index(es).")
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin, profile_scope
+    admin = open_store_admin(profile_scope(), read_only=False)
+    supported = not isinstance(admin, AdminUnsupported)
+    refusal = None if ns.force or not supported else admin.held_refusal(
+        command="optimize", force_hint="`sessions optimize --force`")
+    if refusal:
+        raise ConsoleCommandError(refusal)
+    print(f"Optimized {admin.vacuum() if supported else 0} FTS index(es).")
 
 
 @_captured
@@ -714,13 +726,14 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
     ns = _parse(
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
-    from hermes_state import DEFAULT_DB_PATH
-    from hermes_state_repair import HealthCheckUnavailable, _db_opens_cleanly, repair_state_db_schema
-    db_path = DEFAULT_DB_PATH
+    from persistence.core.admin import AdminUnsupported, HealthCheckUnavailable
+    from persistence_assembly import open_store_admin, profile_scope, store_location
+    db_path = store_location(profile_scope())
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
-    reason = _db_opens_cleanly(db_path)
+    admin = open_store_admin(db_path)
+    reason = None if isinstance(admin, AdminUnsupported) else admin.opens_cleanly()
     if isinstance(reason, HealthCheckUnavailable):
         raise ConsoleCommandError(f"Could not check {db_path}: {reason}")
     if reason is None:
@@ -729,7 +742,7 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | Non
     print(f"{db_path} does not open cleanly: {reason}")
     if ns.check_only:
         return 1  # _capture_output turns a non-zero status into a ConsoleCommandError carrying the printed reason
-    report = repair_state_db_schema(db_path, backup=not ns.no_backup)
+    report = open_store_admin(db_path, read_only=False).repair_schema(backup=not ns.no_backup)
     if not report.get("repaired"):
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")
     if report.get("backup_path"):

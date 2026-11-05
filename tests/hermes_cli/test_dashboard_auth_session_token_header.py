@@ -103,11 +103,18 @@ def test_bearer_wins_over_session_header(gated, token, other_token):
     assert r.json().get("provider") == "other-login"
 
 
-def test_session_header_follows_the_webapps_bearer_rule(gated, token, monkeypatch):
-    """Where a bearer token may not work alone (the gateway's Webapp), neither does the header."""
+def test_session_header_follows_the_webapps_bearer_rule(gated, token, other_token, monkeypatch):
+    """On the gateway's Webapp (no provider token works alone there), the header follows the bearer
+    rule: the deployment session token works there as a bearer and so in the header; another
+    provider's token still opens nothing through it."""
     client = gated()
     monkeypatch.setattr(webapp_sign_in, "token_works_alone", lambda request, tok: False)
+    assert client.get("/api/auth/me", headers={
+        "Authorization": f"Bearer {token}"}).status_code == 200
     r = client.get("/api/auth/me", headers={_HEADER: token})
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.json().get("provider") == "session-token"
+    r = client.get("/api/auth/me", headers={_HEADER: other_token})
     assert r.status_code == 401
     assert r.json()["reason"] == "no_cookie"
 

@@ -152,6 +152,39 @@ def _response_finish_reason(response: Any) -> str:
         return ""
 
 
+def _response_usage_counts(response: Any) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    """(prompt, completion, total, reasoning) token counts of a dict- or object-shaped
+    response; ``None`` per field when unreadable. Diagnostics only — never raises."""
+    def _field(container: Any, *names: str) -> Optional[int]:
+        for name in names:
+            try:
+                value = container.get(name) if isinstance(container, dict) else getattr(container, name, None)
+                if isinstance(value, bool) or not isinstance(value, int):
+                    continue
+                return value
+            except Exception:
+                continue
+        return None
+
+    try:
+        usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+        if usage is None:
+            return None, None, None, None
+        prompt = _field(usage, "prompt_tokens", "input_tokens")
+        completion = _field(usage, "completion_tokens", "output_tokens")
+        total = _field(usage, "total_tokens")
+        try:
+            details = usage.get("completion_tokens_details") if isinstance(usage, dict) else getattr(
+                usage, "completion_tokens_details", None
+            )
+        except Exception:
+            details = None
+        reasoning = _field(details, "reasoning_tokens") if details is not None else None
+        return prompt, completion, total, reasoning
+    except Exception:
+        return None, None, None, None
+
+
 # Marker for a length-stopped (PARTIAL) summary; the except-branch classifier keys
 # on this exact substring, so keep raise sites and classifier in sync.
 # RuntimeError marker raised when the summarizer's generation stopped on the output-token cap
@@ -3968,8 +4001,24 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # exchange unabsorbed instead; a later pass retries it. (Same class as _generate_summary's guard;
         # pi#7048.)
         if _response_finish_reason(response) == "length":
+            _p, _c, _t, _r = _response_usage_counts(response)
+            # Keep token counts inside the marker prefix: _short_error_text caps durable/user-facing errors
+            # at 220 characters, so the provider/model suffix may be trimmed while usage remains visible.
+            _parts = [
+                f"{name}_tokens={value:,}"
+                for name, value in (("prompt", _p), ("completion", _c), ("reasoning", _r))
+                if value is not None
+            ]
+            _usage_note = ("; " + " ".join(_parts)) if _parts else ""
+            logger.warning(
+                "Compression summary truncated: %s prompt_tokens=%s completion_tokens=%s "
+                "total_tokens=%s reasoning_tokens=%s prompt_chars=%s model=%s",
+                _TRUNCATED_SUMMARY_MARKER, _p, _c, _t, _r, f"{len(prompt):,}",
+                self.summary_model or self.model,
+            )
             raise RuntimeError(
-                f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
+                f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}{_usage_note}): "
+                f"generation hit the output "
                 f"token cap and the summary is incomplete {where}"
             )
         return content

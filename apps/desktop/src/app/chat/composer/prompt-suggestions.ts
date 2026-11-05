@@ -31,7 +31,16 @@ const NON_HUMAN_SOURCES = new Set(['cron', 'oneshot', 'subagent', 'worker', 'sys
 /** Titles the agent writes for itself, whatever the row's source says. */
 const INTERNAL_TITLE = /^(subagent:|cronjob response|pulse delivery check|\[system|\[important)/i
 
-const WINDOW_MS = 45 * 24 * 60 * 60 * 1000
+/** `SessionInfo.last_active` is epoch SECONDS, not milliseconds: the backend's
+ *  own liveness window is `time.time() - last_active < 300`. Comparing it
+ *  against a millisecond window makes every row look weeks stale and empties the
+ *  chips silently, so the unit is normalised here rather than assumed, and a
+ *  backend that ever switches conventions just keeps working. */
+function epochSeconds(value: number): number {
+  return value > 1e12 ? value / 1000 : value
+}
+
+const WINDOW_SECONDS = 45 * 24 * 60 * 60
 const MIN_LENGTH = 8
 const MAX_LENGTH = 72
 const DEFAULT_LIMIT = 6
@@ -89,7 +98,7 @@ export function promptSuggestions(
   sessions: readonly SessionInfo[],
   { excludeSessionId, limit = DEFAULT_LIMIT, now = Date.now() }: PromptSuggestionOptions = {}
 ): PromptSuggestion[] {
-  const oldest = now - WINDOW_MS
+  const oldest = epochSeconds(now) - WINDOW_SECONDS
   const seen = new Set<string>()
   const out: PromptSuggestion[] = []
 
@@ -99,7 +108,7 @@ export function promptSuggestions(
         return false
       }
 
-      if (session.last_active < oldest) {
+      if (epochSeconds(session.last_active) < oldest) {
         return false
       }
 
@@ -113,7 +122,7 @@ export function promptSuggestions(
       // either the first user words verbatim or a placeholder.
       return (session.message_count ?? 0) >= 2
     })
-    .sort((a, b) => b.last_active - a.last_active)
+    .sort((a, b) => epochSeconds(b.last_active) - epochSeconds(a.last_active))
 
   for (const session of rows) {
     const title = session.title ?? ''

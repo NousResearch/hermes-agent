@@ -4,8 +4,9 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { promptSuggestions } from './prompt-suggestions'
 
-const NOW = Date.UTC(2026, 10, 5, 0, 0, 0)
-const DAY = 24 * 60 * 60 * 1000
+// SessionInfo timestamps are epoch SECONDS (see the backend's is_active window).
+const NOW = Math.floor(Date.UTC(2026, 10, 5, 0, 0, 0) / 1000)
+const DAY = 24 * 60 * 60
 
 function session(overrides: Partial<SessionInfo> & { id: string; title: string }): SessionInfo {
   return {
@@ -61,6 +62,22 @@ describe('promptSuggestions', () => {
     ]
 
     expect(texts(rows)).toEqual(['Update the astro-blog work entry'])
+  })
+
+  it('reads last_active in seconds, and still works if a backend sends milliseconds', () => {
+    const rows = [
+      session({ id: 'secs', title: 'Audit the AWS stacks before payday' }),
+      {
+        ...session({ id: 'millis', title: 'Track Becky messages and update NAHC repo' }),
+        last_active: (NOW - DAY) * 1000
+      },
+      {
+        ...session({ id: 'stale-ms', title: 'Old quarter thing from before the move' }),
+        last_active: (NOW - 90 * DAY) * 1000
+      }
+    ]
+
+    expect(texts(rows)).toEqual(['Audit the AWS stacks before payday', 'Track Becky messages and update NAHC repo'])
   })
 
   it('drops drafts, hidden rows, stale rows and slash commands', () => {

@@ -68,15 +68,18 @@ class CLIBacktrackMixin:
         return prompts
 
     def _backtrack_reply(self, ordinal: int) -> str:
-        """The assistant text that answered user turn ``ordinal`` (everything up to the next turn)."""
+        """The assistant text that answered user turn ``ordinal`` (everything up to the next turn), as
+        the transcript showed it: a compaction handoff summary is model-facing, never the answer."""
+        from agent.compaction_display import project_compaction_message_for_display
         from hermes_cli.cli_session_mixin import _user_turn_indices
         history = self.conversation_history or []
         indices = _user_turn_indices(history)
         if not 0 <= ordinal < len(indices):
             return ""
         end = indices[ordinal + 1] if ordinal + 1 < len(indices) else len(history)
-        texts = [self._undo_content_to_text(m.get("content")).strip() for m in history[indices[ordinal] + 1:end]
-                 if isinstance(m, dict) and m.get("role") == "assistant"]
+        shown = (project_compaction_message_for_display(m) for m in history[indices[ordinal] + 1:end])
+        texts = [self._undo_content_to_text(m.get("content")).strip() for m in shown
+                 if m is not None and m.get("role") == "assistant"]
         return "\n\n".join(text for text in texts if text)
 
     def _backtrack_context_rows(self, ordinal: int, text: str, width: int) -> list[str]:

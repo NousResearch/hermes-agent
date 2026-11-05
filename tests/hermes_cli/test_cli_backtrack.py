@@ -131,3 +131,11 @@ def test_page_keys_scroll_a_long_reply_and_moving_resets_it(cli, monkeypatch):
     cli._backtrack_move(1)
     assert cli._backtrack_state["context_offset"] == 0
     assert all(active == 1 for *_x, active in _active(cli._session_db, cli.session_id))
+
+
+def test_a_compaction_summary_is_never_shown_as_the_reply(cli):
+    from agent.context_compressor import SUMMARY_PREFIX
+    cli.conversation_history.insert(-1, {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nINTERNAL HANDOFF"})
+    assert cli._open_backtrack_picker()
+    panel = _panel_text(cli)
+    assert "g1" in panel and "INTERNAL HANDOFF" not in panel and "CONTEXT COMPACTION" not in panel

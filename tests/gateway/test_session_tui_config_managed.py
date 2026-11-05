@@ -65,3 +65,38 @@ def test_owner_config_set_runs_its_edit_once(home, monkeypatch, managed, key, va
     calls = []
     assert _owner_write(home, key, value, calls) == expected
     assert calls == [key]
+
+
+@pytest.mark.parametrize(("scope", "pins_effort"), [("global", True), ("global", False), ("session", True)])
+def test_owner_global_reasoning_level_is_refused_before_anything_changes(home, monkeypatch, scope, pins_effort):
+    """``config.set reasoning <level> scope=global`` saves agent.reasoning_effort: a pinned one is refused
+    before the session's level is committed or config.yaml is written. A session level writes no config key."""
+    import asyncio
+    from gateway import session_setting_commands, session_tui_config
+    from hermes_cli import managed_scope
+    if pins_effort:
+        (home.parent / "managed" / "config.yaml").write_text("agent:\n  reasoning_effort: low\n")
+        managed_scope.invalidate_managed_cache()
+    calls = []
+
+    async def commit(authority, actor, ref, value, persist_global):
+        calls.append(("commit", persist_global))
+    monkeypatch.setattr(session_tui_config, "_authorize_write", lambda *a: None)
+    monkeypatch.setattr(session_setting_commands, "commit_reasoning_command", commit)
+    runner = SimpleNamespace(_apply_reasoning_selection=lambda route, platform, value, persist_global: calls.append(
+        ("apply", persist_global)))
+    authority = SimpleNamespace(profile_id=str(home), authorize=lambda *a: None, runner=runner,
+                                sessions={"s": SimpleNamespace(route="s")})
+    connection = SimpleNamespace(authority=authority, actor=SimpleNamespace(subject="owner"))
+    params = {"session_id": "s", "key": "reasoning", "value": "high", "scope": scope}
+
+    def run():
+        return asyncio.run(session_tui_config._set_command_setting(connection, SimpleNamespace(session_id="s"), params))
+    if scope == "global" and pins_effort:
+        with pytest.raises(RuntimeStoreError) as refused:
+            run()
+        assert (refused.value.reason, refused.value.field) == ("permission_denied", "agent.reasoning_effort")
+        assert calls == []
+    else:
+        assert run() == {"key": "reasoning", "value": "high", "scope": scope}
+        assert calls == [("commit", scope == "global"), ("apply", scope == "global")]

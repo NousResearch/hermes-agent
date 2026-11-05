@@ -379,6 +379,12 @@ async def _set_command_setting(connection, ref, params):
     from gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
         raise RuntimeStoreError('invalid_params')
+    if scope == 'global' and parse_reasoning_effort(value) is not None:
+        # --global saves agent.reasoning_effort (_save_gateway_config_key, no managed check): a pinned
+        # one is refused before the session's level is committed, as the sidecar's config.set refuses it.
+        from hermes_cli.managed_scope import is_key_managed
+        if await asyncio.to_thread(is_key_managed, 'agent.reasoning_effort'):
+            raise _managed_refusal('agent.reasoning_effort')
     live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
     from gateway.session_setting_commands import commit_reasoning_command
     await commit_reasoning_command(connection.authority, connection.actor, ref, value, scope == 'global')

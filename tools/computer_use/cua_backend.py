@@ -243,6 +243,9 @@ def _empty_discovery_reason() -> str:
     if sys.platform == "darwin":  # headless Mac / asleep panel: ScreenCaptureKit has 0 shareable displays while TCC looks fine
         return ("window discovery returned no windows; on macOS this usually means no shareable display (headless Mac or "
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
+    if sys.platform == "linux" and os.environ.get("WAYLAND_DISPLAY") and not bool(_computer_use_cfg().get("native_wayland", False)):
+        return ("window discovery returned no windows; native Wayland windows are invisible to the default X11 backend — "
+                "set `computer_use.native_wayland: true` and restart the gateway")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):

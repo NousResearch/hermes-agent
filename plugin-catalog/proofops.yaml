@@ -1,6 +1,6 @@
 name: proofops
 repo: https://github.com/rasrobo/proofops
-sha: fb1dbe7ffb78c7ac9b4c08db9357271c3ce671b4
+sha: 681dda2b66b40f23d34c8f6b1ceec41188b77c1a
 description: >-
   Verification for completion claims. An agent runs a declared plan of read-only checks
   against a system and gets a receipt: each check's actual result, what it proves, and -

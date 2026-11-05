@@ -1962,6 +1962,22 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", guard)
 ```
 
+### Create a profile that can answer
+
+`ctx.create_profile(name, *, description=None, soul=None, model=None, provider=None, mirror_credentials=True, share_auth=False, no_alias=False)` creates a fresh profile the same way the Desktop's **New bot** does, so its first turn has a provider. A bare `create_profile()` leaves a comment-only `.env`, no `auth.json` and no model.
+
+With `mirror_credentials` on (the default), Hermes copies the `.env`, `auth.json` and voice settings of the profile that loaded your plugin into the new profile once. It also gives the new profile that model unless you pin `model` and `provider`. Messaging bot tokens are stripped, so two profiles never fight over one bot. Single-use OAuth grants are stripped too. `share_auth=True` skips the `auth.json` copy, and the new profile then reads the shared root sign-in. Nothing is inherited later: profiles stay separate after creation.
+
+Your plugin never sees a credential. The call returns `{name, path, soul_written, model_set, mirrored}`, where `mirrored` holds only booleans (`env`, `auth`, `model_inherited`, `voice`). An invalid or taken name raises `ValueError` or `FileExistsError` before anything is created. Use this instead of copying `.env` or `auth.json` yourself, which the [plugin catalog](./catalog-submission.md) does not accept (rule 11).
+
+```python
+def register(ctx):
+    def new_agent(raw_args: str) -> str:
+        made = ctx.create_profile(raw_args.strip(), no_alias=True)
+        return f"Created {made['name']}" + ("" if made["mirrored"]["env"] else " (no API keys copied)")
+    ctx.register_command("new-agent", new_agent, description="Create a profile that can answer")
+```
+
 ### Add Automation Blueprints
 
 `ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())` adds a fill-in-the-blanks automation to the [Automation Blueprints catalog](../../reference/automation-blueprints-catalog.mdx). It appears next to the built-ins in `/blueprint` (CLI, TUI, messengers), the dashboard's Blueprints tab, and the Desktop Cron page, labelled with your plugin's name. The arguments are the fields of the built-in `AutomationBlueprint` (`cron/blueprint_catalog.py`); each slot is a dict of `BlueprintSlot` fields.

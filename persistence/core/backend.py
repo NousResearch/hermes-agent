@@ -17,6 +17,15 @@ from ..conversation.messages import MessageRepository
 from ..conversation.search import SessionSearch
 from ..conversation.sessions import SessionRepository
 from ..conversation.usage import UsageAnalytics, UsageRepository
+from ..gateway.hosted_rooms import (
+    HostedRoomAttachmentRepository,
+    HostedRoomDriverRepository,
+    HostedRoomPeerRepository,
+    HostedRoomPolicyRepository,
+    HostedRoomReplicaRepository,
+    HostedRoomRepository,
+)
+from ..gateway.routing import RoutingRepository
 from .admin import AdminUnsupported, ProfileRepairAdmin, StoreAdmin
 from .aio import AwaitableStore
 from .capabilities import PersistenceCapabilities
@@ -45,6 +54,13 @@ class PersistenceStore(Protocol):
     runtime: SessionRuntimeRepository
     bindings: SessionBindingRepository
     coordination: CoordinationRepository
+    routing: RoutingRepository
+    hosted_rooms: HostedRoomRepository
+    hosted_room_peers: HostedRoomPeerRepository
+    hosted_room_replicas: HostedRoomReplicaRepository
+    hosted_room_driver: HostedRoomDriverRepository
+    hosted_room_policy: HostedRoomPolicyRepository
+    hosted_room_attachments: HostedRoomAttachmentRepository
 
 
 @runtime_checkable

@@ -1,6 +1,42 @@
 import type { SessionRedirectResponse } from '@/app/types'
 import { translateNow } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { notify } from '@/store/notifications'
+
+/** A failed acknowledgement is not proof that the correction was undelivered. */
+export class UnconfirmedCorrectionError extends Error {
+  constructor(
+    error: unknown,
+    public readonly noticeId?: string
+  ) {
+    super(error instanceof Error ? error.message : 'Correction delivery unconfirmed', { cause: error })
+  }
+}
+
+export function notifyCorrectionUnconfirmed(text?: string, id?: string): string {
+  const show = (copyFailed = false): string =>
+    notify({
+      ...(id ? { id } : {}),
+      kind: 'warning',
+      persistent: text !== undefined,
+      title: translateNow(copyFailed ? 'common.copyFailed' : 'composer.steerUnconfirmedTitle'),
+      message: translateNow(
+        text === undefined ? 'composer.steerUnconfirmedBody' : 'composer.steerExternalUnconfirmedBody'
+      ),
+      ...(text === undefined
+        ? {}
+        : {
+            action: {
+              label: translateNow('common.copy'),
+              onClick: () => {
+                void writeClipboardText(text).catch(() => show(true))
+              }
+            }
+          })
+    })
+
+  return show()
+}
 
 /**
  * Where an accepted `queued` correction lands. A backend that names the destination wins:
@@ -30,6 +66,8 @@ export function notifyCorrectionQueued(result: Pick<SessionRedirectResponse, 'di
     id: 'composer-steer-queued',
     kind: 'info',
     title: translateNow('composer.steerQueuedTitle'),
-    message: translateNow(result.reason === 'compression' ? 'composer.steerQueuedCompressionBody' : 'composer.steerQueuedBody')
+    message: translateNow(
+      result.reason === 'compression' ? 'composer.steerQueuedCompressionBody' : 'composer.steerQueuedBody'
+    )
   })
 }

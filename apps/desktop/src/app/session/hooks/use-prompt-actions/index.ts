@@ -10,7 +10,12 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
-import { notifyCorrectionQueued, queuedCorrectionJoinsLiveTurn } from '@/lib/correction-receipt'
+import {
+  notifyCorrectionQueued,
+  notifyCorrectionUnconfirmed,
+  queuedCorrectionJoinsLiveTurn,
+  UnconfirmedCorrectionError
+} from '@/lib/correction-receipt'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -29,7 +34,9 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
+import { $connection } from '@/store/session'
 import {
   $busy,
   $currentCwd,
@@ -878,6 +885,15 @@ export function usePromptActions({
         return false
       }
 
+      const selectedAtSend = selectedStoredSessionIdRef.current
+      const connectionAtSend = $connection.get()
+      const profileAtSend = $activeGatewayProfile.get()
+
+      const stillHere = () =>
+        selectedStoredSessionIdRef.current === selectedAtSend &&
+        $connection.get() === connectionAtSend &&
+        $activeGatewayProfile.get() === profileAtSend
+
       // #105176: a steer reaches here on the composer's own busy belief, and
       // the composer keeps that belief one effect tick past the busy→false
       // settle. When it lags, the turn has already ended: redirecting would
@@ -954,13 +970,24 @@ export function usePromptActions({
               updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
             } else {
               moveOptimisticMessageToEnd()
-              notifyCorrectionQueued(result)
+
+              if (stillHere()) {
+                notifyCorrectionQueued(result)
+              }
             }
 
             triggerHaptic('submit')
 
             return true
           }
+
+          if (result?.status === 'rejected' && result.delivered === false) {
+            discardOptimisticMessage()
+
+            return false
+          }
+
+          throw new Error('Correction delivery unconfirmed')
         } catch (err) {
           discardOptimisticMessage()
 
@@ -972,10 +999,6 @@ export function usePromptActions({
 
           throw err
         }
-
-        discardOptimisticMessage()
-
-        return false
       }
 
       try {
@@ -986,15 +1009,13 @@ export function usePromptActions({
 
         return result
       } catch (err) {
-        notifyError(err, copy.promptFailed)
-        throw err
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyCorrectionUnconfirmed() : undefined)
       }
     },
     [
       activeSessionIdRef,
       appendSessionTextMessage,
       busyRef,
-      copy.promptFailed,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
@@ -1025,17 +1046,36 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
+        try {
+          const response = await target.requestGateway<SessionRedirectResponse>('session.steer', {
+            session_id: id,
+            text
+          })
 
-        return response?.status === 'queued'
+          if (response?.status === 'queued') {
+            return true
+          }
+
+          if (response?.status === 'rejected' && response.delivered === false) {
+            return false
+          }
+
+          throw new Error('Correction delivery unconfirmed')
+        } catch (error) {
+          if (isUndeliveredCorrectionRefusal(error)) {
+            return false
+          }
+
+          throw error
+        }
       }
 
       try {
         const { result } = await withSessionNotFoundResume(target.sessionId, target.storedSessionId, send, target)
 
         return result
-      } catch {
-        return false
+      } catch (error) {
+        throw new UnconfirmedCorrectionError(error)
       }
     },
     [

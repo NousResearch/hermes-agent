@@ -2455,6 +2455,10 @@ export const jaOverrides = {
     queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
     queueSteerRefusedTitle: 'ステアが受け付けられませんでした',
     queueSteerRefusedBody: '現在のターンはこの修正を受け付けられませんでした。メッセージはキューに残り、先頭に移動しました。',
+    steerUnconfirmedTitle: '送信を確認できません',
+    steerUnconfirmedBody: '送達は未確認です。再送する前にメッセージとキューを確認してください。',
+    steerExternalUnconfirmedBody:
+      '前の送信は未確認です。テキストをコピーし、再送する前にメッセージとキューを確認してください。',
     steerQueuedTitle: '次のターンにキューしました',
     steerQueuedBody: '現在のターンがこのメッセージを受け取れなかったため、次に実行されるようキューに入れました。',
     steerQueuedCompressionBody: 'コンテキストを圧縮中のため、このメッセージは次に実行されるようキューに入れました。',

@@ -85,7 +85,7 @@ export interface SessionCompressResponse {
 
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
-  // tool-result boundary); 'rejected' == no live tool window, caller queues.
+  // tool-result boundary). A bare 'rejected' is not proof of non-delivery.
   status?: 'queued' | 'rejected'
   text?: string
 }
@@ -97,6 +97,8 @@ export interface SessionRedirectResponse {
    *  Absent from older backends (and the canonical reply), which name no destination. */
   disposition?: 'steer' | 'queue' | null
   reason?: string | null
+  /** Only false proves that a rejected correction is safe to submit as a new turn. */
+  delivered?: false | null
   /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
   voice_stopped?: boolean
 }

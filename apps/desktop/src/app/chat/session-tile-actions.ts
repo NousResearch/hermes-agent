@@ -17,7 +17,12 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
-import { notifyCorrectionQueued, queuedCorrectionJoinsLiveTurn } from '@/lib/correction-receipt'
+import {
+  notifyCorrectionQueued,
+  notifyCorrectionUnconfirmed,
+  queuedCorrectionJoinsLiveTurn,
+  UnconfirmedCorrectionError
+} from '@/lib/correction-receipt'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -25,7 +30,9 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
+import { $connection } from '@/store/session'
 import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
@@ -413,16 +420,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.steer', { session_id: liveId, text }),
+          liveId => requestSessionGateway<SessionRedirectResponse>('session.steer', { session_id: liveId, text }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
           }
         )
 
-        return result?.status === 'queued'
-      } catch {
-        return false
+        if (result?.status === 'queued') {return true}
+
+        if (result?.status === 'rejected' && result.delivered === false) {return false}
+        throw new Error('Correction delivery unconfirmed')
+      } catch (error) {
+        if (isUndeliveredCorrectionRefusal(error)) {return false}
+        throw new UnconfirmedCorrectionError(error)
       }
     },
     [bindRecoveredRuntime, requestSessionGateway]
@@ -436,6 +447,16 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       if (!text || !sessionId) {
         return false
       }
+
+      const sourceStoredId = storedIdRef.current
+      const connectionAtSend = $connection.get()
+      const profileAtSend = $activeGatewayProfile.get()
+
+      const stillHere = () =>
+        runtimeIdRef.current === sessionId &&
+        storedIdRef.current === sourceStoredId &&
+        $connection.get() === connectionAtSend &&
+        $activeGatewayProfile.get() === profileAtSend
 
       const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -500,13 +521,24 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
           } else {
             moveOptimisticMessageToEnd()
-            notifyCorrectionQueued(result)
+
+            if (stillHere()) {
+              notifyCorrectionQueued(result)
+            }
           }
 
           triggerHaptic('submit')
 
           return true
         }
+
+        if (result?.status === 'rejected' && result.delivered === false) {
+          discardOptimisticMessage()
+
+          return false
+        }
+
+        throw new Error('Correction delivery unconfirmed')
       } catch (err) {
         discardOptimisticMessage()
 
@@ -515,15 +547,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           return false
         }
 
-        notifyError(err, copy.promptFailed)
-        throw err
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyCorrectionUnconfirmed() : undefined)
       }
-
-      discardOptimisticMessage()
-
-      return false
     },
-    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
+    [bindRecoveredRuntime, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

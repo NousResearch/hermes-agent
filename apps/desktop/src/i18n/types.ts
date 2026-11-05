@@ -3006,6 +3006,9 @@ export interface Translations extends NoticeTranslations {
     queuedTerminalSelectionExpiredBody: string
     queueSteerRefusedTitle: string
     queueSteerRefusedBody: string
+    steerUnconfirmedTitle: string
+    steerUnconfirmedBody: string
+    steerExternalUnconfirmedBody: string
     steerQueuedTitle: string
     steerQueuedBody: string
     steerQueuedCompressionBody: string

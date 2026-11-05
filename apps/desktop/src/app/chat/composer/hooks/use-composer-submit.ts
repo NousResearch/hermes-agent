@@ -4,6 +4,11 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
+import {
+  notifyCorrectionQueued,
+  notifyCorrectionUnconfirmed,
+  UnconfirmedCorrectionError
+} from '@/lib/correction-receipt'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
@@ -23,7 +28,9 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
+import { $activeGatewayProfile } from '@/store/profile'
 import { hasBlockingPromptRequest } from '@/store/prompts'
+import { $connection } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -122,6 +129,7 @@ export function useComposerSubmit({
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const pendingSteers = useRef(new Set<string | null>())
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -133,7 +141,8 @@ export function useComposerSubmit({
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
     target?: Parameters<ChatBarProps['onSubmit']>[1],
-    onRejected?: (scope: string | null, submissionId: string) => void
+    onRejected?: (scope: string | null, submissionId: string) => void,
+    onAccepted?: () => void
   ) => {
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
@@ -190,7 +199,7 @@ export function useComposerSubmit({
 
     // A synchronous throw takes the rejection path too: the caller has already cleared the
     // composer, so a send that fails while it is being prepared must not take the words with it.
-    void new Promise<boolean>(resolve =>
+    return new Promise<boolean>(resolve =>
       resolve(
         onSubmit(text, {
           ...target,
@@ -205,7 +214,13 @@ export function useComposerSubmit({
       .then(accepted => {
         if (accepted === false) {
           rejected()
-        } else if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
+
+          return
+        }
+
+        onAccepted?.()
+
+        if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
           // Through the composer's own save, so a next message the user types
           // into this emptied draft counts as unsaved and is saved again.
           stashAt(submittedScope, '', [])
@@ -241,6 +256,17 @@ export function useComposerSubmit({
         ) {
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
+          const submittedScope = draftScopeRef.current
+          const connectionAtSend = $connection.get()
+          const profileAtSend = $activeGatewayProfile.get()
+
+          const stillHere = () =>
+            draftScopeRef.current === submittedScope &&
+            $connection.get() === connectionAtSend &&
+            $activeGatewayProfile.get() === profileAtSend
+
+          const unconfirmed = (error: unknown) =>
+            notifyCorrectionUnconfirmed(text, error instanceof UnconfirmedCorrectionError ? error.noticeId : undefined)
 
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
           const enqueue = (key: string | null = queueKey, id?: string) =>
@@ -271,13 +297,19 @@ export function useComposerSubmit({
           // the model's next tool result, and keeps its kind if it has to queue.
           if (displayKind) {
             if (current.onSteerHidden) {
-              void Promise.resolve(current.onSteerHidden(text))
+              if (pendingSteers.current.has(submittedScope)) {
+                return
+              }
+
+              pendingSteers.current.add(submittedScope)
+              void new Promise<boolean>(resolve => resolve(current.onSteerHidden!(text)))
                 .then(accepted => {
-                  if (!accepted) {
+                  if (!accepted && stillHere()) {
                     enqueue()
                   }
                 })
-                .catch(() => enqueue())
+                .catch(unconfirmed)
+                .finally(() => pendingSteers.current.delete(submittedScope))
             } else {
               enqueue()
             }
@@ -291,19 +323,25 @@ export function useComposerSubmit({
             text.trim() &&
             !SLASH_COMMAND_RE.test(text.trim())
           ) {
-            void Promise.resolve(current.onSteer(text))
+            if (pendingSteers.current.has(submittedScope)) {
+              return
+            }
+
+            pendingSteers.current.add(submittedScope)
+            void new Promise<boolean>(resolve => resolve(current.onSteer!(text)))
               .then(accepted => {
-                if (!accepted) {
+                if (!accepted && stillHere()) {
                   enqueue()
                 }
               })
-              .catch(() => enqueue())
+              .catch(unconfirmed)
+              .finally(() => pendingSteers.current.delete(submittedScope))
           } else {
             enqueue()
           }
         }
       }),
-    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
+    [activeQueueSessionKeyRef, draftScopeRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   // A phone keyboard the user put away stays down after a send, so the reply
@@ -473,7 +511,7 @@ export function useComposerSubmit({
   }
 
   const submitDraft = () => {
-    if (disabled) {
+    if (disabled || pendingSteers.current.has(draftScopeRef.current)) {
       return
     }
 
@@ -553,7 +591,12 @@ export function useComposerSubmit({
   // active model request with its displayed context or waits for the current
   // tool boundary. If the turn already ended, queue the words instead.
   const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt') => {
-    const text = draftRef.current.trim()
+    if (pendingSteers.current.has(draftScopeRef.current)) {
+      return
+    }
+
+    const originalText = draftRef.current
+    const text = originalText.trim()
     // The Steer action on a restored send: queued under its id like a busy Enter (see queueRetry).
     const retry = attachments.length ? undefined : takeDraftRetry?.(draftRef.current, [])
 
@@ -584,12 +627,28 @@ export function useComposerSubmit({
     }
 
     triggerHaptic('submit')
-    clearDraft()
 
-    const submittedScope = activeQueueSessionKeyRef.current
+    const submittedScope = draftScopeRef.current
+    const connectionAtSend = $connection.get()
+    const profileAtSend = $activeGatewayProfile.get()
+    const sameOwner = () => $connection.get() === connectionAtSend && $activeGatewayProfile.get() === profileAtSend
+    const stillHere = () => draftScopeRef.current === submittedScope && sameOwner()
+    pendingSteers.current.add(submittedScope)
 
-    // The draft is already cleared, so a refused or failed redirect must keep
-    // the only copy (#68927): the canonical gateway queue when the server owns
+    const clearSentDraft = () => {
+      if (stillHere() && draftRef.current === originalText && scope.attachments.$attachments.get().length === 0) {
+        clearDraft()
+      } else if (
+        sameOwner() &&
+        draftScopeRef.current !== submittedScope &&
+        stashStillHoldsSent(submittedScope, originalText, [])
+      ) {
+        stashAt(submittedScope, '', [])
+      }
+    }
+
+    // Retain the draft until acceptance. Only a proven undelivered refusal may
+    // use the existing fallback (#68927): the canonical gateway queue when the server owns
     // it, the local queue otherwise, or the composer itself when there is no
     // queue yet (a new chat is busy before its first session exists). Keep the
     // frozen transport for the queue; restoring to the composer keeps the chip
@@ -597,52 +656,68 @@ export function useComposerSubmit({
     const hasTerminalTransport = frozen.displayText !== frozen.transportText
     const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
 
-    const keep = () => {
-      if (!activeQueueSessionKey) {
-        loadIntoComposer(frozen.displayText, [])
-        stashAt(submittedScope, frozen.displayText, [])
+    const queued = () => {
+      clearSentDraft()
 
+      if (stillHere()) {
+        notifyCorrectionQueued({ disposition: 'queue' })
+      }
+    }
+
+    const keep = () => {
+      // A different owner must not acquire this operation's fallback or draft.
+      if (!stillHere() || !activeQueueSessionKey) {
         return
       }
 
-      // The words did not join the running turn: say where they went, so a
-      // queued row is never mistaken for a delivered steer (#141973).
-      notify({
-        id: 'composer-steer-queued',
-        kind: 'info',
-        title: translateNow('composer.steerQueuedTitle'),
-        message: translateNow('composer.steerQueuedBody')
-      })
-
       if (canonical) {
         // `fromQueue` skips the submit-side freeze, so hand it the frozen transport.
-        dispatchSubmit(frozen.transportText, [], undefined, {
-          ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
-          fromQueue: true,
-          sessionId: sessionId ?? null,
-          storedSessionId: activeQueueSessionKey
-        })
+        return dispatchSubmit(
+          frozen.transportText,
+          [],
+          undefined,
+          {
+            ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
+            fromQueue: true,
+            sessionId: sessionId ?? null,
+            storedSessionId: activeQueueSessionKey
+          },
+          () => {},
+          queued
+        )
       } else {
-        enqueueQueuedPrompt(activeQueueSessionKey, {
+        const entry = enqueueQueuedPrompt(activeQueueSessionKey, {
           text: frozen.displayText,
           attachments: [],
           ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
         })
+
+        if (entry) {
+          queued()
+        }
       }
     }
 
-    void Promise.resolve()
-      .then(() => onSteer(frozen.transportText, mode))
+    // Invoke synchronously: the action captures the source before navigation can change its refs.
+    void new Promise<boolean>(resolve => resolve(onSteer(frozen.transportText, mode)))
       .then(accepted => {
-        if (!accepted) {
-          keep()
+        if (accepted) {
+          clearSentDraft()
+        } else {
+          return keep()
         }
       })
-      .catch(keep)
+      .catch(error => {
+        // A lost ACK may have delivered the correction: never replay it as a new turn.
+        if (stillHere() && !(error instanceof UnconfirmedCorrectionError)) {
+          notifyCorrectionUnconfirmed()
+        }
+      })
+      .finally(() => pendingSteers.current.delete(submittedScope))
   }
 
   const queueDraft = () => {
-    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
+    if (disabled || !busy || pendingSteers.current.has(draftScopeRef.current) || refusedDuringSetup(draftRef.current)) {
       return
     }
 

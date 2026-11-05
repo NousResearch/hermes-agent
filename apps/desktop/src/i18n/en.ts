@@ -3502,6 +3502,11 @@ export const en: Translations = {
     queueSteerRefusedTitle: 'Steer not taken',
     queueSteerRefusedBody:
       'The live turn could not take the redirect. Your message stays queued and is now first in line.',
+    steerUnconfirmedTitle: 'Delivery unconfirmed',
+    steerUnconfirmedBody:
+      'Delivery is unconfirmed. Check messages and the queue before deciding whether to send again.',
+    steerExternalUnconfirmedBody:
+      'A previous submission is unconfirmed. Copy its text and check messages and the queue before deciding whether to send again.',
     steerQueuedTitle: 'Queued for the next turn',
     steerQueuedBody: 'The running turn could not take this message, so it was queued to run next.',
     steerQueuedCompressionBody: 'Context is being compacted, so this message was queued to run next.',

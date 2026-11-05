@@ -157,3 +157,22 @@ async def test_card_resolves_its_own_request(newer_request_pending, press):
 
     assert newer_request_pending.event.is_set()
     assert newer_request_pending.result == pressed
+
+
+@pytest.mark.asyncio
+async def test_matrix_settled_card_reports_expiry(newer_request_pending):
+    """A reaction on a settled Matrix card says it expired and retires the card, as the other adapters do."""
+    from agent.i18n import t
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+    adapter._user_id, adapter._client = "@bot:example.org", MagicMock()
+    adapter.set_authorization_check(lambda *_a, **_k: True)
+    send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
+    with patch.object(adapter, "send", new=send), patch.object(adapter, "_send_reaction", new=AsyncMock(return_value=None)):
+        await adapter.send_exec_approval(chat_id="!room:x", command="rm -rf build", session_key=SESSION, request_id="req-old")
+        await adapter._on_reaction(SimpleNamespace(
+            sender="@alice:x", event_id="$react", room_id="!room:x",
+            content={"m.relates_to": {"event_id": "$card", "key": "\u2705"}}))
+
+    assert send.await_args_list[-1].args[:2] == ("!room:x", t("platform.matrix.approval.expired"))
+    assert "$card" not in adapter._approval_prompts_by_event

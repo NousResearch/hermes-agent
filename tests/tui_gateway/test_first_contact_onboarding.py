@@ -104,11 +104,11 @@ def test_installs_prior_sessions_probe_counts_the_install(monkeypatch):
     one row (the persisted current session) means a fresh install."""
     calls = {}
 
-    class _DB:
+    class _Sessions:
         def __init__(self, n):
             self._n = n
 
-        def session_count_ge(self, minimum):
+        def count_at_least(self, minimum):
             calls["minimum"] = minimum
             return self._n >= minimum
 
@@ -123,9 +123,10 @@ def test_installs_prior_sessions_probe_counts_the_install(monkeypatch):
             return False
 
     fresh = _session(types.SimpleNamespace())
-    monkeypatch.setattr(server, "_session_db", lambda _s: _Ctx(_DB(1)))
+    monkeypatch.setattr(server, "_session_db", lambda _s: _Ctx(object()))
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: _Ctx(types.SimpleNamespace(sessions=_Sessions(1))))
     assert server._install_has_prior_sessions(fresh) is False
     assert calls["minimum"] == 2
 
-    monkeypatch.setattr(server, "_session_db", lambda _s: _Ctx(_DB(2)))
+    monkeypatch.setattr(server, "_persistence_for", lambda _db: _Ctx(types.SimpleNamespace(sessions=_Sessions(2))))
     assert server._install_has_prior_sessions(fresh) is True

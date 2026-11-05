@@ -59,6 +59,13 @@ export function openRewindPicker(ctx: SlashRunCtx) {
     return ctx.transcript.sys(t('slashCmd.core.busy.replying', 'rewind'))
   }
 
+  // A manual /compress runs on this socket's serial lane: anything queued behind it (here, the
+  // snapshot fetch) waits out the whole compaction and then dies on the request deadline. The
+  // compressing status arrives before the summary starts, so refuse locally instead (#149517).
+  if (getUiState().compacting) {
+    return ctx.transcript.sys(t('slashCmd.core.busy.compressing', 'rewind'))
+  }
+
   void ctx.gateway.gw
     .request('session.resume', { session_id: sid })
     .then(raw => {

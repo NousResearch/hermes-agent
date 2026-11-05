@@ -8,7 +8,7 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_envelope import restore_native
 from gateway.session_ingress import admit_message
-from hermes_state_runtime import list_session_admissions
+from persistence_assembly import close_stores_under
 
 CHAT = '15551234567@s.whatsapp.net'
 
@@ -27,12 +27,12 @@ async def test_path_text_typed_command_is_admitted_as_text(tmp_path, monkeypatch
     try:
         receipt = await authority.admit_native(MessageEvent(text=text, source=source, message_id='p1',
                                                             message_type=MessageType.COMMAND))
-        row, = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)
-        replay = restore_native(row['payload'], runner)
+        row, = authority.persistence.admissions.list(session_id=receipt.ref.session_id, pending_only=False)
+        replay = restore_native(row.payload, runner)
         assert (replay.text, replay.message_type, replay.get_command()) == (text, MessageType.TEXT, None)
         # A real slash command still never enters the FIFO as a turn.
         reply = await admit_message(authority, MessageEvent(text='/new', source=source, message_id='c1',
                                                             message_type=MessageType.COMMAND))
         assert 'invalid_params' in reply
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

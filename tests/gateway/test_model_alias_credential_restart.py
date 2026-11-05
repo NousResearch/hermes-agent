@@ -5,6 +5,8 @@ may have refilled."""
 from dataclasses import asdict
 from types import SimpleNamespace
 
+from persistence_assembly import open_persistence, profile_scope
+
 import pytest
 
 
@@ -13,7 +15,6 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, far_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.3:9/v1'
     (tmp_path / 'config.yaml').write_text(
@@ -22,8 +23,8 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
     monkeypatch.setitem(model_switch.DIRECT_ALIASES, 'far', model_switch.DirectAlias(
         'far-model', 'custom', far_url, api_key='sk-other-profile'))
 
-    def owner(db):
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    def owner():
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         authority.runner = SimpleNamespace(session_authority=authority,
                                            _resolve_session_agent_runtime=lambda **k: (None, {}))
         return authority
@@ -33,8 +34,8 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
             success=True, new_model=alias + '-model', target_provider='custom', base_url=base_url,
             api_key='resolved-at-switch', resolved_via_alias=alias))
 
-    with SessionDB(tmp_path / 'state.db') as db:
-        first = owner(db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        first = owner()
         policy = build_policy({'cwd': str(tmp_path), 'model': 'a', 'provider': 'custom', 'base_url': old_url},
                               {'model': {'provider': 'custom', 'default': 'a', 'base_url': old_url}})
         prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
@@ -45,7 +46,7 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
         switched = restore_policy(committed)
         assert _resolve_policy_agent_runtime(first.runner, switched)[1]['api_key'] == 'sk-far-literal'
         # Owner restart: a fresh authority over the same durable receipt, nothing in memory.
-        restarted = owner(db)
+        restarted = owner()
         assert _resolve_policy_agent_runtime(restarted.runner, switched)[1]['api_key'] == 'sk-far-literal'
         switch('back', old_url)
         again = await prepare_model(restarted, SimpleNamespace(source=None, route='r'), {'model': 'back'},

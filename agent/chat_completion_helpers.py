@@ -3348,6 +3348,17 @@ class _StreamingCall(StreamingWaitMonitor):
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
+        if (
+            effective_finish_reason == "content_filter"
+            and usage_obj is None
+            and (reasoning_parts or reasoning_details)
+            and not content_parts
+            and not refusal_parts
+            and not tool_calls_acc
+        ):
+            # Stream aborted mid-reasoning without a final usage chunk or refusal delta
+            # (e.g. translation proxy mapping an upstream stream cut to content_filter).
+            response._proxy_stream_drop = True
         # A held router timeout shim (#68396) is rejected by validate_response and retried;
         # releasing its text here would show the provider failure as assistant output.
         if not is_router_timeout_shim(response):

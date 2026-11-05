@@ -189,6 +189,18 @@ def has_explicit_refusal(response: Any, normalized: Any) -> bool:
     return False
 
 
+def is_proxy_stream_drop(response: Any, normalized: Any = None) -> bool:
+    """True only when the transport or proxy positively flagged an aborted stream
+    (``response._proxy_stream_drop`` or ``provider_data["proxy_stream_drop"]``) rather
+    than a standards-compliant Chat Completions ``finish_reason="content_filter"``."""
+    if getattr(response, "_proxy_stream_drop", False):
+        return True
+    provider_data = getattr(normalized, "provider_data", None) or {}
+    if isinstance(provider_data, dict) and provider_data.get("proxy_stream_drop"):
+        return True
+    return False
+
+
 def partial_result(
     messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,

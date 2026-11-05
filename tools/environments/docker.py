@@ -1152,10 +1152,14 @@ class DockerEnvironment(BaseEnvironment):
         mid-pull) can leave a "Created" orphan the exited-only reaper never catches, so it is
         removed by name before re-raising."""
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        # A hash of a weak secret is still an offline guessing oracle.
+        # The private directory keeps this label out of both argv and logs.
+        # Snap-packaged Docker runs confined and cannot read host /tmp, so snap
+        # mode stages the file in a random 0700 non-hidden directory under $HOME
+        # instead; the TemporaryDirectory cleanup around the run is unchanged.
+        label_parent = str(Path.home()) if self._snap_compat else None
         try:
-            # A hash of a weak secret is still an offline guessing oracle.
-            # The private directory keeps this label out of both argv and logs.
-            with tempfile.TemporaryDirectory(prefix="hermes-docker-label-") as label_dir:
+            with tempfile.TemporaryDirectory(prefix="hermes-docker-label-", dir=label_parent) as label_dir:
                 label_file = Path(label_dir) / "runtime.label"
                 label_file.write_text(f"{_RUNTIME_LABEL_KEY}={self._runtime_fp}\n", encoding="utf-8")
                 run_cmd = self._run_command(container_name, cwd, str(label_file))

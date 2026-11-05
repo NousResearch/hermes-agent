@@ -1,0 +1,17 @@
+name: zkagent-attest
+repo: https://github.com/MCPVOT/hermes-zkagent
+sha: 1a8a97b507e64046f355aef95cb39da5b7229f4b
+description: "Verifiable receipts for what an agent actually did: records each tool call, proves the session stayed inside a signed cap without revealing which tools ran, and discloses exactly one action on request."
+maintainer: MCPVOT
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - zkagent_status
+    - zkagent_attest
+    - zkagent_verify
+    - zkagent_disclose
+  provides_hooks:
+    - post_tool_call

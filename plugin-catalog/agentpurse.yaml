@@ -4,17 +4,7 @@ sha: 84a1ed7cc9dbac462a5bde8b65f6d105cc56b20b
 subdir: plugins/hermes
 version: "1.0.0"
 title: AgentPurse
-description: >-
-  Search, quote, and buy from an AgentPurse allowance on the PayPal sandbox.
-  Every purchase waits for Hermes' approval prompt and is sent only after a
-  person approves it; YOLO, approvals off, auto-approve modes, and smart
-  (model) approval cannot spend. A per-chat spend limit and /purse kill sit in
-  front of the clerk. Disclosure: calls agentpurse.vercel.app (POST /mcp and
-  GET /api/spends/:id), which talks to the PayPal sandbox and Channel3. The API
-  key is read through Hermes' secret scope. A kill switch, quote cache,
-  short-lived approval grants, and per-chat spent cents live in plugin state.
-  No shell commands, background processes, telemetry, or self-update.
-  Sandbox money only. A receipt is not a retailer order.
+description: "Search, quote, and buy from an AgentPurse allowance on the PayPal sandbox. Every purchase waits for Hermes' approval prompt and is sent only after a person approves it; YOLO, approvals off, auto-approve modes, and smart (model) approval cannot spend. A per-chat spend limit and /purse kill sit in front of the clerk. Disclosure — calls the author's AgentPurse service at agentpurse.vercel.app (POST /mcp and GET /api/spends/:id; the server uses the PayPal sandbox and Channel3 for product data) with AGENTPURSE_API_KEY from Hermes's secret scope, sending quotes, purchase sentences and the task/page excerpt the agent supplies; request_purchase and watch_price each wait for a person to answer Hermes's approval prompt (YOLO, approvals off, smart approval and unattended runs cannot spend), but an approved price watch later lets AgentPurse file the purchase server-side with no second Hermes prompt (/purse kill cancels open watches); a kill switch, quote cache, one-time approval grants and per-chat spent cents live in plugin state; PayPal sandbox money only, and a receipt is not a retailer order."
 maintainer: maaz-bin-hassan
 tier: community
 category: tools

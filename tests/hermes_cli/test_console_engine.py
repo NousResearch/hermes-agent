@@ -8,6 +8,32 @@ import pytest
 from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
 
 
+def _track_maintenance(monkeypatch, name, calls, *, raise_on_call=False):
+    """Record every ``maintenance.<name>`` call the console's store makes (raising instead when asked)."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from hermes_cli import console_engine
+
+    real_session_db = console_engine._session_db
+
+    @contextmanager
+    def tracked_session_db(*, read_only=True):
+        with real_session_db(read_only=read_only) as store:
+            maintenance = store.maintenance
+
+            def tracked(*args, **kwargs):
+                calls.append(args[0] if args else kwargs.get("source"))
+                if raise_on_call:
+                    raise AssertionError(f"{name} must not run before every guard passes")
+                return getattr(maintenance, name)(*args, **kwargs)
+
+            yield SimpleNamespace(sessions=store.sessions, maintenance=SimpleNamespace(
+                assert_export_safe=maintenance.assert_export_safe, **{name: tracked}))
+
+    monkeypatch.setattr(console_engine, "_session_db", tracked_session_db)
+
+
 def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_hermes_home):
     """The held-store refusal this command prints points at `sessions optimize --force`; if the
     console rejected the flag, the command could only ever refuse whenever a gateway is running."""
@@ -18,14 +44,12 @@ def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_her
 
 
 def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB()
-    try:
-        db.create_session("chat-session", source="cli", model="test/model")
-        db.create_session("tool-session", source="tool", model="test/model")
-    finally:
-        db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "chat-session", "cli", model="test/model")
+        seed_session(store, "tool-session", "tool", model="test/model")
 
     engine = HermesConsoleEngine()
     listed = engine.execute("sessions list --limit 10")
@@ -43,28 +67,17 @@ def test_sessions_export_rejects_oversized_single_before_touching_output(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_cli import session_export
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB()
-    try:
-        db.create_session("too-large", source="cli")
-        db.append_messages_batch(
-            "too-large",
-            [{"role": "user", "content": f"message-{i}"} for i in range(3)],
-        )
-    finally:
-        db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "too-large", "cli")
+        seed_messages(store, "too-large", *[{"role": "user", "content": f"message-{i}"} for i in range(3)])
 
-    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 2)
+    monkeypatch.setattr(session_export, "resolved_max_export_messages", lambda: 2)
     materialized = []
-    original_export_session = SessionDB.export_session
-
-    def tracked_export_session(self, session_id):
-        materialized.append(session_id)
-        return original_export_session(self, session_id)
-
-    monkeypatch.setattr(SessionDB, "export_session", tracked_export_session)
+    _track_maintenance(monkeypatch, "export_session", materialized)
     output = tmp_path / "sessions.jsonl"
     output.write_text("keep me\n", encoding="utf-8")
 
@@ -93,21 +106,16 @@ def test_sessions_export_all_uses_per_session_budget(
     """
     import json
 
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_cli import session_export
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB()
-    try:
+    with open_persistence(profile_scope()) as store:
         for name in ("first-safe", "second-safe", "third-safe"):
-            db.create_session(name, source="cli")
-            db.append_messages_batch(
-                name,
-                [{"role": "user", "content": f"{name}-{i}"} for i in range(2)],
-            )
-    finally:
-        db.close()
+            seed_session(store, name, "cli")
+            seed_messages(store, name, *[{"role": "user", "content": f"{name}-{i}"} for i in range(2)])
 
-    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+    monkeypatch.setattr(session_export, "resolved_max_export_messages", lambda: 3)
     output = tmp_path / "all-sessions.jsonl"
 
     # 3 sessions x 2 messages = 6 total > 3, but each session is under the
@@ -134,32 +142,19 @@ def test_sessions_export_all_rejects_single_oversized_session(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_cli import session_export
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB()
-    try:
-        db.create_session("small", source="cli")
-        db.append_messages_batch(
-            "small",
-            [{"role": "user", "content": f"small-{i}"} for i in range(2)],
-        )
-        db.create_session("runaway", source="cli")
-        db.append_messages_batch(
-            "runaway",
-            [{"role": "user", "content": f"runaway-{i}"} for i in range(4)],
-        )
-    finally:
-        db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "small", "cli")
+        seed_messages(store, "small", *[{"role": "user", "content": f"small-{i}"} for i in range(2)])
+        seed_session(store, "runaway", "cli")
+        seed_messages(store, "runaway", *[{"role": "user", "content": f"runaway-{i}"} for i in range(4)])
 
-    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+    monkeypatch.setattr(session_export, "resolved_max_export_messages", lambda: 3)
     export_all_calls = []
-
-    def tracked_export_all(self, source=None):
-        export_all_calls.append(source)
-        raise AssertionError("export_all must not run before every guard passes")
-
-    monkeypatch.setattr(SessionDB, "export_all", tracked_export_all)
+    _track_maintenance(monkeypatch, "export_all", export_all_calls, raise_on_call=True)
     output = tmp_path / "all-sessions.jsonl"
 
     result = HermesConsoleEngine().execute(
@@ -181,20 +176,15 @@ def test_sessions_export_zero_limit_disables_guard(
     monkeypatch,
     tmp_path,
 ):
-    import hermes_state
-    from hermes_state import SessionDB
+    from hermes_cli import session_export
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB()
-    try:
-        db.create_session("huge", source="cli")
-        db.append_messages_batch(
-            "huge",
-            [{"role": "user", "content": f"huge-{i}"} for i in range(5)],
-        )
-    finally:
-        db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, "huge", "cli")
+        seed_messages(store, "huge", *[{"role": "user", "content": f"huge-{i}"} for i in range(5)])
 
-    monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
+    monkeypatch.setattr(session_export, "resolved_max_export_messages", lambda: 0)
     output = tmp_path / "huge.jsonl"
 
     result = HermesConsoleEngine().execute(

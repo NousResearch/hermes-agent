@@ -18,15 +18,10 @@ def _client():
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-    # Keep the state DB under the isolated HERMES_HOME for any handler that
-    # touches it.
-    hermes_state.DEFAULT_DB_PATH = get_hermes_home() / "state.db"
     return client, _SESSION_HEADER_NAME
 
 
@@ -515,11 +510,11 @@ class TestSessionManagementEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-x", source="cli")
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-x", "cli")
 
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
@@ -527,12 +522,11 @@ class TestSessionManagementEndpoints:
         # ages (mirrors the CLI: any filter disables the implicit 90-day
         # default). dry_run so nothing is deleted; the seeded session is
         # recent + ended, so it would be invisible under a 90-day cutoff.
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-recent-ended", source="cli")
-        db.end_session("sess-recent-ended", "completed")
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-recent-ended", "cli", end_reason="completed")
 
         r = self.client.post(
             "/api/sessions/prune",
@@ -547,16 +541,16 @@ class TestSessionManagementEndpoints:
         assert all("last_active" in session for session in body["sessions"])
 
     def test_prune_reports_open_sessions_excluded_by_safety_guard(self):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
+        from tests.fixtures.storage_seed import seed_session
 
-        db = SessionDB()
-        db.create_session(session_id="sess-old-open", source="skip-test")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (1.0, "sess-old-open"),
-        )
-        db._conn.commit()
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            seed_session(db, "sess-old-open", "skip-test")
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (1.0, "sess-old-open"),
+            ))
 
         r = self.client.post(
             "/api/sessions/prune",
@@ -567,9 +561,8 @@ class TestSessionManagementEndpoints:
         assert body["removed"] == 0
         assert body["skipped_open"] == 1
 
-        db = SessionDB()
-        assert db.get_session("sess-old-open") is not None
-        db.close()
+        with open_persistence(profile_scope()) as db:
+            assert db.sessions.get("sess-old-open") is not None
 
 
 class _FakeMeta:

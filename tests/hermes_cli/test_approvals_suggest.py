@@ -4,20 +4,21 @@ Approval history in Hermes is implied, not ledgered: the session DB
 (state.db) stores every assistant ``terminal`` tool call plus its paired
 ``role='tool'`` result. A dangerous-classified command whose result is not a
 BLOCKED/denied/pending marker ran with user consent. These tests build
-synthetic state.db fixtures and verify scanning, ranking, safety exclusions,
+state.db fixtures through the storage seeds and verify scanning, ranking, safety exclusions,
 and the --apply merge path.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from argparse import Namespace
 
 import pytest
 
 import tools.approval as approval_module
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from hermes_cli.approvals_suggest import (
     Proposal,
     apply_proposals,
@@ -30,32 +31,13 @@ from hermes_cli.approvals_suggest import (
 
 
 # ---------------------------------------------------------------------------
-# Fixture helpers: synthetic session DB
+# Fixture helpers: a session DB seeded through the store
 # ---------------------------------------------------------------------------
-
-def _make_db(path):
-    con = sqlite3.connect(path)
-    con.executescript(
-        """
-        CREATE TABLE messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT,
-            tool_call_id TEXT,
-            tool_calls TEXT,
-            timestamp REAL NOT NULL
-        );
-        """
-    )
-    con.commit()
-    return con
-
 
 _ID_COUNTER = [0]
 
 
-def _add_terminal_call(con, command, result="ok: done", ts=None):
+def _add_terminal_call(store, command, result="ok: done", ts=None):
     """Insert an assistant terminal tool call + its paired tool result."""
     _ID_COUNTER[0] += 1
     call_id = f"call_{_ID_COUNTER[0]}"
@@ -72,25 +54,16 @@ def _add_terminal_call(con, command, result="ok: done", ts=None):
             }
         ]
     )
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, tool_calls, timestamp) "
-        "VALUES ('s1', 'assistant', '', ?, ?)",
-        (tool_calls, ts),
-    )
-    con.execute(
-        "INSERT INTO messages (session_id, role, content, tool_call_id, timestamp) "
-        "VALUES ('s1', 'tool', ?, ?, ?)",
-        (result, call_id, ts + 1),
-    )
-    con.commit()
+    seed_messages(store, "s1",
+                  {"role": "assistant", "content": "", "tool_calls": tool_calls, "timestamp": ts},
+                  {"role": "tool", "content": result, "tool_call_id": call_id, "timestamp": ts + 1})
 
 
 @pytest.fixture
 def db_path(tmp_path):
-    path = tmp_path / "state.db"
-    con = _make_db(path)
-    yield path, con
-    con.close()
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as store:
+        seed_session(store, "s1", "cli")
+        yield tmp_path / "state.db", store
 
 
 @pytest.fixture

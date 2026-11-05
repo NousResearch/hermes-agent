@@ -124,14 +124,16 @@ def _owner_rig(tmp_path, monkeypatch, *, old_owner=False):
     from gateway.runtime_bootstrap import TicketStore
     from hermes_cli import web_server as web
     from hermes_cli import web_server_chat
+    from persistence_assembly import profile_scope
 
     profile = str(tmp_path)
     tickets = TicketStore("owner", [profile])
     control = GatewayControlServer(tmp_path)
     control.ticket_store = tickets
     runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
-                             session_authority=SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"),
-                                                               profile_id=profile, runner=None),
+                             session_authority=SimpleNamespace(
+                                 persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)),
+                                 profile_id=profile, runner=None),
                              session_ticket_store=tickets)
     endpoint = gateway_runtime.GatewayEndpoint(profile, "owner", 1, 1, "http://127.0.0.1:1", "none", frozenset())
     monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime",

@@ -1,6 +1,6 @@
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 8ccab32adf7a8d4c2af5cca46d650d814959db71
+sha: a5e91fb0f9ada423bb3a6a95e084da9b2cfe134f
 description: >-
   A memory of what the user has seen on screen. Screenshots in the folders the OS
   already writes them to are read locally with Tesseract, deduplicated (SHA-256

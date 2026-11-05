@@ -1,0 +1,21 @@
+name: zeromem
+repo: https://github.com/ptaranat/zeromem
+subdir: hermes/zeromem
+sha: f7e669c47cc0f6c9867829c37af8e4fc2803fe15
+version: "0.4.0"
+description: "Local memory that keeps every message word for word in one SQLite file. Storing and searching make no LLM calls and cost zero tokens. Rust core, with a one-command import of your existing Hermes history. Disclosure: downloads a 130MB embedding model from Hugging Face on first run, then makes no network calls; stores messages as plain text on disk."
+maintainer: ptaranat
+tier: community
+category: memory
+requires_hermes: ">=0.22"
+docs_url: https://github.com/ptaranat/zeromem#readme
+image: https://raw.githubusercontent.com/ptaranat/zeromem/f7e669c47cc0f6c9867829c37af8e4fc2803fe15/assets/zeromem-og.png
+readme: true
+capabilities:
+  provides_tools:
+    - zeromem_recall
+    - zeromem_stats
+    - zeromem_forget_session
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

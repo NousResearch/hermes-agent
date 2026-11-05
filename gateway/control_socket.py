@@ -362,7 +362,8 @@ class GatewayControlServer:
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": handler(params) if wants_params else handler()}
         except Exception as exc:
-            response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
+            from storage_user_copy import error_type_name
+            response = {"ok": False, "error": f"{error_type_name(exc)}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
             response["id"] = request_id
         try:

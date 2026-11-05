@@ -108,6 +108,24 @@ def _unfurl_event():
     }
 
 
+def _thread_parent_metadata_event():
+    """Slack parent update emitted when a reply changes only thread metadata."""
+    original = _original_event()
+    updated = dict(original)
+    updated.update({"reply_count": 1, "latest_reply": "1787365411.012100"})
+    return {
+        "type": "message",
+        "subtype": "message_changed",
+        "channel": CHANNEL,
+        "channel_type": "channel",
+        "team": TEAM,
+        "ts": UNFURL_EVENT_TS,
+        "event_ts": UNFURL_EVENT_TS,
+        "message": updated,
+        "previous_message": original,
+    }
+
+
 def _body():
     return {"team_id": TEAM, "event_id": "Ev0BRUTU4GP7"}
 
@@ -176,6 +194,30 @@ class TestUnfurlDuringInflightMessage:
             await adapter._handle_slack_message(_unfurl_event(), _body())
 
         asyncio.run(scenario())
+        assert len(delivered) == 1
+
+    def test_thread_parent_metadata_update_after_restart_is_ignored(self):
+        """Reply metadata must not replay an old parent when the ts cache is empty."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+
+        asyncio.run(
+            adapter._handle_slack_message(_thread_parent_metadata_event(), _body())
+        )
+
+        assert delivered == []
+
+    def test_text_change_without_edited_metadata_is_still_processed(self):
+        """Do not require Slack's optional ``edited`` block to recognize a real edit."""
+        delivered = []
+        adapter = _make_adapter(delivered)
+        adapter._resolve_user_name = AsyncMock(return_value="richard")
+        event = _thread_parent_metadata_event()
+        event["message"]["text"] = "<@U0BCLP7DB7B> corrected text"
+
+        asyncio.run(adapter._handle_slack_message(event, _body()))
+
         assert len(delivered) == 1
 
 

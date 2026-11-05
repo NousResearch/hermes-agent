@@ -184,7 +184,7 @@ Then a gate step in `ci.yaml` rewrites the result:
 |---|---|
 | `python` | anything not provably irrelevant to Python (includes `skills/`, `website/docs/`, `website/scripts/`, `website/static/oauth/`) |
 | `python_prod` | as `python`, excluding `tests/` |
-| `frontend` | `ui-tui/`, `web/`, `apps/`, `tests-js/`, root npm manifests, the WhatsApp bridge, JS under `scripts/build/` |
+| `frontend` | `ui-tui/`, `web/`, `apps/`, `tests-js/`, root pnpm manifests (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`), the WhatsApp bridge, JS under `scripts/build/` |
 | `rust` | `.rs`, Cargo files, bootstrap-installer crate paths |
 | `catalog` | `plugin-catalog/*.yaml`, `contributors/emails/` (a diff with only these runs catalog tests **instead of** the Python suite) |
 | `site` | the Docusaurus site |
@@ -194,7 +194,7 @@ Then a gate step in `ci.yaml` rewrites the result:
 | `uv_lock` | `pyproject.toml` or `uv.lock` |
 | `deps` | `pyproject.toml` |
 | `scan` | Python files, `.pth`, setup hooks |
-| `npm_lock` | any `package-lock.json` |
+| `npm_lock` | `pnpm-lock.yaml` or any `package-lock.json` |
 | `docker_meta` | Dockerfiles and Docker scripts |
 | `docker`, `nix` | slow lanes, read by `docker.yml` and `nix.yml` (not by `ci.yaml`) |
 | `e2e`, `e2e_upgrade`, `e2e_desktop_core`, `e2e_desktop_update` | computed, then forced off except on release or dispatch |
@@ -233,7 +233,7 @@ of every suite that reads it.
 | ↳ Deny unrelated histories (step) | | `pull_request` only | push, dispatch, release |
 | ↳ Check contributors (step) | | `python` or `catalog` | neither |
 | ↳ Check uv.lock (step) | | `uv_lock` | neither lockfile nor pyproject changed |
-| ↳ package-lock.json diff (advisory steps) | | PR and `npm_lock` | push, or no lockfile change |
+| ↳ JS lockfile diff, `pnpm-lock.yaml` and `package-lock.json` (advisory steps) | | PR and `npm_lock` | push, or no lockfile change |
 | ↳ Prompt surface diff (advisory steps) | | PR and `python` | push, or no Python change |
 | ↳ Lint Docker scripts (steps) | | `docker_meta` | no Docker meta change |
 | ↳ Supply-chain scan / PyPI upper bounds (steps) | | PR and `scan` / `deps` | push, or neither lane |
@@ -344,7 +344,7 @@ branch protection.
 | `skills-index.yml` | 06:00, 18:00 | push, dispatch | See above |
 | `skills-index-freshness.yml` | every 4 h | dispatch | Upstream only. Opens an issue if `/docs/api/skills-index.json` is more than 26 h stale, missing, or a source collapsed. Also checks CORS on `/docs/api/plugins.json`. |
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
-| `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock` and `package-lock.json`. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
+| `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock`, `pnpm-lock.yaml` and the nested `package-lock.json` files. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
 
 ---
 

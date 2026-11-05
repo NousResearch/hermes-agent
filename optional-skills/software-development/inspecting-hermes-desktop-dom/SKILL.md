@@ -16,7 +16,7 @@ metadata:
 ## Overview
 
 When you are developing `apps/desktop` and the user is running that same app
-(`hgui` / `npm run dev`), you can read the **live rendered DOM** of the window
+(`hgui` / `pnpm run dev`), you can read the **live rendered DOM** of the window
 they are looking at — computed styles, geometry, which CSS rule actually won,
 console output — instead of inferring it from `.tsx` and being wrong.
 
@@ -125,7 +125,7 @@ cd apps/desktop
 HERMES_HOME=$HOME/.hermes/cache/scratch/cdp-probe-home \
 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 \
 HERMES_DESKTOP_CDP_PORT=9333 \
-  npx electron . --user-data-dir=$HOME/.hermes/cache/scratch/cdp-probe-userdata
+  pnpm exec electron . --user-data-dir=$HOME/.hermes/cache/scratch/cdp-probe-userdata
 ```
 
 The separate `--user-data-dir` dodges Electron's single-instance lock, so it
@@ -133,7 +133,7 @@ cannot collide with a running `hgui`; the separate `HERMES_HOME` keeps it away
 from real sessions. Pick a port other than 9222 for the same reason. Run it in
 the background and kill it when done.
 
-`npm run perf:serve` does the same with a temp `HERMES_HOME` baked in, if you
+`pnpm run perf:serve` does the same with a temp `HERMES_HOME` baked in, if you
 also want the perf harness.
 
 ## Pitfalls

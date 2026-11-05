@@ -153,6 +153,7 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 | **Git**              | With the `git-lfs` extension installed                                                        |
 | **Python 3.14** | Current development uses PM's pinned interpreter. The broader `>=3.11,<3.15` package metadata keeps old updaters working, not the current runtime on older Python. |
 | **Node.js** | Use the PM pin or a version accepted by root `package.json` engines |
+| **pnpm** | Exactly the root `package.json` `devEngines` pin; `source ./activate` provides it |
 
 ### PM developer environment
 
@@ -223,15 +224,18 @@ than copying production credentials into the checkout.
 
 ### JavaScript workspaces and website
 
-From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
-shared JS workspaces. The website is separate:
+From the repository root, run `pnpm install --frozen-lockfile` for the desktop,
+TUI, dashboard, and shared JS workspaces. Root `package.json` pins pnpm in
+`devEngines` (`source ./activate` provides that exact version): any other pnpm
+version fails, and the root `preinstall` script refuses `npm install`. The website is a
+separate npm project:
 
 ```bash
 npm ci --prefix website
 npm run build:fast --prefix website
 ```
 
-Use a Node/npm version accepted by the corresponding `package.json` engines.
+Use a Node version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 
 Logos and icons are generated from `assets/nous-girl-*.svg` and

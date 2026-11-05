@@ -579,7 +579,7 @@ Hybrid repos (agent + desktop halves in one repo) use one link and one
 dialog. The same modal is reachable without a link via **Capabilities →
 Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
 `hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
-(`npm run dev`) the scheme is `hermes-dev://`.
+(`pnpm run dev`) the scheme is `hermes-dev://`.
 
 Websites need no SDK — a normal anchor works:
 

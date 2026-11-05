@@ -1,19 +1,19 @@
 """The page a browser gets for a Webapp document request the gateway cannot serve yet.
 
-While the gateway drains for a restart or ``hermes update``, ``gateway/run_api.py`` answers every
-request it refuses with ``503 {"error":"gateway_not_ready"}``, and after an update whose Webapp rebuild
-failed ``_serve_index`` answers ``/`` with a 503 JSON reason. A tab reloaded then showed only that JSON.
-API callers keep the JSON; a browser's page load gets the same 503 as a page that says what is happening
-and reloads once the app answers again.
+Two refusals answer 503: ``gateway/run_api.py`` while the gateway drains for a restart or
+``hermes update``, and ``_serve_index`` while the Webapp bundle is stale after a failed rebuild. API
+callers get the JSON body; a browser's page load gets a page that says what is happening and reloads
+once the app answers again.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import html
-import json
 
 from starlette.responses import HTMLResponse
 
-from hermes_cli.webapp_page_policy import _ScriptHashes
+from hermes_cli.dashboard_auth.prefix import normalise_prefix
 
 # Title and body per page kind. The body is trusted HTML (it may hold <code>); the title is escaped.
 _COPY = {
@@ -25,20 +25,31 @@ _COPY = {
                     "itself once the web app is rebuilt."),
 }
 _KIND_HEADER = "X-Hermes-Restart-Page"
-_NO_STORE = "no-store, no-cache, must-revalidate"  # same value as web_server_dashboard._NO_STORE
+_NO_STORE = "no-store, no-cache, must-revalidate"  # the Cache-Control value web_server_dashboard sends
 
 # Polls the app root, never this URL: a page load with a one-time effect (``/auth/callback``'s code)
-# must run once, on the reload. The root is found by stripping PATH (the path the gateway saw) from the
-# browser's path, which keeps a proxy prefix. It reloads once the root answers OK, or answers another
-# page kind (the restart is over but the bundle is stale: show that page instead).
+# must run once, on the reload. The root is the proxy prefix the SPA's base path comes from
+# (``X-Forwarded-Prefix``) plus ``/``. It reloads once the root answers OK, redirects (the app is up but
+# signed out; following the redirect would start a sign-in and replace the callback's PKCE state), or
+# answers another page kind (the restart is over but the bundle is stale: show that page instead).
+# The root and kind come from ``<main>``'s data attributes, so the script and its hash are constant.
 _SCRIPT = (
-    "(function(){var p=location.pathname,s=PATH,base=p.slice(-s.length)===s?p.slice(0,p.length-s.length):'';"
-    "var tries=0;function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
-    "function poll(){tries++;fetch(base+'/',{cache:'no-store',credentials:'same-origin',"
+    "(function(){var c=document.querySelector('main').dataset,tries=0;"
+    "function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
+    "function poll(){tries++;fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
     "headers:{accept:'text/html'}}).then(function(r){var k=r.headers.get('" + _KIND_HEADER.lower() + "');"
-    "if(r.ok||(k&&k!==KIND)){location.reload();}else{later();}},later);}"
+    "if(r.ok||r.type==='opaqueredirect'||(k&&k!==c.kind)){location.reload();}else{later();}},later);}"
     "later();})();"
 )
+_CSP = (
+    "default-src 'none'; "
+    f"script-src 'sha256-{base64.b64encode(hashlib.sha256(_SCRIPT.encode()).digest()).decode()}'; "
+    "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
+def _header(scope, name: bytes) -> bytes:
+    return next((value for key, value in scope.get("headers") or () if key == name), b"")
 
 
 def _wants_document(scope) -> bool:
@@ -50,8 +61,7 @@ def _wants_document(scope) -> bool:
     path = scope.get("path") or ""
     if path == "/api" or "/api/" in path:
         return False
-    accept = next((value for key, value in scope.get("headers") or () if key == b"accept"), b"")
-    return b"text/html" in accept
+    return b"text/html" in _header(scope, b"accept")
 
 
 def document_refusal(scope, kind: str) -> HTMLResponse | None:
@@ -60,8 +70,7 @@ def document_refusal(scope, kind: str) -> HTMLResponse | None:
     if not _wants_document(scope):
         return None
     title, body = _COPY[kind]
-    path = json.dumps(scope.get("path") or "/").replace("</", "<\\/")
-    script = _SCRIPT.replace("PATH", path, 1).replace("KIND", json.dumps(kind), 1)
+    root = normalise_prefix(_header(scope, b"x-forwarded-prefix").decode("latin-1")) + "/"
     page = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -73,15 +82,14 @@ def document_refusal(scope, kind: str) -> HTMLResponse | None:
         "code{font:.9em ui-monospace,Menlo,monospace;background:#26262a;padding:1px 5px;border-radius:4px}"
         "@media(prefers-color-scheme:light){body{background:#faf9f5;color:#1b1b1a}p{color:#4a4945}"
         "code{background:#ecebe5}}</style></head>"
-        f"<body><main><h1>{html.escape(title)}</h1><p>{body}</p></main>"
-        f"<script>{script}</script></body></html>"
+        f'<body><main data-root="{html.escape(root)}" data-kind="{html.escape(kind)}">'
+        f"<h1>{html.escape(title)}</h1><p>{body}</p></main>"
+        f"<script>{_SCRIPT}</script></body></html>"
     )
     return HTMLResponse(page, status_code=503, headers={
         "Retry-After": "2",
         "Cache-Control": _NO_STORE,
-        "Content-Security-Policy": (f"default-src 'none'; script-src {_ScriptHashes(page).hashes[0]}; "
-                                    "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
-                                    "form-action 'none'; frame-ancestors 'none'"),
+        "Content-Security-Policy": _CSP,
         "X-Content-Type-Options": "nosniff",
         _KIND_HEADER: kind,
     })

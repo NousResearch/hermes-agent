@@ -52,19 +52,28 @@ async def test_a_page_load_during_the_drain_gets_the_restart_page(path):
 
 
 @pytest.mark.asyncio
-async def test_the_page_runs_only_its_own_hashed_script_and_polls_the_app_root_not_its_url():
+@pytest.mark.parametrize("path,prefix,root", [
+    ("/auth/callback", None, "/"),
+    ("/sessions/KIND", "/hermes", "/hermes/"),       # request data never lands in the code
+    ("/sessions/caf%C3%A9", "/hermes/", "/hermes/"),
+    ("/x", "/a/../b", "/"),                          # a rejected prefix falls back to the bare root
+])
+async def test_the_page_runs_only_its_own_hashed_script_and_polls_the_app_root_not_its_url(path, prefix, root):
     """A page load with a one-time effect (an OAuth callback's code) must run once, on the reload:
-    the poll asks for the root under the same proxy prefix, never this URL."""
+    the poll asks for the root under the proxy prefix the SPA's base path uses, never this URL."""
     import base64
     import hashlib
     import re
 
-    _, _, body, headers, _ = await _drained("GET", "/auth/callback", PAGE_LOAD)
+    headers_in = dict(PAGE_LOAD, **({"x-forwarded-prefix": prefix} if prefix else {}))
+    _, _, body, headers, _ = await _drained("GET", path, headers_in)
     script = re.search(r"<script>(.*)</script>", body, re.DOTALL).group(1)
     digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
     csp = headers[b"content-security-policy"].decode()
     assert f"script-src 'sha256-{digest}';" in csp and "script-src 'unsafe-inline'" not in csp
-    assert 's="/auth/callback"' in script and "fetch(base+'/'" in script and "location.href" not in script
+    assert f'<main data-root="{root}" data-kind="restarting">' in body
+    assert "fetch(c.root" in script and "redirect:'manual'" in script and "location.href" not in script
+    assert path not in script
 
 
 @pytest.mark.asyncio
@@ -110,4 +119,5 @@ def test_a_page_load_of_a_bundle_the_update_could_not_rebuild_gets_the_rebuild_p
 
 def test_a_current_bundle_is_served_as_before(monkeypatch, tmp_path):
     page = _webapp(monkeypatch, tmp_path, stale=False).get("/", headers=PAGE_LOAD)
-    assert page.status_code == 200 and "app" in page.text
+    assert page.status_code == 200 and "<body>app</body>" in page.text
+    assert "x-hermes-restart-page" not in page.headers

@@ -702,6 +702,16 @@ export function preserveLocalPendingTurnMessages(
       (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
 
+  // A safety-refused prompt is retained for display as a `system` content_refused
+  // row carrying the user's own text (NOTICE_DISPLAY_KINDS), never a `user` row —
+  // so the acknowledged-user match above cannot see it, and the optimistic
+  // `user-*` prompt (which a canonical submit can leave without a rowId) would be
+  // re-appended beside the greyed block on warm resume. Treat the content_refused
+  // row as that prompt's stored counterpart so the optimistic twin is dropped.
+  const contentRefusedCounterparts = nextMessages.filter(
+    message => message.role === 'system' && message.contentRefused
+  )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -776,6 +786,18 @@ export function preserveLocalPendingTurnMessages(
     }
 
     if (isOptimisticUser && !liveOptimisticUsers.has(message)) {
+      continue
+    }
+
+    // Its stored counterpart is the greyed content_refused row (same prompt
+    // text), so the optimistic prompt is already represented, not unsent input.
+    if (
+      isOptimisticUser &&
+      contentRefusedCounterparts.some(
+        refused =>
+          textWithoutReferenceLines(chatMessageText(refused)) === textWithoutReferenceLines(chatMessageText(message))
+      )
+    ) {
       continue
     }
 

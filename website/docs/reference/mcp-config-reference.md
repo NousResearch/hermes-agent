@@ -349,6 +349,7 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+- `oauth.scope`, when set, is authoritative for the authorization request. The MCP SDK otherwise replaces the client metadata's scope during 401-discovery with the scopes it reads from server metadata (the `WWW-Authenticate` `scope` hint, else the protected resource's `scopes_supported`, else the authorization server's), which an authorization server can reject wholesale when it advertises more scopes than a client may present. An unset `oauth.scope` leaves the SDK's selection untouched
 - Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
 
 ### Device-code login (RFC 8628)

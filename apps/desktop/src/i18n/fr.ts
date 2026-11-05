@@ -20,6 +20,7 @@ import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
 import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
+import { frPluginUpdateAll } from './fr_plugin_update_all'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
@@ -2527,6 +2528,7 @@ export const frOverrides = {
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
       ...frPluginUpdate,
+      ...frPluginUpdateAll,
       ...frPluginPreviewAccess,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
@@ -5196,6 +5198,10 @@ export const frOverrides = {
       authorized: server => `${server} autorisé`,
       failed: server => `Échec de la configuration de ${server}`,
       toolCount: count => (count === 1 ? '1 outil' : `${count} outils`),
+      launchCommand: target => `Exécute : ${target}`,
+      launchRemote: target => `Se connecte à : ${target}`,
+      launchEnv: keys => `Environnement : ${keys}`,
+      launchCwd: dir => `Dossier de travail : ${dir}`,
       envRequired: "Renseignez d'abord les identifiants requis",
       sendFailed: "Impossible d'envoyer la réponse de configuration MCP",
       reloadFailed:

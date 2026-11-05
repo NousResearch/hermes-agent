@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Bu kontrolleri yalnızca yetkili bir Matrix kullanıcısı kullanabilir."
       not_requester: "Bu kontrolleri yalnızca bu işlemi isteyen kullanıcı kullanabilir."
   feishu:
+    clarify:
+      title: "Hermes girdinize ihtiyaç duyuyor"
+      other: "✏️ Diğer (yanıt yazın)"
+      awaiting_typed: "{user} kullanıcısının yazılı yanıtı bekleniyor…"
+    picker:
+      apply_error: "Seçim uygulanırken hata: {error}"
     approval:
       action_session: "Oturum"
       action_always: "Her zaman"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Diğer (yanıt yazın)"
     prompt_expired: ⌛ Bu istem artık yanıt beklemiyor. Yanıtınızı normal bir mesaj olarak gönderin.
 slash:
+  rewind:
+    description: "Düzenleyip yeniden göndermek için önceki bir isteme geri sar veya oradan çatalla (Esc Esc)"
   approve:
     description: "Bekleyen tehlikeli bir komutu onayla"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
+  backtrack:
+    title: "↺ Geri sar — önceki bir istemi seç"
+    keys_hint: "↑/↓ seç · Enter düzenle ve yeniden gönder · f buradan çatalla · Esc kapat"
+    preview_label: "İstem {number} / {total}:"
+    more_lines: "… ({count} satır daha)"
+    editing_hint: "↺ İstem {number} düzenleniyor — Enter buraya geri sarar ve gönderir · Esc Esc iptal eder"
+    edit_cancelled: "↺ Geri sarma iptal edildi; hiçbir şey kaldırılmadı."
+    rewound: "↺ İstem {number}'e geri sarıldı ({count} mesaj arşivlendi); düzenleme gönderiliyor."
+    forked: "⑂ İstem {number} öncesinden çatallandı; özgün oturum {parent} değişmedi. Aşağıdaki istemi düzenleyin ve göndermek için Enter'a basın."
+    nothing: "(._.) Geri sarılacak önceki istem yok."
+    target_changed: "(x_x) İstem {number}'i seçtiğinizden beri oturum değişti; hiçbir şey kaldırılmadı. Düzenlemeniz yazma alanına geri kondu."
+    invalid: "(._.) İstem {value} yok — 1 ile {total} arasında seçin."
+    usage: "Kullanım: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Geri sarma başarısız; geçmiş değiştirilmedi: {error}"
   modern:
     thought_for: "{seconds} sn düşündü"
     thought: "Düşündü"

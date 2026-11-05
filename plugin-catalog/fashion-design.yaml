@@ -1,0 +1,24 @@
+name: fashion-design
+repo: https://github.com/priticolours/fashion-design
+sha: 1fef81776333f8941a800e83a0db9236e0f1d82b
+description: Fashion design toolkit for drafting ideas, tech packs, size sheets, and manufacturing prep
+maintainer: priticolours
+tier: community
+category: tools
+requires_hermes: ">=0.8.0"
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - design_brief
+    - tech_pack
+    - size_sheet
+    - bom
+    - fabric_calculator
+    - cost_sheet
+    - construction_guide
+    - color_palette
+    - measurement_chart
+    - collection_plan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

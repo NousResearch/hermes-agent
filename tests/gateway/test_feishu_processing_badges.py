@@ -50,7 +50,8 @@ def fake_lark_requests(monkeypatch):
     for name in ("CreateMessageReactionRequest", "CreateMessageReactionRequestBody", "DeleteMessageReactionRequest"):
         setattr(im_v1, name, _FakeSdkRequestType)
     contact_v3 = types.ModuleType("lark_oapi.api.contact.v3")
-    setattr(contact_v3, "GetUserRequest", _FakeSdkRequestType)
+    for name in ("GetUserRequest",):
+        setattr(contact_v3, name, _FakeSdkRequestType)
     monkeypatch.setitem(sys.modules, "lark_oapi.api.im.v1", im_v1)
     monkeypatch.setitem(sys.modules, "lark_oapi.api.contact.v3", contact_v3)
     monkeypatch.setattr(

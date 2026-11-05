@@ -81,32 +81,24 @@ def client(monkeypatch, homes):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", homes["launch"] / "state.db")
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c
 
 
-class _StubDB:
-    """Just enough session store for the delete/prune bodies; records nothing itself."""
+class _StubStore:
+    """Just enough storage interface for the prune preview; records nothing itself."""
 
-    def delete_sessions(self, ids, **_kwargs):
-        return len(ids)
+    class maintenance:
+        @staticmethod
+        def count_open_prune_matches(*_args, **_kwargs):
+            return 0
 
-    def delete_empty_sessions(self, sessions_dir=None):
-        return 1
-
-    def count_open_prune_matches(self, **_filters):
-        return 0
-
-    def list_prune_candidates(self, **_filters):
-        return []
-
-    def prune_sessions(self, **_kwargs):
-        return 1
+        @staticmethod
+        def list_prune_candidates(*_args, **_kwargs):
+            return []
 
     def close(self):
         pass
@@ -124,6 +116,7 @@ def seams(monkeypatch):
     from agent import credential_sources
     from hermes_cli import web_server_gateway, web_server_sessions
     from hermes_cli.config import get_hermes_home
+    from hermes_cli.web_routers import sessions as sessions_router
 
     record = {"spawn": [], "db": [], "pool_home": []}
 
@@ -134,9 +127,11 @@ def seams(monkeypatch):
         record["spawn"].append((name, list(argv)))
         return _Proc()
 
+    real_open = web_server_sessions._open_session_db_for_profile
+
     def _open_db(profile, *, read_only):
         record["db"].append(profile)
-        return _StubDB()
+        return _StubStore() if read_only else real_open(profile, read_only=False)
 
     class _Pool:
         def remove_index(self, _index):

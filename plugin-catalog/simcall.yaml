@@ -1,0 +1,42 @@
+name: simcall
+repo: https://github.com/dpvanhoose/hermes-simcall
+sha: 36b2c8567e31113ad24bc431d4392b79709faff6
+description: >-
+  Let your agent make real phone calls from your own Android phone and SIM over
+  USB. It listens, talks and presses keypad digits, and when the far side asks
+  something it does not know, it holds and asks you in chat. No Twilio, no cloud
+  voice API, no public server. Speech runs locally: Kokoro and Parakeet on Apple
+  Silicon, Piper and faster-whisper elsewhere.
+  Disclosure: places real outbound calls on your own phone plan. Transcript text
+  goes to your model, so set a local endpoint to keep it on your network. Setup
+  downloads the D8 compiler from Google Maven and a Piper voice from Hugging Face,
+  each pinned by SHA-256, speech packages into the plugin's own environment (uv
+  and Python 3.11 on Apple Silicon), Kokoro and Parakeet from Hugging Face at
+  pinned revisions (about 2.9 GB), a spaCy model from GitHub, or the unpinned
+  Whisper model off Apple Silicon. It pushes a bridge built from source to the
+  phone's /data/local/tmp over adb. Transcripts are saved locally, newest 200
+  calls kept. Audio recording is off by default. No telemetry, no self-updater,
+  no credential-file reads. Hermes approval before each new number (hermes -z
+  has no approval step), automated systems only by default, and emergency, N11,
+  short-code and premium numbers are hard-blocked.
+maintainer: dpvanhoose
+tier: community
+category: voice
+title: SimCall
+docs_url: https://github.com/dpvanhoose/hermes-simcall#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/dpvanhoose/hermes-simcall/36b2c8567e31113ad24bc431d4392b79709faff6/docs/banner.png
+requires_hermes: ">=0.22.7"
+platforms:
+  - macos
+  - linux
+capabilities:
+  provides_tools:
+    - phone_call
+    - phone_status
+    - phone_answer
+    - phone_hangup
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

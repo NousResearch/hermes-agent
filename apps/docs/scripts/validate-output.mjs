@@ -12,7 +12,6 @@ import { exportedRoutes, htmlPath, rscPath, redirectEntries, sitemapXml, redirec
 import { LOCALES, SITE_URL, DOCS_BASE_PATH, canonicalUrl, localizedHref, publicHref, splitLocalePath } from '../src/lib/urls.ts';
 import { openSearchXml } from './opensearch.mjs';
 import { checkExportLinks } from './check-export-links.mjs';
-import { groupAuthors } from '../src/lib/plugin-pages.ts';
 import { readDocumentMetadata, documentSlugs } from '../src/lib/content.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,21 +152,25 @@ function checkCatalogRoutes(appDir, fail, ctx) {
   }
   const known = new Set(ctx.routes);
   for (const locale of LOCALES) {
-    // The marketplace owns the catalogs; the edge 308s these routes there, so a
-    // revived hub page would be unreachable and stale.
+    // The marketplace owns the catalogs: the edge 308s the hubs, plugin pages and
+    // author pages there, so an exported copy would be unreachable and stale.
     for (const hub of ['plugins', 'skills']) {
       const route = localizedHref(`/${hub}`, locale);
       if (known.has(route) || existsSync(htmlPath(path.join(appDir, 'out'), route))) {
         fail(`the ${locale} ${hub} hub page ${route} is exported, but the marketplace owns it`);
       }
     }
-    for (const name of names) {
-      const route = localizedHref(`/plugins/${encodeURIComponent(name)}`, locale);
-      if (!known.has(route)) fail(`catalog entry ${name} has no ${locale} page at ${route}`);
+    // Any page under /plugins/ (a plugin or author page), whether Next listed it or not.
+    const prefix = `${localizedHref('/plugins', locale)}/`;
+    const pluginsDir = path.join(appDir, 'out', ...prefix.split('/').filter(Boolean));
+    const exported = new Set([...known].filter((route) => route.startsWith(prefix)));
+    if (existsSync(pluginsDir)) {
+      for (const entry of readdirSync(pluginsDir, { recursive: true }).map(String)) {
+        if (path.basename(entry) === 'index.html') exported.add(prefix + path.dirname(entry).split(path.sep).join('/'));
+      }
     }
-    for (const author of groupAuthors(plugins)) {
-      const route = localizedHref(`/plugins/by/${encodeURIComponent(author.slug)}`, locale);
-      if (!known.has(route)) fail(`catalog maintainer ${author.slug} has no ${locale} author page at ${route}`);
+    for (const route of [...exported].sort()) {
+      fail(`the ${locale} catalog page ${route} is exported, but the marketplace owns it`);
     }
   }
 }

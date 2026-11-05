@@ -8,7 +8,7 @@ import threading
 import pytest
 
 from gateway.session_contract import Submission
-from hermes_state_runtime import get_session_admission
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
 from tests.waiting import async_wait_until
 
@@ -52,13 +52,14 @@ async def test_cancel_before_worker_reservation_settles_interrupted(tmp_path, mo
             task.cancel()
             release.set()
             await asyncio.wait_for(task, 10)
-            row = get_session_admission(db, admission_id=receipt.admission_id)
-            assert row['status'] == 'terminal' and row['outcome'] == 'interrupted'
+            row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+            assert row.status == 'terminal' and row.outcome == 'interrupted'
             assert authority.sessions['s'].event_stream.execution == {}
             if phase != 'environment':
                 await async_wait_until(lambda: children and all(child.poll() is not None for child in children),
                                        timeout=10, what='the managed worker child exited')
-            assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
+            with raw_holder(authority.persistence)._read_ctx() as conn:
+                assert conn.execute('SELECT COUNT(*) FROM worker_executions').fetchone()[0] == 0
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)

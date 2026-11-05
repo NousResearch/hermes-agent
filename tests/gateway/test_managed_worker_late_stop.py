@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 # Harmless child: says hello, then on Stop either acknowledges (finished) or keeps chattering.
 CHILD = """import json, sys, threading, time
@@ -64,7 +64,7 @@ def test_repeated_late_stop_shares_the_first_stops_deadline():
         worker.control({'type': 'stop'})
         first = time.monotonic()
         frames = []
-        with pytest.raises(RuntimeStoreError) as stopped:
+        with pytest.raises(AuthorityRefusal) as stopped:
             while True:
                 frames.append(await worker.next_frame(None, ack=ACK))
                 if len(frames) == 3:

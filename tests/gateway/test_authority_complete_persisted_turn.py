@@ -10,11 +10,13 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from persistence.conversation.messages import ConversationRequest
 from run_agent import AIAgent
 
 ACTOR = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
@@ -24,7 +26,7 @@ REF = SessionRef('owned', 's')
 def _flushing_agent(db, session_id):
     """Agent shell owning the real per-turn flush that stamps ``_row_id`` on live dicts."""
     agent = SimpleNamespace(
-        _session_db=db, _session_db_created=True, _persist_disabled=False, session_id=session_id,
+        _session_db=db, persistence=db, _session_db_created=True, _persist_disabled=False, session_id=session_id,
         _session_persist_lock=None, _flushed_db_message_ids=set(), _flushed_db_message_session_id=None,
         _last_flushed_db_idx=0, _persist_user_message_idx=None, _persist_user_message_override=None,
         _persist_user_message_timestamp=None, _pending_cli_user_message=None,
@@ -37,8 +39,7 @@ def _flushing_agent(db, session_id):
 
 def _tool_turn(db, session_id):
     """One earlier turn already stored, then a tool turn the agent runs and flushes itself."""
-    db.append_message(session_id, 'user', 'earlier')
-    db.append_message(session_id, 'assistant', 'before')
+    seed_messages(db, session_id, {'role': 'user', 'content': 'earlier'}, {'role': 'assistant', 'content': 'before'})
     history = [{'role': 'user', 'content': 'earlier'}, {'role': 'assistant', 'content': 'before'}]
     agent = _flushing_agent(db, session_id)
     call = {'id': 'c1', 'type': 'function', 'function': {'name': 'terminal', 'arguments': '{}'}}
@@ -49,14 +50,14 @@ def _tool_turn(db, session_id):
         {'role': 'assistant', 'content': 'finished while away'}]
     agent._persist_user_message_idx = len(history)
     agent._flush_messages_to_session_db(messages, history)
-    rows = db.get_messages_as_conversation(session_id, include_row_ids=True)
+    rows = conversation(db, session_id, ConversationRequest(include_row_ids=True))
     return agent, history, messages, [row['_row_id'] for row in rows[-4:]]
 
 
 def test_turn_runner_result_carries_the_committed_turn_receipt(tmp_path):
     from gateway.run_turn_runner import _persisted_turn
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
     agent, history, messages, row_ids = _tool_turn(db, 's')
     result = {'final_response': 'finished while away', 'messages': messages}
 
@@ -71,14 +72,14 @@ def test_steered_turn_receipt_names_every_user_row_in_order(tmp_path):
     """A steer/redirect adds a second user row, so the turn is never `complete`; the receipt still
     names each committed user row so the client can bind every optimistic bubble it painted."""
     from gateway.run_turn_runner import _persisted_turn
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
     agent = _flushing_agent(db, 's')
     messages = [{'role': 'user', 'content': 'slow one'}, {'role': 'assistant', 'content': 'partial'},
                 {'role': 'user', 'content': 'change course'}, {'role': 'assistant', 'content': 'steered reply'}]
     agent._persist_user_message_idx = 0
     agent._flush_messages_to_session_db(messages, [])
-    row_ids = [row['_row_id'] for row in db.get_messages_as_conversation('s', include_row_ids=True)]
+    row_ids = [row['_row_id'] for row in conversation(db, 's', ConversationRequest(include_row_ids=True))]
     receipt = _persisted_turn(agent, [], {'final_response': 'steered reply', 'messages': messages}, 0)
 
     assert receipt['complete'] is False
@@ -92,12 +93,13 @@ def test_steered_turn_receipt_names_every_user_row_in_order(tmp_path):
 async def test_authority_completion_publishes_the_turn_receipt(tmp_path, monkeypatch):
     from gateway import session_finite
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    epoch = begin_runtime_epoch(db, instance_id='current')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    epoch = db.runtime.begin_epoch(instance_id='current')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', epoch=epoch,
+                                 persistence=db)
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
     frames = []
     authority.sessions['s'].event_stream.observers.add(frames.append)

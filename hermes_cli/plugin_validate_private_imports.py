@@ -144,15 +144,93 @@ def private_import_findings(plugin_dir: Path) -> list[str]:
 # facade + sibling files. Calling one of their private methods (``db._execute_write(...)``,
 # ``runner._evict_cached_agent(...)``) couples the plugin to core internals exactly like a private
 # import, but no import names it, so the import pass above cannot see it.
-_CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", "agent/turn_*.py",
-                        "gateway/run.py", "gateway/run_*.py", "hermes_cli/plugins.py")
+_CORE_HANDLE_SOURCES = ("run_agent.py", "agent/turn_*.py", "gateway/run.py", "gateway/run_*.py",
+                        "hermes_cli/plugins.py")
+# The removed session store's private method names (main's ``hermes_state.py`` and ``hermes_state_*.py``); they go
+# with the ``hermes_state`` stand-in.
+_REMOVED_STORE_PRIVATE_METHODS = (
+    "_acquire_path_permit", "_acquire_process_permit", "_active_clause", "_active_transcript_counts",
+    "_advance_message_uid_backfill", "_append_detached_result", "_append_messages_in_transaction",
+    "_apply_claimed_batch", "_apply_token_batch", "_archive_and_compact_on_conn", "_archive_named_rows",
+    "_attach_import_parents", "_auto_archive_lineage", "_backfill_gateway_metadata_from_sessions_json",
+    "_backfill_progress", "_bump_conversation_generation", "_bump_session_counters", "_canonical_replayed_user_content",
+    "_capture_retired_generation", "_carried_tail_ids", "_carried_tail_slots", "_carry_parent_timestamps",
+    "_chain_search_where", "_check_transcript_write_guards", "_checkout_read_conn", "_claim_stored_copy",
+    "_clone_message_rows", "_close_conn_logged", "_close_connection_quietly", "_close_read_conn",
+    "_coalesce_token_deltas", "_coerce_or", "_compact_session_cols", "_compile_like_boolean_query",
+    "_compression_tip_on", "_connect_and_init", "_connect_and_init_with_lock_patience", "_connect_read_only",
+    "_contains_cjk", "_copy_of_current_row", "_corrupt_error", "_count_cjk", "_db_file_was_replaced",
+    "_db_has_legacy_inline_fts", "_db_has_trigram_tool_calls_projection", "_db_needs_fts_storage_upgrade",
+    "_decode_content", "_decode_display_metadata", "_decoded_repair_row", "_dedupe_display_generations",
+    "_dedupe_legacy_system_prompts", "_dedupe_replayed_user", "_defer_stale_fts_for_holders",
+    "_delete_routing_entries_for_sessions", "_delete_unreferenced_system_prompts", "_demote_legacy_fts_to_trash",
+    "_describe_search_path", "_disable_close_time_checkpoint", "_display_dedupe_key", "_display_identity",
+    "_display_messages_from_conn", "_display_rows_from_conn", "_display_set", "_drain_token_queue_at_exit",
+    "_drop_all_fts_triggers",
+    "_drop_fts_triggers", "_drop_shadowed_checkpoint_rows", "_encode_content", "_encode_display_metadata",
+    "_end_and_bump", "_ensure_db_file_generation", "_ensure_display_order", "_ensure_fts_schema",
+    "_ensure_unique_title_index", "_ensure_v23_fts_tables",
+    "_enter_fts_fail_open", "_evict_one_idle_read_conn", "_exact_replayed_user_clone_key",
+    "_execute_ddl_script_transactional", "_execute_ddl_skipping_settled_triggers", "_execute_transcript_write",
+    "_execute_write", "_expand_compression_lineage", "_fetch_conversation_rows", "_finalize_search_matches",
+    "_find_duplicate_replayed_user_message", "_find_foreign_import_on_conn", "_fold_summary_carrier",
+    "_foreign_state_db_holders", "_freelist_ratio",
+    "_fts_external_index_empty_with_messages", "_fts_index_is_misaligned_source", "_fts_index_known_empty",
+    "_fts_match_sql", "_fts_rebuild_finish", "_fts_table_exists", "_fts_table_probe", "_fts_teardown_start_table",
+    "_fts_teardown_trash_step", "_fts_triggers_missing", "_fts_update_trigger_needs_narrowing", "_get_read_conn",
+    "_get_session_rich_row", "_get_session_rich_rows_batch", "_guarded_ids", "_halt_db_corrupt",
+    "_halt_if_db_generation_changed", "_handle_quarantine_if_invalid", "_has_fts_trash",
+    "_has_short_cjk_token", "_heal_gateway_routing_pk", "_heal_session_model_usage_pk", "_import_float_or_finite",
+    "_import_int_or_bounded", "_import_int_or_none", "_import_json_object_or_none", "_import_load_json",
+    "_import_non_finite_path", "_import_session_row", "_import_text_or_none", "_index_held_dicts",
+    "_inherit_parent_session_metadata", "_init_fts", "_init_schema", "_insert_message_rows", "_insert_row",
+    "_insert_session_row", "_is_compression_ancestor", "_is_compression_child_row", "_is_explicit_branch_session",
+    "_is_explicit_fork_child_row", "_is_fts5_unavailable_error", "_is_fts_write_corruption_error", "_is_model_only_row",
+    "_is_structural_corruption_error", "_is_trigram_unavailable_error", "_ledgered_session_ids", "_legacy_display_page",
+    "_like_rows", "_list_row", "_live_pk_columns", "_loaded_view_content", "_match_rows", "_matching_active_ids",
+    "_matching_retired_ids", "_merge_fts_incrementally", "_merge_model_config_json", "_merged_user_run",
+    "_message_column_names", "_message_row_params", "_migrate_broad_fts_update_triggers",
+    "_migrate_misaligned_fts_source", "_migrate_trigram_cron_exclusion", "_migrate_v22_session_model_usage",
+    "_next_chunk_rows", "_normalize_import_message", "_normalize_import_session", "_open_read_only", "_open_writer",
+    "_open_writer_conn", "_optimize_drive", "_optimize_settle", "_optimize_vacuum", "_or_relaxed_query",
+    "_own_profile_name", "_page_pragmas", "_parse_schema_columns", "_pin_connection", "_pinned_read_conn",
+    "_plan_refused_retention", "_present_fts_tables",
+    "_proved_coverage", "_prune_filter_where", "_prune_shadowed_checkpoints", "_prune_where",
+    "_publish_child_session_row", "_publish_compression_child_on_conn",
+    "_quarantine_reason", "_raise_if_db_corrupt", "_raise_if_db_replaced", "_reaction_list", "_reaction_row_query",
+    "_read_all", "_read_ctx", "_read_one", "_read_retrying_ioerr", "_read_rows", "_read_session_number",
+    "_reap_inactive_orphan_desktop_holders", "_reasoning_json_text", "_rebuild_fts_indexes", "_rebuild_table",
+    "_rebuild_table_statements", "_reconcile_columns",
+    "_reconcile_display_orders", "_record_db_file_identity", "_record_model_usage", "_recover_stale_fts",
+    "_recover_stale_fts_locked", "_refresh", "_refresh_fts_stale_state", "_remove_session_files",
+    "_removed_todo_copies", "_reopen_after_close_locked", "_repair_optimize_bookkeeping", "_replays_as",
+    "_reseed_missing_progress", "_reset_fts_index_to_empty", "_resolve_carried_row_ids", "_resolve_title_conflict",
+    "_resume_count_scope", "_resume_lineage_ids", "_retire_canonical_bot_chat_in_transaction", "_retire_donor_segment", "_retire_undrained_queue_rows_conn",
+    "_rewrite_explains", "_rewritten_carry", "_rich_row", "_routing_entries_for_sessions", "_row_identity",
+    "_row_to_message_dict", "_rows_to_conversation", "_run", "_run_admitted_startup_rebuild", "_run_data_migrations",
+    "_sanitize_fts5_query", "_search_cjk", "_search_message_fields", "_search_messages_impl",
+    "_search_messages_like_fallback", "_search_unindexed_gap", "_seed_fts_rebuild_markers", "_serialized_message_row",
+    "_session_lineage_root_to_tip", "_session_row_dict", "_session_turn_lease_key", "_session_turn_lease_key_on_conn",
+    "_set_lineage_column", "_set_lineage_column_in_transaction", "_set_session_title",
+    "_set_session_title_in_transaction", "_settle_lost_generation_locked", "_sleep_before_write_retry",
+    "_split_rewind_target", "_sqlite_supports_fts5", "_sqlite_table_exists", "_stamp_kept_live_prefix",
+    "_stamp_settled_fts_layout", "_stamp_tool_call_uids", "_stop_token_writer", "_store_system_prompt",
+    "_tail_originals", "_tail_rows_after_watermark", "_title_rank", "_todo_copies", "_todo_copy_removed",
+    "_token_writer_loop", "_topic_read", "_topic_read_all", "_topic_read_one", "_transcript_cursor_slot",
+    "_transcript_durable_firsts", "_trigram_eligible_tokens",
+    "_trigram_route_ok", "_trigram_tokenizer_available", "_try_checkpoint", "_try_incremental_merge_fts",
+    "_try_wal_checkpoint", "_uids_active_outside", "_unarchive_auto_archived_lineage", "_uncounted_merged_rows",
+    "_update_token_counts_in_transaction", "_validate_import_message_content", "_validate_import_payload",
+    "_validate_import_session", "_wal_generation_was_lost", "_warn_fts5_unavailable", "_warn_trigram_unavailable",
+    "_with_messages", "_with_removed_identities", "_write_generation", "_write_guards_reject",
+    "_write_model_config_patch",
+    "_write_rowcount", "_write_session_column", "_write_sql", "_write_sql_logged",
+)
 
 
-@lru_cache(maxsize=1)
-def _core_private_methods() -> frozenset:
-    root = Path(__file__).resolve().parents[1]
+def _private_method_names(root: Path, patterns) -> frozenset:
     names: set[str] = set()
-    for pattern in _CORE_HANDLE_SOURCES:
+    for pattern in patterns:
         for path in root.glob(pattern):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8-sig"))
@@ -162,6 +240,12 @@ def _core_private_methods() -> frozenset:
                       if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                       and item.name.startswith("_") and not item.name.startswith("__")}
     return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def _core_private_methods() -> frozenset:
+    root = Path(__file__).resolve().parents[1]
+    return _private_method_names(root, _CORE_HANDLE_SOURCES) | frozenset(_REMOVED_STORE_PRIVATE_METHODS)
 
 
 def _own_names(files: list[tuple[Path, ast.AST]]) -> set[str]:

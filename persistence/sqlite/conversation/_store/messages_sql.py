@@ -131,5 +131,5 @@ def _scrub_surrogates(value: Any) -> Any:
 
 def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
-    from persistence.sqlite.conversation._store.core import _compression_lock_holder_process_is_dead
-    return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
+    from process_identity import holder_process_is_dead
+    return float(row["expires_at"]) <= now or holder_process_is_dead(row["holder"])

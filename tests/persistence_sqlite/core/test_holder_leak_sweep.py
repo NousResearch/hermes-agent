@@ -23,7 +23,7 @@ from __future__ import annotations
 import threading
 import time
 
-import hermes_state_guard as guard_module
+from persistence.sqlite._state import guard as guard_module
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session
 

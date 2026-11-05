@@ -47,33 +47,47 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
 /** Display kinds of a user row that is still a prompt the user typed (main's `_history_to_messages`). */
 const TYPED_PROMPT_KINDS = new Set(['skill_invocation', 'steer'])
 
+/** A live row `agent/micro_compaction.py` merged adjacent prompts into: model-only, so the display
+ * shows the archived originals in its place. */
+const isMergedPrompt = (row: Record<string, unknown>) =>
+  Boolean((row.display_metadata as undefined | { model_only?: unknown })?.model_only)
+
 /** Each target with `reply`: the assistant text between its prompt and the next user turn, for the
  * picker's context view (the transcript itself cannot be scrolled in native-scrollback mode).
  *
- * Read from the DISPLAY rows (`messages`: compaction handoffs stripped, as the transcript showed them),
- * never the raw stored rows. Every prompt the user typed ends an exchange, rewindable or not: an archived
- * prompt's answer belongs to that prompt, not to the live target before it. Synthetic user rows (an
- * auto-continue note, a failed-turn card) are part of the turn they interrupt and end nothing. */
+ * The exchanges are cut from the STORED rows, the same rows the targets come from: a micro-compaction
+ * merge target (one stored row standing for prompts the display shows separately) still owns the live
+ * answer after it. Rows a compression archived belong to no live exchange and are skipped. Only the
+ * TEXT comes from the display rows (`messages`, keyed by row id: compaction handoffs stripped, as the
+ * transcript showed them); a stored row the display dropped (a standalone handoff summary, a
+ * `[System: …]` notice) adds and ends nothing, except a merge row, which stands for the prompts it
+ * replaced. Synthetic user rows (an auto-continue note, a failed-turn card) end nothing. */
 export function withReplies(
   snapshot: Pick<MutationSnapshot, 'messages' | 'stored_messages'>,
   targets: RewindTarget[]
 ): RewindTarget[] {
   const wanted = new Set(targets.map(target => target.rowId))
+  const shown = new Map((snapshot.messages ?? []).map(row => [row.row_id, row.text]))
   const byRow = new Map<number, string[]>()
   let open: null | string[] = null
 
-  for (const row of snapshot.messages ?? []) {
+  for (const row of snapshot.stored_messages ?? snapshot.messages ?? []) {
+    if (row.archived || (row.role === 'user' && !shown.has(row.row_id) && !isMergedPrompt(row))) {
+      continue
+    }
+
     if (row.role === 'user' && (!row.display_kind || TYPED_PROMPT_KINDS.has(String(row.display_kind)))) {
-      open = !row.archived && wanted.has(row.row_id as number) ? [] : null
+      open = wanted.has(row.row_id as number) ? [] : null
 
       if (open) {
         byRow.set(row.row_id as number, open)
       }
     } else if (open && row.role === 'assistant') {
-      const text = typeof row.text === 'string' ? row.text.trim() : ''
+      const text = shown.get(row.row_id)
+      const trimmed = typeof text === 'string' ? text.trim() : ''
 
-      if (text) {
-        open.push(text)
+      if (trimmed) {
+        open.push(trimmed)
       }
     }
   }

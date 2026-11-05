@@ -5,6 +5,7 @@ import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { rewindTargets, withReplies } from '../app/slash/canonicalRewindPicker.js'
+import { canonicalResult } from '../canonicalGateway.js'
 import { RewindPicker } from '../components/rewindPicker.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -51,8 +52,8 @@ describe('rewind targets carry the reply that followed', () => {
       messages: [
         { role: 'user', text: 'live one', row_id: 21 },
         { role: 'assistant', text: 'answer to live one', row_id: 22 },
-        { archived: true, role: 'user', text: 'archived prompt', row_id: 5 },
-        { archived: true, role: 'assistant', text: 'archived answer', row_id: 6 },
+        { role: 'user', text: 'archived prompt', row_id: 5 },
+        { role: 'assistant', text: 'archived answer', row_id: 6 },
         { role: 'user', text: 'live two', row_id: 23 },
         { role: 'assistant', text: 'answer to live two', row_id: 25 }
       ],
@@ -72,6 +73,41 @@ describe('rewind targets carry the reply that followed', () => {
     expect(targets.map(({ reply, text }) => ({ reply, text }))).toEqual([
       { reply: 'answer to live one', text: 'live one' },
       { reply: 'answer to live two', text: 'live two' }
+    ])
+  })
+
+  it('gives a micro-compaction merge target the answer that followed its merged prompts', () => {
+    // A real `session.resume` after `agent/micro_compaction.py` folded Q1 (interrupted) and Q2 into one
+    // model-only live row: the display shows the archived originals instead, so the target's row id
+    // is not among the display rows. A `[System: …]` notice the display drops ends no exchange.
+    const resume = {
+      messages: [
+        { role: 'user', content: 'Q1\n\nQ2', display_metadata: { model_only: true }, row_id: 6 },
+        { role: 'user', content: 'Q1', archived: true, row_id: 1 },
+        { role: 'user', content: 'Q2', archived: true, row_id: 2 },
+        { role: 'assistant', content: 'A2', row_id: 7 },
+        { role: 'user', content: 'Q3', row_id: 8 },
+        { role: 'assistant', content: 'A3', row_id: 9 },
+        { role: 'user', content: '[System: model switched to x]', row_id: 10 },
+        { role: 'assistant', content: 'A3b after switch', row_id: 11 }
+      ],
+      display_messages: [
+        { role: 'user', text: 'Q1', row_id: 1 },
+        { role: 'user', text: 'Q2', row_id: 2 },
+        { role: 'assistant', text: 'A2', row_id: 7 },
+        { role: 'user', text: 'Q3', row_id: 8 },
+        { role: 'assistant', text: 'A3', row_id: 9 },
+        { role: 'assistant', text: 'A3b after switch', row_id: 11 }
+      ]
+    }
+
+    const snap = canonicalResult('session.resume', resume)
+    const targets = withReplies(snap, rewindTargets(snap))
+
+    expect(targets.map(({ reply, rowId }) => ({ reply, rowId }))).toEqual([
+      { reply: 'A2', rowId: 6 },
+      { reply: 'A3\n\nA3b after switch', rowId: 8 },
+      { reply: undefined, rowId: 10 }
     ])
   })
 })

@@ -328,9 +328,10 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/session_lost_and_found.py",
+    "path": "persistence/sqlite/admin/_lost_and_found.py",
     "symbol": "find_sqlite3_cli",
-    "kind": "bare_which"
+    "kind": "bare_which",
+    "reason": "the SQLite backend's copy of hermes_cli/session_lost_and_found.py::find_sqlite3_cli, resolving sqlite3 as that reviewed site does"
   },
   {
     "path": "hermes_cli/setup_tts.py",

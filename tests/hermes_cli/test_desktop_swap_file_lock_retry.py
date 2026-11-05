@@ -9,6 +9,13 @@ from __future__ import annotations
 
 import os
 import sys
+
+import pytest
+
+# The layout helper branches per host (win-unpacked / linux-unpacked / mac-arm64), so every
+# lane should run its own shape — without a platforms marker the OS lanes never import the
+# file and the darwin-specific lock retry stays unexercised in CI.
+pytestmark = pytest.mark.platforms("any")
 from pathlib import Path
 
 from hermes_cli import main_desktop
@@ -35,16 +42,18 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
-    return desktop_dir, staging, live_exe, slept
+    # The promotion renames the unpacked ROOT (electron-builder's appOutDir), which on darwin is
+    # an ancestor of the exe (…/mac-arm64 vs …/Contents/MacOS) — key the lock on that root.
+    return desktop_dir, staging, live_exe, slept, main_desktop._desktop_unpacked_root(live_exe, desktop_dir / "release")
 
 
 def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeypatch, caplog):
-    desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    desktop_dir, staging, live_exe, slept, live_root = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     locked = {"n": 0}
 
     def scanner_locked_rename(src, dst):
-        if Path(dst) == live_exe.parent and locked["n"] < 2:
+        if Path(dst) == live_root and locked["n"] < 2:
             locked["n"] += 1
             raise PermissionError(32, "being used by another process")
         return real_rename(src, dst)
@@ -61,7 +70,7 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
 
 def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkeypatch, caplog):
     """A lock that never clears: bounded attempts, real OSError surfaced in the log, live app untouched."""
-    desktop_dir, staging, live_exe, slept = _staged_over_live(tmp_path, monkeypatch)
+    desktop_dir, staging, live_exe, slept, live_root = _staged_over_live(tmp_path, monkeypatch)
     real_rename = os.rename
     attempts = {"n": 0}
 
@@ -78,5 +87,5 @@ def test_swap_gives_up_after_bounded_retries_and_keeps_live_app(tmp_path, monkey
     assert attempts["n"] == len(main_desktop._DESKTOP_SWAP_RENAME_RETRY_DELAYS_S) + 1
     assert len(slept) == len(main_desktop._DESKTOP_SWAP_RENAME_RETRY_DELAYS_S)
     assert live_exe.read_text(encoding="utf-8") == "old"
-    assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+    assert not (live_root.parent / (live_root.name + ".previous")).exists()
     assert any("Access is denied" in r.message and "live app kept" in r.message for r in caplog.records)

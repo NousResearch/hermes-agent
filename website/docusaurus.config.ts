@@ -137,6 +137,11 @@ const config: Config = {
           label: 'Docs',
         },
         {
+          href: 'https://hermes-agent.nousresearch.com/marketplace',
+          label: 'Marketplace',
+          position: 'left',
+        },
+        {
           href: 'https://hermes-agent.nousresearch.com/',
           label: 'Download',
           position: 'left',

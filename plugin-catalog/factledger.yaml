@@ -1,0 +1,39 @@
+name: factledger
+title: Factledger
+repo: https://github.com/explorelifehus-eng/factledger
+sha: 2641791435b0075299e9c3f725417680b346b266
+subdir: plugin
+version: "1.0.0"
+description: >-
+  A typed-facts ledger with structural truth — the agent records durable facts
+  (prices, statuses, limits, decisions, capabilities) once and search/show them
+  whenever they matter. For every (scope, subject, predicate) exactly one row is
+  active; a new value closes the previous one (valid_to + superseded_by) instead
+  of overwriting it, so contradictory versions never coexist and history is the
+  audit trail. The full ledger stays queryable on demand, separate from the
+  character-budgeted memory view that is injected every turn. Tools: add, show,
+  search, history, compile, stale, export, check, stats. Local-first TSV store,
+  stdlib only, no network, no credentials. Disclosure — none: no network calls,
+  no shell commands, no background processes, no credential access; every tool
+  reads or writes only the local ledger file.
+maintainer: GiaVaSwNi
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/explorelifehus-eng/factledger
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - factledger_add
+    - factledger_show
+    - factledger_search
+    - factledger_history
+    - factledger_compile
+    - factledger_stale
+    - factledger_export
+    - factledger_check
+    - factledger_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

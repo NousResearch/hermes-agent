@@ -424,6 +424,8 @@ Keep the class attributes in step with the profile's `process_*` fields. Overrid
 
 `agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults. The module keeps its whole former surface for listed catalog plugins pinned to it (`ACP_MARKER_BASE_URL`, its former private helpers, `subprocess` for `Popen` patching); the first access of any of its names warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
 
+A client that does work the user cannot see while a call is in flight — waiting out a rate limit, reconnecting, switching credentials — can say so on the turn's status rail (the CLI status line and `status_callback` for the TUI, desktop and messaging gateway) with `agent.status_output.notify_turn_status(message, kind="lifecycle" | "warn" | "activity")`. `lifecycle`/`warn` print a status line; `activity` updates the transient thinking/spinner line instead (`thinking_callback` — it never becomes a message, so use it for a line that updates while a wait counts down). It returns `False` outside a provider call and never raises; keep it to one short line and throttle it yourself.
+
 ### Picker rows for non-api-key plugins
 
 Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declaring a built-in slug such as `bedrock` is deduped, never doubled), so external-process and OAuth plugins appear in `hermes model`, `/model` and the Desktop model selector alongside the built-in providers. Visibility is gated by credentials, not by `auth_type`:

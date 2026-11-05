@@ -8,17 +8,20 @@ import json
 
 import pytest
 
-from hermes_state_local import API_BINDING_PREFIX
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.conversation.sessions import NewSession
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_holder import api_binding_key
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 
 def _rehome(authority, session_id, **origin):
-    key = API_BINDING_PREFIX + session_id
-    receipt = json.loads(authority.db.get_meta(key))
+    meta, key = authority_persistence(authority).state_meta, api_binding_key(session_id)
+    receipt = json.loads(meta.get(key))
     receipt['profile_id'] = '/departed/host/profiles/alpha'
     receipt['entry']['origin'].update(origin)
-    authority.db.set_meta(key, json.dumps(receipt))
+    meta.set(key, json.dumps(receipt))
 
 
 @pytest.mark.asyncio
@@ -34,7 +37,7 @@ async def test_moved_api_receipt_restores_only_under_its_own_profile(tmp_path, m
         await initialize_gateway_runtime(runner)
         alpha = runner.session_authorities.for_home(homes[1][1])
         for sid in ('api-moved', 'api-sibling'):
-            alpha.db.create_session(sid, source='api_server')
+            authority_persistence(alpha).sessions.create(NewSession(session_id=sid, source='api_server'))
             bind_api_session(alpha, sid)
         _rehome(alpha, 'api-moved')
         _rehome(alpha, 'api-sibling', profile='beta')
@@ -42,10 +45,10 @@ async def test_moved_api_receipt_restores_only_under_its_own_profile(tmp_path, m
 
         restored = restore_api_session(alpha, 'api-moved')
         assert alpha.sessions[restored.session_id].source.profile == 'alpha'
-        with pytest.raises(RuntimeStoreError, match='profile_mismatch'):
+        with pytest.raises(AuthorityRefusal, match='profile_mismatch'):
             restore_api_session(alpha, 'api-sibling')
     finally:
         for authority in list(getattr(runner, 'session_authorities', None) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

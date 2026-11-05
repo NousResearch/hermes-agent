@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 
@@ -29,7 +31,7 @@ async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monke
         alpha = registry.for_home(alpha_home)
         launch = registry.launch
         for authority in (alpha, launch):
-            authority.db.create_session('api-1', source='api_server')
+            seed_session(authority.persistence, 'api-1', 'api_server')
 
         ref = bind_api_session(alpha, 'api-1')
         live = alpha.sessions[ref.session_id]
@@ -61,6 +63,6 @@ async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monke
         assert Path(runner._resolve_profile_home_for_source(restored_source)) == alpha_home.resolve()
     finally:
         for authority in list(getattr(runner, 'session_authorities', None) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

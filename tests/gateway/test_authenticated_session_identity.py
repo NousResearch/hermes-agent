@@ -75,12 +75,12 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     from gateway.session_local import create_local_session
     from gateway.session_contract import SessionActor
     from hermes_cli.web_server_sessions import _session_mutation_context
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
 
     async def actor(session):
@@ -93,7 +93,6 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
         assert auth(ws)[0] is None
         result = factory(authority, object(), ws._hermes_auth_identity).actor
         # HTTP mutation must use precisely the WS ownership/retry key.
-        monkeypatch.setattr('hermes_state._default_db_path', lambda: authority.db.db_path)
         assert _session_mutation_context(request, None)[1].subject == result.subject
         return result
 
@@ -125,7 +124,7 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     # A bare pre-cutover subject is not a sign-in the owner stored: never adopted on first request.
     old = create_local_session(cold, SessionActor('user-a', owner.profile_id, owner.capabilities, 'old'),
                                {**params, 'request_id': 'old-ambiguous'})
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await cold.resolve(reconnect, old)
 
 
@@ -139,11 +138,11 @@ async def test_private_native_subject_preserves_existing_creation_and_mutation_r
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
     caps = frozenset({'session:create', 'session:read', 'session:control'})
     old = SessionActor('uid:1000', 'fixture', caps, 'old')
@@ -157,5 +156,5 @@ async def test_private_native_subject_preserves_existing_creation_and_mutation_r
     result = await mutate_session(authority, old, ref, edit)
     assert await mutate_session(authority, native, ref, edit) == result
     remote = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': old.subject}).actor
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         await authority.resolve(remote, ref)

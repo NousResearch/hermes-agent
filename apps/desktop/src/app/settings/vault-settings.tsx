@@ -343,10 +343,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       return
     }
 
-    // Every kind is filled only on the origin it was saved for; a card without an origin is unfillable.
+    // An origin scopes autofill but is optional for manually managed vault items.
     const origin = form.origin.trim()
 
-    if (!isValidOrigin(origin)) {
+    if (origin && !isValidOrigin(origin)) {
       setFormError(v.originInvalid)
 
       return

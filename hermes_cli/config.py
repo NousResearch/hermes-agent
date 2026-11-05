@@ -1238,9 +1238,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
 
     if current_ver < latest_ver and not floor_refused:
-        config = read_raw_config()
-        config["_config_version"] = latest_ver
-        _persist_migration(config)
+        from hermes_cli.config_drift_warning import persist_and_warn_default_drift
+        persist_and_warn_default_drift(current_ver, latest_ver, results, quiet)
 
     missing_skill_config = get_missing_skill_config_vars()
     if missing_skill_config and interactive and not quiet:

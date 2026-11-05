@@ -22,6 +22,7 @@ import { billingDialogCopy, usageLimitDialog } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
+import { noteTerminalToolComplete } from '../lib/osc7.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
@@ -1575,6 +1576,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (ev.payload.name === 'clarify') {
           flushAbandonedClarify()
         }
+
+        // The terminal tool's `cd` happened in a subshell the host terminal never saw;
+        // its result carries `cwd` only when the command moved. Tell the terminal (OSC 7).
+        noteTerminalToolComplete(getUiState().storedSid, ev.payload.name, ev.payload.result)
 
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''

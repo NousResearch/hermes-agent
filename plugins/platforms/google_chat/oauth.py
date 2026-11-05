@@ -54,7 +54,13 @@ _REQUIRED_PACKAGES = [
 
 # Google deprecated the ``oob`` flow: use a localhost redirect that is expected
 # to FAIL; the user pastes the code from the failed browser URL back into chat.
-_REDIRECT_URI = "http://localhost:1"
+#
+# The port must stay off the browsers' blocked-port list. Port 1 (tcpmux) is on it, and a blocked
+# port does not fail the way this flow needs: Chrome and Firefox refuse to navigate there at all,
+# so the consent screen hangs after "Allow" and no URL carrying ?code= ever reaches the address
+# bar. A normal high port is attempted, refused because nothing is listening, and leaves the code
+# visible — which is the failure this design wants.
+_REDIRECT_URI = "http://localhost:8765"
 
 
 def _sanitize_email(email: str) -> str:

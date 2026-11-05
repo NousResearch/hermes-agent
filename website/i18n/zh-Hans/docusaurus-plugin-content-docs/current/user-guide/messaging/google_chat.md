@@ -214,7 +214,7 @@ python -m gateway.platforms.google_chat_user_oauth \
 
 1. 向机器人发送 `/setup-files`，机器人回复当前状态和下一步操作。
 2. 发送 `/setup-files start`，机器人回复一个 OAuth URL。
-3. 打开该 URL，点击 **Allow**，浏览器会尝试加载 `http://localhost:1/?...&code=...` 并失败。这是预期行为——auth code 在地址栏的 URL 中。
+3. 打开该 URL，点击 **Allow**，浏览器会尝试加载 `http://localhost:8765/?...&code=...` 并失败。这是预期行为——auth code 在地址栏的 URL 中。
 4. 复制失败的 URL（或仅复制 `code=...` 的值），粘贴回 Chat 中作为 `/setup-files <PASTED_URL>`。机器人将其换取 refresh token。
 
 token 保存在 `~/.hermes/google_chat_user_tokens/<sanitized_email>.json`。该用户私信中后续的文件请求将使用*其*token，机器人以其身份上传，消息投递到其 space。

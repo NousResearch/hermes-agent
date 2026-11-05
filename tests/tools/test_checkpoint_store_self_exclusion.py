@@ -151,6 +151,17 @@ class TestStoreNeverStagesItself:
         assert "notes.md" in changed
         assert not [p for p in changed if p.startswith("checkpoints/")], changed
 
+        # Rolling back to it restores the project but never rewinds the live store.
+        ref = _ref_name(_project_hash(str(home)))
+        tip = subprocess.run(["git", f"--git-dir={store}", "rev-parse", ref],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        result = mgr.restore(str(home), polluted_commit)
+        assert result["success"], result
+        assert (home / "notes.md").read_text() == "pre-fix 1\n"
+        after = subprocess.run(["git", f"--git-dir={store}", "rev-list", ref],
+                               capture_output=True, text=True, check=True).stdout.split()
+        assert tip in after, "the live ref lost newer history to the captured store copy"
+
     def test_project_outside_home_unaffected(self, home_as_workdir, tmp_path):
         project = tmp_path / "project"
         project.mkdir()

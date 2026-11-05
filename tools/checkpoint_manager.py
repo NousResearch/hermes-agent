@@ -290,7 +290,7 @@ def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
         )
 
 
-def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
+def _unstage_excluded(store: Path, working_dir, index_file: Path) -> bool:
     """Drop paths the store's excludes now cover from an index re-seeded from an older checkpoint.
 
     ``add -A`` honours ``info/exclude`` only for paths it is not already tracking, so a
@@ -301,13 +301,18 @@ def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
         ["ls-files", "--cached", "--ignored", "-z", f"--exclude-from={store / 'info' / 'exclude'}"],
         store, working_dir, index_file=index_file,
     )
-    paths = [p for p in out.split("\x00") if p] if ok else []
+    if not ok:
+        return False
+    paths = [p for p in out.split("\x00") if p]
     for i in range(0, len(paths), 200):
-        _run_git(
-            ["rm", "--cached", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
+        ok, _, _ = _run_git(
+            ["rm", "--cached", "-f", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
             store, working_dir, index_file=index_file,
             extra_env={"GIT_LITERAL_PATHSPECS": "1"},
         )
+        if not ok:
+            return False
+    return True
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -843,7 +848,8 @@ def _dir_file_count(path: str) -> int:
                     if not any(fnmatch.fnmatchcase(name, p) for p in file_patterns):
                         count += 1
                 elif not any(
-                    fnmatch.fnmatchcase(name, p) for p in directory_patterns
+                    # git applies slash-less patterns (``*.log``) to directories too
+                    fnmatch.fnmatchcase(name, p) for p in directory_patterns + file_patterns
                 ):
                     retained_directories.append(name)
                 if count > _MAX_FILES:
@@ -1350,10 +1356,11 @@ class CheckpointManager:
                         for record in selected.split("\x00")
                         if record.startswith("160000 ") and "\t" in record
                     ]
+                    store_paths = _store_pathspecs(store.parent, abs_dir)
                     selected_paths = [
-                        record.split("\t", 1)[1]
-                        for record in selected.split("\x00")
-                        if "\t" in record
+                        path for record in selected.split("\x00") if "\t" in record
+                        for path in [record.split("\t", 1)[1]]
+                        if not any(path == sp or path.startswith(sp + "/") for sp in store_paths)
                     ]
                     if not selected_paths:
                         # An exclusion-only spec can match nothing. Checkout
@@ -1466,8 +1473,11 @@ class CheckpointManager:
                     extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         else:
+            # A checkpoint taken before the store was excluded holds a copy of it: never check
+            # that out over the live store (it would rewind refs to the captured ones).
+            store_excludes = _exclude_store_args(store.parent, abs_dir)[1:]
             ok, _stdout, err = _run_git(
-                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                ["checkout", commit_hash, "--", file_path if file_path else ".", *store_excludes],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
             )
@@ -1588,12 +1598,16 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # Drop entries the old tree carries but this build excludes BEFORE staging: ``add -A``
+        # re-reads every tracked path, and a locked browser-profile file would fail it each time.
+        _unstage_store(store, working_dir, index_file)
+        if not _unstage_excluded(store, working_dir, index_file):
+            logger.debug("Checkpoint could not drop newly excluded paths from the index")
+            return False
         ok, err = self._stage_with_oversize_preflight(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
-        _unstage_store(store, working_dir, index_file)
-        _unstage_excluded(store, working_dir, index_file)
 
         if self.max_file_size_mb > 0:
             if not self._drop_oversize_from_index(store, working_dir, index_file):

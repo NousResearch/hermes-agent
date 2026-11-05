@@ -798,6 +798,11 @@ class TestDirFileCount:
         build_dir.mkdir()
         for idx in range(10):
             (build_dir / f"generated-{idx}.o").write_text("generated")
+        # git applies a slash-less pattern (``*.log``) to a directory too.
+        log_dir = Path(work_dir) / "run.log"
+        log_dir.mkdir()
+        for idx in range(10):
+            (log_dir / f"part-{idx}.txt").write_text("log")
 
         assert mgr.ensure_checkpoint(work_dir, "before_edit") is True
 
@@ -836,7 +841,10 @@ class TestSnapshotScopeGuards:
             old_build.setattr(cm, "DEFAULT_EXCLUDES",
                               [p for p in cm.DEFAULT_EXCLUDES if "chrome" not in p])
             assert mgr.ensure_checkpoint(str(work_dir), "old build") is True
-        # ...and the next snapshot on this build drops it from the same store.
+        # ...Chromium then rewrites and locks it (unreadable here), and the next snapshot on this
+        # build drops it from the same store without ever reading it.
+        (profile / "Cookies").write_text("rewritten while locked")
+        (profile / "Cookies").chmod(0)
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('again')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "new build") is True

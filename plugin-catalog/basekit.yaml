@@ -1,0 +1,26 @@
+name: basekit
+repo: https://github.com/D0xedDevi0/hermes-basekit
+sha: 3e16a9a70dba22fa6b6e2855a064832ba1084511
+description: >-
+  Read-only live Base (chain 8453) intelligence — gas and real USD cost estimates,
+  wallet portfolios, decoded transaction receipts, token facts with proxy detection, and
+  windowed transfer/approval reads — plus a desktop pane, status-bar chip and a
+  standard-library-only core with no PyPI dependencies.
+maintainer: D0xedDevi0
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "1.0.0"
+readme: true
+capabilities:
+  provides_tools:
+    - base_network
+    - base_portfolio
+    - base_tx
+    - base_token
+    - base_activity
+    - base_allowances
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

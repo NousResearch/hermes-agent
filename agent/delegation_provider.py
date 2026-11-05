@@ -15,7 +15,7 @@ unchanged in-process and under ``plugins.isolation: host``.
 Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any of):
 
 * ``model``, ``provider``, ``base_url``, ``api_key``, ``api_mode``, ``request_overrides``,
-  ``reasoning_effort``, ``fallback_providers`` - shaped exactly like the ``delegation`` config
+  ``reasoning_effort``, ``fallback_providers``, ``acp_cwd`` - shaped exactly like the ``delegation`` config
   section and resolved by the same credential resolver ``delegation.*`` uses (empty route = the
   child inherits the parent's route, like an empty ``delegation`` section). An unknown
   ``reasoning_effort`` refuses the task.
@@ -44,13 +44,13 @@ from agent.provider_base import ProviderBase
 #: raw route fields (``provider``/``model``/``base_url``/``api_key``) never become model-facing.
 RESERVED_TASK_PARAMETERS = frozenset({
     "goal", "context", "index", "output_schema", "images", "group", "role", "toolsets",
-    "acp_command", "acp_args", "provider", "model", "base_url", "api_key", "api_mode",
+    "acp_command", "acp_args", "acp_cwd", "provider", "model", "base_url", "api_key", "api_mode",
 })
 
 #: Keys a route may carry; anything else in a provider's answer is ignored.
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
-    "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
+    "reasoning_effort", "service_tier", "fallback_providers", "profile", "label", "acp_cwd",
 })
 
 

@@ -746,6 +746,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     if _is_external_process_provider(agent.provider):
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
+        client_kwargs["acp_cwd"] = agent.acp_cwd
     from agent.provider_route_hooks import route_answer
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
@@ -770,6 +771,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
     already bound and there is no OpenAI client to construct.
     """
+    from agent.agent_init_clients import _client_kwargs_from_routed
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
@@ -927,6 +929,14 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             raise
 
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    if _is_external_process_provider(agent.provider):
+        # An explicit remote cwd wins over the router's configured default.
+        if agent.acp_cwd is not None:
+            client_kwargs["acp_cwd"] = agent.acp_cwd
+        agent.acp_command = client_kwargs.get("command")
+        agent.acp_args = list(client_kwargs.get("args") or [])
+        agent.acp_cwd = client_kwargs.get("acp_cwd")
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
@@ -990,22 +1000,6 @@ def _host_default_headers_factory(base_url: str):
         if base_url_host_matches(base_url, host):
             return factory
     return None
-
-
-def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
-    """OpenAI-client kwargs mirroring a router-resolved client, keeping its provider headers
-    (SDK stores them in ``_custom_headers``; older/mocked clients expose ``default_headers``)."""
-    kwargs = {"api_key": client.api_key, "base_url": str(client.base_url)}
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    headers = (
-        getattr(client, "_custom_headers", None)
-        or getattr(client, "default_headers", None)
-        or getattr(client, "_default_headers", None)
-    )
-    if headers:
-        kwargs["default_headers"] = dict(headers)
-    return kwargs
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
@@ -2143,6 +2137,7 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    *, acp_cwd: str | None = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2189,6 +2184,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
+    agent.acp_cwd = acp_cwd
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
 

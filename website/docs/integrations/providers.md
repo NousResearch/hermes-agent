@@ -219,6 +219,23 @@ Sign in with `hermes auth add copilot` (device-code login), or set `COPILOT_GITH
 
 Setup, models and environment variables: [github-copilot plugin docs](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot).
 
+### Remote ACP working directory
+
+When an ACP provider launches its server through SSH or another remote wrapper,
+set the server's absolute session directory in `config.yaml`:
+
+```yaml
+model:
+  acp_cwd: "/remote/workspace"
+```
+
+The launcher keeps Hermes' local working directory; `session/new` receives this
+remote path unchanged, even when it does not exist locally. Without `acp_cwd`,
+ACP continues to use Hermes' resolved session workspace. The setting applies to
+CLI, TUI/Desktop, gateway, API, cron and auxiliary clients. Delegated children
+inherit it; `delegation.acp_cwd` overrides it. Configure it in YAML rather than
+adding a non-secret environment variable.
+
 ### First-Class API-Key Providers
 
 These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:

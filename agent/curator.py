@@ -1100,7 +1100,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         agent_kwargs: dict[str, Any] = {}
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
-            agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+            agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []), acp_cwd=rp.get("acp_cwd"))
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_reasoning_config
 

@@ -334,9 +334,9 @@ class ACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or self._resolve_command()
         self._acp_args = list(acp_args or args or self._resolve_args())
-        # The session's workspace, not the process cwd: under the gateway every turn runs in
-        # the daemon (or a managed worker) whose own cwd is unrelated to the client's.
-        self._acp_cwd = str(Path(acp_cwd or resolve_agent_cwd()).resolve())
+        # The launcher runs locally; an explicit session cwd belongs to the ACP server.
+        self._process_cwd = str(resolve_agent_cwd().resolve())
+        self._acp_cwd = acp_cwd or self._process_cwd
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed = False
         # Clients are cached and shared across concurrent callers (auxiliary tasks, async
@@ -407,7 +407,7 @@ class ACPClient:
             # pipes stay intact for the ACP wire.
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
+                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._process_cwd, env=_build_subprocess_env(),
                 creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:

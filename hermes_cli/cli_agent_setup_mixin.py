@@ -40,6 +40,7 @@ def _current_runtime(cli) -> dict:
         "api_mode": cli.api_mode,
         "command": cli.acp_command,
         "args": list(cli.acp_args or []),
+        "acp_cwd": getattr(cli, "acp_cwd", None),
         "credential_pool": getattr(cli, "_credential_pool", None)}
 
 
@@ -47,7 +48,7 @@ def _route_signature(model, runtime: dict) -> tuple:
     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()), runtime.get("acp_cwd"))
 
 
 def _cooldown_cause(entry) -> str:
@@ -301,7 +302,7 @@ class CLIAgentSetupMixin:
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
-            list(runtime.get("args") or []))
+            list(runtime.get("args") or []), runtime.get("acp_cwd"))
         # A callable api_key is a bearer-token provider (Azure Entra ID): the OpenAI SDK
         # invokes it per request, so skip string validation / placeholder substitution.
         if not callable(api_key) and not (isinstance(api_key, str) and api_key):
@@ -324,8 +325,9 @@ class CLIAgentSetupMixin:
             print(f"\n{t('cli.startup.empty_base_url')}")
             return False
         credentials_changed = api_key != self.api_key or base_url != self.base_url
-        routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
-        self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
+        routing_changed = resolved_routing != (
+            self.provider, self.api_mode, self.acp_command, self.acp_args, getattr(self, "acp_cwd", None))
+        self.provider, self.api_mode, self.acp_command, self.acp_args, self.acp_cwd = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
         self._provider_source = runtime.get("source")
         self.api_key = api_key
@@ -698,7 +700,7 @@ class CLIAgentSetupMixin:
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
-                acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
+                acp_args=runtime.get("args"), acp_cwd=runtime.get("acp_cwd"), credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,

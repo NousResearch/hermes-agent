@@ -3172,6 +3172,7 @@ delegation:
   #     options: [...]
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
+  # acp_cwd: "/remote/workspace"            # Remote ACP session directory (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
   # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
@@ -3192,6 +3193,8 @@ delegation:
 **Delegation strategy (`backend`):** `delegation.backend` picks the strategy plugin that decides each subagent's route. `default` follows the keys below (or the parent's route when they are empty). Plugin strategies such as `model_map` (a named model per task) and `profile_routes` (a Hermes profile per task) read their settings from `delegation.backends.<backend name>`. A backend whose plugin is missing or disabled fails closed: `delegate_task` returns a tool error naming it and the fix (`/delegation default`, or `hermes config set delegation.backend default`) instead of running children on another route. A backend route without its own `fallback_providers` uses `delegation.fallback_providers`. See [Subagent Delegation → Delegation strategies](features/delegation.md#delegation-strategies-delegationbackend).
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+
+**ACP working directory (`acp_cwd`):** `model.acp_cwd` sets the ACP server's session directory. Children inherit it; `delegation.acp_cwd` overrides it. The path need not exist on the local host when using SSH. The launcher stays in Hermes' local workspace, and switching a child to an HTTP provider clears inherited ACP settings.
 
 **Subagent fallback chain:** Set `delegation.fallback_providers` to give workers their own chain (same entry shape as the top-level list). An explicitly pinned child (by provider, endpoint, or model) uses that chain only when it is declared; otherwise it fails loudly instead of borrowing the parent agent's route. For an unpinned child, an absent or `null` setting preserves parent-chain inheritance. Use `fallback_providers: []` under `delegation:` to disable child fallback entirely.
 

@@ -274,6 +274,11 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+For an ACP provider running through SSH, `model.acp_cwd` sets the remote session
+directory. Children inherit it; set `delegation.acp_cwd` to give them a different
+absolute server path. These paths do not need to exist locally. See
+[Remote ACP working directory](../../integrations/providers.md#remote-acp-working-directory).
+
 In Desktop, set the same keys under **Settings → Model → Subagents** (see [Desktop](../desktop.md#subagent-models-and-limits)). The page edits the profile chosen under **Applies to**, affects subagents launched after you click **Apply**, and never changes the main model or a child that is already running.
 
 ### Cost strategy: frontier planner, inexpensive workers

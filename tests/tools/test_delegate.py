@@ -1534,28 +1534,21 @@ class TestDispatchDelegateTask(unittest.TestCase):
             return "{}"
 
         parent = _make_mock_parent(depth=0)
+        hidden = {"acp_command": "claude", "acp_args": ["--acp", "--stdio"], "acp_cwd": "/untrusted"}
         with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
             run_agent.AIAgent._dispatch_delegate_task(
                 parent,
                 {
                     "goal": "test",
-                    "acp_command": "claude",
-                    "acp_args": ["--acp", "--stdio"],
-                    "tasks": [
-                        {
-                            "goal": "nested",
-                            "acp_command": "codex",
-                            "acp_args": ["--acp"],
-                        },
-                    ],
+                    **hidden,
+                    "tasks": [{"goal": "nested", **hidden}],
                 },
             )
 
-        self.assertNotIn("acp_command", captured)
-        self.assertNotIn("acp_args", captured)
         self.assertEqual(captured["goal"], "test")
-        self.assertNotIn("acp_command", captured["tasks"][0])
-        self.assertNotIn("acp_args", captured["tasks"][0])
+        for name in hidden:
+            self.assertNotIn(name, captured)
+            self.assertNotIn(name, captured["tasks"][0])
 
 
 

@@ -216,6 +216,8 @@ def _profile_route(home: Path) -> TaskRoute:
         model, provider, rt.get("base_url"),
         rt.get("api_key") or "no-key-required", rt.get("api_mode"), dict(rt.get("request_overrides") or {}),
         command=rt.get("command"), args=list(rt.get("args") or []),
+        # An unset profile cwd must not inherit another profile's remote path.
+        acp_cwd=rt.get("acp_cwd") or "",
     )
     return TaskRoute(creds, {"fallback_providers": fallback if isinstance(fallback, list) else []},
                      ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home)

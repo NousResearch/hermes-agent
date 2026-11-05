@@ -1309,10 +1309,10 @@ DEFAULT_CONFIG = {
         # hindsight, supermemory, mem0, openviking, holographic). Empty = built-in only.
         "provider": "",
     },
-    # Subagent delegation: `backend` = task-routing strategy ("default": keys below), `backends.<name>` = its settings.
     "delegation": {
         "backend": "default",
         "backends": {},
+        "acp_cwd": "",  # Remote ACP session directory (empty = inherit parent).
         "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
         "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
         # Fallback chain for delegated children (same entry format as the top-level list).

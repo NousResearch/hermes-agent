@@ -20,7 +20,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
-_RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_mode', 'command', 'args',
+_RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_mode', 'command', 'args', 'acp_cwd',
                  'credential_pool', 'max_tokens', 'capabilities')
 
 

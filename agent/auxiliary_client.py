@@ -5249,7 +5249,7 @@ def _resolve_external_process_branch(req: _ResolveRequest, creds: dict[str, Any]
             return None, None
         try:
             client = _extproc_profile.create_client(
-                api_key=api_key, base_url=base_url,
+                api_key=api_key, base_url=base_url, acp_cwd=creds.get("acp_cwd"),
                 command=str(creds.get("command", "")).strip() or None, args=list(creds.get("args") or []))
         except Exception:
             logger.warning("resolve_provider_client: profile %r failed to create an external-process client",
@@ -5270,7 +5270,6 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     try:
         from hermes_cli.auth import (
             PROVIDER_REGISTRY, resolve_api_key_provider_credentials,
-            resolve_external_process_provider_credentials,
         )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
@@ -5284,7 +5283,8 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     if auth_type == "api_key":
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
     if auth_type == "external_process":
-        return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        return _resolve_external_process_branch(req, resolve_runtime_provider(requested=provider, target_model=req.model))
     from agent.auxiliary_client_registry import REGISTRY_AUTHTYPE_ARMS
     arm = REGISTRY_AUTHTYPE_ARMS.get(auth_type)
     if arm is not None:

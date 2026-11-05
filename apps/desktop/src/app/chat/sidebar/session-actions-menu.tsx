@@ -30,7 +30,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { ArchiveOff } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
-import { exportSession } from '@/lib/session-export'
+import { copyConciseTranscript, exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -439,6 +439,22 @@ function useSessionActions({
       onSelect: () => {
         triggerHaptic('selection')
         void exportSession(sessionId, { profile, title })
+      }
+    }),
+    spec({
+      disabled: !sessionId,
+      icon: 'copy',
+      label: r.copyConcise,
+      onSelect: () => {
+        triggerHaptic('selection')
+        const gateway = activeGateway()
+        const runtimeId = resolveRuntimeIdForStored(sessionId)
+
+        void copyConciseTranscript(runtimeId, (method, params) =>
+          gateway
+            ? requestForOwnedSession(runtimeId, ambientRequestFor(gateway), method, params ?? {})
+            : Promise.reject(new Error('gateway_unavailable'))
+        )
       }
     })
   ]

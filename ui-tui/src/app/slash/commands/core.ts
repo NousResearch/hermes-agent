@@ -104,6 +104,61 @@ const PREVIEW_CHARS = 50
 /** Clip a queued/steered prompt for the confirmation line. */
 const previewOf = (text: string): string => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
+// OSC 52 payloads are capped by terminals (xterm: 100,000 base64 chars = 74,994 raw bytes).
+const OSC52_MAX_TEXT_BYTES = 74_994
+
+/** `/copy all`: the whole conversation as concise Markdown, rendered by the OWNER from its stored display
+ *  history (`session.export` + `concise`: compaction-archived turns and the compression lineage included,
+ *  no tool logs, no model call), then written to THIS machine's clipboard. A gateway that predates the
+ *  option refuses it: that is reported, never answered from the rows loaded in this UI. */
+const copyConciseTranscript = (ctx: SlashRunCtx) => {
+  const { sys } = ctx.transcript
+
+  if (!ctx.sid) {
+    return sys(t('slashCmd.core.copy.nothingToCopy'))
+  }
+
+  if (!ctx.gateway.gw?.isCanonical) {
+    return sys(t('slashCmd.core.copy.allUnsupported'))
+  }
+
+  void ctx.gateway
+    .rpc<SessionExportResponse>('session.export', { concise: true, format: 'md', redact: false, session_id: ctx.sid })
+    .then(async r => {
+      const text = r?.content
+
+      if (typeof text !== 'string' || !text.trim()) {
+        return ctx.stale() ? undefined : sys(t('slashCmd.core.copy.nothingToCopy'))
+      }
+
+      const chars = String(text.length)
+
+      if (!isRemoteShellSession(process.env) && (await writeClipboardText(text))) {
+        return ctx.stale() ? undefined : sys(t('slashCmd.core.copy.allCopied', chars))
+      }
+
+      if (Buffer.byteLength(text, 'utf8') > OSC52_MAX_TEXT_BYTES) {
+        return sys(t('slashCmd.core.copy.allTooLarge'))
+      }
+
+      writeOsc52Clipboard(text)
+
+      if (!ctx.stale()) {
+        sys(t('slashCmd.core.copy.sentOsc52'))
+      }
+    })
+    .catch(error => {
+      const message = error instanceof Error ? error.message : String(error)
+
+      // An older owner refuses the unknown `concise` key (invalid_params) or the whole verb.
+      sys(
+        message === 'invalid_params' || message === 'unknown_method'
+          ? t('slashCmd.core.copy.allOutdated')
+          : t('slashCmd.core.copy.failed', message)
+      )
+    })
+}
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -475,7 +530,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'copy selection or assistant message',
+    help: 'copy selection, an assistant message, or the whole concise transcript (all)',
     name: 'copy',
     run: async (arg, ctx) => {
       const { sys } = ctx.transcript
@@ -493,6 +548,10 @@ export const coreCommands: SlashCommand[] = [
         } else {
           return sys(t('slashCmd.core.copy.clipboardFailed'))
         }
+      }
+
+      if (arg.trim().toLowerCase() === 'all') {
+        return copyConciseTranscript(ctx)
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
@@ -651,7 +710,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'save the current transcript to JSON',
+    help: 'save the current transcript (json|md|html, --concise for dialogue only)',
     name: 'save',
     run: (arg, ctx) => {
       const hasConversation = ctx.local
@@ -670,14 +729,26 @@ export const coreCommands: SlashCommand[] = [
       // the user's machine, as the classic CLI's `/save [json|md|html] [filename] [redact]` did.
       // The same verb serves a remote Desktop, where the gateway's disk is not the user's.
       if (ctx.gateway.gw?.isCanonical) {
-        const parts = arg.trim().split(/\s+/).filter(Boolean)
-        const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
+        // `--concise` / `--redact` may sit anywhere; the legacy bare `redact` only as the last word.
+        const words = arg.trim().split(/\s+/).filter(Boolean)
+        const lower = (w: string) => w.toLowerCase()
+        const concise = words.some(w => lower(w) === '--concise')
+        let parts = words.filter(w => lower(w) !== '--concise')
+        let redact = parts.some(w => lower(w) === '--redact')
 
-        if (redact) {
-          parts.pop()
+        parts = parts.filter(w => lower(w) !== '--redact')
+
+        if (!redact && lower(parts.at(-1) ?? '') === 'redact') {
+          redact = true
+          parts = parts.slice(0, -1)
         }
 
         const [format = 'json', filename] = parts
+
+        if (concise && !['md', 'markdown'].includes(format.toLowerCase())) {
+          return ctx.transcript.sys(t('slashCmd.core.save.conciseMdOnly'))
+        }
+
         // The user's folder, fixed now: a local session's cwd, else the launch HERMES_CWD (a remote
         // session's folder names the gateway host's disk, not this one).
         const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
@@ -686,7 +757,12 @@ export const coreCommands: SlashCommand[] = [
         // The write is the user's accepted request: it runs even when another slash has started
         // since (the stale-flight guard drops only the success notice; a failure always shows).
         return void ctx.gateway
-          .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
+          .rpc<SessionExportResponse>('session.export', {
+            format,
+            redact,
+            session_id: ctx.sid,
+            ...(concise ? { concise } : {})
+          })
           .then(r => {
             if (!r) {
               return

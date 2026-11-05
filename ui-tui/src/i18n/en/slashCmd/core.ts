@@ -74,7 +74,12 @@ export const slashCmdCoreEn = {
       copiedCharsOne: (count: string) => `copied ${count} character`,
       copiedCharsOther: (count: string) => `copied ${count} characters`,
       clipboardFailed: 'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence',
-      usage: 'usage: /copy [number]',
+      usage: 'usage: /copy [number|all]',
+      allCopied: (chars: string) => `copied the concise transcript (${chars} characters)`,
+      allTooLarge:
+        'the transcript is too large for the terminal clipboard (about 74 KB max) — use /save md --concise instead',
+      allOutdated: 'this gateway is too old for /copy all — update it to copy the concise transcript',
+      allUnsupported: '/copy all needs the canonical gateway — use /save md --concise or update Hermes',
       nothingToCopy: 'nothing to copy — start a conversation first',
       sentOsc52: 'sent OSC52 copy sequence (terminal support required)',
       copied: 'copied to clipboard',
@@ -108,7 +113,8 @@ export const slashCmdCoreEn = {
       noConversation: 'no conversation yet',
       noActiveSession: 'no active session — nothing to save',
       saved: (file: string) => `conversation saved to: ${file}`,
-      failed: 'failed to save'
+      failed: 'failed to save',
+      conciseMdOnly: '--concise only applies to Markdown: /save md --concise'
     },
     focus: {
       statusOn: 'focus view on — only your prompt and the final response',

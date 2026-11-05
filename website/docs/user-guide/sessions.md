@@ -389,6 +389,19 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Concise transcript
+
+To move a conversation into another AI app, copy its **concise transcript**: the user and assistant messages as plain Markdown, in order, with a `## User` / `## Assistant` heading per message. Tool calls and results, reasoning ("Thinking"), system and internal instructions, model-switch and other timeline notices, and compaction handoff summaries are left out. Message text is taken verbatim: code blocks, links, emoji and non-Latin text survive. Attachments appear as short placeholders such as `[image]`, never as file contents or base64. Nothing is summarized or rewritten, and no model is called.
+
+| Where | How |
+|-------|-----|
+| CLI / TUI | `/copy all` copies it to your clipboard; `/save md --concise [filename]` writes the same text to a file (add `--redact` to scrub secrets first) |
+| Desktop | Session menu → **Copy concise transcript**, or `/save md --concise` |
+
+It covers the **whole** conversation, not what the model currently holds or what is loaded on screen: turns archived by compaction and earlier segments of a compression chain are included. A message carried into a later segment appears once; a message you really sent twice appears twice. Undone or edited-away messages, branches and other sessions are not included. It is not `/compress`: that shortens the model's working context, this never changes the session. The transcript is read from the stored history at the moment you ask, so it ends at the last message already stored; text of a reply that is still streaming is not part of it. Run it again after the turn finishes.
+
+The clipboard is always the one on the machine you are typing on, even when Hermes runs elsewhere (Desktop → remote gateway, TUI over SSH). Over SSH the terminal clipboard (OSC 52) is capped at about 74 KB; a longer transcript is not truncated. Hermes says so and you use `/save md --concise` instead. `--concise` applies to Markdown only, and a gateway older than this feature reports that it cannot produce one rather than copying what the UI has loaded. `/copy`, `/copy N` and the other `/save` formats are unchanged.
+
 ### Export Sessions
 
 `hermes sessions export` is one surface for every export format, selected with `--format`:

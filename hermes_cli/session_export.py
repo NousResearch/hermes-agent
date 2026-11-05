@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, UTC
 from html import escape as html_escape
 import json
+import re
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
 
 from hermes_cli.timefmt import coerce_epoch
@@ -240,8 +241,96 @@ def load_save_snapshot(db: Any, session_id: str, fmt: str) -> Optional[dict[str,
     return export
 
 
+# --- Concise transcript: the visible user/assistant dialogue of the WHOLE conversation ---------------
+# Deterministic projection (no model call): it reads the stored display history, so turns archived by
+# compaction and the verified compression lineage are included, and runs it through the SAME
+# ``_history_to_messages`` projection the chat UIs paint from. Only the visible text of user/assistant
+# rows is whitelisted into the result; tool rows, reasoning, provider replay fields and system rows never
+# leave this function.
+
+# display_kind values that are dialogue the user saw (None = a plain turn). Every other kind is a
+# timeline notice (model/personality switch, delegation/failure/auto-continue notes), not dialogue.
+_CONCISE_DISPLAY_KINDS = frozenset({None, "", "steer", "skill_invocation"})
+_CONCISE_DATA_URL_RE = re.compile(r"data:[A-Za-z0-9.+/-]+;base64,[A-Za-z0-9+/=_-]{64,}")
+# A terminal's OSC 52 payload is capped (xterm: 100,000 base64 chars = 74,994 raw bytes).
+OSC52_MAX_TEXT_BYTES = 74_994
+
+
+def _concise_text(message: dict[str, Any]) -> str:
+    """Visible text of one projected display row: the commentary the chat shows, then the answer."""
+    body = message.get("display_content")
+    if not isinstance(body, str):
+        body = message.get("text")
+    parts = [p for p in (message.get("display_commentary") or []) if isinstance(p, str) and p.strip()]
+    if isinstance(body, str) and body.strip():
+        parts.append(body)
+    text = "\n\n".join(p.strip("\n") for p in parts)
+    return _CONCISE_DATA_URL_RE.sub("[attachment]", text)
+
+
+def concise_messages(rows: Iterable[dict[str, Any]], profile_home: Any = None) -> list[dict[str, str]]:
+    """``[{"role", "content"}]`` for the stored display *rows* (``get_messages_as_conversation`` shape)."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    from tui_gateway.session_history import _history_to_messages
+
+    prepared: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("role") not in ("user", "assistant"):
+            continue
+        meta = row.get("display_metadata")
+        if isinstance(meta, dict) and meta.get(MODEL_ONLY_DISPLAY_METADATA_KEY):
+            continue  # a micro-compaction merge the model reads but nobody typed
+        # Tool calls are structural records, not dialogue: the projection must never render them.
+        prepared.append({k: v for k, v in row.items() if k != "tool_calls"})
+    out: list[dict[str, str]] = []
+    for message in _history_to_messages(prepared, profile_home=profile_home, image_urls=False):
+        role = message.get("role")
+        if role not in ("user", "assistant") or message.get("display_kind") not in _CONCISE_DISPLAY_KINDS:
+            continue
+        if text := _concise_text(message):
+            out.append({"role": role, "content": text})
+    return out
+
+
+def load_concise_transcript(db: Any, session_id: str, profile_home: Any = None) -> Optional[dict[str, Any]]:
+    """The whole conversation ending at physical session *session_id* (its compression lineage root → tip,
+    compaction-archived turns included, undone/edited/branched rows excluded), or None without a row.
+
+    One read-only pass over stored rows: no compaction, no model call, no new turn; the live model context
+    and the loaded UI rows are never the source. ``messages`` is empty for a conversation with no dialogue."""
+    session = db.get_session(session_id)
+    if not session:
+        return None
+    rows = db.get_messages_as_conversation(
+        session_id, include_ancestors=True, include_compacted=True, include_row_ids=True)
+    return {"id": session_id, "title": db.get_session_title(session_id) or session.get("title"),
+            "messages": concise_messages(rows, profile_home)}
+
+
+def render_concise_markdown(session: dict[str, Any]) -> str:
+    """Portable Markdown of a :func:`load_concise_transcript` dict: speaker headings, message text verbatim."""
+    title = " ".join(str(session.get("title") or session.get("id") or "Untitled").split())
+    lines = [f"# Conversation: {title}", ""]
+    for message in session.get("messages") or []:
+        lines += [f"## {'User' if message['role'] == 'user' else 'Assistant'}", "", message["content"], ""]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def parse_save_args(parts: list[str]) -> tuple[list[str], bool, bool]:
+    """``(positional words, redact, concise)`` of ``/save`` words. ``--redact`` / ``--concise`` may sit
+    anywhere; the legacy bare ``redact`` is a flag only as the last word (a file may be called redact.md)."""
+    words = list(parts)
+    concise = "--concise" in [w.lower() for w in words]
+    words = [w for w in words if w.lower() != "--concise"]
+    redact = "--redact" in [w.lower() for w in words]
+    words = [w for w in words if w.lower() != "--redact"]
+    if not redact and words and words[-1].lower() == "redact":
+        redact, words = True, words[:-1]
+    return words, redact, concise
+
+
 SAVE_USAGE = """/save — export the current session to a file
-Usage: /save <format> [filename] [redact]
+Usage: /save <format> [filename] [redact] [--concise]
 
 Formats:
   json    full session snapshot (canonical export shape)
@@ -252,11 +341,14 @@ Options:
   filename   optional output name/path (default: auto-named;
              CLI saves under ~/.hermes/sessions/saved/)
   redact     scrub API keys, tokens, and credentials before writing
+  --concise  (md only) the visible user/assistant dialogue of the whole
+             conversation, without tool logs or internal records
 
 Examples:
   /save json
   /save html
   /save md notes.md
+  /save md --concise
   /save html session.html redact"""
 
 _SAVE_FORMAT_ALIASES = {"json": "json", "snapshot": "json", "md": "md", "markdown": "md", "html": "html"}

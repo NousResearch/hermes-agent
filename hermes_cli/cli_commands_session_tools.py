@@ -10,6 +10,7 @@ cli_commands_mixin import _t`` style imports keep working.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import importlib
 import io
 import shlex
@@ -187,10 +188,41 @@ class CLICommandsSessionToolsMixin:
         else:
             _cp(_dim_line(_t("paste.extract_failed")))
 
+    def _copy_concise_transcript(self) -> None:
+        """``/copy all``: the whole conversation's visible dialogue as concise Markdown, from the stored
+        display history (the same text ``/save md --concise`` writes), never the live model context.
+        Read-only: no model call, compaction or new turn. Never truncated: past the terminal's OSC 52
+        payload cap it says so and points at the file export."""
+        from hermes_cli.gateway_tools_notify import gateway_store
+        from hermes_cli.session_export import OSC52_MAX_TEXT_BYTES
+        store = gateway_store(self)
+        if store is not None:  # the gateway owns the session: it renders, THIS machine's clipboard receives
+            if not self.conversation_history:
+                return _cp(f"  {_t('copy.nothing_yet')}")
+            from hermes_cli.cli_session_mixin import _export_on_gateway
+            text = _export_on_gateway(store.connection, self.session_id, "md", None, False, True)
+        else:
+            text = self._concise_transcript_text(False)
+        if not text:
+            return None
+        try:
+            from hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
+            if is_remote_shell_session() or not write_clipboard_text(text):
+                if len(text.encode("utf-8")) > OSC52_MAX_TEXT_BYTES:
+                    return _cp(f"  {_t('copy.all_too_large', limit=OSC52_MAX_TEXT_BYTES // 1000)}")
+                self._write_osc52_clipboard(text)
+                _cp(f"  {_t('copy.all_copied_osc52', chars=len(text))}")
+            else:
+                _cp(f"  {_t('copy.all_copied', chars=len(text))}")
+        except (OSError, subprocess.SubprocessError, ValueError) as e:  # clipboard tool / terminal write
+            _cp(f"  {_t('copy.failed', error=e)}")
+
     def _handle_copy_command(self, cmd_original: str) -> None:
-        """Handle /copy [number] — copy assistant output to clipboard."""
+        """Handle /copy [number|all] — copy assistant output (or the whole concise transcript) to clipboard."""
         from cli import _assistant_copy_text
         arg = _command_arg(cmd_original)
+        if arg.lower() == "all":
+            return self._copy_concise_transcript()
         assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
         if not assistant:
             return _cp(f"  {_t('copy.nothing_yet')}")

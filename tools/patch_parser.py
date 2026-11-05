@@ -258,7 +258,7 @@ def _hint_pick(content: str, hunk: Hunk,
 
 
 def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered: bool,
-                 written: tuple[Span, ...] = ()) -> tuple[Optional[Span], int, Optional[str]]:
+                 written: tuple[Span, ...] = (), successive: bool = False) -> tuple[Optional[Span], int, Optional[str]]:
     """``(span, candidates, conflict)``: the one source site this hunk may edit, else
     ``(None, candidates, conflict)``.
 
@@ -268,9 +268,9 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
     of this patch wrote (``written``) is never a site. Precedence: a unique @@ hint @@ site
     first (position in the patch never overrides it; one behind the cursor while another site
     follows it is a conflict); then the scope after the previous hunk, across the whole matcher
-    chain before any earlier site; then order the patch states (an ``ordered`` hunk, the first
-    of several or one of a run of identical hunks, takes the first site at or after
-    ``cursor``, inside its hint's windows if the hint occurs); else exactly one site."""
+    chain before any earlier site; then order the patch states (the first of several without
+    a literal hint, or a run of identical hunks), else exactly one site. An inconclusive hint
+    cannot make an unrelated later hunk silently select its first candidate."""
     free = lambda span: _unwritten(content, span, hunk, written)
     tiers = [[s for s in tier if free(s)] for tier in _line_spans(content, pattern.split('\n'))]
     raw = [s for pos in _positions(content, pattern) if free(s := (pos, pos + len(pattern)))]
@@ -284,8 +284,8 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         extra = [r for r in raw + norm if inside(r) and not any(_overlaps(r, line) for line in lines)]
         return sorted(lines + _distinct(sorted(extra)))
 
-    if not any(tiers):  # no whole-line site anywhere: the fuzzy chain decides
-        return None, len(_distinct(sorted(raw))), None
+    if not any(tiers) and not raw:  # no literal site: the fuzzy chain decides
+        return None, 0, None
     # Inside a bounded scope (after the previous hunk, around an @@ hint @@) a whole-line site
     # must not shadow a site only a normalizing strategy finds, so those count there too.
     if cursor or _hint_windows(content, hunk.context_hint):
@@ -297,13 +297,15 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         whole, after = (sorted(whole + fuzzy), []) if similar else (whole, fuzzy)
     windows, hinted = _hint_pick(content, hunk, sites)
     if hinted:
-        if cursor and hinted[0] < cursor and after:
+        ranges = _edit_ranges(content, hinted, hunk)
+        behind = ranges[0][0] < cursor and not (ranges == [hinted] and hinted[0] < cursor < hinted[1])
+        if cursor and behind and any(not _overlaps(hinted, site) for site in after):
             return None, len(after) + 1, ("its @@ hint targets a site before "
                                           "the previous hunk while another site follows it")
         return hinted, 1, None
     if windows and ordered:
         after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)]
-    if len(after) == 1 or (after and ordered):
+    if len(after) == 1 or (after and ordered and (not windows or successive)):
         return after[0], len(after), None
     pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
     return (pool[0], 1, None) if len(pool) == 1 else (None, len(pool), None)
@@ -441,6 +443,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
     strategies: list[str] = []
     written: list[Span] = []
     removed: list[str] = []  # source text earlier hunks replaced
+    landed: list[tuple[str, str]] = []
     changes = cursor = 0
     changed_patterns = ['\n'.join(s) for s, r in map(_split_hunk, hunks) if s and s != r]
     for index, hunk in enumerate(hunks, start=1):
@@ -482,9 +485,10 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             continue
         # Order the patch itself states: the first hunk of several starts at the top of the file,
         # and a run of identical hunks edits successive sites.
-        ordered = (index == 1 and len(hunks) > 1) or changed_patterns.count('\n'.join(search_lines)) > 1
+        successive = changed_patterns.count('\n'.join(search_lines)) > 1
+        ordered = (index == 1 and len(hunks) > 1) or successive
         span, candidates, conflict = _select_span(content, pattern, hunk, cursor, ordered=ordered,
-                                                  written=tuple(written))
+                                                  written=tuple(written), successive=successive)
         if span is not None:
             new_content, edit, error, strategy = _window_edit(content, *span, pattern, replacement)
             error = error and f"{label} not found — {error}" or (None if edit else f"{label} not found")
@@ -496,13 +500,15 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
         else:
             new_content, edit, error, strategy = _fuzzy_replace_hunk(content, hunk, pattern, replacement, free, removed)
             # Already-applied hunks are a no-op; only reached when no site of the search text remains.
-            error = (None if not error or is_already_applied(content, pattern, replacement) else
+            consumed_differently = any(wrote != replacement and _consumed(pattern, [old]) for old, wrote in landed)
+            error = (None if not error or (not consumed_differently and is_already_applied(content, pattern, replacement)) else
                      f"{label} not found — {error}" + _no_match_hint(error, pattern, content))
         if error:
             errors.append(error)
         if edit:
             start, old_end, cursor = edit
             removed.append(content[start:old_end])
+            landed.append((content[start:old_end], replacement))
             content = new_content
             strategies.append(strategy)
             notes.extend([correction] if correction else [])

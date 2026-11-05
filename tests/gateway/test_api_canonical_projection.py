@@ -1,6 +1,7 @@
 """Canonical API admissions project the real turn: media, tool payloads, controls, outcomes."""
 import asyncio
 import base64
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -161,6 +162,38 @@ async def test_run_sse_tool_completed_preview_is_bounded(api, owner):
     completed = next((e for e in _events(queue) if e['event'] == 'tool.completed'), None)
     assert completed is not None, _events(queue)
     assert len(completed['preview']) == 500 and completed['preview'].endswith('...'), completed
+
+
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_reports_each_calls_own_duration(api, owner, monkeypatch):
+    """Canonical tool sinks carry no duration, so the run stream reported 0 for every tool; overlapping
+    calls must each report the time between their own start and completion."""
+    from gateway.platforms import api_server_runs
+    clock = [10.0]
+    monkeypatch.setattr(api_server_runs, 'time', SimpleNamespace(
+        monotonic=lambda: clock[0], time=time.time, perf_counter=time.perf_counter))
+    admitted = admit_api_turn(api, session_id='sse-duration', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        slow, fast = {'path': 'big.xlsx'}, {'path': 'small.txt'}
+        turn.combined_tool_start_callback('call-slow', 'read_file', slow)
+        clock[0] = 11.0
+        turn.combined_tool_start_callback('call-fast', 'read_file', fast)
+        clock[0] = 11.25
+        turn.combined_tool_complete_callback('call-fast', 'read_file', fast, 'small body')
+        clock[0] = 12.5
+        turn.combined_tool_complete_callback('call-slow', 'read_file', slow, 'big body')
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    durations = {e['tool_call_id']: e['duration'] for e in _events(queue) if e['event'] == 'tool.completed'}
+    assert durations == {'call-fast': 0.25, 'call-slow': 2.5}, durations
 
 
 def _wrap(api, run_id, loop, sink):

@@ -25,7 +25,6 @@ import {
   isSubmitEnter,
   Loader,
   LogView,
-  MessageTextContent,
   SegmentedControl,
   Textarea,
   Tip,
@@ -58,6 +57,7 @@ import {
   useKanbanScope
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
+import { TaskMarkdown } from './task-markdown'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -181,18 +181,6 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
       return { label: event.kind.replace(/_/g, ' '), detail: detail || undefined }
     }
   }
-}
-
-// Task bodies, results, summaries and comments are agent-written markdown;
-// rendering them raw left `**Goal:**` and backticks literal. Same renderer as
-// chat. `media={false}`: kanban text is not session-scoped, so `MEDIA:` paths
-// must not be resolved against the active gateway.
-function TaskMarkdown({ text }: { text: string }) {
-  return (
-    <div className="min-w-0 [&_.aui-md>:first-child]:mt-0 [&_.aui-md>:last-child]:mb-0" data-selectable-text="true">
-      <MessageTextContent media={false} text={text} />
-    </div>
-  )
 }
 
 // Sidebar property row: a Section (so every sidebar label — these, Estimate,
@@ -471,7 +459,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <TaskMarkdown text={body} />
+        <TaskMarkdown linkPaths text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -737,7 +725,7 @@ function FeedTabs({
                     <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
                     <span className="text-[0.625rem] text-(--ui-text-quaternary)">{ago(comment.created_at)}</span>
                   </div>
-                  <TaskMarkdown text={comment.body} />
+                  <TaskMarkdown linkPaths text={comment.body} />
                 </li>
               ))}
             </ul>

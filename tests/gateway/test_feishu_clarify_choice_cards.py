@@ -169,3 +169,30 @@ async def test_multi_select_card_accepts_a_typed_free_form_answer(adapter):
     assert cg.attempt_text_response_for_session("sess", "use canary instead") == cg.TEXT_RESOLVED
     assert cg._entries["m1"].response == "use canary instead"
 
+
+@pytest.mark.asyncio
+async def test_a_newer_picker_in_the_chat_retires_the_older_one_and_both_are_shared(adapter):
+    adapter._loop = asyncio.get_running_loop()
+    applied = []
+
+    async def on_choice(chat_id, value):
+        applied.append(value)
+
+    adapter.send = AsyncMock()
+    choices = [{"value": "anthropic/claude-sonnet-4.5", "label": "Switch to anthropic/claude-sonnet-4.5 (in budget)"},
+               {"value": "low", "label": "Low"}]
+    cards = []
+    for _ in range(2):
+        assert (await adapter.send_choice_picker(CHAT, "Keep going on another model:", choices, "sess", on_choice)).success
+        cards.append(json.loads(adapter._feishu_send_with_retry.call_args.kwargs["payload"]))
+    old_values, new_values = ([b["value"] for b in c["elements"][1]["actions"]] for c in cards)
+    assert cards[0]["config"]["update_multi"] is True
+    body = cards[0]["elements"][0]["content"]
+    assert "(in budget)" in body and body != cards[0]["header"]["title"]["content"]
+
+    assert _click(adapter, old_values[1]) is None  # the replaced picker no longer applies
+    settled = _click(adapter, new_values[1])
+    assert settled["config"]["update_multi"] is True
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert applied == ["low"]

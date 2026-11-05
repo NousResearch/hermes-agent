@@ -141,18 +141,18 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, LocalRuntimeUnavailableError):
         # The chosen model is configured; its local server is down. Not a credential verdict, so
         # the client must not offer "Update API key" or sign-in: the sentence names the fix.
         return f"⚠️ {exc}", exc.error_code, exc.retryable
-    if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
+    if isinstance(exc, AuthorityRefusal) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
         from agent.turn_failure_copy import launch_credentials_copy
         return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
-    if isinstance(exc, RuntimeStoreError):
+    if isinstance(exc, AuthorityRefusal):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
         # /login — the profile's own credentials were never in play.
@@ -214,7 +214,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             owner_id = (source.chat_id if getattr(source, 'platform', None) == Platform.LOCAL
                         else authority.logical_owner(ctx.session_id))
             if owner_id in authority.sessions:
-                generation = authority.db.get_session(owner_id)["runtime_generation"]
+                from gateway.session_persistence import authority_persistence
+                from persistence.core.errors import StoreUnavailable
+                if (store := authority_persistence(authority)) is None:
+                    raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+                # A live session without its row fails the turn with the error reading the absent row raises.
+                if (row := store.sessions.get(owner_id)) is None:
+                    raise TypeError("'NoneType' object is not subscriptable")
+                generation = row.runtime_generation
                 self._approval_owner = (authority, owner_id, generation)
 
 
@@ -1120,9 +1127,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         try:
             # run_sync is off-loop (executor); sync DB is fine.
-            binding = self._runner._session_db._db.get_telegram_topic_binding_by_session(session_id=agent_session_id)
-            if binding and binding.get("thread_id"):
-                ctx.source.thread_id = str(binding["thread_id"])
+            binding = self._runner.persistence.routing.get_topic_binding_for_session(session_id=agent_session_id)
+            if binding and binding.thread_id:
+                ctx.source.thread_id = str(binding.thread_id)
                 logger.debug(
                     "Restored source.thread_id=%s from binding after session split %s → %s",
                     ctx.source.thread_id, ctx.session_id, agent_session_id,
@@ -1174,7 +1181,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 src = ctx.source
                 if (
                     getattr(src, "platform", None) == Platform.TELEGRAM and getattr(src, "chat_type", None) == "dm"
-                    and getattr(src, "thread_id", None) is None and runner._session_db is not None
+                    and getattr(src, "thread_id", None) is None and runner.persistence is not None
                 ):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
@@ -1243,12 +1250,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         policy = policy_for_source(self._runner, self._ctx.source)
         with ExitStack() as scope:
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:
                     raise

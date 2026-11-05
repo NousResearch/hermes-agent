@@ -554,36 +554,38 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
         inflight: dict[str, asyncio.Task] = {}
 
-        async def _dispatch(row, session_id, session_db, profile_name) -> None:
+        async def _dispatch(row, session_id, store, profile_name) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
             try:
                 await self._process_handoff(*((row, profile_name) if _process_takes_profile else (row,)))
-                await session_db.complete_handoff(session_id)
+                await store.aio.coordination.complete_handoff(session_id=session_id)
             except asyncio.CancelledError:
                 # Leave the row 'running' so the next start's reclaim marks it failed with a clear reason.
                 raise
             except Exception as exc:
                 logger.warning("Handoff for session %s failed: %s", session_id, exc, exc_info=True)
                 with _log_suppressed(logging.DEBUG, "Could not record handoff failure", exc_info=True):
-                    await session_db.fail_handoff(session_id, str(exc))
+                    await store.aio.coordination.fail_handoff(session_id=session_id, error=str(exc))
             finally:
                 inflight.pop(session_id, None)
 
         async def _tick(profile_name: Optional[str] = None) -> None:
             """One poll of the CURRENTLY-SCOPED store; ``profile_name`` (None = root) routes delivery
             to that profile's OWN adapter. A closure, not a method: tests bind ``_handoff_watcher`` onto
-            a ``SimpleNamespace`` with only ``_session_db``/``_running``/``_process_handoff``."""
-            session_db = getattr(self, "_session_db", None)
-            if session_db is None:
+            a ``SimpleNamespace`` with only ``persistence``/``_running``/``_process_handoff``."""
+            store = getattr(self, "persistence", None)
+            if store is None:
                 return
-            pending = await session_db.list_pending_handoffs()
-            for row in pending:
-                session_id = row.get("id")
+            pending = await store.aio.coordination.list_pending_handoffs()
+            for handoff in pending:
+                session_id = handoff.session_id
                 if not session_id or session_id in inflight:
                     continue
-                if not await session_db.claim_handoff(session_id):
+                if not await store.aio.coordination.claim_handoff(session_id=session_id):
                     # Another tick or another gateway already claimed it.
                     continue
+                # The session-row fields ``_process_handoff`` reads.
+                row = {"id": session_id, "handoff_platform": handoff.platform, "title": handoff.title}
                 # INVARIANT (do not weaken): created inside _profile_runtime_scope but RUNS after it
                 # exits; it sees the profile scope only because ensure_future copies the Context.
                 # Positional, not keyword: the watcher's existing unit tests bind a stand-in
@@ -596,7 +598,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 # primary-config delivery (the exact bug fixed in #91217) while still recording
                 # handoff_state='completed'.
                 inflight[session_id] = asyncio.ensure_future(
-                    _dispatch(row, session_id, session_db, profile_name)
+                    _dispatch(row, session_id, store, profile_name)
                 )
 
         # A row still 'running' at startup died mid-dispatch and blocks request_handoff until reclaimed.

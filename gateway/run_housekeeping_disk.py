@@ -78,9 +78,10 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     import asyncio
     import time
     from gateway.config import Platform
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import policy_for_source
     from hermes_cli import prune_advisor
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     live = authority.sessions.get(ref.session_id)
     source = getattr(live, "source", None)
@@ -88,11 +89,13 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
         return
     try:
         policy = policy_for_source(authority.runner, source)
-    except RuntimeStoreError:  # policy not restored yet: this viewer gets no notice, the next one may
+    except AuthorityRefusal:  # policy not restored yet: this viewer gets no notice, the next one may
         return
     if policy is None or policy.source not in {"tui", "gui"}:
         return
-    home = Path(authority.db.db_path).parent
+    if (store := authority_persistence(authority)) is None:
+        return  # no store to name the profile home: no notice for this viewer
+    home = store.scope.profile_dir
     if not prune_advisor.notice_due(home, _LOCAL_NOTIFIED):
         return
     _LOCAL_NOTIFIED[str(home)] = time.time()  # in-flight claim: one estimate per home at a time

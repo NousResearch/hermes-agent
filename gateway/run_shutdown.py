@@ -2080,7 +2080,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return
         _step = GatewayShutdownMixin._quiet_step
         # Close SQLite session DBs so --replace's new gateway does not hit 'database is locked'.
-        # ``_session_db`` is an AsyncSessionDB facade — unwrap; ``session_store`` holds ``_db``.
+        # ``_session_db`` may wrap the SessionDB it serves (``_db``): unwrap; ``session_store`` holds ``_db``.
         _self_db = getattr(self, "_session_db", None)
         _self_db = getattr(_self_db, "_db", _self_db)
         store = getattr(self, "session_store", None)
@@ -2093,15 +2093,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             _step("SessionDB handle sweep error", _sweep)
         # Same sweep for the runner's own per-profile session_search handles.
         _step("Runner SessionDB handle sweep error", lambda: GatewayRunner.close_all_session_db_handles(self))
+        _step("Runner persistence handle sweep error", lambda: GatewayRunner.close_all_persistence_handles(self))
 
         def _close_shared() -> None:
-            # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
-            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
-            # (#90837).
-            from hermes_state_registry import close_all
-            closed = close_all()
-            if closed:
-                logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
+            # Shared stores still held in the process-wide registry (tools, cron, mirror, the storage interface).
+            # This is the safety net that guarantees no WAL write lock survives past gateway shutdown (#90837).
+            from persistence_assembly import close_all_stores
+            if closed := close_all_stores():
+                logger.debug("Closed %d shared store(s) at shutdown", closed)
 
         _step("Shared SessionDB close error", _close_shared)
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())

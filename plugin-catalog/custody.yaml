@@ -1,7 +1,7 @@
 name: custody
 repo: https://github.com/Parker-Fawcett/custody
-sha: d4622ecfe791c6fc28ca5f800de5682df445a240
-version: "0.1.0"
+sha: c9a6ebb882a7ddfee305c20609ad4b42fc9b801b
+version: "0.1.1"
 description: >-
   Resolve what a destructive command will actually touch before Hermes asks you
   to approve it, then escalate anything this session did not create. Approvals

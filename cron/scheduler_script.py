@@ -297,8 +297,11 @@ def _windows_cron_bootstrap_argv(
     python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
     """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
     the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
-    editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
-    ``__file__``/``sys.path[0]`` semantics). Plain invocation if the venv is unresolvable."""
+    editable installs would be invisible; bootstrap via addsitedir + a real ``__main__`` module for
+    source scripts (mirrors ``_POSIX_SCRIPT_BOOTSTRAP``, #124973). Shapes runpy resolved by path
+    (zipapp ``.pyz``, sourceless ``.pyc``, a directory) keep going through ``run_path`` — this
+    bootstrap replaced one that ran them, so it must not drop them. Plain invocation if the venv
+    is unresolvable."""
     site_packages = next((Path(item) for item in env_overlay.get("PYTHONPATH", "").split(os.pathsep)
                           if Path(item).name == "site-packages"),
                          _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages")
@@ -309,13 +312,32 @@ def _windows_cron_bootstrap_argv(
             "without .pth processing (editable installs may be unimportable)",
             site_packages)
         return [python_exe, script_path]
+    # runpy.run_path swaps __main__ out once the body returns, so atexit handlers and non-daemon
+    # threads that pickle script-defined classes fail with "attribute lookup on __main__ failed"
+    # (#124973 fixed this on POSIX; Windows ran the same broken bootstrap). Install a real
+    # __main__ module the way a plain ``python script.py`` does, so sys.modules["__main__"]
+    # survives the body. Only source runs that way: for anything else the compile below refuses
+    # the file with a bare "source code string cannot contain null bytes" (zipapp, sourceless
+    # bytecode) or a PermissionError (a directory), so those keep runpy's loader-by-path path —
+    # the behaviour this bootstrap had before, and one no job silently loses.
     bootstrap = (
-        "import os, runpy, site, sys;"
-        f"site.addsitedir({str(site_packages)!r});"
-        "script = sys.argv[1];"
-        "sys.argv = [script] + sys.argv[2:];"
-        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
-        "runpy.run_path(script, run_name='__main__')"
+        "import importlib.machinery, os, runpy, site, sys, types" + os.linesep +
+        f"site.addsitedir({str(site_packages)!r})" + os.linesep +
+        "script = sys.argv[1]" + os.linesep +
+        "sys.argv = [script] + sys.argv[2:]" + os.linesep +
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(script)))" + os.linesep +
+        "if script.lower().endswith(tuple(importlib.machinery.SOURCE_SUFFIXES)):" + os.linesep +
+        "    main = types.ModuleType('__main__')" + os.linesep +
+        "    main.__file__ = script" + os.linesep +
+        "    main.__loader__ = importlib.machinery.SourceFileLoader('__main__', script)" + os.linesep +
+        "    main.__cached__ = None" + os.linesep +
+        "    main.__builtins__ = __builtins__" + os.linesep +
+        "    sys.modules['__main__'] = main" + os.linesep +
+        "    with open(script, 'rb') as f:" + os.linesep +
+        "        code = compile(f.read(), script, 'exec')" + os.linesep +
+        "    exec(code, main.__dict__)" + os.linesep +
+        "else:" + os.linesep +
+        "    runpy.run_path(script, run_name='__main__')"
     )
     return [python_exe, "-c", bootstrap, script_path]
 

@@ -1,13 +1,13 @@
 name: constraint-vault
 repo: https://github.com/jusst01/constraint-vault
 sha: e7949720041458c6b23821fc4091343c7b3fd0d9
-description: "Pins the user exact constraints (numbers, addresses, hard rules) as structured local data and re-injects them verbatim into the model context on every turn and immediately after every context compaction, with a SHA-256 hash-logged injection record, because memory providers and compression silently paraphrase or drop exact values. Not a memory provider and not a compressor: a guard layer above both. Disclosure: local code only; stores constraints in a JSON file under ~/.hermes managed through its own tools and commands, reads them back for injection, opens no network connections and starts no processes."
+description: "Pins the user exact constraints (numbers, addresses, hard rules) as structured local data and re-injects them verbatim into the model context on every turn and immediately after every context compaction, with a SHA-256 hash-logged injection record, because memory providers and compression silently paraphrase or drop exact values. Not a memory provider and not a compressor: a guard layer above both. Disclosure — local code only, no network or processes; stores constraints in constraint-vault.json in the Hermes home and appends a hash record to constraint-vault-injections.jsonl on every turn; the model can pin or drop constraints through its own tools without asking, and pinned text is injected into the model context on every turn of every session until dropped."
 maintainer: jusst
 tier: community
 category: general
 docs_url: https://github.com/jusst01/constraint-vault#readme
 version: "0.1.0"
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.22.3"
 platforms: []
 capabilities:
   provides_tools: [vault_pin, vault_list, vault_drop]

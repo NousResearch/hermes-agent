@@ -45,6 +45,10 @@ class PromptSubmitParams(SessionParams):
     confirm_empty_truncate: bool | None = None
     confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
     rebind_survivor_row_ids: list[int] | None = None
+    # Per-turn declared values (``terminal.client_env_turn_passthrough``): bound for THIS turn's tool
+    # subprocesses only, never stored with the session and never logged. A run identity changes per
+    # turn, so the session's frozen ``client_env`` cannot carry it.
+    turn_env: dict[str, str] | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
     hosted_task: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_task")

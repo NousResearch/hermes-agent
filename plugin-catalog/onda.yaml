@@ -18,3 +18,4 @@ capabilities:
   requires_env: []
 known_issues:
 - "Sign-in needs one extra command after install, because a portable plugin cannot declare an OAuth MCP server: hermes mcp add onda --url https://api.getonda.ru/mcp --auth oauth --connect-timeout 300"
+requires_hermes: ">=0.22.0"

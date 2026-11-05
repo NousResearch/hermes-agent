@@ -1,10 +1,12 @@
 import type { TranslationOverrides } from './define-locale'
 import { zhHantPluginPreviewAccess } from './zh-hant_plugin_preview_access'
+import { zhHantPluginUpdateAll } from './zh-hant_plugin_update_all'
 
 export const zhHantCapabilities = {
   skills: {
     plugins: {
       ...zhHantPluginPreviewAccess,
+      ...zhHantPluginUpdateAll,
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。',
       folderAccess: {
         title: '資料夾存取',

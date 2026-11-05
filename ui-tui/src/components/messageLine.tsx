@@ -18,6 +18,7 @@ import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.j
 
 import { MessageImages } from './inlineImage.js'
 import { Md } from './markdown.js'
+import { PasteSections } from './pasteSections.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
@@ -328,6 +329,12 @@ export const MessageLine = memo(function MessageLine({
       </Box>
 
       <MessageImages cols={cols} msg={msg} spaced t={t} />
+      <PasteSections
+        marginLeft={gutterWidth}
+        pastes={msg.pastes}
+        t={t}
+        width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+      />
     </Box>
   )
 })

@@ -72,7 +72,7 @@ def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
     key = "agent:main:local:dm:launch-yolo"
     monkeypatch.setattr(session_policy, "policy_for_source",
                         lambda _runner, _source: SimpleNamespace(yolo=True, platform="cli", max_turns=5,
-                                                                        skills_prompt=None))
+                                                                        skills_prompt=None, ignore_user_config=False))
 
     def _stop(**_kw):
         raise RuntimeError("stop after the yolo seam")

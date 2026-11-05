@@ -159,7 +159,7 @@ async function submitDialog() {
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
   await act(async () => {})
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
 
   if (!submit.disabled) {
     await act(async () => { fireEvent.click(submit) })
@@ -206,7 +206,7 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
 
   const { onCreated, onClose } = await submitDialog()
   expect(screen.getByRole('status').textContent).toBe(unavailable)
-  expect((screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement).disabled).toBe(true)
   expect(notify).not.toHaveBeenCalled()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
@@ -248,7 +248,7 @@ it('canonical creation offers this connection and reachable other-connection bot
   })
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
   await waitFor(() => expect(submit.disabled).toBe(false))
   expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull()
   expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
@@ -295,7 +295,7 @@ it('rechecks the current mode before creating after a mixed legacy selection', a
   })
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (3)' })
+  const submit = screen.getByRole('button', { name: 'Create group (3)' })
   expect((submit as HTMLButtonElement).disabled).toBe(false)
 
   await act(async () => { fireEvent.click(submit) })
@@ -331,7 +331,7 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('rejects a %s 
   await waitFor(() => expect(capabilityReads).toBe(1))
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
+  const submit = screen.getByRole('button', { name: 'Create group (2)' })
   await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
 
   await act(async () => { fireEvent.click(submit) })
@@ -371,7 +371,7 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('does not pers
   await waitFor(() => expect(capabilityReads).toBe(1))
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
+  const submit = screen.getByRole('button', { name: 'Create group (2)' })
   await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
 
   await act(async () => { fireEvent.click(submit) })

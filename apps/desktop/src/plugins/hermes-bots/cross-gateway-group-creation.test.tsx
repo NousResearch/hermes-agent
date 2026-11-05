@@ -123,7 +123,7 @@ it('a selection spanning two connections creates a Desktop-driven room, never a 
   const { onCreated } = await pick([alpha, beta, remote], ['alpha', 'remote'])
 
   expect(screen.getByRole('note').textContent).toBe(desktopDriven)
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
   expect(submit.disabled).toBe(false)
   await act(async () => { fireEvent.click(submit) })
 
@@ -142,7 +142,7 @@ it('a selection on this connection alone still creates the gateway-owned room (c
   const { onCreated } = await pick([alpha, beta, remote], ['alpha', 'beta'])
 
   expect(screen.queryByRole('note')).toBeNull()
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (2)' })) })
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
   expect(onCreated.mock.calls[0][1]).toBe('key')
@@ -152,7 +152,7 @@ it('a selection on this connection alone still creates the gateway-owned room (c
 it('a selection wholly on another connection is not offered for creation from here', async () => {
   await pick([alpha, remote, scout], ['remote', 'scout'])
 
-  expect((screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement).disabled).toBe(true)
   expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.selectionElsewhere('Other box'))
 })
 
@@ -166,7 +166,7 @@ it('a room whose members span connections opens in the Desktop-driven view on a 
 
 it('a room created across connections stays Desktop-driven after its remote member is removed', async () => {
   const { onCreated, view } = await pick([alpha, beta, remote], ['alpha', 'beta', 'remote'])
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (3)' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (3)' })) })
   view.unmount()
   const [[group]] = onCreated.mock.calls
 

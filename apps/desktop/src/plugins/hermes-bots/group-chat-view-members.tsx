@@ -19,6 +19,7 @@ import {
   DialogTitle,
   host,
   RowButton,
+  useI18n,
   useValue
 } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useState } from 'react'
@@ -247,7 +248,7 @@ async function writeMembershipChanges(group: string, writes: MembershipWrite[], 
  * when a removed member's machine is offline or a remote write does not land. */
 export function setGroupChatMembers(group: string, selected: RosterRow[]) {
   if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
-    return Promise.reject(new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`))
+    return Promise.reject(new Error(botsText().group.memberSizeError(GROUP_CHAT_MAX_MEMBERS)))
   }
 
   return queueMembershipEdit([...$lastRoster.get(), ...selected], () => saveGroupChatMembers(group, selected))
@@ -329,6 +330,7 @@ interface GroupMemberPickerProps {
  *  until Save; Cancel leaves membership untouched. */
 export function GroupMemberPicker({ group, members, open, onClose }: GroupMemberPickerProps) {
   const b = useBots()
+  const { t } = useI18n()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const liveRoster: RosterRow[] = useValue($lastRoster)
 
@@ -377,8 +379,8 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
     <Dialog onOpenChange={value => !value && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Manage members</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots for “${group}”. The room, its history and its member sessions stay as they are.`}</DialogDescription>
+          <DialogTitle>{b.group.manageMembers}</DialogTitle>
+          <DialogDescription>{b.group.manageMembersDesc(GROUP_CHAT_MAX_MEMBERS, group)}</DialogDescription>
         </DialogHeader>
         <div className="grid max-h-80 gap-0.5 overflow-y-auto" data-testid="group-member-picker">
           {roster.map(bot => {
@@ -435,10 +437,10 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
-            Cancel
+            {t.common.cancel}
           </Button>
           <Button disabled={selected.size < 2 || selected.size > GROUP_CHAT_MAX_MEMBERS} onClick={() => void save()}>
-            Save members
+            {b.group.saveMembers}
           </Button>
         </DialogFooter>
       </DialogContent>

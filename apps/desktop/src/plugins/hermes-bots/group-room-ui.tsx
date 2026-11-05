@@ -15,7 +15,8 @@ import {
   GlyphSpinner,
   PRIMARY_ICON_BTN,
   relativeTime,
-  Tip
+  Tip,
+  useI18n
 } from '@hermes/plugin-sdk'
 import type { ComponentProps, FormEvent, ReactNode } from 'react'
 
@@ -121,6 +122,8 @@ const AVATAR_COLUMN = 'w-7 shrink-0'
 export function RoomMessage({ actions, author, avatar, badge, children, isUser = false, timestampMs }: {
   actions?: ReactNode; author?: ReactNode; avatar?: ReactNode; badge?: ReactNode; children: ReactNode; isUser?: boolean; timestampMs?: number
 }) {
+  const { locale } = useI18n()
+
   return <div className="group/room-message flex items-start gap-3 py-2" data-room-message={isUser ? 'user' : 'member'}>
     <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
     <div className="min-w-0 flex-1">
@@ -128,7 +131,7 @@ export function RoomMessage({ actions, author, avatar, badge, children, isUser =
         {author && <span className="truncate text-[0.8125rem] font-semibold text-foreground">{author}</span>}
         {badge}
         {typeof timestampMs === 'number' && Number.isFinite(timestampMs) &&
-          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs)}</time>}
+          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs, undefined, locale)}</time>}
         {actions && <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/room-message:opacity-100 focus-within:opacity-100">{actions}</div>}
       </div>
       <div className={cn(ROOM_TEXT_SCALE, 'wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',

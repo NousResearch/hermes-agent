@@ -560,7 +560,7 @@ function GroupChatSettingsDialog({
             variant="secondary"
           >
             <Codicon name="organization" />
-            {`Manage members (${(members || []).length})…`}
+            {`${b.group.manageMembers} (${(members || []).length})…`}
           </Button>
         ) : null}
         <DialogFooter>
@@ -809,13 +809,13 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
+  const { locale } = useI18n()
   const b = useBots()
-  const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   // A former member's line is labelled from the live roster (renderEntry).
   const liveRoster: RosterRow[] = useValue($lastRoster)
 
-  const room: GroupChatRoom = rooms[group] || { log: [], running: false }
+  const room: GroupChatRoom = useValue($groupChats)[group] || { log: [], running: false }
 
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
@@ -952,7 +952,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         setComposerDraft(next)
         host.notify({
           kind: 'success',
-          message: `${Number(request.count) || attachments.length} Browser comment${Number(request.count) === 1 ? '' : 's'} added to ${group}. Review the New Thread draft before sending.`
+          message: botsText().group.browserCommentsAdded(Number(request.count) || attachments.length, group)
         })
         send({
           ok: true,
@@ -1109,10 +1109,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     .sort((a, b) => (a.at || 0) - (b.at || 0))
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
-  const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const availabilityLabel = b.group.availableCount(availableMembers, members.length)
 
   const memberNames =
-    members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || 'No bots in this group chat'
+    members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || b.group.noBots
 
   const header = (
     <RoomHeader
@@ -1136,8 +1136,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             <Codicon name="gear" />
           </Button>
         </Tip>
-        <Tip label={'Manage members'}>
-          <Button aria-label={'Manage group members'} className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground" onClick={() => setMemberPickerOpen(true)} size="icon-sm" variant="ghost">
+        <Tip label={b.group.manageMembers}>
+          <Button aria-label={b.group.manageMembers} className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground" onClick={() => setMemberPickerOpen(true)} size="icon-sm" variant="ghost">
             <Codicon name="organization" />
           </Button>
         </Tip>
@@ -1215,7 +1215,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           {summaryActivity ? (
             <span
               className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
-            >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
+            >{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at, undefined, locale)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1244,7 +1244,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
                   {groupActivityLabel(event, group)}
                 </span>
-                <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
+                <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at, undefined, locale)}</span>
                 {room.running && event.kind === 'working' ? (
                   <Tip label={b.group.stopHint}>
                     <Button
@@ -1394,9 +1394,9 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   )
 
   // #91359: recognized @mentions render as inline references; recomputed
-  // only when the roster changes since the classifier consults the members.
-  const mentionComponents = useMemo(() => groupMentionComponents(members), [members])
-  const mentionText = useMemo(() => groupMentionText(members), [members])
+  // when the roster or the translated tooltip labels change.
+  const mentionComponents = useMemo(() => groupMentionComponents(members, b.group), [members, b.group])
+  const mentionText = useMemo(() => groupMentionText(members, b.group), [members, b.group])
 
   // #89883: answer ONE bot from its message. Seeds `@tag ` into the composer
   // that owns this entry's thread — the open reply box when it is this
@@ -1475,9 +1475,9 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     const actions = entry.text.trim() || !isUser ? (
       <>
         {isUser ? null : (
-          <Tip label={`Reply to @${replyMentionTag(entry, member)}`}>
+          <Tip label={b.group.replyTo(`@${replyMentionTag(entry, member)}`)}>
             <Button
-              aria-label={`Reply to ${display}`}
+              aria-label={b.group.replyTo(display)}
               className="text-(--ui-text-tertiary) hover:text-foreground"
               onClick={() => replyToMember(entry, member)}
               size="icon"
@@ -1494,7 +1494,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     const author = isUser ? (
       label
     ) : (
-      <Tip label={revealed ? 'Hide full handle' : 'Show full handle'}>
+      <Tip label={revealed ? b.group.hideHandle : b.group.showHandle}>
         <Button
           className="text-left text-[0.8125rem] font-semibold text-foreground"
           onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
@@ -1819,7 +1819,7 @@ export function openGroupChat(group: string, origin: CanonicalGroupOrigin): void
   })
   recordGroupOpenOrigin(group, origin)
   const ownerKey = groupWorkspaceOwnerKey(group)
-  setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
+  setBotsWorkspaceOwner(ownerKey, null, botsText().group.startInComposer())
   // #93813: what reached the members' room sessions while nobody drove them
   // (a Bot posting reports into its own session, a CLI resume) is posted as
   // the room opens, not only once the room next drives that member.

@@ -741,6 +741,8 @@ hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
 
+When the agent runs `hermes skills install`, the current approval policy asks for approval; `--yes` skips only the interactive confirmation, keeping the security scan.
+
 ### Supported hub sources
 
 | Source | Example | Notes |

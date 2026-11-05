@@ -92,22 +92,27 @@ def _sources():
     return create_source_router(GitHubAuth())
 
 
-def _confirm() -> bool:
-    """Prompt `Confirm [y/N]:`; EOF/Ctrl-C counts as no."""
+def _confirm() -> Optional[bool]:
+    """Prompt `Confirm [y/N]:`; EOF means no terminal, Ctrl-C counts as no."""
     try:
         return input("Confirm [y/N]: ").strip().lower() in {"y", "yes"}
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
+        return None
+    except KeyboardInterrupt:
         return False
 
 
-def _confirm_or_cancel(c: Console, *lines: str, cancel: str = "[dim]Cancelled.[/]\n") -> bool:
-    """Print `lines`, ask `_confirm()`; on refusal print `cancel` and return False."""
+def _confirm_or_cancel(c: Console, *lines: str, cancel: str = "[dim]Cancelled.[/]\n") -> Optional[bool]:
+    """Print `lines`, ask `_confirm()`; print `cancel` unless confirmed, preserving EOF."""
     for line in lines:
         c.print(line)
-    if _confirm():
+    answer = _confirm()
+    if answer:
         return True
+    if answer is None:
+        c.print("No terminal to answer on: re-run with --yes to confirm (the security scan still runs).", soft_wrap=True)
     c.print(cancel)
-    return False
+    return answer
 
 
 def _clear_skills_cache() -> None:
@@ -711,7 +716,7 @@ _INSTALL_PANELS = {
         "Disclaimer", "yellow")}
 
 
-def _confirm_install(c: Console, bundle, category: str) -> bool:
+def _confirm_install(c: Console, bundle, category: str) -> Optional[bool]:
     """Source-appropriate disclaimer panel + `Install '<name>'?` prompt."""
     files_at = f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]"
     body, title, style = _INSTALL_PANELS["official" if bundle.source == "official" else "external"]
@@ -800,7 +805,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     of an installed skill run through here too and are not installs, nor is a cancelled prompt.
 
     Returns True when the skill was installed, False when the install failed (unresolved name,
-    fetch, scan block, bad path), None for a no-op the user owns (already installed, declined).
+    fetch, scan block, bad path, no terminal), None for a no-op the user owns (already installed, declined).
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
@@ -876,13 +881,14 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     if bundle.source == "official" and not category:
         category = "/".join(bundle.identifier.split("/")[1:-1])
 
+    failed = "failed"
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
+        failed = None
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
             return bundle, None, None
-    failed = None if existing else "failed"
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}
 
@@ -909,9 +915,10 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category):
+    confirmed = True if force or skip_confirm else _confirm_install(c, bundle, category)
+    if not confirmed:
         shutil.rmtree(q_path, ignore_errors=True)
-        return bundle, None, None
+        return bundle, None, False if confirmed is None else None
 
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)

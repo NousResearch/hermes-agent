@@ -485,6 +485,13 @@ DANGEROUS_PATTERNS = [
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Extension installs and source trust load code or instructions into future sessions.
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'["\']?(?:'
+     r'skills["\']?\s+["\']?(?:install|update|trust|tap["\']?\s+["\']?add|snapshot["\']?\s+["\']?import)'
+     r'|plugins["\']?\s+["\']?(?:install|update|enable|adopt|trust-update-url|pack["\']?\s+["\']?install'
+     r'|validate["\']?\s+[^;&|\n]*(?<!\S)--install-deps)'
+     r')(?![\w-])',
+     "install, enable or trust a skill or plugin (code and instructions every session loads)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context

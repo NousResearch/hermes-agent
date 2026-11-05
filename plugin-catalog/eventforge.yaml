@@ -1,0 +1,32 @@
+name: eventforge
+repo: https://github.com/sinequix/eventforge
+sha: 952e521b13ab97daebe24028290663a13a492fae
+subdir: plugins/hermes-eventforge
+description: Proxy the local EventForge control plane into Hermes with approval-gated tools and verified-event context.
+maintainer: sinequix
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+title: EventForge for Hermes
+docs_url: https://github.com/sinequix/eventforge/blob/master/plugins/hermes-eventforge/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - ef_listen_for_webhook
+    - ef_emit_event
+    - ef_query_memory
+    - ef_spawn_subagent
+    - ef_approve_action
+    - ef_forge_mcp
+    - ef_approve_forge
+    - ef_list_events
+    - ef_list_workflows
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+  provides_middleware: []
+  requires_env: []

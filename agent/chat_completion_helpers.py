@@ -3295,6 +3295,8 @@ class _StreamingCall(StreamingWaitMonitor):
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
         refusal_parts=None, proxy_stream_drop=False):
         """Assemble the non-streaming-shaped response after the chunk loop (partial-stream stub on EOF drop)."""
+        from agent.turn_truncation import consume_stream_proxy_drop, stamp_proxy_stream_drop
+        proxy_stream_drop = consume_stream_proxy_drop(stream, proxy_stream_drop=proxy_stream_drop)
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         if not full_reasoning and full_content:
@@ -3336,7 +3338,6 @@ class _StreamingCall(StreamingWaitMonitor):
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
-        from agent.turn_truncation import stamp_proxy_stream_drop
         stamp_proxy_stream_drop(
             stream, response, effective_finish_reason, content_parts, refusal_parts, tool_calls_acc,
             proxy_stream_drop=proxy_stream_drop)

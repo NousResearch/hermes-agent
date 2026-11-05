@@ -225,11 +225,33 @@ def _chunk_has_proxy_drop_marker(chunk: Any) -> bool:
 def _mark_stream_proxy_drop(stream: Any) -> None:
     if stream is None:
         return
-    _OBSERVED_PROXY_DROP_STREAMS.add(id(stream))
+    import contextlib
+    import weakref
+    sid = id(stream)
+    _OBSERVED_PROXY_DROP_STREAMS.add(sid)
+    with contextlib.suppress(TypeError):
+        weakref.finalize(stream, _OBSERVED_PROXY_DROP_STREAMS.discard, sid)
     try:
         stream._proxy_stream_drop = True
     except Exception:
         logger.debug("Could not attach _proxy_stream_drop to stream object", exc_info=True)
+
+
+def consume_stream_proxy_drop(stream: Any, *, proxy_stream_drop: bool = False) -> bool:
+    """Consume and retire any recorded proxy-drop marker for ``stream`` so an early return
+    or later object-ID reuse cannot leak the marker onto a subsequent stream."""
+    import contextlib
+    observed = bool(proxy_stream_drop)
+    if stream is not None:
+        sid = id(stream)
+        if sid in _OBSERVED_PROXY_DROP_STREAMS:
+            _OBSERVED_PROXY_DROP_STREAMS.discard(sid)
+            observed = True
+        if getattr(stream, "_proxy_stream_drop", False):
+            observed = True
+            with contextlib.suppress(Exception):
+                stream._proxy_stream_drop = False
+    return observed
 
 
 def iter_provider_stream_with_drop_guard(stream: Any):
@@ -237,6 +259,8 @@ def iter_provider_stream_with_drop_guard(stream: Any):
     that occurs on or immediately after a ``finish_reason == "content_filter"`` frame."""
     import httpx as _httpx
 
+    if stream is not None:
+        _OBSERVED_PROXY_DROP_STREAMS.discard(id(stream))
     saw_content_filter = False
     try:
         for chunk in stream:
@@ -266,10 +290,7 @@ def stamp_proxy_stream_drop(
 ) -> None:
     """Stamp ``response._proxy_stream_drop = True`` only when an independent transport/proxy
     abort was observed for a terminal ``content_filter`` stream with no visible payload."""
-    observed = bool(proxy_stream_drop) or bool(getattr(stream, "_proxy_stream_drop", False))
-    if stream is not None and id(stream) in _OBSERVED_PROXY_DROP_STREAMS:
-        _OBSERVED_PROXY_DROP_STREAMS.discard(id(stream))
-        observed = True
+    observed = consume_stream_proxy_drop(stream, proxy_stream_drop=proxy_stream_drop)
     if (
         observed
         and effective_finish_reason == "content_filter"

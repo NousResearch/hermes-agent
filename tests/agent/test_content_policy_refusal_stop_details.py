@@ -216,3 +216,79 @@ def test_chat_completions_positively_flagged_proxy_stream_drop_retries_without_l
     )
     assert exhausted.action == "return"
     assert "partial internal thought" not in exhausted.result["error"]
+
+
+def test_early_exit_partial_stub_retires_proxy_drop_marker_before_later_unmarked_content_filter():
+    """Producer-level seam regression: a proxy-marked stream that exits _finish_chat_stream early
+    via the no-finish reasoning-only partial stub retires its drop marker immediately, so a
+    subsequent unmarked legitimate content_filter stream (even reusing the same stream object/ID)
+    does not inherit _proxy_stream_drop or retry."""
+    from agent import chat_completion_helpers as cch
+    from agent.turn_response_check import check_api_response
+    from agent.turn_truncation import _OBSERVED_PROXY_DROP_STREAMS
+
+    agent = _chat_agent()
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = agent
+
+    class _ReusableStream:
+        __slots__ = ("frames",)
+
+        def __init__(self, frames):
+            self.frames = frames
+
+        def __iter__(self):
+            return iter(self.frames)
+
+    # 1. Proxy-marked stream yields reasoning, then clean EOF with finish_reason=None (early exit).
+    reusable = _ReusableStream([
+        SimpleNamespace(
+            proxy_stream_drop=True,
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="dropped thought", content=None, refusal=None), finish_reason=None)],
+            usage=None,
+        ),
+    ])
+    chunks_1 = list(cch._iter_provider_stream_chunks(reusable))
+    assert len(chunks_1) == 1
+    assert id(reusable) in _OBSERVED_PROXY_DROP_STREAMS
+
+    stub = call._finish_chat_stream(
+        reusable, "assistant", [], ["dropped thought"], {}, None,
+        "claude-via-proxy", None, flush_pending=lambda: None,
+    )
+    assert getattr(stub, "_clean_eof", False) is True
+    # Marker must be retired on the early exit even for a __slots__ stream without __dict__.
+    assert id(reusable) not in _OBSERVED_PROXY_DROP_STREAMS
+
+    # 2. Negative control: an unmarked, legitimate content_filter stream reusing the exact same ID/object
+    # must NOT inherit _proxy_stream_drop or be retried by check_api_response.
+    reusable.frames = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="normal thought", content=None, refusal=None), finish_reason=None)],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content=None, content=None, refusal=None), finish_reason="content_filter")],
+            usage=None,
+        ),
+    ]
+    chunks_2 = list(cch._iter_provider_stream_chunks(reusable))
+    assert len(chunks_2) == 2
+    response = call._finish_chat_stream(
+        reusable, "assistant", [], ["normal thought"], {}, "content_filter",
+        "gpt-4o", None, flush_pending=lambda: None,
+    )
+    assert getattr(response, "_proxy_stream_drop", False) is False
+
+    verdict = check_api_response(
+        agent, response=response, _retry=TurnRetryState(), thinking_spinner=None, messages=[],
+        api_messages=[], api_kwargs={}, active_system_prompt=None, conversation_history=[],
+        finish_reason="content_filter", retry_count=0, max_retries=2, compression_attempts=0,
+        max_compression_attempts=2, length_continue_retries=0, truncated_response_parts=[],
+        truncated_tool_call_retries=0, current_turn_user_idx=0, api_call_count=1,
+        api_request_id="r-seam", api_start_time=0.0, effective_task_id="t-seam", turn_id="u-seam",
+        _preflight_compression_blocked=False, _last_preflight_pressure=None,
+    )
+    assert verdict.action == "return"
+    assert verdict.retry_count == 0
+    assert verdict.result["failed"] is True

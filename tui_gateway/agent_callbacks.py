@@ -574,6 +574,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         # already closed the agent it saw, so one installed now is never closed (#49852).
         closed_midbuild = bool(session.get("_closing"))
         if not closed_midbuild:
+            # The replacement inherits the raw spawning ids: processes started before a compression rotation keep
+            # their old owner, and the reapers' notify keepalive (and close's kill set) match on it.
+            if inherited := set(getattr(old_agent, "_process_owner_task_ids", ())):
+                agent._process_owner_task_ids = {*inherited, *getattr(agent, "_process_owner_task_ids", ())}
             session.update(agent=agent, config_model_seen=config_model_seen)
             owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
             if owned and _transfer_db_to_agent(agent, session_db):

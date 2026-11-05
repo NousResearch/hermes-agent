@@ -46,10 +46,11 @@ def test_native_delete_exact_retry_survives_owner_restart(tmp_path):
         absent = {'ok': True, 'already_absent': True}
         fresh = client.delete(path, params=params | {'request_id': 'different'}, headers=headers(ticket(home, descriptor)))
         assert fresh.status_code == 200 and fresh.json() == absent, fresh.text
-        foreign = client.delete(path, params=params, headers={'Authorization': 'Bearer normal-http-owner'})
-        assert foreign.status_code != 200 or foreign.json() == absent, foreign.text
+        # The dashboard login is the owner, so its exact retry replays the owner's receipt.
+        login = client.delete(path, params=params, headers={'Authorization': 'Bearer normal-http-owner'})
+        assert login.status_code == 200 and login.json() == receipt, login.text
     print(json.dumps({'native_delete_restart': receipt, 'changed_retry': changed.json(),
-                      'fresh_request_status': fresh.status_code, 'foreign_status': foreign.status_code}))
+                      'fresh_request_status': fresh.status_code, 'login_status': login.status_code}))
 
 
 def test_route_retirement_rolls_back_with_receipt_and_rejects_stale_mirror(tmp_path):

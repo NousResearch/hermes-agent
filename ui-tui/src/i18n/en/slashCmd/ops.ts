@@ -18,7 +18,7 @@ export const slashCmdOpsEn = {
       reloadedOther: (count: string) => `reloaded .env (${count} vars updated)`
     },
     browser: {
-      usage: 'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml',
+      usage: 'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml',
       checking: (url: string) => `checking Chromium-family browser remote debugging at ${url}...`,
       connected: (url: string) => `browser connected: ${url}`,
       urlUnavailable: '(url unavailable)',
@@ -26,12 +26,7 @@ export const slashCmdOpsEn = {
       disconnected: 'browser disconnected',
       connectedLive: 'Browser connected to live Chromium-family browser via CDP',
       endpoint: (url: string) => `Endpoint: ${url}`,
-      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint',
-      useUsage: 'Usage: /browser use [off]',
-      useEnabled: 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0',
-      useDisabled: 'Browser Use mode disabled — built-in browser tools restored',
-      newSessionsOnly: 'applies to new sessions — this one keeps its current tools (/new to start one)',
-      modeBrowserUse: 'Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)'
+      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint'
     },
     rollback: {
       noSession: 'no active session — nothing to rollback',
@@ -79,6 +74,17 @@ export const slashCmdOpsEn = {
     reloadSkills: {
       reloaded: 'skills reloaded',
       pageTitle: 'Reload Skills'
+    },
+    pluginsUpdate: {
+      running: 'checking installed plugins for updates…',
+      title: 'Plugin updates:',
+      updated: '✓ updated',
+      current: '= already current',
+      failed: '✗ failed',
+      needsReview: '! needs review',
+      skipped: (name: string, reason: string) => `skipped ${name}: ${reason}`,
+      none: 'No plugin updates to apply.',
+      review: 'Review those with `hermes plugins update <name>` in a terminal.'
     },
     slashWorker: {
       warning: (warning: string) => `warning: ${warning}`,

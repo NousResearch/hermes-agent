@@ -423,6 +423,15 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     expect(configures.at(-1)?.ui_meta).toEqual({ 'hermes-bots': { color: '#0000ff', groups: ['room'] } })
   })
 
+  it("reports a save its machine never answered as unreachable, not as an older gateway's fallback", async () => {
+    hostMock.requestProfile.mockRejectedValue(new Error('connection refused'))
+
+    await expect(saveBotMeta(vps, { groups: [] })).resolves.toEqual({
+      serverOutcome: 'unreachable',
+      serverPersisted: false
+    })
+  })
+
   it('names, tags, and prompts the bot with what its backend reports', () => {
     $botMeta.set({ default: { title: 'Agent B' }, 'vps::default': { title: 'Agent B' } })
     // `/api/profiles` reports no Bot Mode title for the VPS bot.

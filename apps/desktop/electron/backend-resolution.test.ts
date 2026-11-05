@@ -1,14 +1,34 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createInstalledRuntimeGate } from './backend-resolution'
+import type { InstallStamp } from './install-stamp'
 
 const ROOT = '/home/u/.hermes/hermes-agent'
 const active = { label: 'active runtime' }
 
-function gate(env: NodeJS.ProcessEnv) {
+function stamp(payload: InstallStamp['payload']): InstallStamp {
+  return {
+    schemaVersion: 2,
+    commit: null,
+    commitDate: null,
+    branch: null,
+    builtAt: null,
+    dirty: false,
+    source: 'build',
+    distribution: 'desktop-app',
+    updateMechanism: 'self',
+    baseVersion: null,
+    displayVersion: null,
+    distance: null,
+    payload,
+    tag: null
+  }
+}
+
+function gate(env: NodeJS.ProcessEnv, artifact: InstallStamp | null = null) {
   const log = vi.fn()
 
-  return { log, runtime: createInstalledRuntimeGate(env, log) }
+  return { log, runtime: createInstalledRuntimeGate(env, log, artifact) }
 }
 
 describe('installed runtime gate', () => {
@@ -58,5 +78,34 @@ describe('installed runtime gate', () => {
 
     env.HERMES_DESKTOP_IGNORE_EXISTING = '1'
     await expect(runtime.resolve(ROOT, async () => active)).resolves.toBeNull()
+  })
+
+  it('always skips an installation already on the machine on a remote-only artifact', async () => {
+    // The target PC has a full %LOCALAPPDATA%\\hermes install. A light build
+    // must not adopt it even without the flag: it has no local runtime.
+    for (const env of [{}, { HERMES_DESKTOP_IGNORE_EXISTING: '0' }]) {
+      const { log, runtime } = gate(env, stamp('light'))
+      const probe = vi.fn(async () => active)
+
+      await expect(runtime.resolve(ROOT, probe)).resolves.toBeNull()
+      expect(probe).not.toHaveBeenCalled()
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('remote-only'))
+    }
+  })
+
+  it('keeps using the runtime a launch installed on a remote-only artifact', async () => {
+    const { runtime } = gate({}, stamp('light'))
+    const probe = vi.fn(async () => active)
+
+    await expect(runtime.afterInstall(() => runtime.resolve(ROOT, probe))).resolves.toBe(active)
+    expect(probe).toHaveBeenCalledOnce()
+  })
+
+  it('does not skip the installed runtime for bundled/checkout artifacts', async () => {
+    for (const artifact of [stamp('bundled'), stamp('bootstrap'), null]) {
+      const { runtime } = gate({}, artifact)
+
+      await expect(runtime.resolve(ROOT, async () => active)).resolves.toBe(active)
+    }
   })
 })

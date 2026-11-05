@@ -19,7 +19,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/rasrobo/proofops#readme
-version: "0.2.0"
+version: "0.3.0"
 platforms: [linux, macos]
 title: "ProofOps"
 readme: true

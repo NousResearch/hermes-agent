@@ -200,8 +200,9 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
         if seating is None:
             seating = asyncio.create_task(register())
         result = await asyncio.wait_for(asyncio.shield(seating), timeout=3)
-        # A temporary refusal must never queue scope revocation, including for a re-registration.
-        assert _owed(service.db_path) == []
+        # A temporary refusal persists a hold, never runnable revocation debt.
+        assert _owed(service.db_path) == [("linked", "reviewer", 0)]
+        assert hosted_rooms.due_room_grant_revokes(service.db_path, limit=10) == []
         assert (result if surface == 'canonical' else result['message']) == 'room_disbanding_retry'
         assert probed.is_set() == (phase == 'after_probe')
         with pytest.raises(RuntimeStoreError, match='room_disbanding_retry'):
@@ -212,7 +213,7 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
         monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
         if outcome == 'failed':
             assert 'still stopping' in result['message']
-            assert _owed(service.db_path) == []
+            assert _owed(service.db_path) == [("linked", "reviewer", 0)]
             assert await asyncio.to_thread(service.retry_owed_revokes) == 0
             assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None
             assert service.peer_routes == routes and hosted_room_links.load_room_links(service.db_path) == links
@@ -230,7 +231,7 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
             assert service.peer_routes == {} and hosted_room_links.load_room_links(service.db_path) == ()
             # Disband revoked any surviving route at its member gateway first: nothing stays owed.
             assert _owed(service.db_path) == []
-            assert await _grant_error(url, grant) == ('room_reauthorization_required' if routes else None)
+            assert await _grant_error(url, grant) == 'room_reauthorization_required'
     finally:
         release.set()
         publish.set()

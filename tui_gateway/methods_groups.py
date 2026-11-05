@@ -312,9 +312,11 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
     from gateway.hosted_room_peer import (
-        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
+        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
+        room_grant_matches_scope, validate_room_link_url)
     from gateway.hosted_rooms import (
-        AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError, local_authority_gateway_id, room_state)
+        AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError,
+        local_authority_gateway_id, room_state)
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
@@ -334,17 +336,38 @@ def _(rid, params: dict, service) -> dict:
         service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
     from tui_gateway.hosted_room_service import route_publication_lock
 
-    def authorize_publication() -> None:
+    def check_grant_scope(room) -> None:
+        if not room_grant_matches_scope(
+                grant, room_id=room_id, member_id=member_id, home_install_id=local_authority_gateway_id(),
+                authority_gateway_id=room["authority_gateway_id"], authority_epoch=room["authority_epoch"]):
+            raise ValueError("group chat grant scope does not match this route")
+
+    @contextlib.contextmanager
+    def publication():
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            with route_publication_lock(service):
+                yield
+        except RuntimeStoreError as exc:
+            if exc.reason == "room_disbanding_retry":
+                check_grant_scope(room_state(service.db_path, room_id=room_id, include_disbanded=True))
+                # After releasing the lock: an ended room at capacity revokes at the member now.
+                service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+            raise
+
+    def authorize_publication():
         check = getattr(service, "route_authority", None)
         if check is not None:
             check(room_id)
+
     try:
-        with route_publication_lock(service):
+        with publication():
             authorize_publication()
             home_room = room_state(service.db_path, room_id=room_id)
     except RoomNotFoundError:
         ended = getattr(service, "ended_room", None)
-        if ended is not None and ended(room_id) is not None:  # disbanded first: owed, never probed
+        if ended is not None and (room := ended(room_id)) is not None:  # disbanded first: owed, never probed
+            check_grant_scope(room)
             owe()
         raise
     client = PeerRunsHTTPClient(base_url=target_url, api_key="", receipt_db_path=service.db_path)
@@ -360,7 +383,7 @@ def _(rid, params: dict, service) -> dict:
     if (any(probe.get(k) != v for k, v in expected_scope.items())
             or int(probe.get("authority_epoch") or 0)
             != int(home_room.get("authority_epoch") or 0)):
-        raise ValueError("room grant scope does not match this route")
+        raise ValueError("group chat grant scope does not match this route")
     # A caller may still choose the identity; otherwise the route keeps one across re-registration.
     cancellation_scope_id, trace_id = route_identity(
         db_path=service.db_path, home_install_id=home_install_id, room_id=room_id, member_id=member_id)
@@ -372,7 +395,7 @@ def _(rid, params: dict, service) -> dict:
         cancellation_scope_id=str(params.get("cancellation_scope_id") or cancellation_scope_id),
         trace_id=str(params.get("trace_id") or trace_id), grant=grant)
     refused = None
-    with route_publication_lock(service):
+    with publication():
         # The probe took time: publish only while the room is still the one it was checked against.
         try:
             authorize_publication()
@@ -480,7 +503,7 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
     from gateway.hosted_rooms import (
-        AuthorityConflictError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
+        AuthorityConflictError, RoomHeldGrantsPendingError, RoomHistoryExpiredError, disband_room, local_authority_gateway_id,
         room_state)
     room_id = str(params.get("room_id") or "")
 
@@ -505,10 +528,21 @@ def _(rid, params: dict, service) -> dict:
         service.stop_room(
             room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
             require_acknowledged=True)
-        service.revoke_room_routes(room_id)
-        with route_publication_lock(service):
-            existing = room_state(service.db_path, room_id=room_id, include_disbanded=True)
-            return disband_with_state(existing)
+        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from tui_gateway.hosted_room_service import RoomDisbandRefusedError
+        for attempt in range(3):
+            try:
+                service.revoke_room_routes(room_id)
+            except PeerRunsHTTPError as exc:
+                raise RoomDisbandRefusedError(
+                    "peer_unreachable", "The member could not be reached; retry Disband when it is available.") from exc
+            try:
+                with route_publication_lock(service):
+                    existing = room_state(service.db_path, room_id=room_id, include_disbanded=True)
+                    return disband_with_state(existing)
+            except RoomHeldGrantsPendingError:
+                if attempt == 2:
+                    raise
 
 
 @_room_method("groups.stop", code=5116, service_code=4115)

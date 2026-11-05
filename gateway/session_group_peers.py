@@ -103,8 +103,10 @@ def _probe(client, grant, catalog, scope):
 def register(service, params):
     """Bind a target grant to the room's pinned peer member, after a live scoped probe."""
     from gateway.hosted_room_peer import (
-        GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION, validate_room_link_url)
-    from gateway.hosted_rooms import HostedRoomError, OwedRevokesFullError, RoomNotFoundError
+        GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION,
+        room_grant_matches_scope, validate_room_link_url)
+    from gateway.hosted_rooms import (
+        HostedRoomError, OwedRevokesFullError, RoomNotFoundError, room_state)
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     room_id, member_id, profile, grant = (params.get(k) for k in ('room_id', 'member_id', 'target_profile', 'grant'))
@@ -127,7 +129,8 @@ def register(service, params):
     except RuntimeStoreError as exc:
         if exc.reason != 'room_disbanding_retry':
             raise
-        room, ended, disbanding = service.ended_room(room_id) or service._room(room_id), None, exc
+        room = room_state(service.db_path, room_id=room_id, include_disbanded=True)
+        ended, disbanding = None, exc
     member = next((m for m in room['members'] if m['member_id'] == member_id), {})
     target = member.get('target') or {}
     if (target.get('kind') != 'peer' or target.get('installation_id') != catalog.installation_id
@@ -137,7 +140,12 @@ def register(service, params):
             # there and nowhere else, so another host can neither read it nor answer for that gateway.
             or target_url != catalog.endpoint_url):
         raise RuntimeStoreError('peer_target_mismatch')
+    if (disbanding is not None or ended is not None) and not room_grant_matches_scope(
+            grant, room_id=room_id, member_id=member_id, home_install_id=room["authority_gateway_id"],
+            authority_gateway_id=room["authority_gateway_id"], authority_epoch=room["authority_epoch"]):
+        raise RuntimeStoreError('peer_target_mismatch')
     if disbanding is not None:
+        service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
         raise disbanding
     if ended is not None:
         # The room ended first (an invitation still in flight when Disband returned): its gateway
@@ -168,6 +176,10 @@ def register(service, params):
                        else RuntimeStoreError('peer_target_mismatch'))
         except HostedRoomError as exc:  # disbanded meanwhile
             refused = exc
+        except RuntimeStoreError as exc:
+            if exc.reason != 'room_disbanding_retry':
+                raise
+            refused = exc
         if refused is None:
             try:
                 service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
@@ -175,6 +187,9 @@ def register(service, params):
             except OwedRevokesFullError as exc:  # the replaced grant's revoke found no room
                 refused = exc
     if refused is not None:
+        if isinstance(refused, RuntimeStoreError) and refused.reason == 'room_disbanding_retry':
+            service.hold_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
+            raise refused
         # The member's gateway has seen this grant for a room that ended or moved, or one it could
         # not store: this home owes its revoke, paid by the worker cycle (or now, when no room is
         # left to record it), so Disband leaves no grant it was handed.

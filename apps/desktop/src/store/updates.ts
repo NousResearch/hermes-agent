@@ -87,10 +87,21 @@ export const resetUpdateApplyState = (target?: UpdateTarget) => {
 }
 
 // The progress view may have been hidden while the backend updated: an outcome that needs the
-// person (a failure, a manual step) shows it again.
+// person (a failure, a manual step) shows it again. A client apply owns the overlay until it ends,
+// so the backend outcome waits in its own state and shows when the client finishes in place.
 function showBackendProgress(): void {
+  if ($updateApply.get().applying) {
+    return
+  }
+
   $updateOverlayTarget.set('backend')
   $updateOverlayOpen.set(true)
+}
+
+function backendOutcomeWaiting(): boolean {
+  const backend = $backendUpdateApply.get()
+
+  return !backend.applying && (backend.stage === 'error' || backend.stage === 'manual')
 }
 
 const UPDATE_TOAST_ID = 'desktop-update-available'
@@ -809,9 +820,15 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
         // the overlay and let the user know the new version loads next launch
         // rather than stranding them on an un-closeable spinner.
-        setUpdateOverlayOpen(false)
-        // The client's own state: a hidden backend update keeps running under it.
+        // The client's own state: a hidden backend update keeps running under it, and a backend
+        // outcome that waited behind this apply shows now.
         resetUpdateApplyState('client')
+
+        if (backendOutcomeWaiting()) {
+          showBackendProgress()
+        } else {
+          setUpdateOverlayOpen(false)
+        }
 
         if (result.updateAvailable === false) {
           return result
@@ -994,6 +1011,18 @@ function receiptProvesOutcome(
   return Number.isFinite(startedMs) && startedMs >= applyStartedAtMs - 60_000
 }
 
+/** This apply's run has ended without success: it exited, or the backend reads its own receipt
+ *  `interrupted` (its process is gone). The receipt case is a failure now, not a wait until the
+ *  deadline, for a run whose dashboard restarted under it and lost the process. */
+function runEndedUnfinished(
+  status: Awaited<ReturnType<typeof getActionStatus>>,
+  actionId: string | undefined
+): boolean {
+  const ownReceipt = !!actionId && status.receipt?.action_id === actionId
+
+  return status.exit_code !== null || (ownReceipt && status.receipt?.outcome === 'interrupted')
+}
+
 function legacyBackendReachedTarget(
   status: BackendUpdateCheckResponse,
   targetSha: string | undefined,
@@ -1118,7 +1147,7 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
         }
       }
 
-      if (last.exit_code !== null) {
+      if (runEndedUnfinished(last, started.action_id)) {
         break
       }
     }

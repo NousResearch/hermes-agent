@@ -146,8 +146,8 @@ class TestUpdateStatusReadsReceipt:
     @pytest.mark.parametrize("alive,shown", [(True, "running"), (False, "interrupted")])
     def test_a_running_receipt_whose_process_is_gone_reads_interrupted(self, client, tmp_path, monkeypatch,
                                                                        alive, shown):
-        """A killed update leaves its receipt ``running`` until the next run reconciles it. A client
-        that rejoins a running update on connect must not follow that dead one as live."""
+        """A killed update leaves its receipt ``running`` until the next run reconciles it. The window
+        that pressed Update reads its own run's receipt to learn the run died."""
         import hermes_cli.update_receipt as ur
 
         _write_receipt(tmp_path, monkeypatch, outcome="running")

@@ -38,17 +38,11 @@ vi.mock('@/lib/storage', () => ({
   storedString: (key: string) => storage.get(key) ?? null
 }))
 
-const notifySpy = vi.fn()
-const dismissSpy = vi.fn()
+// Import-safety stubs: updates.ts pulls these modules in at load time.
+vi.mock('@/store/notifications', () => ({ notify: vi.fn(), dismissNotification: vi.fn() }))
+vi.mock('@/store/gateway-reconnect', () => ({ reconnectGateway: vi.fn().mockResolvedValue(undefined) }))
 
-vi.mock('@/store/notifications', () => ({
-  notify: (...args: unknown[]) => notifySpy(...args),
-  dismissNotification: (...args: unknown[]) => dismissSpy(...args)
-}))
-
-// updates.ts reads the connections registry (multi-target gating + the
-// everything-flow fan-out). Mock the store shallowly: the real module drags in
-// the profile/gateway-switch graph, which is far heavier than these tests need.
+// The real connections store drags in the profile/gateway-switch graph.
 const { atom: registryAtom } = await import('nanostores')
 const $mockConnectionsRegistry = registryAtom<unknown>(null)
 
@@ -65,13 +59,6 @@ vi.mock('@/hermes', () => ({
   checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
   updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
-}))
-
-// Stub: the real reconnect module's graph is not needed here.
-const reconnectGatewaySpy = vi.fn().mockResolvedValue(undefined)
-
-vi.mock('@/store/gateway-reconnect', () => ({
-  reconnectGateway: (...args: unknown[]) => reconnectGatewaySpy(...args)
 }))
 
 const {
@@ -167,6 +154,59 @@ describe('hidden backend update progress', () => {
     await pressed
 
     expect($backendUpdateApply.get().stage).toBe(stage)
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('a pressed update whose own run the backend reports interrupted fails at once', async () => {
+    const own = 'b'.repeat(32)
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 4, action_id: own })
+    // The dashboard restarted under its run, so it no longer has the process; the receipt says it died.
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: null,
+      lines: [],
+      name: 'hermes-update',
+      pid: null,
+      running: false,
+      receipt: { action_id: own, outcome: 'interrupted', started_at: new Date().toISOString(), finished_at: null }
+    })
+
+    const pressed = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    await pressed
+
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it("does not replace a running client update's progress with a backend failure, and shows it after", async () => {
+    const { pressed } = await pressAndHide()
+
+    let finishClient: (value: unknown) => void = () => undefined
+
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: vi.fn(() => new Promise(resolve => (finishClient = resolve))) } }
+    }
+
+    try {
+      $updateOverlayTarget.set('client')
+      $updateOverlayOpen.set(true)
+      const client = applyUpdates()
+
+      getActionStatusSpy.mockResolvedValue({ exit_code: 1, lines: [], name: 'hermes-update', pid: 4, running: false })
+      await vi.advanceTimersByTimeAsync(1500)
+      await pressed
+
+      expect($backendUpdateApply.get().stage).toBe('error')
+      expect($updateOverlayTarget.get()).toBe('client')
+      expect($updateApply.get().applying).toBe(true)
+
+      finishClient({ ok: true, backendUpdated: true })
+      await client
+    } finally {
+      delete (globalThis as unknown as { window?: unknown }).window
+    }
+
+    expect($updateOverlayTarget.get()).toBe('backend')
     expect($updateOverlayOpen.get()).toBe(true)
   })
 

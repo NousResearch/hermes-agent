@@ -319,8 +319,8 @@ def _owner_alive(record: dict[str, Any]) -> bool:
 
 def effective_outcome(record: dict[str, Any]) -> Any:
     """The record's outcome, with a ``running`` run whose processes are gone read as ``interrupted``:
-    what reconcile_interrupted_runs will persist at the next update, answered now so no client
-    follows a killed run as live."""
+    the rule reconcile_interrupted_runs persists at the next update, answered now, so a client
+    following that run sees it failed instead of waiting out its deadline."""
     outcome = record.get("outcome")
     return "interrupted" if outcome == "running" and not _owner_alive(record) else outcome
 
@@ -341,7 +341,7 @@ def reconcile_interrupted_runs() -> list[dict[str, Any]]:
         for path in sorted(directory.glob("update_*.json"), key=lambda p: p.stat().st_mtime)[-_RECEIPT_KEEP:]:
             with suppress(Exception):
                 record = json.loads(path.read_text(encoding="utf-8-sig"))
-                if not isinstance(record, dict) or record.get("outcome") != "running" or effective_outcome(record) != "interrupted":
+                if not isinstance(record, dict) or record.get("outcome") != "running" or _owner_alive(record):
                     continue
                 stages = record.get("stages") or []
                 last = stages[-1].get("name") if stages and isinstance(stages[-1], dict) else None

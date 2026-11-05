@@ -54,7 +54,7 @@ def restart_wait_open(runner) -> bool:
 # only pass the drain's refusal; the listener's auth gate still runs on them. Every other write and
 # route keeps that refusal. The prompt itself (approval.pending / *.respond) rides the WebSocket.
 # The update status is here because `hermes update` drains through this same wait, and the
-# windows following that update poll it.
+# window that pressed Update polls it to follow the run.
 _RESTART_WAIT_READS = re.compile(
     r"/api/(?:health|status|actions/hermes-update/status|profiles/sessions(?:/sidebar)?"
     r"|sessions/[^/]+(?:/messages(?:/around)?|/timeline)?)")

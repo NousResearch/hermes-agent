@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
 from tests.gateway.fixtures.webhook_route_authority import mount_authority
+from tests.gateway.session_claims import claim
 
 
 @pytest.mark.asyncio
@@ -53,7 +54,8 @@ async def test_admitted_webhook_runs_through_startup_restore_gate(monkeypatch):
             return 'answered'
 
         monkeypatch.setattr(runner, '_hm_pending_reply_intercepts', turn_ran)
-        result = await execute_admission(authority, SessionRef(authority.profile_id, row['target_session_id']), row)
+        ref = SessionRef(authority.profile_id, row['target_session_id'])
+        result = await execute_admission(authority, ref, claim(authority, ref, row))
 
         assert runner._startup_restore_queue == [], 'the gate parked an admission it does not own'
         assert turns == ['during restore']

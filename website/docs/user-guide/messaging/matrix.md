@@ -133,6 +133,18 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
 
+### Link Previews
+
+Matrix has no sender-side switch for link preview cards, and Element's room setting (`org.matrix.room.preview_urls`) only affects Element. To keep a room such as a digest or alerts channel free of preview cards, list it under `disable_link_previews` (or set `true` for every room):
+
+```yaml
+matrix:
+  disable_link_previews:
+    - "!alerts:example.org"
+```
+
+Text Hermes sends to those rooms (replies, edits and cron deliveries) carries an empty bundled-preview list (`m.url_previews: []` and the unstable `com.beeper.linkpreviews: []`, [MSC4095](https://github.com/matrix-org/matrix-spec-proposals/pull/4095)). Clients that honour bundled previews, such as Sable and Beeper, treat that as "no previews for this message"; the reader's own preview settings and other rooms are unaffected. Clients that ignore bundled previews still render their own cards.
+
 ### Project Room Isolation
 
 If you use the same Matrix bot in multiple project rooms, configure stable

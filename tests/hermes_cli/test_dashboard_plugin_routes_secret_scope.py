@@ -24,11 +24,9 @@ def client(monkeypatch, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
     from hermes_constants import get_hermes_home
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     # The launch profile's own credential source: what a scoped read must return.
     (get_hermes_home() / ".env").write_text("GITHUB_TOKEN=ghp_launch_token\n", encoding="utf-8")
     return TestClient(app, raise_server_exceptions=False,

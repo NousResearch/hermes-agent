@@ -14,15 +14,15 @@ _Usage = namedtuple("_Usage", "total used free")
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     h = tmp_path / "home"
     h.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(h))
-    db = SessionDB(db_path=h / "state.db")
-    db.create_session("recent", source="cli")
-    db.append_message("recent", role="user", content="hi")
-    db.end_session("recent", "user_exit")
-    db.close()
+    with open_persistence(profile_scope(home=h)) as store:
+        seed_session(store, "recent", "cli")
+        seed_messages(store, "recent", {"role": "user", "content": "hi"})
+        store.sessions.end("recent", "user_exit")
     return h
 
 
@@ -121,7 +121,8 @@ def test_local_notice_is_neither_re_asked_after_an_answer_nor_spent_on_nobody(ho
     _disk(monkeypatch, free_gb=1)
     events = SessionEvents()  # no viewer attached: publish delivers to nobody
     live = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), event_stream=events)
-    authority = SimpleNamespace(sessions={"s1": live}, runner=None, db=SimpleNamespace(db_path=home / "state.db"))
+    authority = SimpleNamespace(sessions={"s1": live}, runner=None,
+                                persistence=SimpleNamespace(scope=SimpleNamespace(profile_dir=home)))
     ref = SimpleNamespace(session_id="s1")
     rhd._LOCAL_NOTIFIED.clear()
 
@@ -143,22 +144,22 @@ def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatc
     overstates what pruning frees (and flips "will not fix this disk"). The estimate must track
     the bytes a real prune + VACUUM gives back."""
     import sqlite3
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, open_store_admin, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     h = tmp_path / "skewed"
     h.mkdir()
-    db = SessionDB(db_path=h / "state.db")
     old = time.time() - 200 * 86400
-    for i in range(40):  # old: 40 x 20 tiny messages
-        db.create_session(f"old{i}", source="cli")
-        for _ in range(20):
-            db.append_message(f"old{i}", role="user", content="ok")
-        db.end_session(f"old{i}", "user_exit")
-    for i in range(4):  # recent: 4 x 5 large messages
-        db.create_session(f"new{i}", source="cli")
-        for _ in range(5):
-            db.append_message(f"new{i}", role="assistant", content="x" * 40_000)
-        db.end_session(f"new{i}", "user_exit")
-    db.close()
+    with open_persistence(profile_scope(home=h)) as store:
+        for i in range(40):  # old: 40 x 20 tiny messages
+            seed_session(store, f"old{i}", "cli")
+            for _ in range(20):
+                seed_messages(store, f"old{i}", {"role": "user", "content": "ok"})
+            store.sessions.end(f"old{i}", "user_exit")
+        for i in range(4):  # recent: 4 x 5 large messages
+            seed_session(store, f"new{i}", "cli")
+            for _ in range(5):
+                seed_messages(store, f"new{i}", {"role": "assistant", "content": "x" * 40_000})
+            store.sessions.end(f"new{i}", "user_exit")
     with sqlite3.connect(h / "state.db") as conn:
         conn.execute("UPDATE sessions SET started_at=?, ended_at=?, last_activity_at=? WHERE id LIKE 'old%'",
                      (old, old, old))
@@ -167,10 +168,9 @@ def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatc
     advice = prune_advisor.advise(h)
     assert advice.prunable_sessions == 40
     before = (h / "state.db").stat().st_size
-    db = SessionDB(db_path=h / "state.db")
-    db.prune_sessions(older_than_days=90)
-    db.vacuum()
-    db.close()
+    with open_persistence(profile_scope(home=h)) as store:
+        store.maintenance.prune_sessions(older_than_days=90, media_root=str(h / "media"))
+    open_store_admin(profile_scope(home=h), read_only=False).vacuum()
     shrink = before - (h / "state.db").stat().st_size
     # message share says ~89% of the file; the bytes really freed are a small fraction of it
     assert advice.reclaim_bytes < before * 0.25

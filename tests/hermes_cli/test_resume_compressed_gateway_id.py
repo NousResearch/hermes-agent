@@ -21,20 +21,22 @@ def _runner(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _cached_agent_for=lambda route: None)
+    runner = SimpleNamespace(session_store=store, adapters={}, _draining=False, _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     return runner
 
 
-def _compress(db, parent, child, source):
+def _compress(store, parent, child, source):
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
     history = [{'role': 'user', 'content': f'retained {child}'}, {'role': 'assistant', 'content': 'history'}]
-    assert db.try_acquire_compression_lock(parent, 'fixture')
+    assert store.coordination.try_acquire_compression_lock(session_id=parent, holder='fixture')
     try:
-        db.publish_compression_child(parent_session_id=parent, child_session_id=child,
-                                     source=source, messages=history, compression_lock_holder='fixture')
+        store.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source=source),
+                                                [NewMessage.from_live(m) for m in history],
+                                                compression_lock_holder='fixture')
     finally:
-        db.release_compression_lock(parent, 'fixture')
+        store.coordination.release_compression_lock(session_id=parent, holder='fixture')
 
 
 async def _compressed(tmp_path):
@@ -49,7 +51,7 @@ async def _compressed(tmp_path):
     store = authority.runner.session_store
     for parent, child in ((ref.session_id, 'seg-2'), ('seg-2', 'seg-3')):
         store._record_gateway_session_peer(parent, live.route, live.source)
-        _compress(authority.db, parent, child, authority.db.get_session(parent)['source'])
+        _compress(authority.persistence, parent, child, authority.persistence.sessions.get(parent).source)
         store._record_gateway_session_peer(child, live.route, live.source)
     return authority, ref.session_id
 
@@ -61,7 +63,6 @@ def _gateway_store(loop, authority, tmp_path):
     from hermes_cli.gateway_client import GatewayClientError
     from hermes_cli.gateway_connection import GatewayConnection, SessionState
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from hermes_state import SessionDB
     states = {}
     connection = types.SimpleNamespace(final=False, launch_api_key=None, launch_api_key_typed=False,
                                        state=lambda sid: states.setdefault(sid, SessionState(sid)))
@@ -80,7 +81,6 @@ def _gateway_store(loop, authority, tmp_path):
 
     store = GatewaySessionStore(connection)
     store.call = call
-    store._reader = SessionDB(db_path=authority.db.db_path, read_only=True)
     return store, calls
 
 
@@ -135,7 +135,7 @@ def test_resume_of_a_compressed_root_addresses_the_receipt_owner(rig, path, monk
 
 def test_the_tip_segment_alone_still_has_no_receipt(rig):
     """The receipt check is not weakened: addressing the physical segment is still refused by name."""
-    from hermes_state_runtime import RuntimeStoreError
-    with pytest.raises(RuntimeStoreError) as refused:
+    from persistence.core.errors import AuthorityRefusal
+    with pytest.raises(AuthorityRefusal) as refused:
         _gateway_accepts(rig, 'seg-3')
     assert refused.value.reason == 'storage_unavailable'

@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.gateway_owner import GatewayOwner
+from tests.fixtures.storage_seed import seed_messages
 from tools.todo_tool import TodoStore
 
 
@@ -121,10 +122,21 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
             return _cli_mod.HermesCLI(**kwargs)
 
 
-def _prepare_cli_with_active_session(tmp_path):
+@pytest.fixture
+def owner(tmp_path, monkeypatch):
+    owner = GatewayOwner(tmp_path, monkeypatch)
+    yield owner
+    owner.close()
+
+
+def _prepare_cli_with_active_session(owner):
+    """A CLI on its gateway store, attached to the session the owner created for it at startup."""
     cli = _make_cli()
-    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
-    cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
+    cli._session_db = owner.client()
+    # The startup session.create, without ``_ensure_gateway_session``'s process-wide tool hook: this
+    # owner shares the process, and its own create would call back through it.
+    cli.session_id = cli._session_db.open_session(cli)
+    cli._gateway_session_open = True
 
     cli.agent = _FakeAgent(cli.session_id, cli.session_start)
     cli.conversation_history = [{"role": "user", "content": "hello"}]
@@ -149,8 +161,8 @@ def _reset_session_id_context():
     _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
 
-def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path):
-    cli = _prepare_cli_with_active_session(tmp_path)
+def test_new_command_creates_real_fresh_session_and_resets_agent_state(owner):
+    cli = _prepare_cli_with_active_session(owner)
     old_session_id = cli.session_id
     old_session_start = cli.session_start
 
@@ -165,7 +177,7 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     new_session = cli._session_db.get_session(cli.session_id)
     assert new_session is not None
 
-    cli._session_db.append_message(cli.session_id, role="user", content="next turn")
+    seed_messages(owner.persistence, cli.session_id, {"role": "user", "content": "next turn"})
 
     assert cli.agent.session_id == cli.session_id
     assert cli.agent._last_flushed_db_idx == 0
@@ -179,13 +191,13 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
 
 
-def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
+def test_new_session_delivers_context_engine_boundary_synchronously(owner):
     """The context-engine on_session_end must fire during /new itself.
 
     It is cheap local state work and ordering-sensitive: it must land before
     reset_session_state() rebinds the engine to the new session. The LLM-bound
     provider extraction is what gets deferred, not this."""
-    cli = _prepare_cli_with_active_session(tmp_path)
+    cli = _prepare_cli_with_active_session(owner)
     old_session_id = cli.session_id
 
     engine_calls = []
@@ -227,8 +239,8 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
 
 
 
-def test_clear_command_starts_new_session_before_redrawing(tmp_path):
-    cli = _prepare_cli_with_active_session(tmp_path)
+def test_clear_command_starts_new_session_before_redrawing(owner):
+    cli = _prepare_cli_with_active_session(owner)
     cli.console = MagicMock()
     cli.show_banner = MagicMock()
 
@@ -245,7 +257,7 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
 
 
 
-def test_new_session_resets_token_counters(tmp_path):
+def test_new_session_resets_token_counters(owner):
     """Regression test for #2099: /new must zero all token counters.
 
     Drives the real ``AIAgent.reset_session_state`` (and the real context-engine
@@ -257,7 +269,7 @@ def test_new_session_resets_token_counters(tmp_path):
     from agent.context_engine import ContextEngine
     from run_agent import AIAgent
 
-    cli = _prepare_cli_with_active_session(tmp_path)
+    cli = _prepare_cli_with_active_session(owner)
     agent = cli.agent
     agent.reset_session_state = types.MethodType(AIAgent.reset_session_state, agent)
     agent._transition_context_engine_session = types.MethodType(

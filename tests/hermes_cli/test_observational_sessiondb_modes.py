@@ -10,10 +10,9 @@ from hermes_cli import sessions_cmd
 
 def test_sessions_observational_commands_on_missing_store_stay_empty(monkeypatch, tmp_path, capsys):
     """Fresh profile: list/stats/pinned report empty without creating a writable store."""
-    import hermes_state
+    from hermes_constants import get_hermes_home
 
-    db_path = tmp_path / "state.db"
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
+    db_path = get_hermes_home() / "state.db"
 
     list_args = Namespace(sessions_action="list", source=None, limit=20, workspace=None)
     assert sessions_cmd.cmd_sessions(list_args) is None
@@ -35,13 +34,13 @@ def test_doctor_write_probe_never_touches_a_store_a_live_writer_holds(monkeypatc
     import sqlite3
 
     import hermes_state_holders
-    import hermes_state_repair
     from hermes_cli import doctor_state
+    from persistence.sqlite.admin import _doctor
 
     state_db = tmp_path / "state.db"
     sqlite3.connect(state_db).execute("CREATE TABLE sessions (id TEXT)").connection.close()
     probed: list = []
-    monkeypatch.setattr(hermes_state_repair, "_db_opens_cleanly", lambda path: probed.append(path))
+    monkeypatch.setattr(_doctor, "_db_opens_cleanly", lambda path: probed.append(path))
 
     monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *_a, **_k: True)
     assert doctor_state._write_health_reason(state_db, should_fix=False) is None

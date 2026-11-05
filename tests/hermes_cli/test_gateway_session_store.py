@@ -227,8 +227,8 @@ def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeyp
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
     assert db.get_session("x") is None and db._reader is None
-    from hermes_state import SessionDB
-    SessionDB(db_path=tmp_path / "state.db").close()
+    from persistence_assembly import open_persistence, profile_scope
+    open_persistence(profile_scope(home=tmp_path), eager=True).close()
     assert db.get_session("x") is None and db._reader is not None
 
 
@@ -265,12 +265,11 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     main prints comes from the read-only reader."""
     db, client = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-other", source="local")
-    writer.set_session_title("local-other", "Alpha Title")
-    writer.create_session("local-old", source="local")
-    writer.close()
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-other", "local", title="Alpha Title")
+        seed_session(writer, "local-old", "local")
     db.open_session(cli("local-old", resumed=True))
 
     async def refuse(method, *, _timeout=None, **params):
@@ -385,21 +384,19 @@ def test_new_session_id_off_the_gateway_is_mains_mint():
 def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, monkeypatch):
     """The gateway labels an interactive local row ``local`` (``created_source`` keeps the surface), so
     main's ``source='cli'`` listings (/resume picker, /sessions, /history, bare -c) read both labels."""
-    import sqlite3
     db, _ = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),
             ("one", "oneshot", "oneshot"))
-    for sid, source, _created in rows:
-        writer.create_session(sid, source=source)
-        writer.append_message(sid, "user", "hi " + sid)
-    writer.close()
-    conn = sqlite3.connect(tmp_path / "state.db")
-    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows])
-    conn.commit()
-    conn.close()
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        for sid, source, _created in rows:
+            seed_session(writer, sid, source)
+            seed_messages(writer, sid, {"role": "user", "content": "hi " + sid})
+        raw_holder(writer)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows]))
     from hermes_cli.session_listing import query_session_listing
     listed = query_session_listing(db, source="cli", include_unnamed=True, limit=10)
     assert sorted(r["id"] for r in listed) == ["legacy", "local-cli"]
@@ -423,19 +420,17 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
     ``local`` that the CLI created is CLI history."""
-    import sqlite3
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-cli", source="local")
-    writer.append_message("local-cli", "user", "hi")
-    writer.create_session("local-tui", source="local")
-    writer.append_message("local-tui", "user", "later")
-    writer.close()
-    conn = sqlite3.connect(tmp_path / "state.db")
-    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")])
-    conn.commit()
-    conn.close()
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-cli", "local")
+        seed_messages(writer, "local-cli", {"role": "user", "content": "hi"})
+        seed_session(writer, "local-tui", "local")
+        seed_messages(writer, "local-tui", {"role": "user", "content": "later"})
+        raw_holder(writer)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")]))
     monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
     from hermes_cli.main import _resolve_last_session
     assert _resolve_last_session("cli") == "local-cli"

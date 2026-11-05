@@ -44,25 +44,20 @@ def client(monkeypatch, profiles_on_disk):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     http = TestClient(app)
     http.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return http
 
 
 def _seed_session(home, session_id, *, source="cli"):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(session_id, source=source)
-        db.append_message(session_id=session_id, role="user", content="hi")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, session_id, source)
+        seed_messages(store, session_id, {"role": "user", "content": "hi"})
 
 
 def _sidebar(client, profile):
@@ -85,14 +80,14 @@ class TestSidebarFailedLoad:
         self, client, profiles_on_disk, monkeypatch
     ):
         _seed_session(profiles_on_disk["worker"], "worker-chat")
-        import hermes_state
+        from persistence.sqlite.conversation import sessions as sqlite_sessions
 
-        def boom(self, *args, **kwargs):
+        def boom(holder, *args, **kwargs):
             raise sqlite3.OperationalError(
                 "no such column: s.compression_ineffective_count"
             )
 
-        monkeypatch.setattr(hermes_state.SessionDB, "list_sessions_rich", boom)
+        monkeypatch.setattr(sqlite_sessions, "list_sessions_rich", boom)
 
         payload = _sidebar(client, "worker")
 
@@ -106,32 +101,30 @@ class TestSidebarFailedLoad:
     ):
         home = profiles_on_disk["worker"]
         _seed_session(home, "worker-chat")
-        from hermes_cli import web_server_sessions as sessions_mod
+        from persistence.sqlite.admin._maintenance import MaintenanceAdmin
+        from persistence.sqlite.conversation import sessions as sqlite_sessions
 
-        monkeypatch.setattr(
-            sessions_mod,
-            "_session_db_read_probe_statements",
-            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',),
-        )
-        import hermes_state
+        monkeypatch.setattr(MaintenanceAdmin, "schema_drift_reason", lambda _self: "no such column: not_a_real_column")
+        import persistence_assembly
+        from persistence.sqlite._holder import StoreHolder
 
         writable_opens = []
-        real_init = hermes_state.SessionDB.__init__
+        real_init = StoreHolder.__init__
 
         def counting_init(self, *args, **kwargs):
             if not kwargs.get("read_only", False):
                 writable_opens.append(1)
             return real_init(self, *args, **kwargs)
 
-        monkeypatch.setattr(hermes_state.SessionDB, "__init__", counting_init)
-        real_list = hermes_state.SessionDB.list_sessions_rich
+        monkeypatch.setattr(StoreHolder, "__init__", counting_init)
+        real_writer = persistence_assembly.open_persistence
+        monkeypatch.setattr(persistence_assembly, "open_persistence",
+                            lambda *a, **kw: writable_opens.append(1) or real_writer(*a, **kw))
 
-        def list_then_miss(self, *args, **kwargs):
-            if str(getattr(self, "_db_path", home / "state.db")):
-                raise sqlite3.OperationalError("no such column: s.not_a_real_column")
-            return real_list(self, *args, **kwargs)
+        def list_then_miss(holder, *args, **kwargs):
+            raise sqlite3.OperationalError("no such column: s.not_a_real_column")
 
-        monkeypatch.setattr(hermes_state.SessionDB, "list_sessions_rich", list_then_miss)
+        monkeypatch.setattr(sqlite_sessions, "list_sessions_rich", list_then_miss)
 
         first = _sidebar(client, "worker")
         second = _sidebar(client, "worker")
@@ -141,9 +134,10 @@ class TestSidebarFailedLoad:
             _assert_failed_load(payload["recents"], "worker")
 
     def test_healthy_empty_store_stays_an_empty_list(self, client, profiles_on_disk):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        SessionDB(db_path=profiles_on_disk["worker"] / "state.db").close()
+        with open_persistence(profile_scope(home=profiles_on_disk["worker"])) as store:
+            store.ready()
 
         payload = _sidebar(client, "worker")
 
@@ -156,17 +150,17 @@ class TestSidebarFailedLoad:
     ):
         _seed_session(profiles_on_disk["default"], "default-chat")
         _seed_session(profiles_on_disk["worker"], "worker-chat")
-        import hermes_state
+        from persistence.sqlite.conversation import sessions as sqlite_sessions
 
-        real_list = hermes_state.SessionDB.list_sessions_rich
+        real_list = sqlite_sessions.list_sessions_rich
         worker_db = (profiles_on_disk["worker"] / "state.db").resolve()
 
-        def explode_worker(self, *args, **kwargs):
-            if Path(self.db_path).resolve() == worker_db:
+        def explode_worker(holder, *args, **kwargs):
+            if Path(holder.db_path).resolve() == worker_db:
                 raise sqlite3.OperationalError("database is locked")
-            return real_list(self, *args, **kwargs)
+            return real_list(holder, *args, **kwargs)
 
-        monkeypatch.setattr(hermes_state.SessionDB, "list_sessions_rich", explode_worker)
+        monkeypatch.setattr(sqlite_sessions, "list_sessions_rich", explode_worker)
 
         payload = _sidebar(client, "all")
 

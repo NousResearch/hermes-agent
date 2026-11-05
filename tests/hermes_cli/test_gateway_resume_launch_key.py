@@ -18,6 +18,7 @@ import pytest
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, rpc_error
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
+from tests.fixtures.storage_seed import seed_messages
 
 RAW = 'UNIQUE-LAUNCH-ONLY-KEY'
 LAUNCH = {'model': 'm', 'provider': None, 'api_key': RAW, 'base_url': 'http://127.0.0.1:9/v1'}
@@ -61,7 +62,7 @@ class _Owners:
 
     async def boot(self, instance_id):
         from gateway.session_authority import initialize_session_authority
-        owner = SimpleNamespace(session_store=self.store, _session_db=self.store._db, adapters={}, _draining=False,
+        owner = SimpleNamespace(session_store=self.store, _session_db=self.store.persistence, adapters={}, _draining=False,
                                 _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
         owner._adapter_for_source = lambda source: owner.adapters.get(source.platform)
         self.current = await initialize_session_authority(owner, profile_id=self.profile, instance_id=instance_id)
@@ -91,7 +92,7 @@ class _Owners:
         await asyncio.to_thread(conn.close)
         for life in self.lives:
             await life.connection.close()
-        self.store._db.close()
+        self.store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -135,10 +136,10 @@ def _refuse_the_rebind(monkeypatch, code):
     """The owner refuses the keyed resume with ``code`` where it takes the key back (a receipt read that
     fails is ``storage_unavailable``); a plain resume never gets there."""
     from gateway import session_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     def refuse(*_a):
-        raise RuntimeStoreError(code)
+        raise AuthorityRefusal(code)
     monkeypatch.setattr(session_policy, 'rebind_launch_key', refuse)
 
 
@@ -186,7 +187,7 @@ async def test_a_refused_keyed_resume_retries_plain_only_when_the_key_does_not_a
 async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypatch, caplog):
     """The owner checks ``session:control`` before it takes a key back: a read-only viewer's keyed resume is
     ``permission_denied``, and it still gets main's ``session:read`` attach, binding nothing."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
     owners = await _Owners().start(tmp_path, monkeypatch)
     await owners.boot('restarted')
@@ -197,7 +198,7 @@ async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypa
         cli = SimpleNamespace(_resumed=True, session_id=owners.keyed)
         assert await asyncio.to_thread(store.open_session, cli, LAUNCH) == owners.keyed
         assert any('permission_denied' in line for line in _plain_retries(caplog))
-        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+        with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
             owners.key_of(owners.keyed)
     finally:
         await owners.close(conn)
@@ -283,12 +284,10 @@ async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_
     the session keeps its own frozen route."""
     from unittest.mock import patch
     from cli import HermesCLI
-    from hermes_state import SessionDB
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     try:
-        store = GatewaySessionStore(conn)
-        store._reader = SessionDB(db_path=owners.store._db.db_path, read_only=True)  # the CLI's state.db reads
+        store = GatewaySessionStore(conn)  # reads the profile's state.db through its own read-only handle
         cli = HermesCLI.__new__(HermesCLI)
         cli._session_db, cli._resumed, cli.session_id, cli._typed_api_key = store, True, owners.keyed, RAW
         cli.agent, cli.conversation_history, cli._pending_resume_sessions = None, [], None
@@ -324,7 +323,7 @@ async def test_branch_after_new_in_a_typed_key_cli_switches_to_the_child(tmp_pat
         await asyncio.to_thread(store.open_session, cli, LAUNCH)
         fresh = await asyncio.to_thread(CLIInitMixin._new_session_id, cli, datetime.now())  # /new
         assert owners.key_of(fresh) is None
-        owners.store._db.append_message(fresh, role='user', content='hello')
+        seed_messages(owners.store.persistence, fresh, {'role': 'user', 'content': 'hello'})
         child = await asyncio.to_thread(CLIInitMixin._new_session_id, cli, datetime.now(), branch_of=fresh)  # /branch
         assert child != fresh and store.current['stored_session_id'] == child
     finally:

@@ -189,17 +189,31 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     assert payload["state"] == "retrying", payload
 
 
-def test_served_profile_mirrors_the_default_relay(served_root):
+
+@pytest.mark.parametrize(("relay_url", "alpha_yaml", "expected"), [
+    # Hosted: the container env enables Relay for every profile; the default's adapter serves it.
+    ("https://connector.example", "", "connected"),
+    # The profile opted out: the live shared adapter must not paint its saved Disable over.
+    ("https://connector.example", "platforms:\n  relay:\n    enabled: false\n", "disabled"),
+    # A self-hosted secondary that never set Relay up stays as it was.
+    (None, "", "disabled"),
+])
+def test_served_profile_mirrors_the_default_relay(served_root, monkeypatch, relay_url, alpha_yaml, expected):
     """Relay is process-level shared ingress: the default's one adapter serves every profile, and
-    the multiplexer stamps no ``<profile>:relay`` entry when it does. The served profile must read
-    the default's live relay state, not fall through to ``pending_restart`` ("Restart needed"
-    forever for a channel that is answering)."""
+    the multiplexer stamps no ``<profile>:relay`` entry when it does. A profile with Relay on must
+    read the default's live state, not fall through to ``pending_restart`` ("Restart needed"
+    forever for a channel that is answering), and the profile's own enable/disable still decides."""
     from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
     from hermes_cli.web_routers import messaging
+    if relay_url:
+        monkeypatch.setenv("GATEWAY_RELAY_URL", relay_url)
+    else:
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
     record = json.loads((served_root / "gateway_state.json").read_text(encoding="utf-8"))
     record["platforms"]["relay"] = {"state": "connected"}
     (served_root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     alpha = served_root / "profiles" / "alpha"
+    (alpha / "config.yaml").write_text(alpha_yaml, encoding="utf-8")
     live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     plats = profile_platforms_from_multiplexer(live.runtime, "alpha")
     assert plats["relay"]["state"] == "connected"
@@ -208,6 +222,8 @@ def test_served_profile_mirrors_the_default_relay(served_root):
 
     entry = {"id": "relay", "name": "Relay", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
-    [payload] = messaging._platform_payloads(alpha, [entry])
-    assert payload["state"] == "connected", payload
+    with messaging._profile_scope("alpha") as scoped_dir:  # the route's own scoping
+        [payload] = messaging._platform_payloads(scoped_dir, [entry])
+    assert payload["state"] == expected, payload
+    assert payload["enabled"] is (expected == "connected"), payload
     assert payload["error_code"] is None, payload

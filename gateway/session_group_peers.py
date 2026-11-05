@@ -104,7 +104,7 @@ def register(service, params):
     """Bind a target grant to the room's pinned peer member, after a live scoped probe."""
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, HostedRoomPeerError, PROTOCOL_VERSION, validate_room_link_url)
-    from gateway.hosted_rooms import HostedRoomError, RoomNotFoundError
+    from gateway.hosted_rooms import HostedRoomError, OwedRevokesFullError, RoomNotFoundError
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     room_id, member_id, profile, grant = (params.get(k) for k in ('room_id', 'member_id', 'target_profile', 'grant'))
@@ -162,11 +162,15 @@ def register(service, params):
         except HostedRoomError as exc:  # disbanded meanwhile
             refused = exc
         if refused is None:
-            service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
-                                        target_url=target_url, catalog=catalog)
+            try:
+                service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
+                                            target_url=target_url, catalog=catalog)
+            except OwedRevokesFullError as exc:  # the replaced grant's revoke found no room
+                refused = exc
     if refused is not None:
-        # The member's gateway has seen this grant for a room that ended or moved: this home owes
-        # its revoke, paid by the worker cycle, so Disband leaves no grant it was handed.
+        # The member's gateway has seen this grant for a room that ended or moved, or one it could
+        # not store: this home owes its revoke, paid by the worker cycle (or now, when no room is
+        # left to record it), so Disband leaves no grant it was handed.
         service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
                                  client=client)
         raise refused

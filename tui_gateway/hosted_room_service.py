@@ -361,14 +361,34 @@ class HostedRoomService:
 
     def owe_grant_revoke(
         self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any = None) -> None:
-        """Record that this home owes a revoke for a grant it was handed (``retry_owed_revokes``)."""
-        hosted_rooms.owe_room_grant_revoke(
-            self.db_path, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
-            expires_at=room_grant_hard_expiry(grant))
+        """Record that this home owes a revoke for a grant it was handed (``retry_owed_revokes``).
+        With no room left to record it, the grant is revoked at its member's gateway now, and an
+        error is raised if that gateway does not confirm it: a live grant is never dropped quietly."""
+        try:
+            hosted_rooms.owe_room_grant_revoke(
+                self.db_path, room_id=room_id, member_id=member_id, target_url=target_url, grant=grant,
+                expires_at=room_grant_hard_expiry(grant))
+        except hosted_rooms.OwedRevokesFullError:
+            self._revoke_unowed(room_id=room_id, member_id=member_id, target_url=target_url,
+                                grant=grant, client=client)
+            return
         with self._policy_lock:
             self._may_owe_revokes = True
         self._keep_revoke_client(grant, client)
         self.runtime.wakeup()
+
+    def _revoke_unowed(self, *, room_id: str, member_id: str, target_url: str, grant: str, client: Any) -> None:
+        revoke = _hook(client, "revoke_grant") or PeerRunsHTTPClient(
+            base_url=target_url, api_key="", timeout_seconds=_OWED_REVOKE_TIMEOUT_SECONDS,
+            total_deadline=True).revoke_grant
+        try:
+            revoke(grant=grant)
+        except PeerRunsHTTPError as exc:
+            if not _grant_revoke_is_terminal(exc):
+                message = (f"revoke for member {member_id} of room {room_id} could not be recorded "
+                           f"(too many owed revokes) or sent: {exc}")
+                self.runtime._record_error(message)
+                raise hosted_rooms.OwedRevokesFullError(message) from exc
 
     def _keep_revoke_client(self, grant: str, client: Any) -> None:
         if client is not None and not isinstance(client, PeerRunsHTTPClient):

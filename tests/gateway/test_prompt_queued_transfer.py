@@ -12,11 +12,10 @@ import pytest
 from agent.interrupt_control import InterruptControlMixin
 from gateway import session_finite, session_queued_controls
 from gateway.session_contract import SessionRef
-from hermes_state_runtime import (
-    begin_runtime_epoch, claim_session_input, find_session_admission, get_session_admission,
-    recover_session_inputs,
-)
+from persistence_assembly import store_location
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_prompt_queued_controls import Turn, _call, _completions, _connection, _ledger, interactive
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until, wait_until
 
@@ -32,7 +31,7 @@ async def test_a_steer_before_the_turn_adopts_its_agent_is_refused_and_the_promp
     """Reviewer repro: execution held before adoption, steer, then agent construction fails. The text
     must not be reported steered; the durable queued prompt stays queued and runs in FIFO order."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     held, release, ran = asyncio.Event(), asyncio.Event(), []
 
     async def execute(authority, ref, row):
@@ -49,18 +48,18 @@ async def test_a_steer_before_the_turn_adopts_its_agent_is_refused_and_the_promp
         queued = await _submit(authority, 'follow-up')
         reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
         assert reply.get('error', {}).get('data', {}).get('reason') == 'steer_unavailable', reply
-        assert get_session_admission(db, admission_id=queued.admission_id)['status'] == 'queued'
+        assert authority.persistence.admissions.get(admission_id=queued.admission_id).status == 'queued'
         assert not authority.pending_steers, 'nothing may be latched for an agent that does not exist yet'
         release.set()
         await _drained(authority)
     assert ran == ['running', 'follow-up'], 'the queued prompt must still run as its own turn'
-    assert _ledger(db) == [('running', 'terminal', 'failed'), ('follow-up', 'terminal', 'completed')]
+    assert _ledger(authority.persistence) == [('running', 'terminal', 'failed'), ('follow-up', 'terminal', 'completed')]
 
 
 @pytest.mark.asyncio
 async def test_a_steer_into_a_turn_that_then_fails_settles_interrupted_not_steered(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn, frames = Turn(monkeypatch, fail='running'), []
     authority.sessions['s'].event_stream.observers.add(frames.append)
     with db:
@@ -99,7 +98,7 @@ async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp
     claim never ran it, so it is not steered: the admission goes back to its FIFO place and runs once as
     its own turn, and the cached agent no longer holds it for an unrelated later turn."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     agent, claimed, release, ran, taken, frames = BufferedAgent(), asyncio.Event(), asyncio.Event(), [], [], []
 
     async def execute(authority, ref, row):
@@ -123,10 +122,10 @@ async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp
     assert agent._pending_steer is None, 'an unconsumed steer must not wait for an unrelated later turn'
     if consumed:
         assert (taken, ran) == (['follow-up'], ['running'])
-        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+        assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
     else:
         assert (queued.admission_id, 'steered') not in _completions(frames)
-        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
+        assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
         assert ran == ['running', 'follow-up'], 'the returned prompt runs once, as its own turn'
 
 
@@ -137,7 +136,7 @@ async def test_each_transfer_settles_by_its_own_identity_whatever_text_another_c
     drain carrying A's text inside a multiline prompt, or exactly A's text. A is steered and never runs
     again; B, which the turn never read, goes back to its queue place and runs once as its own turn."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     agent, ran, taken = BufferedAgent(), [], []
     claimed, drain, drained, release = (asyncio.Event() for _ in range(4))
 
@@ -169,7 +168,7 @@ async def test_each_transfer_settles_by_its_own_identity_whatever_text_another_c
         await _drained(authority)
     assert taken == ['alpha']
     assert ran == ['running', later], 'the consumed prompt never runs again; the unread one runs once'
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('a', 'terminal', 'steered'),
+    assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('a', 'terminal', 'steered'),
                            ('b', 'terminal', 'completed')]
     assert agent._pending_steer is None
 
@@ -180,15 +179,14 @@ def _runner_authority(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway.run import GatewayRunner
     from gateway.session_authority import LiveSession, SessionAuthority
-    from hermes_state import SessionDB
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='gui')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'gui')
     runner = object.__new__(GatewayRunner)
     vars(runner).update(_draining=False, _restart_requested=True, config=SimpleNamespace(multiplex_profiles=False),
                         _adapter_for_source=lambda source: None)
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='current'))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='current',
+                                 epoch=db.runtime.begin_epoch(instance_id='current'), persistence=storage_handle(tmp_path))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
     return db, authority, runner
 
@@ -227,17 +225,17 @@ async def test_a_late_transfer_is_never_a_follow_up_that_a_restart_can_discard(t
 
         def settled():
             task = authority.sessions['s'].task
-            return _ledger(db)[1][1] != 'started' and (task is None or task.done())
+            return _ledger(authority.persistence)[1][1] != 'started' and (task is None or task.done())
         await async_wait_until(settled, timeout=30, what='the transfer settled and the queue went idle')
     assert follow_ups[0] is None, 'a transferred prompt never rides the leftover-steer follow-up'
     assert not [r for r in caplog.records if 'Discarding pending follow-up' in r.getMessage()]
-    assert ('follow-up', 'terminal', 'steered') not in _ledger(db)
+    assert ('follow-up', 'terminal', 'steered') not in _ledger(authority.persistence)
     # Back in its FIFO place: it runs once as its own admission, or, while the owner drains for its
     # restart (it claims nothing new), it waits queued for the next owner.
     if draining:
-        assert (_ledger(db)[1], handled) == (('follow-up', 'queued', None), ['running'])
+        assert (_ledger(authority.persistence)[1], handled) == (('follow-up', 'queued', None), ['running'])
     else:
-        assert (_ledger(db)[1], handled) == (('follow-up', 'terminal', 'completed'), ['running', 'follow-up'])
+        assert (_ledger(authority.persistence)[1], handled) == (('follow-up', 'terminal', 'completed'), ['running', 'follow-up'])
 
 
 @pytest.mark.asyncio
@@ -246,7 +244,7 @@ async def test_a_cancel_that_read_the_row_queued_before_a_steer_took_it_is_refus
     the running turn before the cancel's write. The cancel must not succeed while that transfer goes
     on: it is refused by name, nothing stays owed, and the transfer still settles with its claim."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn = Turn(monkeypatch)
     with db:
         await _submit(authority, 'running')
@@ -264,7 +262,7 @@ async def test_a_cancel_that_read_the_row_queued_before_a_steer_took_it_is_refus
         await _drained(authority)
     assert reply.get('error', {}).get('data', {}).get('reason') == 'stale_generation', reply
     assert queued.admission_id not in authority.cancel_obligations
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+    assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
 
 
 @pytest.mark.asyncio
@@ -273,7 +271,7 @@ async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_p
     transfer still lists it, marked ``steering``, so no client retires an admission that may go back to
     the queue. Once it settles ``steered`` it leaves the pending set."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn, frames = Turn(monkeypatch), []
     authority.sessions['s'].event_stream.observers.add(frames.append)
 
@@ -291,7 +289,7 @@ async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_p
         turn.release.set()
         await _drained(authority)
     assert listed(queued.admission_id) == []
-    assert _ledger(db)[-1] == ('follow-up', 'terminal', 'steered')
+    assert _ledger(authority.persistence)[-1] == ('follow-up', 'terminal', 'steered')
 
 
 @pytest.mark.asyncio
@@ -302,14 +300,14 @@ async def test_a_steer_write_that_committed_but_reported_failure_is_still_settle
     survive it: an exact retry delivers the committed transfer, and without one the claim's settlement
     puts the undelivered prompt back in its queue place (never left ``steering`` until a restart)."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn = Turn(monkeypatch)
-    original = session_queued_controls.steer_session_input
+    original = authority.persistence.admissions.steer
 
     def committed_then_failed(*args, **kwargs):
         original(*args, **kwargs)
         raise sqlite3.OperationalError('disk I/O error')
-    monkeypatch.setattr(session_queued_controls, 'steer_session_input', committed_then_failed)
+    monkeypatch.setattr(authority.persistence.admissions, 'steer', committed_then_failed)
     with db:
         await _submit(authority, 'running')
         await asyncio.wait_for(turn.claimed.wait(), 30)
@@ -324,10 +322,10 @@ async def test_a_steer_write_that_committed_but_reported_failure_is_still_settle
         await _drained(authority)
     if retry:
         assert (turn.agent.steers, turn.ran) == (['follow-up'], ['running'])
-        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+        assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
     else:
         assert (turn.agent.steers, turn.ran) == ([], ['running', 'follow-up'])
-        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
+        assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
 
 
 @pytest.mark.asyncio
@@ -335,17 +333,17 @@ async def test_a_turn_that_ends_between_the_steer_commit_and_delivery_gets_its_p
     """The receiving execution returns after the steer committed but before the text reached its agent:
     the admission is put back in its FIFO place (never reported steered) and runs as its own turn."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn = Turn(monkeypatch)
     loop = asyncio.get_running_loop()
-    original = session_queued_controls.steer_session_input
+    original = authority.persistence.admissions.steer
 
     def committed_then_turn_ends(*args, **kwargs):
         committed = original(*args, **kwargs)
         loop.call_soon_threadsafe(turn.release.set)
         wait_until(lambda: authority.executing.get('s') is None, timeout=30, what='the receiving execution returned')
         return committed
-    monkeypatch.setattr(session_queued_controls, 'steer_session_input', committed_then_turn_ends)
+    monkeypatch.setattr(authority.persistence.admissions, 'steer', committed_then_turn_ends)
     with db:
         await _submit(authority, 'running')
         await asyncio.wait_for(turn.claimed.wait(), 30)
@@ -358,24 +356,24 @@ async def test_a_turn_that_ends_between_the_steer_commit_and_delivery_gets_its_p
         await _drained(authority)
     assert turn.agent.steers == []
     assert turn.ran == ['running', 'follow-up']
-    assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
+    assert _ledger(authority.persistence) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
 
 
 def test_an_owner_restart_mid_transfer_settles_the_steered_admission_interrupted(tmp_path, monkeypatch):
     """Committed but not confirmed consumed when the owner died: interrupted, never auto-replayed."""
-    from hermes_state_runtime import admit_session_input
     db, authority = _authority(tmp_path, monkeypatch)
+    store = authority.persistence
     with db:
         for request_id in ('running', 'follow-up'):
-            admit_session_input(db, epoch=authority.epoch, principal_id='human', session_id='s',
-                                request_id=request_id, payload={'text': request_id})
-        running = claim_session_input(db, epoch=authority.epoch, session_id='s')
-        follow = find_session_admission(db, principal_id='human', session_id='s', request_id='follow-up')
-        session_queued_controls.steer_session_input(db, epoch=authority.epoch, admission_id=follow['admission_id'],
-                                                    generation=running['generation'])
-        epoch = begin_runtime_epoch(db, instance_id='next')
-        recover_session_inputs(db, epoch=epoch)
-    assert _ledger(db) == [('running', 'unknown', None), ('follow-up', 'terminal', 'interrupted')]
+            store.admissions.admit(epoch=authority.epoch, principal_id='human', session_id='s',
+                                   request_id=request_id, payload={'text': request_id})
+        running = store.admissions.claim(epoch=authority.epoch, session_id='s')
+        follow = store.admissions.find(principal_id='human', session_id='s', request_id='follow-up')
+        store.admissions.steer(epoch=authority.epoch, admission_id=follow.admission_id,
+                               generation=running.generation)
+        epoch = store.runtime.begin_epoch(instance_id='next')
+        store.admissions.recover(epoch=epoch)
+    assert _ledger(authority.persistence) == [('running', 'unknown', None), ('follow-up', 'terminal', 'interrupted')]
 
 
 @pytest.mark.asyncio
@@ -384,7 +382,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
     """Reviewer repro: another connection holds BEGIN IMMEDIATE while a steer/replace waits on the writer.
     A loop-side receipt (which takes the session's stream lock) still returns while the writer is held."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     turn = Turn(monkeypatch)
     with db:
         await _submit(authority, 'running')
@@ -394,7 +392,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
         holding, release, done, writing = threading.Event(), threading.Event(), threading.Event(), threading.Event()
 
         def hold_writer():
-            blocker = sqlite3.connect(str(db.db_path), isolation_level=None, timeout=10)
+            blocker = sqlite3.connect(str(store_location(authority.persistence.scope)), isolation_level=None, timeout=10)
             try:
                 blocker.execute('BEGIN IMMEDIATE')
                 holding.set()
@@ -404,9 +402,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
                 blocker.close()
                 done.set()
         # The control's own store write starts (and then waits on the held writer).
-        from gateway import session_authority
-        target, name = ((session_queued_controls, 'steer_session_input') if verb == 'steer'
-                        else (session_authority, 'admit_session_input'))
+        target, name = authority.persistence.admissions, 'steer' if verb == 'steer' else 'admit'
         original = getattr(target, name)
 
         def announced(*args, **kwargs):
@@ -438,16 +434,16 @@ async def test_concurrent_replacements_of_different_rows_under_one_submission_id
     """Reviewer repro: both initial lookups see no replacement; one replacement is admitted and binds the
     row it retired, the other is refused admission_conflict and its row stays queued."""
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     barrier = threading.Barrier(2, timeout=30)
-    original = session_queued_controls.find_session_admission
+    original = authority.persistence.admissions.find
 
     def synchronized(*args, **kwargs):
         found = original(*args, **kwargs)
         barrier.wait()
         return found
-    monkeypatch.setattr(session_queued_controls, 'find_session_admission', synchronized)
+    monkeypatch.setattr(authority.persistence.admissions, 'find', synchronized)
     with db:
         a, b = await _submit(authority, 'a'), await _submit(authority, 'b')
         replies = await asyncio.gather(*(
@@ -456,7 +452,7 @@ async def test_concurrent_replacements_of_different_rows_under_one_submission_id
     succeeded = [reply for reply in replies if 'error' not in reply]
     refused = [reply['error']['data']['reason'] for reply in replies if 'error' in reply]
     assert len(succeeded) == 1 and refused == ['admission_conflict'], replies
-    ledger = dict((request_id, (status, outcome)) for request_id, status, outcome in _ledger(db))
+    ledger = dict((request_id, (status, outcome)) for request_id, status, outcome in _ledger(authority.persistence))
     assert sorted([ledger['a'], ledger['b']]) == [('queued', None), ('terminal', 'cancelled')], ledger
     assert ledger['edit'] == ('queued', None)
 
@@ -464,7 +460,7 @@ async def test_concurrent_replacements_of_different_rows_under_one_submission_id
 @pytest.mark.asyncio
 async def test_a_replacement_retry_naming_another_admission_is_a_conflict(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
-    interactive(db)
+    interactive(authority.persistence)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     with db:
         a, b = await _submit(authority, 'a'), await _submit(authority, 'b')
@@ -485,7 +481,7 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
     """A hosted-room settlement has no ``steered`` (or replaced) result: its rows are never offered either
     verb and the verbs refuse them by name, so the room's terminal/results reads stay healthy."""
     from dataclasses import asdict
-    from gateway.hosted_room_driver import TaskIdentity
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     from gateway.session_contract import SessionActor
     from gateway.session_controls import AuthorityConnection
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
@@ -495,9 +491,9 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
     callbacks = []
-    rows = [rpc.submit(**coords, session_id=sid, prompt=text, task=TaskIdentity('room', text, 'thread', text),
+    rows = [rpc.submit(**coords, session_id=sid, prompt=text, task=HostedTaskIdentity('room', text, 'thread', text),
                        execution_generation=1, on_terminal=callbacks.append) for text in ('first', 'second')]
-    claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    authority.persistence.admissions.claim(epoch=authority.epoch, session_id=sid)
     ref = SessionRef(authority.profile_id, sid)
 
     def run(coro):
@@ -515,7 +511,7 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
         reply = run(conn.dispatch({'id': 1, 'method': method, 'params': {
             'session_id': sid, 'admission_id': rows[1]['admission_id'], **params}}))
         assert reply.get('error', {}).get('data', {}).get('reason') == 'unsupported_control', (method, reply)
-    assert get_session_admission(authority.db, admission_id=rows[1]['admission_id'])['status'] == 'queued'
+    assert authority.persistence.admissions.get(admission_id=rows[1]['admission_id']).status == 'queued'
     # The room's reads stay healthy over its ledger.
     assert isinstance(rpc.history(**coords, session_id=sid), list)
     assert isinstance(rpc.info(**coords, session_id=sid), dict)
@@ -531,6 +527,6 @@ def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, m
         for source, offered in (('gui', True), ('desktop', True), ('tui', True), ('cli', True), ('acp', True),
                                 ('cron', False), ('kanban', False), ('a2a', False), ('bot_room', False)):
             authority.launch_sources = {}
-            interactive(db, source=source)
+            interactive(authority.persistence, source=source)
             controls = session_queued_controls.queued_controls(authority, row)
             assert controls == (['steer', 'replace'] if offered else []), (source, controls)

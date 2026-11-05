@@ -1,6 +1,8 @@
 """``/model <alias>`` keeps the alias endpoint's own credential on the next turn."""
 import pytest
 
+from persistence_assembly import open_persistence, profile_scope
+
 
 @pytest.mark.asyncio
 async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_own_key(tmp_path, monkeypatch):
@@ -12,7 +14,6 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import bind_launch_key, build_policy, restore_policy
-    from hermes_state import SessionDB
     from hermes_cli import model_switch
     old_url, far_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.3:9/v1'
     monkeypatch.setenv('FAR_ALIAS_KEY', 'sk-far-env')
@@ -28,8 +29,8 @@ async def test_model_switch_to_a_keyed_direct_alias_runs_the_next_turn_with_its_
         f'  far-env: {{model: far-model, provider: custom, base_url: "{far_url}", key_env: FAR_ALIAS_KEY}}\n'
         f'  far-literal: {{model: far-model, provider: custom, base_url: "{far_url}", api_key: sk-far-literal}}\n'
         f'  far-ref: {{model: far-model, provider: custom, base_url: "{far_url}", api_key: "${{FAR_ALIAS_KEY}}"}}\n')
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+    with open_persistence(profile_scope(home=tmp_path)) as handle:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', persistence=handle)
         runner = SimpleNamespace(session_authority=authority,
                                  _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-endpoint-a'}))
         authority.runner = runner

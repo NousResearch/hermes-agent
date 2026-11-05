@@ -255,7 +255,7 @@ class TestAPIServerDisconnectClosesResponseStore:
         adapter._runner = None
         adapter._app = None
         adapter._response_store = store
-        adapter._session_dbs = {}
+        adapter._home_stores = {}
         adapter._session_db_cache_lock = threading.Lock()
         adapter._session_db_cache_closed = False
         adapter.platform = Platform.API_SERVER
@@ -268,13 +268,13 @@ class TestAPIServerDisconnectClosesResponseStore:
         adapter = self._build_adapter_with_store(store)
         first_db = MagicMock()
         second_db = MagicMock()
-        adapter._session_dbs = {"default": first_db, "work": second_db}
+        adapter._home_stores = {"default": first_db, "work": second_db}
 
         await adapter.disconnect()
 
         first_db.close.assert_called_once_with()
         second_db.close.assert_called_once_with()
-        assert adapter._session_dbs == {}
+        assert adapter._home_stores == {}
 
     @pytest.mark.asyncio
     async def test_disconnect_closes_cached_session_dbs_when_runner_cleanup_fails(
@@ -283,7 +283,7 @@ class TestAPIServerDisconnectClosesResponseStore:
         """Runner teardown errors must not strand cached DB handles."""
         adapter = self._build_adapter_with_store(MagicMock())
         cached_db = MagicMock()
-        adapter._session_dbs = {"default": cached_db}
+        adapter._home_stores = {"default": cached_db}
         adapter._runner = MagicMock()
         adapter._runner.cleanup = AsyncMock(side_effect=RuntimeError("boom"))
 

@@ -2,6 +2,9 @@
 import asyncio
 
 import pytest
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_seed import seed_messages
 
 
 @pytest.mark.asyncio
@@ -12,7 +15,6 @@ async def test_native_fifo_identity_is_stable_across_compression(tmp_path, monke
     from gateway.session_authority import initialize_session_authority, SessionAuthority
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -33,13 +35,12 @@ async def test_native_fifo_identity_is_stable_across_compression(tmp_path, monke
     assert receipts[0].ref.session_id == parent == receipts[1].ref.session_id
 
     # Compression (the real publication path) moves the route to a child before the drain runs.
-    db = authority.db
-    db.append_message(parent, 'user', 'first')
-    db.append_message(parent, 'assistant', 'ok')
+    db = authority.persistence
+    seed_messages(db, parent, {'role': 'user', 'content': 'first'}, {'role': 'assistant', 'content': 'ok'})
     child = parent + '-child'
-    db.publish_compression_child(parent_session_id=parent, child_session_id=child, source='discord',
-                                 messages=[{'role': 'user', 'content': 'summary'}],
-                                 require_compression_lease=False)
+    db.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source='discord'),
+                                         [NewMessage.from_live({'role': 'user', 'content': 'summary'})],
+                                         require_compression_lease=False)
     assert runner.session_store.advance_compression_session(key, parent, child) is not None
     assert runner.session_store.peek_session_id(key) == child
 
@@ -56,8 +57,8 @@ async def test_native_fifo_identity_is_stable_across_compression(tmp_path, monke
     ref = receipts[0].ref
     await SessionAuthority._drain(authority, ref)
     assert executed == ['first', 'second'], executed
-    rows = list_session_admissions(db, session_id=parent, pending_only=False)
-    assert [(r['request_id'], r['status']) for r in rows] == [('first', 'terminal'), ('second', 'terminal')]
+    rows = db.admissions.list(session_id=parent, pending_only=False)
+    assert [(r.request_id, r.status) for r in rows] == [('first', 'terminal'), ('second', 'terminal')]
 
     # An exact retry of the first event is the same admission, and a third follows the same FIFO.
     with native_callback(runner, events[0], get_hermes_home()):

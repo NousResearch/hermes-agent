@@ -2,7 +2,7 @@
 
 Hermes Agent 使用 SQLite 数据库（`~/.hermes/state.db`）跨 CLI 和 gateway 会话持久化会话元数据、完整消息历史及模型配置。这替代了早期的逐会话 JSONL 文件方案。
 
-源文件：`hermes_state.py`
+源文件：`persistence/` 中的存储契约、入口 `persistence_assembly.py`（`open_persistence`、`open_persistence_reader`），以及 `persistence/sqlite/` 中的 SQLite 后端
 
 ## Hermes home 与 profile 隔离
 
@@ -187,7 +187,7 @@ END;
 
 ## 写入竞争处理
 
-多个 hermes 进程（gateway + CLI 会话 + worktree agent）共享同一个 `state.db`。`SessionDB` 类通过以下方式处理写入竞争：
+多个 hermes 进程（gateway + CLI 会话 + worktree agent）共享同一个 `state.db`。SQLite 后端的存储持有者（`persistence/sqlite/_holder.py` 中的 `StoreHolder`）通过以下方式处理写入竞争：
 
 - **短 SQLite 超时**（1 秒），而非默认的 30 秒
 - **应用层重试**，带随机抖动（20–150ms，最多 15 次重试）
@@ -206,82 +206,94 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 
 ## 常用操作
 
+应用代码通过唯一入口 `persistence_assembly` 访问存储。`open_persistence(scope)` 返回绑定到某个 profile 存储的句柄。句柄为每项能力提供一个仓库（`sessions`、`messages`、`lineage`、`search`、`maintenance`、`state_meta` 等），所有操作都不再接收 profile 参数。契约及其类型化记录位于 `persistence/`，由 `persistence/sqlite/` 中的 SQLite 后端实现。运行在 asyncio 事件循环上的代码使用可等待视图 `store.aio`（`await store.aio.messages.read_transcript(...)`），每次调用都在事件循环之外执行。
+
 ### 初始化
 
 ```python
-from hermes_state import SessionDB
+from pathlib import Path
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
 
-db = SessionDB()                           # 默认：~/.hermes/state.db
-db = SessionDB(db_path=Path("/tmp/test.db"))  # 自定义路径
+store = open_persistence(profile_scope())          # 默认：get_hermes_home() / "state.db"
+store = open_persistence(profile_scope("coder"))   # 命名 profile 的存储
+store = open_persistence(profile_scope(home=Path("/tmp/test-home")))  # <home>/state.db
+store.close()                                      # 每个句柄只释放一次引用
+
+# 只读访问不会创建、迁移或修复存储
+with open_persistence_reader("coder") as reader:
+    count = reader.sessions.count_sessions()
 ```
 
 ### 创建和管理会话
 
 ```python
+from persistence.conversation.sessions import NewSession
+
 # 创建新会话
-db.create_session(
+store.sessions.create(NewSession(
     session_id="sess_abc123",
     source="cli",
     model="anthropic/claude-sonnet-4.6",
     user_id="user_1",
     parent_session_id=None,  # 或用于血缘追踪的上一个会话 ID
-)
+))
 
 # 结束会话
-db.end_session("sess_abc123", end_reason="user_exit")
+store.sessions.end("sess_abc123", "user_exit")
 
 # 重新打开会话（清除 ended_at/end_reason）
-db.reopen_session("sess_abc123")
+store.sessions.reopen("sess_abc123")
 ```
 
 ### 存储消息
 
 ```python
-msg_id = db.append_message(
-    session_id="sess_abc123",
+from persistence.conversation.messages import NewMessage
+
+msg_id = store.messages.append("sess_abc123", NewMessage(
     role="assistant",
     content="Here's the answer...",
-    tool_calls=[{"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}],
+    tool_calls=({"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},),
     token_count=150,
     finish_reason="stop",
     reasoning="Let me think about this...",
-)
+))
 ```
 
 ### 检索消息
 
 ```python
-# 包含所有元数据的原始消息
-messages = db.get_messages("sess_abc123")
+# 包含所有元数据的原始消息（TranscriptRow 记录；as_wire_row() 返回字典）
+rows = store.messages.read_transcript("sess_abc123")
 
 # OpenAI 对话格式（用于 API 重放）
-conversation = db.get_messages_as_conversation("sess_abc123")
+conversation = [m.as_openai_message() for m in store.messages.read_conversation("sess_abc123")]
 # 返回：[{"role": "user", "content": "..."}, {"role": "assistant", ...}]
 ```
 
 ### 会话标题
 
 ```python
-# 设置标题（非 NULL 标题中必须唯一）
-db.set_session_title("sess_abc123", "Fix Docker Build")
+# 设置标题（非 NULL 标题中必须唯一，否则抛出 TitleConflict）
+store.sessions.set_title("sess_abc123", "Fix Docker Build")
 
 # 按标题解析（返回血缘中最新的）
-session_id = db.resolve_session_by_title("Fix Docker Build")
+session_id = store.sessions.resolve_by_title("Fix Docker Build")
 
 # 自动生成血缘中的下一个标题
-next_title = db.get_next_title_in_lineage("Fix Docker Build")
+next_title = store.sessions.next_title_in_lineage("Fix Docker Build")
 # 返回："Fix Docker Build #2"
 ```
 
 
 ## 全文搜索
 
-`search_messages()` 方法支持 FTS5 查询语法，并自动对用户输入进行清理。
+`search` 仓库的 `search_messages()` 支持 FTS5 查询语法，并自动对用户输入进行清理。
 
 ### 基本搜索
 
 ```python
-results = db.search_messages("docker deployment")
+hits = store.search.search_messages("docker deployment")
 ```
 
 ### FTS5 查询语法
@@ -298,24 +310,24 @@ results = db.search_messages("docker deployment")
 
 ```python
 # 仅搜索 CLI 会话
-results = db.search_messages("error", source_filter=["cli"])
+hits = store.search.search_messages("error", source_filter=["cli"])
 
 # 排除 gateway 会话
-results = db.search_messages("bug", exclude_sources=["telegram", "discord"])
+hits = store.search.search_messages("bug", exclude_sources=["telegram", "discord"])
 
 # 仅搜索用户消息
-results = db.search_messages("help", role_filter=["user"])
+hits = store.search.search_messages("help", role_filter=["user"])
 ```
 
 ### 搜索结果格式
 
-每条结果包含：
-- `id`、`session_id`、`role`、`timestamp`
-- `snippet` — FTS5 生成的片段，带 `>>>match<<<` 标记
-- `context` — 匹配前后各 1 条消息（内容截断至 200 字符）
-- `source`、`model`、`session_started` — 来自父会话
+每条结果是一个 `SearchHit` 记录（`persistence/conversation/search.py`），包含：
+- `message_id`、`session_id`、`role`、`timestamp`、`tool_name`
+- `snippet`：FTS5 生成的片段，带 `>>>match<<<` 标记
+- `context`：匹配前一条消息、匹配本身及后一条消息，均为 `SearchContext` 记录（内容截断至 200 字符）
+- `source`、`model`、`session_started`：来自父会话
 
-`_sanitize_fts5_query()` 方法处理边缘情况：
+SQLite 后端的 `_sanitize_fts5_query()`（`persistence/sqlite/conversation/_store/search.py`）处理边缘情况：
 - 去除不匹配的引号和特殊字符
 - 将含连字符的词包裹在引号中（`chat-send` → `"chat-send"`）
 - 移除悬空的布尔运算符（`hello AND` → `hello`）
@@ -393,21 +405,26 @@ LIMIT 10;
 ## 导出与清理
 
 ```python
-# 导出单个会话及其消息
-data = db.export_session("sess_abc123")
+from gateway.session_ingress_media import native_inputs_root
+from persistence.conversation.messages import ReplaceMode
 
-# 导出所有会话（含消息）为字典列表
-all_data = db.export_all(source="cli")
+media_root = str(native_inputs_root())  # profile 保留的媒体，随会话一并删除
 
-# 删除旧会话（仅删除已结束的会话）
-deleted_count = db.prune_sessions(older_than_days=90)
-deleted_count = db.prune_sessions(older_than_days=30, source="telegram")
+# 导出单个会话及其消息（SessionExport：.session 行，.messages）
+export = store.maintenance.export_session("sess_abc123")
 
-# 清除消息但保留会话记录
-db.clear_messages("sess_abc123")
+# 导出所有会话（含消息）
+all_exports = store.maintenance.export_all(source="cli")
 
-# 删除会话及所有消息
-db.delete_session("sess_abc123")
+# 删除旧会话（仅已结束的会话）；返回 PruneResult(count, deleted_ids)
+result = store.maintenance.prune_sessions(older_than_days=90, media_root=media_root)
+result = store.maintenance.prune_sessions(older_than_days=30, source="telegram", media_root=media_root)
+
+# 清空消息但保留会话记录
+store.messages.replace_transcript("sess_abc123", [], ReplaceMode.DESTRUCTIVE)
+
+# 删除会话及其所有消息；返回被删除的 ID
+store.sessions.delete("sess_abc123", media_root=media_root)
 ```
 
 

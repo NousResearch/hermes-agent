@@ -76,6 +76,7 @@ export const arChrome = {
       'session.new': 'جلسة جديدة',
       'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
+      'session.history': 'سجل الجلسات',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
       'session.slot.1': 'الانتقال إلى الجلسة الأخيرة 1',

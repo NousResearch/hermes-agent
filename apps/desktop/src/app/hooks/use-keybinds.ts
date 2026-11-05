@@ -80,9 +80,7 @@ import {
   closeSwitcher,
   commitOnCtrlUp,
   noteSwitcherKeyDown,
-  onSwitcherTabDown,
   onSwitcherTabUp,
-  openOrAdvanceSwitcher,
   slotSessionId,
   switcherActive,
   switcherJustClosed
@@ -212,21 +210,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   commitSwitcherRef.current = () => goToSession(commitOnCtrlUp())
 
-  const stepSession = (direction: 1 | -1) => {
-    onSwitcherTabDown()
-    goToSession(openOrAdvanceSwitcher(direction))
-  }
-
-  // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
-  // falls through to the recent-session switcher. Landing on the workspace
-  // under a full page routes back to the chat (same as view.tabSlot.1).
+  // Cycle only open tabs. A single-tab zone is a no-op, not a request to
+  // navigate through saved sessions. Landing on the workspace under a full
+  // page routes back to chat (same as view.tabSlot.1).
   const cycleTab = (direction: 1 | -1) => {
     const pane = cycleTreeTabInFocusedZone(direction)
 
     if (pane) {
       leavePageForWorkspaceChat(pane)
-    } else {
-      stepSession(direction)
     }
   }
 
@@ -327,6 +318,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'session.newTab': () => deps.openNewSessionTab(),
     'session.newWindow': () => void openNewWindow(),
+    'session.history': () => openCommandPalettePage('history'),
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
@@ -599,6 +591,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           actionId === 'view.closeTab' &&
           event.key.toLowerCase() === 'w' &&
           hasWordEraseModifier(event) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          isFocusWithin('[data-interactive-terminal]')
+        ) {
+          return
+        }
+
+        // A focused shell owns readline's literal Control+H backspace. Agent
+        // mirrors are noninteractive and keep the history shortcut.
+        if (
+          actionId === 'session.history' &&
+          event.key.toLowerCase() === 'h' &&
+          event.ctrlKey &&
+          !event.metaKey &&
           !event.altKey &&
           !event.shiftKey &&
           isFocusWithin('[data-interactive-terminal]')

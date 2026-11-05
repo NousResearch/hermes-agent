@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import run_agent
 from run_agent import AIAgent
 
 
@@ -459,6 +460,88 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert result["final_response"] == "done"
     tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
+
+
+def test_read_only_refusal_reaches_the_model_and_keeps_the_turn_alive():
+    """A worker that only reads must be re-prompted to act, not left in a silent loop.
+
+    The refused read comes back as a tool result telling the worker to edit the
+    target file, the turn keeps running, and the worker can then actually make the
+    edit — the whole point of ``refuse`` over ``halt``.
+    """
+    agent = _make_agent(
+        "read_file", max_iterations=10,
+        config={"tool_loop_guardrails": {"read_only_loop_enabled": True}},
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("read_file", json.dumps({"path": f"file_{i}.py"}), f"c{i}")],
+        )
+        for i in range(1, 9)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"content": "x"})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("read the files")
+
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("read_only_loop_block" in content for content in tool_contents), tool_contents
+    assert any("edit the target file now" in content for content in tool_contents), tool_contents
+    # The refusal blocked the read, so the tool itself did not run again.
+    assert mock_hfc.call_count < 8, mock_hfc.call_count
+    # The turn stayed alive: the worker still got to finish with a response.
+    assert result["final_response"] == "done"
+    assert result["turn_exit_reason"] != "guardrail_halt"
+
+
+def test_read_only_refusal_is_recorded_even_though_it_does_not_halt(monkeypatch):
+    """The refused read must reach the guardrail recorder.
+
+    ``refuse`` blocks one call and keeps the turn alive so the worker can still make
+    the edit, so it never passes through the ``should_halt`` branch. If the recorder
+    only fired there, ``read_only_loop_block`` would be an unreachable detector and
+    the loop would go unnoticed.
+    """
+    agent = _make_agent(
+        "read_file", max_iterations=10,
+        config={"tool_loop_guardrails": {"read_only_loop_enabled": True}},
+    )
+    recorded: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        run_agent, "record_guardrail_decision",
+        lambda _agent, action, code: recorded.append((action, code)),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("read_file", json.dumps({"path": f"file_{i}.py"}), f"c{i}")],
+        )
+        for i in range(1, 9)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"content": "x"})),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("read the files")
+
+    assert ("refuse", "read_only_loop_block") in recorded, recorded
+    # A refusal is not a halt: the worker still had to be able to make the edit.
+    assert agent._tool_guardrail_halt_decision is None
+    assert result["turn_exit_reason"] != "guardrail_halt"
 
 
 

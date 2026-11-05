@@ -2200,20 +2200,47 @@ tool_loop_guardrails:
   warnings_enabled: true       # inject warnings into tool results (default: true)
   hard_stop_enabled: false     # also BLOCK the call past the hard-stop threshold (default: false)
   non_interactive_hard_stop_enabled: true  # default hard stops for gateway/cron
+  read_only_loop_enabled: false # guard a run of read-only calls with no edit (default: false)
   warn_after:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
     idempotent_no_progress: 2  # same result, no progress, N times
+    read_only_loop: 3          # consecutive read-only calls with no mutating call
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    read_only_loop: 6
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).
+
+#### Read-only loop guard
+
+`read_only_loop_enabled` adds a detector for a worker that keeps *reading* without ever changing
+anything — the failure mode where a supervised task loop inspects file after file and the turn
+ends with no result. It counts consecutive read-only calls within one turn: `read_file`,
+`search_files`, `kanban_show`, `kanban_list`, `kanban_attachments`, and `terminal` commands that
+only inspect (`grep`, `cat`, `sed -n`, `ls`, `git status`, `git log`). Terminal commands that
+write (`cat > file`, `patch`, `apply_patch`, `git apply`, `python - <<`) count as *acting*, not
+reading.
+
+Past `warn_after.read_only_loop` the warning is injected into the tool result; past
+`hard_stop_after.read_only_loop` the read is refused with a message telling the model to edit the
+target file or report what is blocking it. A refusal blocks that one call and keeps the turn
+alive, so the model can still make the edit. Any successful mutating call (write, patch, an edit
+command) clears the streak. The guard is off by default, so normal work is unaffected.
+
+A genuinely read-only task (an audit or a report) opts out by passing `read_only_exempt: true` in
+the tool arguments; the exemption then holds for the rest of the session:
+
+```yaml
+tool_loop_guardrails:
+  read_only_loop_enabled: true
+```
 
 Hard stops are designed to catch **replays** — the same call, unchanged, with nothing happening in between — not legitimate iteration:
 

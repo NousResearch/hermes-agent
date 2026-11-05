@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -66,7 +67,43 @@ PROGRESS_RESET_TOOL_NAMES = frozenset({
     "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
 })
 
-_BOOL_FIELDS = ("warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled")
+# Tools that only READ state. A run of these with no mutating call in between is the
+# "reads forever, never acts" loop a Kanban worker falls into: it inspects the repo
+# endlessly and never edits anything, so the turn ends with no result at all.
+READ_ONLY_TOOL_NAMES = frozenset({
+    "read_file", "search_files", "kanban_show", "kanban_list", "kanban_attachments",
+})
+
+# Per-call opt-in for a genuinely read-only task (audit, report): the worker declares
+# the call deliberate and the guard stops counting it -- and stops blocking -- for the
+# rest of the session.
+READ_ONLY_EXEMPT_ARG = "read_only_exempt"
+
+# ``terminal`` is read-only only when the command inspects. A command that writes files
+# is an act; anything else (build, test, unknown) is neither.
+_TERMINAL_READ_ONLY_HEADS = frozenset({
+    "awk", "basename", "cat", "cmp", "cut", "date", "df", "diff", "dirname", "du", "echo",
+    "egrep", "env", "fd", "fgrep", "file", "find", "grep", "head", "jq", "less", "ls",
+    "md5sum", "more", "nl", "printenv", "printf", "pwd", "realpath", "rg", "sed",
+    "sha256sum", "sort", "stat", "tail", "tr", "tree", "type", "uniq", "wc", "which", "whoami",
+})
+_TERMINAL_READ_ONLY_GIT_SUBCOMMANDS = frozenset({
+    "blame", "branch", "describe", "diff", "log", "ls-files", "ls-tree", "reflog",
+    "rev-parse", "shortlog", "show", "status",
+})
+_TERMINAL_EDIT_MARKERS = (
+    "apply_patch", "git add", "git apply", "git checkout", "git commit", "git merge",
+    "git mv", "git rebase", "git reset", "git restore", "git revert", "git rm", "git stash",
+    "mkdir", "mv ", "cp ", "rm ", "touch ", "chmod", "chown", "ln -s", "dd ", "truncate",
+    "npm install", "pip install", "patch ", "python - <<", "python3 - <<", "sed -i",
+    "sed --in-place", "tee ", "write_file",
+)
+# stdout redirected to a file is a write; ``2>&1`` and friends are not.
+_TERMINAL_REDIRECT_RE = re.compile(r"(?<![\d&])>{1,2}(?![&\d])")
+
+_BOOL_FIELDS = (
+    "warnings_enabled", "hard_stop_enabled", "non_interactive_hard_stop_enabled", "read_only_loop_enabled",
+)
 # Threshold field -> (nested section, nested key). The flat legacy key is the field name itself.
 _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_warn_after": ("warn_after", "exact_failure"),
@@ -75,6 +112,8 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
     "exact_failure_block_after": ("hard_stop_after", "exact_failure"),
     "same_tool_failure_halt_after": ("hard_stop_after", "same_tool_failure"),
     "no_progress_block_after": ("hard_stop_after", "idempotent_no_progress"),
+    "read_only_loop_warn_after": ("warn_after", "read_only_loop"),
+    "read_only_loop_block_after": ("hard_stop_after", "read_only_loop"),
 }
 
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
@@ -128,6 +167,11 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    # Read-only-loop guard: off by default so normal work is unaffected. When on, a run
+    # of read-only calls with no mutating call in between warns, then refuses the read.
+    read_only_loop_enabled: bool = False
+    read_only_loop_warn_after: int = 3
+    read_only_loop_block_after: int = 6
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
@@ -183,7 +227,7 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    action: str = "allow"  # allow | warn | refuse | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -192,6 +236,8 @@ class ToolGuardrailDecision:
 
     @property
     def allows_execution(self) -> bool:
+        # ``refuse`` blocks this one call but keeps the turn alive, so the model can still
+        # edit the target (or report the blocker) instead of the turn ending with nothing.
         return self.action in {"allow", "warn"}
 
     @property
@@ -286,6 +332,17 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "read_only_loop_warning": (
+        "{tool_name} is a read-only call and this turn has made {count} read-only calls in a row "
+        "without changing any file. Stop reading and act: make the change you came to make, "
+        "or report what is blocking you."
+    ),
+    "read_only_loop_block": (
+        "Refused {tool_name}: this turn has made {count} read-only calls in a row without changing "
+        "any file. You have read files continuously without editing anything -- stop reading and "
+        "either edit the target file now, or report what is blocking you. If this task is read-only "
+        "by design, re-issue the call with read_only_exempt=true."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -314,6 +371,9 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        # Session-level read-only opt-in (set by a call carrying READ_ONLY_EXEMPT_ARG).
+        # Deliberately outside reset_for_turn: one declaration exempts the whole session.
+        self._read_only_exempt = False
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -342,6 +402,8 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Consecutive read-only calls this turn with no mutating call in between.
+        self._read_only_streak: int = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -364,10 +426,29 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        # A declared read-only task (audit, report) opts out for the rest of the session.
+        # It only lifts the read-only guard; every other detector still applies.
+        if self._declares_read_only_exempt(args):
+            self._read_only_exempt = True
+            self._read_only_streak = 0
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
-        if cap_block is not None or not self.config.hard_stop_enabled:
-            return cap_block or allow
+        if cap_block is not None:
+            return cap_block
+        # Read-only-loop guard: refuse the read and re-prompt the worker to act. The refusal
+        # blocks this call only; the turn stays alive so the worker can still edit the target
+        # file (or report the blocker) instead of the turn ending with nothing at all.
+        if (
+            self.config.read_only_loop_enabled
+            and not self._read_only_exempt
+            and self._read_only_streak >= self.config.read_only_loop_block_after
+            and self._read_only_call(tool_name, args)
+        ):
+            return self._decide(
+                "refuse", "read_only_loop_block", tool_name, self._read_only_streak, signature,
+            )
+        if not self.config.hard_stop_enabled:
+            return allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -385,6 +466,28 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+        streak = self._advance_read_only_streak(tool_name, args, failed=failed)
+        decision = self._after_call_decision(
+            tool_name, args, result, signature=signature, failed=failed,
+        )
+        if (
+            decision.action == "allow"
+            and not failed
+            and self.config.read_only_loop_enabled
+            and self.config.warnings_enabled
+            and streak >= self.config.read_only_loop_warn_after
+            # Only a read may carry the "you are reading in a loop" warning: a non-read call
+            # (e.g. kanban_complete) must not be labelled a read-only call.
+            and self._read_only_call(tool_name, args)
+        ):
+            return self._decide("warn", "read_only_loop_warning", tool_name, streak, signature)
+        return decision
+
+    def _after_call_decision(
+        self, tool_name: str, args: Mapping[str, Any], result: str | None,
+        *, signature: ToolCallSignature, failed: bool,
+    ) -> ToolGuardrailDecision:
+        """The existing per-signature failure / no-progress detectors."""
         warnings = self.config.warnings_enabled
 
         if failed:
@@ -446,6 +549,38 @@ class ToolCallGuardrailController:
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+
+    def _read_only_call(self, tool_name: str, args: Mapping[str, Any]) -> bool:
+        """Whether this call only inspects state (a read)."""
+        if tool_name in READ_ONLY_TOOL_NAMES:
+            return True
+        if tool_name == "terminal":
+            return _terminal_command_kind(str(args.get("command", ""))) == "read"
+        return False
+
+    def _declares_read_only_exempt(self, args: Mapping[str, Any]) -> bool:
+        """Whether the worker declared this call a deliberate read (audit / report)."""
+        return _truthy_flag(args.get(READ_ONLY_EXEMPT_ARG))
+
+    def _advance_read_only_streak(self, tool_name: str, args: Mapping[str, Any], *, failed: bool) -> int:
+        """Track consecutive read-only calls; returns the streak length after this call.
+
+        A successful mutating call (write, patch, or an edit command run through the
+        terminal) is the worker actually acting, so it clears the streak.
+        """
+        if self._declares_read_only_exempt(args):
+            self._read_only_exempt = True
+        if self._read_only_exempt:
+            return self._read_only_streak
+        if failed:
+            # A failed call belongs to the failure detectors: it neither extends nor breaks
+            # the read-only streak.
+            return self._read_only_streak
+        if self._read_only_call(tool_name, args):
+            self._read_only_streak += 1
+        elif tool_name in self.config.mutating_tools or tool_name in PROGRESS_RESET_TOOL_NAMES:
+            self._read_only_streak = 0
+        return self._read_only_streak
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
@@ -612,6 +747,31 @@ def _ordinal(count: int) -> str:
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
+
+
+def _truthy_flag(value: Any) -> bool:
+    """Interpret a JSON-ish flag (bool, number, "true"/"yes"/"1")."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _terminal_command_kind(command: str) -> str:
+    """Classify a terminal command as ``"read"`` (inspection only), ``"act"`` (writes files)
+    or ``"neutral"`` (anything else)."""
+    text = (command or "").strip().lower()
+    if not text:
+        return "neutral"
+    if _TERMINAL_REDIRECT_RE.search(text) or any(marker in text for marker in _TERMINAL_EDIT_MARKERS):
+        return "act"
+    parts = text.split()
+    head = parts[0]
+    if head == "git":
+        sub = parts[1] if len(parts) > 1 else ""
+        return "read" if sub in _TERMINAL_READ_ONLY_GIT_SUBCOMMANDS else "neutral"
+    if head in _TERMINAL_READ_ONLY_HEADS:
+        return "read"
+    return "neutral"
 
 
 # execute_code reports per-call kernel bookkeeping — a running `kernel.execution_count` and wall-clock

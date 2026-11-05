@@ -747,7 +747,7 @@ _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@\"]+)@")
 # Scheme-less network path (``mount //user:pass@host/share``), masked under force only: ``//`` must
 # start a token (comments are ``// note``, protocol-relative URLs carry no ``@``) and the password
 # needs 8+ characters, so ``//user:note@x`` stays as written.
-_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
+_NETWORK_PATH_USERINFO_RE = re.compile(r"(?<![^\s\"'=(`,\[])(//)([^/\s?#@:\"]+):([^/\s?#@\"]{8,})@")
 
 # ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
 # this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
@@ -1377,7 +1377,7 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 # A docs placeholder is a lower-case or ALL-CAPS name in angle brackets (``<password>``) or an
 # upper-case env var reference (``${REDIS_PASSWORD}``); ``$ecretPassw0rd`` or ``<Zq8x…>`` is
 # a real password that happens to start with the same character.
-_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?")
+_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?|%[A-Z_][A-Z0-9_]*%")
 
 
 # ``https://user:password@host`` in docs names the field instead of filling it in.

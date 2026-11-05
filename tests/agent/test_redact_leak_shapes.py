@@ -177,13 +177,14 @@ class TestNetworkPathUserinfo:
 
     @pytest.mark.parametrize("text", ["//user:FakeSecret9876@host/share",
                                       "mount -t cifs //user:FakeSecret9876@host/share /mnt",
-                                      'src="//user:FakeSecret9876@host/share"'])
+                                      'src="//user:FakeSecret9876@host/share"', "`//user:FakeSecret9876@host`",
+                                      "[//user:FakeSecret9876@host/a, //user:FakeSecret9876@host/b]"])
     def test_forced_network_path_password_masked(self, text):
         _assert_masked(text, "FakeSecret9876")
         assert "//user:***@host" in redact_sensitive_text(text, force=True)
 
     @pytest.mark.parametrize("text", ["// TODO: user:note@x", "//user:note@x", "//cdn.example.com/lib.js",
                                       '<a href="//example.com">', "a//user:FakeSecret9876@h",
-                                      "//user:${SMB_PASSWORD}@host/share"])
+                                      "//user:${SMB_PASSWORD}@host/share", "//user:%SMB_PASSWORD%@host/share"])
     def test_comments_relative_urls_and_placeholders_unchanged(self, text):
         _assert_unchanged(text)

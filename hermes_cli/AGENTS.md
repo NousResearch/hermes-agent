@@ -24,8 +24,7 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 `gateway_launchd.py` (macOS LaunchAgent backend), `gateway_setup_wizard.py`
 (`hermes gateway setup`: `_PLATFORMS` registry, status table, per-platform prompts, service offer),
 `gateway_windows*.py`, `gateway_supervised_restart.py`, `gateway_migrate*.py`, `gateway_multiplex_*.py`,
-`gateway_enroll.py`, `gateway_command_errors.py`, `gateway_restart_identity.py` (host-vs-profile verdict for
-a detached respawn; pins `--profile default` so it never follows the sticky `active_profile`). Sibling bodies read facade names through `_gw()`
+`gateway_enroll.py`, `gateway_command_errors.py`, `gateway_restart_identity.py`. Sibling bodies read facade names through `_gw()`
 (late binding on `hermes_cli.gateway`), so monkeypatch on the facade; mutable state such as
 `_resolved_launchd_domain` stays a facade global.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
@@ -91,12 +90,13 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
   `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
   `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
-  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  round-trip): formatting survives, and the fail-closed unreadable-file guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
   writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
+- **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
+  In daemon, RPC and tick code catch `ConfigBackendUnavailable` explicitly: it is a `SystemExit`, so `except Exception` won't stop it.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

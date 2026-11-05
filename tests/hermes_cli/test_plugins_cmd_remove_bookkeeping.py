@@ -55,6 +55,31 @@ def test_remove_forgets_every_config_trace_and_resets_the_memory_provider(home):
     assert not cfg["memory"]["provider"]
 
 
+def test_remove_clears_the_toolset_of_a_plugin_without_provides_tools(home):
+    """``remove`` drops the plugin's toolset from a saved ``platform_toolsets`` list even when
+    plugin.yaml never declared ``provides_tools``; otherwise ``hermes config check`` warns about an
+    unknown toolset forever."""
+    from tools.registry import registry
+
+    d = _write_plugin(home / "plugins", "zznodecl", "zznodecl")
+    (d / "__init__.py").write_text(
+        "def register(ctx):\n"
+        "    ctx.register_tool(name='zznodecl_tool', toolset='zznodecl_ts', handler=lambda args, **kw: '{}',\n"
+        "                      schema={'name': 'zznodecl_tool', 'description': 'probe',\n"
+        "                              'parameters': {'type': 'object', 'properties': {}}})\n",
+        encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["zznodecl"]},
+        "platform_toolsets": {"cli": ["hermes-cli", "zznodecl_ts"], "telegram": ["hermes-telegram"]},
+    }), encoding="utf-8")
+    try:
+        assert plugins_cmd.dashboard_remove_user_plugin("zznodecl")["ok"] is True
+    finally:
+        registry.deregister("zznodecl_tool")
+
+    assert _config(home)["platform_toolsets"] == {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
+
+
 def test_remove_of_a_symlink_inside_the_plugins_dir_unlinks_only_the_link(home):
     """A dev alias pointing at a sibling install resolves INSIDE the plugins dir, so the containment
     check passes; removing the alias must not delete the sibling (or its install metadata)."""

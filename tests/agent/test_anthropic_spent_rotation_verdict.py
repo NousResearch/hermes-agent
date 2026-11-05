@@ -332,6 +332,7 @@ def test_second_process_adopts_the_terminal_verdict(
         timeout=60,
         env=env,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     assert proc.returncode == 0, f"witness failed:\n{proc.stdout}\n{proc.stderr}"
     verdict = json.loads(proc.stdout.strip().splitlines()[-1])

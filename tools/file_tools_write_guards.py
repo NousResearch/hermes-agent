@@ -25,6 +25,7 @@ from tools.binary_extensions import (
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
 from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -170,6 +171,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+    from tools.skill_lock import path_refusal
+    if reason := path_refusal(candidates):
+        return f"Refusing to write to {filepath}: {reason}"
     return None
 
 
@@ -364,7 +368,9 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     except Exception:
         return None
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    # Resolve against the task's cwd, not the process's: a gateway-hosted turn runs in a
+    # process whose cwd is not the session workspace, so a relative path would miss the gate.
+    targets = [p for p in paths if is_write_approval_required(_resolved_or_raw(p, task_id))]
     if not targets:
         return None
 
@@ -497,7 +503,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
             "corrupt the file (read_file showed you EXTRACTED text, not the real "
-            "bytes). Use the docx/xlsx/powerpoint skills or a library like "
+            "bytes). Use the microsoft-office skill or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
     # A -wal/-shm/-journal path is never a legitimate text target, even when
@@ -634,7 +640,7 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
-    consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
+    consecutive_pairs = sum(1 for prev, current in itertools.pairwise(numbered) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 
 

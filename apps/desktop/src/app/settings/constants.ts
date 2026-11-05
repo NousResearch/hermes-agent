@@ -629,7 +629,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
-    persistentShell: 'Keep shell state between commands when the backend supports it.',
+    persistentShell:
+      'SSH backend: keep exported variables between commands. Off starts each command from the login environment; the working directory always carries over.',
     envPassthrough: 'Environment variables to pass into tool execution.',
     dockerImage: 'Container image used when the execution backend is Docker.',
     singularityImage: 'Image used when the execution backend is Singularity.',
@@ -711,7 +712,16 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Box,
-    keys: ['model_context_length', 'fallback_providers']
+    keys: [
+      'model_context_length',
+      'fallback_providers',
+      'delegation.model',
+      'delegation.provider',
+      'delegation.max_iterations',
+      'delegation.max_concurrent_children',
+      'delegation.child_timeout_seconds',
+      'delegation.reasoning_effort'
+    ]
   },
   {
     id: 'chat',
@@ -854,12 +864,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'agent.api_max_retries',
       'agent.service_tier',
       'agent.tool_use_enforcement',
-      'delegation.model',
-      'delegation.provider',
-      'delegation.max_iterations',
-      'delegation.max_concurrent_children',
-      'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort',
       'updates.non_interactive_local_changes'
     ]
   }

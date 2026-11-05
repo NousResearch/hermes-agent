@@ -42,8 +42,8 @@ def _write_platform_plugin(
     platform: str,
     *,
     with_tools_module: bool,
-    declares_provides_tools: "bool | None" = None,
-) -> "object":
+    declares_provides_tools: bool | None = None,
+) -> object:
     """Create a bundled-style platform plugin and return its manifest.
 
     The adapter import is the expensive thing we must NOT trigger: it is
@@ -189,7 +189,7 @@ class TestA2AClientToolsInCliProcess:
     def test_a2a_appears_in_the_hermes_tools_checklist(self):
         """`a2a` is in _DEFAULT_OFF_TOOLSETS, so it must be tickable.
 
-        Every other member of that set (spotify, video_gen,
+        Every other member of that set (video_gen,
         x_search, ...) renders a checkbox; a2a rendered nothing, so the
         documented opt-in path had nothing to tick.
         """

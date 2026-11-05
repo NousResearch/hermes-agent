@@ -57,7 +57,7 @@ def _stray_python() -> str:
     """Another Python than PM's: 3.11 when uv can find one (the #123972 shape), else the test's."""
     uv = I.real_uv()
     assert uv is not None
-    cp = subprocess.run([uv, "python", "find", "3.11"], capture_output=True, text=True, timeout=120)
+    cp = subprocess.run([uv, "python", "find", "3.11"], capture_output=True, text=True, timeout=120, check=False)
     return cp.stdout.strip() if cp.returncode == 0 and cp.stdout.strip() else sys.executable
 
 
@@ -69,7 +69,7 @@ def _seed_stray_venvs(sb: I.Sandbox) -> dict[str, Path]:
         venv = sb.checkout / name
         shutil.rmtree(venv, ignore_errors=True)
         cp = subprocess.run([uv, "venv", "-q", "--python", python, str(venv)], capture_output=True, text=True,
-                            timeout=300, env={k: v for k, v in __import__("os").environ.items() if k != "VIRTUAL_ENV"})
+                            timeout=300, env={k: v for k, v in __import__("os").environ.items() if k != "VIRTUAL_ENV"}, check=False)
         assert cp.returncode == 0, f"harness: uv venv {venv} failed:\n{cp.stderr}"
         site = next(venv.glob("lib/python3*/site-packages"))
         log = sb.root / f"stray-{name.strip('.')}-loaded.log"

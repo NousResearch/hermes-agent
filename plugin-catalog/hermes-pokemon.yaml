@@ -1,21 +1,21 @@
 name: hermes-pokemon
 repo: https://github.com/sxuff/hermes-pokemon
-sha: 5c461d9e87ed06a41c2f1694108426767e785c2d
-version: "0.6.2"
+sha: a3d9f57f345a744825b59432c343d07d4f508a24
+version: "0.7.0"
 title: Hermes Pokémon
-description: "A cozy pixel-art companion garden for Hermes Desktop with three starters, nicknames, fetch, berries, XP, and optional evolution through all nine starter forms. The companion keeps you company on long turns, reacts quietly to failures and to what Hermes is doing, and lives through seasons, offline rainy days, wild visitors, keepsakes, and milestones. Independent fan project bundling CHUNSOFT Pokémon sprites and SpriteCollab community contributions; artwork is excluded from the source-code MIT license. Uses local plugin storage and read-only focused-session activity, with no runtime network requests, credentials, backend, or model calls. Disclosure — independent fan project bundling CHUNSOFT Pokémon sprites and SpriteCollab contributions that are excluded from the MIT code license; reads focused-session busy state and tool-start events read-only and keeps companion state in plugin storage; no network or model calls."
+description: "A cozy pixel-art companion garden for Hermes Desktop with three starters, nicknames, fetch, berries, XP, and optional evolution through all nine starter forms. The companion keeps you company on long turns, reacts quietly to failures, to what Hermes is doing and to turns finishing in other chats, and lives through seasons with real day length and moon phases, offline showers, wild visitors it greets in character, old-friend cameos, keepsakes, milestones that leave a bench, a lantern and bunting in the garden, and a sapling that grows with the days. Reachable from the keyboard, the status bar and the command palette. Independent fan project bundling CHUNSOFT Pokémon sprites and SpriteCollab community contributions; artwork is excluded from the source-code MIT license. Uses local plugin storage and read-only session activity, with no runtime network requests, credentials, backend, or model calls. Disclosure — independent fan project bundling CHUNSOFT Pokémon sprites and SpriteCollab contributions that are excluded from the MIT code license; reads session busy state and message-complete/tool-start/tool-complete events read-only (other chats contribute only \"a turn finished\"), focuses the composer (caret only, no text) or reveals its own pane only on a user click or command, saves a PNG snapshot to your downloads only when you click Save a snapshot, and keeps companion state in plugin storage; no network or model calls."
 maintainer: sxuff
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/sxuff/hermes-pokemon#readme
 screenshots:
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/habitat.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/starters.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/narrow.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/evolution.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/rain.png
-  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/5c461d9e87ed06a41c2f1694108426767e785c2d/docs/images/visitor.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/habitat.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/starters.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/rewards-night.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/cameo.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/evolution.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/a3d9f57f345a744825b59432c343d07d4f508a24/docs/images/visitor.png
 readme: true
 platforms: []
 capabilities:

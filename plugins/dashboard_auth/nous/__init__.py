@@ -6,14 +6,17 @@ when a client_id (``dashboard.oauth.client_id`` / ``HERMES_DASHBOARD_OAUTH_CLIEN
 Portal JWKS with ``aud`` = bare client_id. Portal issues a 24h *rotating* refresh token with
 reuse detection: the middleware MUST persist ``Session.refresh_token`` back to the cookie on
 every refresh or the next refresh replays a rotated token and revokes the whole session.
+
+While the gateway serves the Webapp, its sign-in uses the client Web Access registered for the
+Webapp instead of the configured one (``hermes_cli.dashboard_auth.listener_client``).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Optional
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
+from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session, listener_client
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JwtOAuthProvider,
@@ -74,7 +77,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
     def _jwks_uri(self) -> str:
         return self._jwks_url
 
-    def _refresh_request(self, refresh_token: str) -> tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    def _refresh_request(self, refresh_token: str) -> tuple[dict[str, str], Optional[dict[str, str]]]:
         # The RT goes in BOTH the body (Portal's request schema requires it) and the
         # ``x-nous-refresh-token`` header (Portal reconciles the two and keeps the value
         # out of body access logs). Header-only → 400.
@@ -83,7 +86,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             {"x-nous-refresh-token": refresh_token})
 
     def _grant(
-        self, data: Dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[Dict[str, str]] = None,
+        self, data: dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[dict[str, str]] = None,
         previous_refresh_token: str = "",
     ) -> Session:
         access_token, payload = exchange_token(
@@ -94,7 +97,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return self._session(access_token, refresh_token_from(payload), self._claims_for(access_token))
 
 
-    def _claims_for(self, access_token: str) -> Dict[str, Any]:
+    def _claims_for(self, access_token: str) -> dict[str, Any]:
         claims = verify_jwt(
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
@@ -116,7 +119,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return claims
 
 
-    def _session(self, access_token: str, refresh_token: str, claims: Dict[str, Any]) -> Session:
+    def _session(self, access_token: str, refresh_token: str, claims: dict[str, Any]) -> Session:
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
@@ -131,6 +134,10 @@ def _load_config_oauth_section() -> dict:
 def _settings() -> dict:
     """Resolve NousDashboardAuthProvider kwargs; the skip reason names BOTH configuration surfaces."""
     section = _load_config_oauth_section()
+    own = listener_client.current()  # a plugin reload while the listener uses its own client keeps it
+    if own is not None:
+        return {"client_id": own[0], "portal_url": own[1],
+                "token_leeway": parse_leeway(section.get("token_leeway"))}
     client_id = resolve_env_or_cfg("HERMES_DASHBOARD_OAUTH_CLIENT_ID", section.get("client_id", ""))
     portal_url = resolve_env_or_cfg("HERMES_DASHBOARD_PORTAL_URL", section.get("portal_url", "")) or _DEFAULT_PORTAL_URL
     if not client_id:
@@ -155,9 +162,22 @@ def _settings() -> dict:
 def register(ctx) -> None:
     """Register ``NousDashboardAuthProvider`` when a client_id is configured."""
     global LAST_SKIP_REASON
+    listener_client.offer(_swap_provider)
     LAST_SKIP_REASON = ""
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, NousDashboardAuthProvider, _settings)
     if kwargs is not None:
         logger.info(
             "dashboard-auth-nous: registered provider (client_id=%s, portal=%s, token_leeway=%ss)",
             kwargs["client_id"], kwargs["portal_url"], kwargs["token_leeway"])
+
+
+def _swap_provider() -> Callable[[], None]:
+    """Put a provider on the listener's own client (``listener_client.use`` has made it current) in
+    place of the registered one; the returned undo puts that one, or none, back."""
+    from hermes_cli.dashboard_auth.registry import (
+        register_global_provider, restore_registration, snapshot_registration)
+
+    previous = snapshot_registration(NousDashboardAuthProvider.name)
+    provider = NousDashboardAuthProvider(**_settings())
+    register_global_provider(provider)
+    return lambda: restore_registration(NousDashboardAuthProvider.name, provider, previous)

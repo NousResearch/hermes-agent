@@ -11,7 +11,8 @@ reader thread's bare context.
 Values cross as JSON. Callables and provider objects travel as references the other side turns
 back into proxies; dataclasses become :class:`Record` (dict + attribute access); anything else
 becomes an :class:`Opaque` placeholder naming its type, so a plugin that touches a live handle it
-cannot have fails with a readable error rather than a pickle surprise.
+cannot have fails with a readable error rather than a pickle surprise. Where a core ABC declares
+the type (``SecretSource.fetch -> FetchResult``, ``home_path: Path``), :func:`restore` rebuilds it.
 """
 
 from __future__ import annotations
@@ -20,10 +21,15 @@ import base64
 import contextvars
 import dataclasses
 import enum
+import functools
+import inspect
 import itertools
 import json
 import logging
 import threading
+import types
+import typing
+from collections import abc
 from concurrent.futures import Future
 from pathlib import PurePath
 from typing import Any, BinaryIO, Callable, Dict, Optional
@@ -57,7 +63,7 @@ _REMOTE_EXCEPTIONS = {
 _REMOTE_EXCEPTIONS["PluginHostUnsupported"] = PluginHostUnsupported
 
 
-def raise_remote(error: Dict[str, Any]) -> None:
+def raise_remote(error: dict[str, Any]) -> None:
     """Re-raise a remote error, as the builtin type when it is one plugins commonly catch."""
     type_name = str(error.get("type") or "")
     message = str(error.get("message") or "")
@@ -149,16 +155,95 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
     return {k: decode(v, resolve) for k, v in value.items()}
 
 
+def restore(value: Any, hint: Any) -> Any:
+    """``value`` as decoded, rebuilt as the type ``hint`` declares: JSON carries dicts, lists and
+    scalars, so a ``FetchResult`` arrives as a :class:`Record`, a ``Path`` as ``str``, an enum as its
+    value, a ``frozenset`` as a list. A value that does not fit stays as decoded, so the consumer's
+    own type check still names it."""
+    if value is None or hint is None or hint is Any:
+        return value
+    origin = typing.get_origin(hint)
+    if origin in (typing.Union, types.UnionType):
+        arms = [arm for arm in typing.get_args(hint) if arm is not type(None)]
+        return restore(value, arms[0]) if len(arms) == 1 else value
+    if origin is not None:
+        return _restore_container(value, origin, typing.get_args(hint))
+    if not isinstance(hint, type) or isinstance(value, hint):
+        return value
+    try:
+        if dataclasses.is_dataclass(hint) and isinstance(value, Record):
+            hints = typing.get_type_hints(hint)
+            return hint(**{f.name: restore(value[f.name], hints.get(f.name))
+                           for f in dataclasses.fields(hint) if f.init and f.name in value})
+        if issubclass(hint, (enum.Enum, PurePath)):
+            return hint(value)
+    except (TypeError, ValueError, NameError):
+        pass
+    return value
+
+
+_SEQUENCES: dict[Any, type] = {list: list, tuple: tuple, set: set, frozenset: frozenset,
+                               abc.Sequence: list, abc.Set: frozenset, abc.Iterable: list}
+
+
+def _restore_container(value: Any, origin: Any, args: tuple) -> Any:
+    if origin in (dict, abc.Mapping) and isinstance(value, dict):
+        key_hint, item_hint = args if len(args) == 2 else (None, None)
+        return {restore(k, key_hint): restore(v, item_hint) for k, v in value.items()}
+    kind = _SEQUENCES.get(origin)
+    if kind is None or not isinstance(value, list):
+        return value
+    if kind is tuple and args and args[-1] is not Ellipsis:  # tuple[str, str]: one hint per slot
+        return tuple(restore(v, a) for v, a in zip(value, args)) if len(args) == len(value) else tuple(value)
+    return kind(restore(v, args[0] if args else None) for v in value)
+
+
+def declared_member(cls: type, name: str) -> Optional[Callable[..., Any]]:
+    """The function ``cls`` declares for method or property ``name`` (its annotations are the contract)."""
+    raw = inspect.getattr_static(cls, name, None)
+    if isinstance(raw, property):
+        raw = raw.fget
+    return raw if inspect.isfunction(raw) else None
+
+
+@functools.lru_cache(maxsize=512)
+def declared_return(cls: type, name: str) -> Any:
+    """Return type ``cls`` declares for method/property ``name``; None when undeclared or unresolvable."""
+    fn = declared_member(cls, name)
+    try:
+        return typing.get_type_hints(fn).get("return") if fn is not None else None
+    except (NameError, TypeError, AttributeError):
+        return None
+
+
+def restore_arguments(fn: Optional[Callable[..., Any]], args: list, kwargs: dict) -> tuple[list, dict]:
+    """``args``/``kwargs`` for a call to the unbound method ``fn``, each rebuilt as its declared
+    parameter type. Positional stays positional and keyword stays keyword: the plugin's override may
+    take ``**kwargs`` where the ABC names the parameter."""
+    if fn is None:
+        return args, kwargs
+    try:
+        hints = typing.get_type_hints(fn)
+        params = list(inspect.signature(fn).parameters.values())[1:]  # drop ``self``
+    except (NameError, TypeError, ValueError, AttributeError):
+        return args, kwargs
+    by_position = [p.name for p in params
+                   if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    restored = [restore(value, hints.get(name)) for value, name in zip(args, by_position)]
+    restored += list(args[len(restored):])
+    by_name = {p.name for p in params
+               if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)}
+    return restored, {k: restore(v, hints.get(k)) if k in by_name else v for k, v in kwargs.items()}
+
+
 def is_async_callable(fn: Any) -> bool:
-    import inspect
     target = getattr(fn, "__func__", fn)
-    return inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    return inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))  # noqa: B004 -- __call__ feeds iscoroutinefunction (async instances), not a callability test
 
 
 def describe_signature(fn: Any) -> Optional[list]:
     """``[[name, kind, has_default], ...]`` so the peer's proxy presents the same parameters (hook
     dispatch passes only the kwargs a callback declares)."""
-    import inspect
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):
@@ -167,7 +252,6 @@ def describe_signature(fn: Any) -> Optional[list]:
 
 
 def signature_from(spec: Optional[list]):
-    import inspect
     if not spec:
         return None
     try:
@@ -197,7 +281,7 @@ class Channel:
     """Bidirectional request/response over a pair of byte streams (one JSON document per line)."""
 
     def __init__(self, reader: BinaryIO, writer: BinaryIO,
-                 handler: Callable[[str, Dict[str, Any], Optional[int]], Any], *, name: str,
+                 handler: Callable[[str, dict[str, Any], Optional[int]], Any], *, name: str,
                  on_close: Optional[Callable[[str], None]] = None,
                  context_for_origin: Optional[Callable[[Optional[int]], contextvars.Context]] = None):
         self._reader, self._writer = reader, writer
@@ -205,13 +289,13 @@ class Channel:
         self._context_for_origin = context_for_origin
         self._write_lock = threading.Lock()
         self._ids = itertools.count(1)
-        self._pending: Dict[int, Future] = {}
+        self._pending: dict[int, Future] = {}
         self._pending_lock = threading.Lock()
-        self._contexts: Dict[int, contextvars.Context] = {}
+        self._contexts: dict[int, contextvars.Context] = {}
         self._closed_reason: Optional[str] = None
         self._thread = threading.Thread(target=self._read_loop, name=f"{name}-reader", daemon=True)
 
-    def start(self) -> "Channel":
+    def start(self) -> Channel:
         self._thread.start()
         return self
 
@@ -223,7 +307,7 @@ class Channel:
         """Caller context recorded when THIS side sent ``request_id`` (still in flight)."""
         return self._contexts.get(request_id) if request_id is not None else None
 
-    def request(self, method: str, params: Dict[str, Any], *, timeout: Optional[float] = None) -> Any:
+    def request(self, method: str, params: dict[str, Any], *, timeout: Optional[float] = None) -> Any:
         if self._closed_reason is not None:
             raise PluginHostUnavailable(self._closed_reason)
         request_id = next(self._ids)
@@ -241,7 +325,7 @@ class Channel:
                 self._pending.pop(request_id, None)
             self._contexts.pop(request_id, None)
 
-    def _send(self, message: Dict[str, Any]) -> None:
+    def _send(self, message: dict[str, Any]) -> None:
         data = (json.dumps(message, separators=(",", ":"), allow_nan=True) + "\n").encode("utf-8")
         with self._write_lock:
             if self._closed_reason is not None:
@@ -276,12 +360,12 @@ class Channel:
             reason = f"{self._name} channel read failed: {exc}"
         self._close(reason)
 
-    def _serve(self, message: Dict[str, Any]) -> None:
+    def _serve(self, message: dict[str, Any]) -> None:
         request_id = message.get("id")
         origin = message.get("origin")
         context = self._context_for_origin(origin) if self._context_for_origin else None
 
-        def run() -> Dict[str, Any]:
+        def run() -> dict[str, Any]:
             token = _SERVING.set(request_id)
             try:
                 result = self._handler(str(message.get("method")), message.get("params") or {}, origin)
@@ -304,12 +388,12 @@ class Channel:
         except (TypeError, ValueError) as exc:  # unserializable result slipped past encode()
             self._send({"id": request_id, "error": {"type": "TypeError", "message": str(exc)}})
 
-    def result_of(self, reply: Dict[str, Any]) -> Any:
+    def result_of(self, reply: dict[str, Any]) -> Any:
         if "error" in reply:
             raise_remote(reply["error"])
         return reply.get("result")
 
-    def call(self, method: str, params: Dict[str, Any], *, timeout: Optional[float] = None) -> Any:
+    def call(self, method: str, params: dict[str, Any], *, timeout: Optional[float] = None) -> Any:
         return self.result_of(self.request(method, params, timeout=timeout))
 
     def _close(self, reason: str) -> None:

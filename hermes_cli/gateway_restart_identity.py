@@ -54,7 +54,7 @@ def restart_argv_is_host_gateway(argv: list[str]) -> bool:
     # ``read_record`` already maps unreadable/corrupt records to None; OSError is the state dir.
     try:
         record = hr.read_record(hr.ROLE_GATEWAY)
-        if record is not None and hr.liveness_is_proven(record):
+        if record is not None and hr.record_names_live_owner(record):
             served = tuple(record.profiles)
             if len(served) > 1 or served == ("default",):
                 return True

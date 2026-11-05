@@ -104,7 +104,7 @@ def main(context: Path, result: Path) -> int:
         # selected store Python. Bootstrap must run before any app imports;
         # its ordinary currency check is now a no-op, not another update.
         sys.argv = list(request["argv"]) if restarting else [str(root / "hermes"), "update"]
-        import hermes_bootstrap  # noqa: F401
+        import hermes_bootstrap
         # Import failures are update failures too: keep the original receipt
         # open before importing the application graph from the new checkout.
         from hermes_cli import main as cli
@@ -182,7 +182,7 @@ def main(context: Path, result: Path) -> int:
         if resume is not None:
             try:
                 resume(token)
-            except Exception as exc:  # noqa: BLE001 — a restart failure is owed, never the exit status (C3)
+            except Exception as exc:
                 attempted = True
                 update_receipt.owe_followup(request["update_id"], "windows_resume", f"Windows gateway recovery failed: {exc}")
         handled = cli_started or (begun and update_receipt._current.get() is None)

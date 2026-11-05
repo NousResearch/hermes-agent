@@ -15,13 +15,17 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 
-const launchFlags: { localModels?: boolean; guestOnboarding?: boolean } | undefined =
+const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean } | undefined =
   ipcRenderer.sendSync('hermes:feature-flags')
 
 // Local, sanitized skin payload for the first renderer theme paint. This does
 // not wait on `gateway.ready`, so an unreachable remote primary cannot force
 // the built-in palette over the skin configured on this machine.
 const localSkin = ipcRenderer.sendSync('hermes:skin:local')
+
+// This machine's UI preferences store (#145213), read before the first paint so
+// a preference set in another window or in this machine's Webapp paints at once.
+const uiPreferencesSnapshot = ipcRenderer.sendSync('hermes:ui-preferences:snapshot')
 
 import { unwrapExpectedNotFound } from './api-expected-404'
 
@@ -31,11 +35,21 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
-  // Launch-flag fact: the Nous free tier is on for this launch
-  // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
-  // decision is stamped onto every backend the app spawns.
-  guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
+  // Dev-only launch fact: an unpackaged app started with --fresh-install, so
+  // onboarding treats this launch as a fresh install. Always false when packaged.
+  assumeFreshInstall: launchFlags?.assumeFreshInstall === true,
   localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
+  uiPreferences: {
+    snapshot: uiPreferencesSnapshot && typeof uiPreferencesSnapshot === 'object' ? uiPreferencesSnapshot : null,
+    read: () => ipcRenderer.invoke('hermes:ui-preferences:read'),
+    write: payload => ipcRenderer.invoke('hermes:ui-preferences:write', payload),
+    onChanged: callback => {
+      const listener = (_event, snapshot) => callback(snapshot)
+      ipcRenderer.on('hermes:ui-preferences:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:ui-preferences:changed', listener)
+    }
+  },
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Loopback origin that hosts YouTube's player for the file:// renderer.
   getEmbedHostOrigin: () => ipcRenderer.invoke('hermes:embed-host:origin'),
@@ -43,13 +57,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
-  touchBackend: (profile, options) => ipcRenderer.invoke('hermes:backend:touch', profile, options),
-  getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
-  setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
   getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),
+  // { connectionId, profile, pluginId, path } → one-use local plugin socket URL, null, or { refused: 'permission' }.
+  getPluginWsUrl: payload => ipcRenderer.invoke('hermes:plugin:ws-url', payload),
   // Union agent roster across every registered connection.
   getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
@@ -333,6 +346,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
+    importConnections: (record: Record<string, string>) =>
+      ipcRenderer.invoke('hermes:profile:connections:import', record),
+    rememberConnection: (connectionId: string, profile: string) =>
+      ipcRenderer.invoke('hermes:profile:connections:remember', connectionId, profile),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
@@ -353,6 +370,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   readPluginSource: (filePath: string) => ipcRenderer.invoke('hermes:readPluginSource', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
+  saveTextFileAs: request => ipcRenderer.invoke('hermes:saveTextFileAs', request),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
@@ -361,6 +379,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   contextMenuCopyImage: () => ipcRenderer.invoke('hermes:context-menu:copy-image'),
   contextMenuSpellcheck: action => ipcRenderer.invoke('hermes:context-menu:spellcheck', action),
   contextMenuGuestAddWord: payload => ipcRenderer.invoke('hermes:context-menu:guest-add-word', payload),
+  spellcheckDictionary: (op, word) => ipcRenderer.invoke('hermes:spellcheck:dictionary', { op, word }),
   onContextMenuSpellcheck: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:context-menu-spellcheck', listener)
@@ -383,10 +402,24 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setActiveWork: payload => ipcRenderer.send('hermes:active-work', payload),
+  scheduleStreamWorkWake: (token, delayMs) => ipcRenderer.send('hermes:stream-work-wake', { token, delayMs }),
+  onStreamWorkWake: callback => {
+    const listener = (_event, token) => callback(token)
+    ipcRenderer.on('hermes:stream-work-ready', listener)
+
+    return () => ipcRenderer.removeListener('hermes:stream-work-ready', listener)
+  },
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: mode => ipcRenderer.send('hermes:keep-awake', mode),
+  // Once per computer, after a timed sleep interrupted a turn with keep-awake off.
+  onKeepAwakeOffer: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:keep-awake-offer', listener)
+
+    return () => ipcRenderer.removeListener('hermes:keep-awake-offer', listener)
+  },
   minimizeToTray: {
     get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
     set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),
@@ -408,6 +441,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   setPreviewGuestHidden: (webContentsId, hidden) =>
     ipcRenderer.send('hermes:preview-guest-hidden', { webContentsId, hidden: Boolean(hidden) }),
+  beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
+  endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
+  executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed
@@ -432,6 +468,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')
+  },
+  preparedSubmissions: {
+    read: () => ipcRenderer.invoke('hermes:prepared-submissions:read'),
+    update: (key, entry) => ipcRenderer.invoke('hermes:prepared-submissions:update', key, entry),
+    compareAndSet: (key, expected, entry) =>
+      ipcRenderer.invoke('hermes:prepared-submissions:compare-and-set', key, expected, entry)
   },
   zoom: {
     // Current zoom of this window, as { level, percent }.
@@ -460,11 +502,24 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
-  reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
+  reconcileDesktopPlugins: async () => (await ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins')).published,
+  reconcileDesktopPluginsReport: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
   logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
+  pluginFiles: {
+    request: (pluginId, labels) => ipcRenderer.invoke('hermes:pluginFiles:request', pluginId, labels),
+    grants: pluginId => ipcRenderer.invoke('hermes:pluginFiles:grants', pluginId),
+    revoke: (pluginId, folderId) => ipcRenderer.invoke('hermes:pluginFiles:revoke', pluginId, folderId),
+    op: (pluginId, request) => ipcRenderer.invoke('hermes:pluginFiles:op', pluginId, request),
+    onChanged: callback => {
+      const listener = (_event, change) => callback(change)
+      ipcRenderer.on('hermes:pluginFiles:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pluginFiles:changed', listener)
+    }
+  },
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
     worktreeAdd: (repoPath, options) => ipcRenderer.invoke('hermes:git:worktreeAdd', repoPath, options),
@@ -591,15 +646,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
   },
-  // Cooperative pool retirement (main → renderer): the pooled backend under
-  // `poolKey` is being stopped for a foreground open. Park that scope; do not
-  // redial into the slot it vacated.
-  onPoolBackendRetiring: callback => {
-    const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:pool:retiring', listener)
-
-    return () => ipcRenderer.removeListener('hermes:pool:retiring', listener)
-  },
   // Soft gateway-mode apply finished tearing down the primary backend. Renderer
   // should wipe session lists + re-dial without a window reload.
   onConnectionApplied: callback => {
@@ -652,7 +698,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
-  getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getVersion: (scope?: { connectionId?: string; profile?: string }) => ipcRenderer.invoke('hermes:version', scope),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
   getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
@@ -664,8 +710,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
-    getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
-    setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+    setChannel: name => ipcRenderer.invoke('hermes:updates:channel:set', name),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:updates:progress', listener)

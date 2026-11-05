@@ -24,6 +24,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import { sessionLabel } from '../lib/sessionLabel.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
@@ -31,12 +32,13 @@ import { LiveAgentsPanel } from './agentsPanel.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { HalfBlockImage, KittyImage } from './cellImage.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { GoalBar } from './goalBar.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
+import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
-import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
@@ -114,8 +116,8 @@ export const PetPane = memo(function PetPane() {
       position="absolute"
       right={PET_RIGHT}
     >
-      {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
-      {!kitty && grid ? <PetSprite grid={grid} /> : null}
+      {kitty ? <KittyImage color={kitty.color} placeholder={kitty.placeholder} /> : null}
+      {!kitty && grid ? <HalfBlockImage grid={grid} /> : null}
     </NoSelect>
   )
 })
@@ -216,7 +218,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   <SessionPanel
                     info={row.msg.info}
                     maxWidth={Math.max(1, composer.cols - 2)}
-                    sid={ui.sid}
+                    sid={sessionLabel(ui.sid)}
                     t={ui.theme}
                   />
                 )}
@@ -413,6 +415,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
+      <LoopBar cols={Math.max(1, composer.cols - 2)} />
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
       <StatusRulePane at="top" composer={composer} nativeMode={nativeMode} status={status} />
       <AmbientDock placement="dock-top" />

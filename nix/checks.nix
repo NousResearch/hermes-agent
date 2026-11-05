@@ -165,6 +165,41 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # The pm artifacts are upstream glibc binaries. autoPatchelf rewrites
+        # their interpreter at build time, and this sandbox has no
+        # /lib64/ld-linux-x86-64.so.2 (that is host nix-ld), so exec'ing them
+        # here is the proof they run on a host that never enabled nix-ld.
+        pm-packages-exec = pkgs.runCommand "hermes-pm-packages-exec" { } ''
+          mkdir -p $out
+          if [ -e /lib64/ld-linux-x86-64.so.2 ]; then
+            echo "sandbox unexpectedly carries a host loader; this proves nothing" >&2
+            exit 1
+          fi
+          ${self'.packages.pm-uv}/bin/uv --version > $out/uv
+          ${self'.packages.pm-node}/bin/node --version > $out/node
+          ${self'.packages.pm-ffmpeg}/bin/ffmpeg -version > $out/ffmpeg
+          ${self'.packages.pm-ripgrep}/bin/rg --version > $out/rg
+          ${self'.packages.pm-python}/bin/python3 -c 'import ssl, sqlite3' > $out/python
+          cat $out/*
+        '';
+
+        # The dev shell's HERMES_PYTHON must carry its own dependencies: the
+        # TUI and the test runner launch it with PYTHONPATH replaced or cleared.
+        dev-venv-self-contained = pkgs.runCommand "hermes-dev-venv-self-contained" { } ''
+          venv=${hermes-agent.devVenv}
+          env -i "$venv/bin/python3" -c '
+          import sys, ruamel.yaml, openai, httpx, pytest
+          assert sys.prefix == "'"$venv"'", sys.prefix
+          assert sys.base_prefix == "${hermes-agent.pmPython}", sys.base_prefix
+          '
+          env -i "$venv/bin/pytest" --version
+          # Native dev commands survive alongside the re-shebanged scripts.
+          env -i "$venv/bin/ruff" --version
+          env -i "$venv/bin/ty" --version
+          mkdir -p $out
+          echo ok > $out/result
+        '';
+
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
         # but this ensures darwin builders also build it during flake check.
@@ -419,8 +454,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 # An override on purpose. Without one the effective package
                 # IS the default package, so a launcher that pinned the plain
                 # default would look correct while it shipped a second
-                # runtime to anyone who customises theirs.
-                extraDependencyGroups = [ "exa" ];
+                # runtime to anyone who customises theirs. The group must be
+                # one the default package does not already ship.
+                extraDependencyGroups = [ "google-meet" ];
                 backend = {
                   mode = "serve";
                   port = 9231;
@@ -452,19 +488,32 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             agentPackages = builtins.filter (p: (p.pname or "") == "hermes-agent") cfg.home.packages;
 
             # The backend of the service, as the unit or the agent runs it.
+            backendArgvList =
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                cfg.launchd.agents.hermes-backend.config.ProgramArguments
+              else
+                [ cfg.systemd.user.services.hermes-backend.Service.ExecStart ];
+            backendArgvText = lib.concatStringsSep " " (lib.flatten backendArgvList);
             backendScript =
               let
-                argv =
-                  if pkgs.stdenv.hostPlatform.isDarwin then
-                    cfg.launchd.agents.hermes-backend.config.ProgramArguments
-                  else
-                    [ cfg.systemd.user.services.hermes-backend.Service.ExecStart ];
-                first = lib.head (lib.flatten argv);
                 # writeShellScript gives a store path. Read the real text, so
                 # the check tests the script and not the option that made it.
-                path = lib.head (lib.splitString " " first);
+                path = lib.head (lib.splitString " " (lib.head (lib.flatten backendArgvList)));
               in
               builtins.readFile path;
+            # The unit text that carries the token's path: an Environment
+            # list (systemd) or an EnvironmentVariables set (launchd).
+            backendTokenText =
+              # Same NAME=value shape on both platforms, so one assertion
+              # covers each: systemd renders an Environment list (with the
+              # value quoted), launchd an attribute set that holds the bare
+              # value.
+              if pkgs.stdenv.hostPlatform.isDarwin then
+                "HERMES_DASHBOARD_SESSION_TOKEN=file:"
+                + (cfg.launchd.agents.hermes-backend.config.EnvironmentVariables.HERMES_DASHBOARD_SESSION_TOKEN
+                  or "")
+              else
+                lib.concatStringsSep "\n" cfg.systemd.user.services.hermes-backend.Service.Environment;
 
             failures =
               lib.optional (
@@ -488,20 +537,35 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ++ lib.optional (
                 !lib.hasInfix "HERMES_DESKTOP_REMOTE_TOKEN" wrapper
               ) "the launcher must give a token with the URL: the desktop resolver throws when the URL is set alone"
-              ++ lib.optional (
-                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN" backendScript
-              ) "the backend must read the session token, or it makes a new one that the application cannot know"
 
               # ── The token never enters the Nix store ────────────────────
-              # Each side must read the file at start time. A --set flag or
-              # an Environment= value writes the literal into a store path
-              # that all users can read.
+              # The desktop launcher reads the file at start time (--run, not
+              # --set: a --set value writes the token into a store path that
+              # all users can read). The backend unit instead carries the
+              # token's PATH in its environment and hermes reads the file
+              # itself, so the store never sees the token either way.
               ++ lib.optional (
                 !lib.hasInfix tokenFile wrapper || !lib.hasInfix "--run" wrapper
               ) "the launcher must read the token from ${tokenFile} at start time, with --run"
               ++ lib.optional (
-                !lib.hasInfix tokenFile backendScript
-              ) "the backend must read the token from ${tokenFile} at start time"
+                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN=" backendTokenText
+                || !lib.hasInfix "file:${tokenFile}" backendTokenText
+              ) "the backend unit must name the token file in its environment, or hermes mints a token the application cannot know"
+              # With no waitFor, a token must no longer force the launcher:
+              # nothing in the command line has to read a secret any more.
+              ++ lib.optional (
+                lib.hasInfix "hermes-backend-launch" backendArgvText
+              ) "a sessionTokenFile alone must not force the launcher; the token path rides in the unit environment (got: ${backendArgvText})"
+
+              # Secret managers leave a "$XDG_RUNTIME_DIR" placeholder in
+              # secret paths for a shell to expand (agenix's Home Manager
+              # module does). escapeShellArg freezes the placeholder into a
+              # literal, so the desktop reader must expand it before its
+              # readability check. The backend takes the path from the unit
+              # environment verbatim, so nothing renders it through a shell.
+              ++ lib.optional (
+                !lib.hasInfix ''_token_file=''${_token_file//\$\{XDG_RUNTIME_DIR\}/''${XDG_RUNTIME_DIR:-}}'' wrapper
+              ) "the desktop launcher must expand an unexpanded \"$XDG_RUNTIME_DIR\" in the token path"
               ++ lib.optional (
                 setValue "HERMES_DESKTOP_REMOTE_TOKEN" != null
               ) "the token must never be a --set value: makeWrapper writes it into the world-readable Nix store";
@@ -984,12 +1048,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 waitFor = null;
                 interfaceName = null;
                 waitTimeout = 120;
-                # No token here: this case asserts the plain argv, which the
-                # module builds only when nothing must run before the
-                # backend. A token needs the launcher script instead.
+                # No token here: this case asserts the plain argv. The
+                # withToken case below proves a token alone still yields the
+                # same plain argv -- only a wait needs the launcher.
                 sessionTokenFile = null;
               };
             };
+            withToken =
+              (cfgFor "serve")
+              // {
+                backend = (cfgFor "serve").backend // {
+                  sessionTokenFile = "/run/secrets/hermes-argv-probe-token";
+                };
+              };
             sentinel = "--hermes-nix-argv-probe";
             probe = argv: lib.escapeShellArgs (argv ++ [ sentinel ]);
           in
@@ -1022,6 +1093,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             check "gateway"   ${probe (common.gatewayArgv (cfgFor "none"))}
             check "serve"     ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "serve"; })}
             check "dashboard" ${probe (common.backendArgv { inherit pkgs; cfg = cfgFor "dashboard"; })}
+            check "serve+token" ${probe (common.backendArgv { inherit pkgs; cfg = withToken; })}
 
             mkdir -p $out
             echo "ok" > $out/result
@@ -1201,6 +1273,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
 
+          # The compiled TUI runs these on HERMES_PYTHON; the Python package lives in another
+          # store path, so they must ship beside entry.js (#139208).
+          for helper in gateway_bootstrap.py clipboard_image.py; do
+            test -f ${hermes-agent}/ui-tui/dist/scripts/$helper || \
+              (echo "FAIL: TUI helper $helper missing"; exit 1)
+          done
+          echo "PASS: TUI Python helpers present"
+
           # self-contained bundle; no runtime node_modules expected
 
           grep -q "HERMES_TUI_DIR" ${hermes-agent}/bin/hermes || \
@@ -1287,6 +1367,96 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: base package clean"
 
           echo "=== All extraPythonPackages checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Extras ADD to what a package ships, through both entry points:
+        # `pkgs.hermes-agent.override { ... }` (the documented overlay path)
+        # and the modules' extraPythonPackages / extraDependencyGroups.
+        # Replacing semantics rebuilt the default package as `minimal` and
+        # dropped every provider group. Each case asserts a positive effect
+        # AND a preserved one, so an implementation that ignored the extras
+        # fails too. Eval-only: a drvPath is the identity of what it builds.
+        extras-extend-package = let
+          testPkg = pythonLock.interpreter.pkgs.pyfiglet;
+          # Not in the default package's groups, so adding it must show.
+          newGroup = "google-meet";
+          path = drv: builtins.unsafeDiscardStringContext drv.drvPath;
+          modulePackage = settings:
+            (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package;
+
+          viaModulePlugin = modulePackage { extraPythonPackages = [ testPkg ]; };
+          viaModuleGroup = modulePackage { extraDependencyGroups = [ newGroup ]; };
+          viaModuleShipped = modulePackage { extraDependencyGroups = [ "anthropic" ]; };
+          viaOverlayGroup = hermes-agent.override { extraDependencyGroups = [ newGroup ]; };
+          # No `or [ ]`: appending to prev.extraDependencyGroups is a shape users already write.
+          viaFunctionGroup = hermes-agent.override (prev: {
+            extraDependencyGroups = prev.extraDependencyGroups ++ [ newGroup ];
+          });
+          viaOverlayShipped = hermes-agent.override { extraDependencyGroups = [ "messaging" ]; };
+
+          # A custom `package` that already carries extras of its own: the
+          # module's extras must land on top of them, not replace them.
+          testPkg2 = pythonLock.interpreter.pkgs.tabulate;
+          newGroup2 = "ddgs";
+          customPackage = hermes-agent.override {
+            extraDependencyGroups = [ newGroup ];
+            extraPythonPackages = [ testPkg ];
+          };
+          viaModuleOnCustom = modulePackage {
+            package = customPackage;
+            extraDependencyGroups = [ newGroup2 ];
+            extraPythonPackages = [ testPkg2 ];
+          };
+          bothExtras = hermes-agent.override {
+            extraDependencyGroups = [ newGroup newGroup2 ];
+            extraPythonPackages = [ testPkg testPkg2 ];
+          };
+
+          cases = [
+            {
+              what = "module extraPythonPackages reaches the package (wrapper PYTHONPATH)";
+              ok = path viaModulePlugin != path hermes-agent;
+            }
+            {
+              what = "module extraPythonPackages keeps the default sealed venv";
+              ok = path viaModulePlugin.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "a new group changes the venv (not ignored)";
+              ok = path viaFunctionGroup.hermesVenv != path hermesVenv;
+            }
+            {
+              what = "module extraDependencyGroups == appending to the package's own";
+              ok = path viaModuleGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "overlay attrset override == appending (shipped groups survive)";
+              ok = path viaOverlayGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "module group the package already ships leaves the venv unchanged";
+              ok = path viaModuleShipped.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "overlay group the package already ships leaves the venv unchanged";
+              ok = path viaOverlayShipped.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "module extras on a custom package keep its groups (venv)";
+              ok = path viaModuleOnCustom.hermesVenv == path bothExtras.hermesVenv;
+            }
+            {
+              what = "module extras on a custom package keep its python packages";
+              ok = path viaModuleOnCustom == path bothExtras;
+            }
+          ];
+          report = lib.concatMapStrings (c: "${if c.ok then "PASS" else "FAIL"}: ${c.what}\n") cases;
+        in pkgs.runCommand "hermes-extras-extend-package" { inherit report; } ''
+          echo "=== Checking extras extend the package's own ==="
+          printf '%s' "$report"
+          if printf '%s' "$report" | grep -q '^FAIL'; then exit 1; fi
           mkdir -p $out
           echo "ok" > $out/result
         '';

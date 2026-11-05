@@ -49,7 +49,7 @@ class _HostRecord:
         self.alive = True
         record = type("Record", (), {"profiles": profiles})()
         monkeypatch.setattr(hr, "read_record", lambda role, **_kw: record if self.alive else None)
-        monkeypatch.setattr(hr, "liveness_is_proven", lambda _record: self.alive)
+        monkeypatch.setattr(hr, "record_names_live_owner", lambda _record: self.alive)
 
 
 def _capture_spawns(monkeypatch) -> list[list[str]]:
@@ -83,7 +83,7 @@ def test_windows_update_relaunch_keeps_the_host_after_its_record_is_gone(sticky_
     """Windows ``hermes update``: pause (classify + kill) an unmapped host, then relaunch it."""
     from hermes_cli import main as cli_main
     import gateway.status as gateway_status
-    import hermes_cli.update_cmd_windows as update_cmd_windows
+    from hermes_cli import update_cmd_windows
 
     record = _HostRecord(monkeypatch, ("default", "worker"))
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)

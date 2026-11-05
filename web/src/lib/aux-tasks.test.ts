@@ -40,6 +40,11 @@ describe("auxTaskRows", () => {
     expect(auxTaskLabel([{ task: "x_task", provider: "auto", model: "", base_url: "", label: "X" }], "x_task")).toBe("X");
   });
 
+  it("does not offer the retired skills_hub slot (#40703)", () => {
+    expect(builtinKeys).not.toContain("skills_hub");
+    expect(auxTaskRows(undefined).map((t) => t.key)).not.toContain("skills_hub");
+  });
+
   it("carries a plugin task's inherited base slot", () => {
     const rows = auxTaskRows([
       {

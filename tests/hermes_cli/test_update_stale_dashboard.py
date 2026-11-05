@@ -110,13 +110,24 @@ def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeyp
         assert pid in exclude_pids
         return []
 
-    with patch(
+    # ``restart_managed`` first probes for a managed hermes-dashboard unit; unstubbed, that
+    # probe found the developer's real unit and restarted it.
+    calls: list[list[str]] = []
+
+    def fake_run(args, *a, **kw):
+        calls.append(list(args))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run), patch(
         "hermes_cli.main_dashboard._find_stale_dashboard_pids",
         side_effect=assert_owned_pid_is_excluded,
     ):
         result = _kill_stale_dashboard_processes(restart_managed=True)
 
     assert result == {"matched": [], "killed": [], "failed": []}
+    assert all(call[:1] == ["systemctl"] and "list-unit-files" in call for call in calls)
+    # Windows has no systemd: the managed-unit probe returns before running anything.
+    assert bool(calls) == (sys.platform != "win32")
 
 
 def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(

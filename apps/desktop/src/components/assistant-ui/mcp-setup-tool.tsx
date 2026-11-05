@@ -10,10 +10,10 @@ import {
   CONNECTOR_CARD_PHASES,
   MARK_LABEL,
   reissueConnectionTarget,
-  useConnectionOwner,
   useConnectorFocusHandoff
 } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowAction, ConnectorSummary } from '@/components/ui/connector-card'
@@ -34,7 +34,6 @@ import {
   toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
-import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
@@ -318,11 +317,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   const verb = rowVerb(target, action)
   const fields = target.requiredEnv
 
-  // The composer's MCP suggestion index caches the configured servers; this row just changed them.
   useEffect(() => {
     if (target.state === 'connected') {
-      invalidateMcpSuggestionIndex()
-
       if (!target.discoveryError && target.tools.length > 0) {
         setSetupOpen(false)
       }

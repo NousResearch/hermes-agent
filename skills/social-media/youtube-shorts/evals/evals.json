@@ -1,0 +1,89 @@
+{
+  "skill": "youtube-shorts",
+  "version": "1.0.0",
+  "description": "The growth engine for YouTube Shorts in 2026 — a discovery engine fully decoupled from long-form. Optimizes for swipe-through (Viewed vs Swiped Away) and ~70%+ retention using the Retention Ladder (Stop, Hold, Angle, Bridge). Drafts the script; the human films/edits; WoopSocial schedules; analytics are read natively in YouTube Studio. Sibling of youtube-long-form.",
+  "evals": [
+    {
+      "name": "earns_reach_by_not_being_skipped",
+      "input": "How do YouTube Shorts actually get views in 2026?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains the deciding metric is swipe-through (Viewed vs Swiped Away), not impressions/CTR — there is no thumbnail or click on Shorts",
+        "Describes the explore-and-exploit seed-audience test (interest-based, not subscriber-count based)",
+        "Introduces the Retention Ladder (Stop, Hold, Angle, Bridge) and that the first frame's job is to make the next second inevitable",
+        "Reads brand-profile and voice-builder before drafting"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Write me a Short script about our invoicing tip.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder first so the Short sounds like the account",
+        "Returns a shootable script (on-screen text, VO, shots) with a frame-one hook",
+        "Designs for ~70%+ retention and a clean loop",
+        "Flags that the human films/edits and the script is the draft, not a finished video"
+      ]
+    },
+    {
+      "name": "decoupled_from_longform_headline",
+      "input": "If I post a bunch of Shorts, will that help my long-form videos rank?",
+      "expect": [
+        "States YouTube fully decoupled Shorts and long-form recommendation systems in late 2025 — they are separate engines",
+        "Explains posting Shorts no longer algorithmically boosts long-form, and a Short that flops won't drag long-form down",
+        "Clarifies the funnel is a manual/viewer-choice bridge (channel surface, search, pinned long-form), not an algorithmic carryover",
+        "Routes long-form strategy to the sibling skill youtube-long-form"
+      ]
+    },
+    {
+      "name": "length_matched_to_retention",
+      "input": "Should I make my Shorts the full 3 minutes now?",
+      "expect": [
+        "Notes Shorts can run up to 3 minutes but length is bimodal: <30s tends to higher completion, ~50-60s tends to higher total views (verify-quarterly)",
+        "States ~70%+ average percentage viewed is the king metric, and a tight 20s watched twice beats a meandering 90s abandoned",
+        "Advises designing the idea first, then the shortest length that still feels complete",
+        "Warns padding a short idea to hit a length hurts retention and distribution"
+      ]
+    },
+    {
+      "name": "diagnoses_a_short_that_died",
+      "input": "My Short got 200 views and just stopped. What happened?",
+      "expect": [
+        "Explains the brutal 30-60 minute test window: if the seed audience swipes, distribution largely stops (dead on arrival)",
+        "Points to the hook (first 1-3 seconds) and the Viewed vs Swiped Away / retention metrics in YouTube Studio as the diagnosis",
+        "Gives concrete targets: aim ~75%+ viewed, ~70%+ retention; >40% swipe-away is a red flag",
+        "Notes a Short can resurface later if it finds a new audience, so the channel isn't doomed"
+      ]
+    },
+    {
+      "name": "pushback_on_template_spam_and_bought_views",
+      "input": "Let's mass-produce 50 AI Shorts from one template this week, buy some views to kickstart them, and do sub4sub.",
+      "expect": [
+        "Refuses templated mass-production: the Anti-Repetitive Content AI and the inauthentic-content policy suppress recycled formats, and wide reach now expects information gain",
+        "Refuses bought views and sub4sub as manipulation that risks YPP standing and doesn't produce engaged views",
+        "Explains volume without novelty is now a negative signal",
+        "Offers the legitimate path: fewer Shorts with genuinely unique angles, strong hooks, and real retention"
+      ]
+    },
+    {
+      "name": "edge_case_ai_shorts_compliance",
+      "input": "Can I even monetize AI-generated Shorts?",
+      "expect": [
+        "Yes, with conditions: use the 'Altered Content' disclosure toggle (required since May 2025) and add genuine original creative direction",
+        "Avoid repetitive templates that trigger the July 2025 inauthentic-content policy; each Short needs a unique angle (information gain)",
+        "Notes engaged views (post March 2025 view-count change) drive monetization, and a Content ID claim on a Short over a minute can block it globally",
+        "Reminds to caption (most watch without sound) and to keep AI as a tool under human direction, not a spam engine"
+      ]
+    },
+    {
+      "name": "publishing_and_native_analytics_via_tools",
+      "input": "Publish this Short for tomorrow and then tell me its swipe rate.",
+      "expect": [
+        "Routes publishing through scheduling-and-queue -> WoopSocial (tools/integrations/woopsocial.md, MCP and REST); YouTube is a supported platform; validate before publish",
+        "Notes WoopSocial has no edit-after-publish (delete + recreate) and no analytics surface",
+        "Says swipe rate / Viewed vs Swiped Away, average % viewed, and engaged views must be read natively in YouTube Studio",
+        "Refuses to fabricate a swipe rate or any metric"
+      ]
+    }
+  ]
+}

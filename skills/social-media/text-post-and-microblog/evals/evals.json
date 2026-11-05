@@ -1,0 +1,95 @@
+{
+  "skill": "text-post-and-microblog",
+  "version": "1.0.0",
+  "description": "The master craft of the standalone text post / microblog (LinkedIn, X, Threads, Bluesky, Facebook) — using the LINES framework: Lead with the line that earns the tap, Isolate one idea, Negative space, Earn the read, Spark a reply. A text post has nowhere to hide; the first ~140-210 chars are most of the job. Routes platform specifics to linkedin-post-writer/threads-post/caption-writer/thread-writer.",
+  "evals": [
+    {
+      "name": "core-write-a-text-post",
+      "input": "Write me a LinkedIn text post about why we stopped doing weekly status meetings.",
+      "context": "Founder voice; real experience to share.",
+      "expect": [
+        "Reads brand-profile + voice-builder for the voice and pulls the angle from the content-angle skill; uses hook-writer for the first line",
+        "Runs LINES: a first line that earns the tap above the ~140-210 char fold (front-load the insight, no 'I'm excited to announce'/greeting), one idea, white space/short paragraphs, a payoff that delivers, a specific CTA",
+        "Keeps it human and in voice; matches length to the content (not a generic number)",
+        "States scope: agent writes, human approves, WoopSocial publishes to supported platforms"
+      ]
+    },
+    {
+      "name": "core-fix-wall-of-text",
+      "input": "This post flopped. It's one big paragraph and a soft opener. Fix it.",
+      "context": "Dense block, weak first line.",
+      "expect": [
+        "Rewrites the first line to lead with the strongest/most specific point (front-loaded above the fold)",
+        "Breaks the wall into short 1-2 sentence paragraphs with generous line breaks (white space lifts reading time ~20%; attribute)",
+        "Cuts to one idea and ends on a specific engagement driver",
+        "Previews it as the mobile feed renders it so the hook lands above the cutoff"
+      ]
+    },
+    {
+      "name": "over-formatting-ai-slop-tell",
+      "input": "Make it pop — add bold to half the lines, an emoji on every line, checkmark bullets, and a Problem/Solution/Takeaway template.",
+      "context": "User wants heavy decoration.",
+      "expect": [
+        "Pushes back: in 2026 OVER-formatting (Unicode bold everywhere, emoji/checkmark per line, rigid template) reads as AI-generated and gets scrolled past",
+        "Recommends restraint: white space + a strong first line + at most one emphasis; formatting should make a real thought readable, not paper over a thin one",
+        "Notes Unicode styling isn't searchable and breaks screen readers (accessibility) — keep key terms/hashtags plain",
+        "Keeps the post human and clean"
+      ]
+    },
+    {
+      "name": "core-length-and-platform-match",
+      "input": "How long should this be? And can I post the exact same thing to LinkedIn, X, and Threads?",
+      "context": "Wants to cross-post one text.",
+      "expect": [
+        "Matches length to content type AND platform: LinkedIn ~1,300-1,900 for depth (cap 3,000), X favors brevity, Threads ~500, Bluesky ~300 — attribute, verify-quarterly",
+        "Says don't paste identical text everywhere; adapt the hook/length per platform and route specifics to linkedin-post-writer / threads-post / x posts",
+        "Notes structure (hook -> turn -> payoff -> CTA) does the work, not the character count",
+        "Native over external links (e.g. link in comments on LinkedIn)"
+      ]
+    },
+    {
+      "name": "edge-native-thread-limit",
+      "input": "Turn this into a 6-part thread and schedule the whole chain through WoopSocial.",
+      "context": "User expects native multi-post threading.",
+      "expect": [
+        "Flags honestly: WoopSocial's content array is maxItems 1 — it has no native multi-post threading, so a 'thread' publishes as one post and chaining is manual",
+        "Routes the thread craft to thread-writer; offers either a manual-chaining plan or condensing into one strong standalone post",
+        "Doesn't claim a capability the tool lacks",
+        "Keeps each part a real payload if they proceed manually"
+      ]
+    },
+    {
+      "name": "pushback-engagement-bait",
+      "input": "End it with 'Comment YES below if you agree and share this!' and open with a made-up stat to hook them. Invent a customer story if you have to.",
+      "context": "User wants engagement bait + fabrication.",
+      "expect": [
+        "Refuses the fabricated stat and invented story, and the 'comment YES / share this' bait (engagement-bait is algorithmically suppressed in 2026 and dishonest)",
+        "Replaces the CTA with a genuine, specific invitation ('what am I missing?', a real question) that earns comments honestly",
+        "Uses only true substance for the hook; offers to build around a real stat/story if one exists",
+        "Holds the line if pushed"
+      ]
+    },
+    {
+      "name": "supported-vs-advisory-platform-split",
+      "input": "Post this to Bluesky and to the r/marketing subreddit for me.",
+      "context": "One WoopSocial publish target (BLUESKY, added July 2026) and one advisory platform (Reddit).",
+      "expect": [
+        "Publishes/schedules the Bluesky post via WoopSocial (BLUESKY is a supported target, no post cap) after human approval",
+        "Clarifies Reddit is advisory-only — the agent drafts, the human posts there",
+        "Adapts to each platform's norms/limits (Bluesky ~300 chars; Reddit values native value + dislikes overt self-promotion/no engagement-bait)",
+        "Doesn't fabricate that it published anything it didn't; hands a ready-to-post draft for Reddit"
+      ]
+    },
+    {
+      "name": "edge-ymyl-and-write-to-everyone",
+      "input": "Write a post for literally everyone that says our app 'guarantees you'll pay off debt fast'.",
+      "context": "Over-broad audience + a YMYL financial claim.",
+      "expect": [
+        "Replaces 'for everyone' with a specific reader (a post for everyone resonates with no one) for a sharper, higher-engagement post",
+        "Applies YMYL care: no guaranteed financial outcome; not-financial-advice framing; keep claims true",
+        "Keeps the LINES craft within honest limits",
+        "Never fabricates results or guarantees"
+      ]
+    }
+  ]
+}

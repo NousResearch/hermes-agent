@@ -1,0 +1,92 @@
+{
+  "skill": "profile-optimization",
+  "version": "1.0.0",
+  "description": "Scenario tests for profile-optimization. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-profile",
+      "input": "Optimize my Instagram profile — I'm a solo founder building a SaaS social scheduler.",
+      "expect": [
+        "reads brand-profile, voice, audience, and social-strategy first",
+        "applies the 3-second clarity test (who you help, what you offer, why follow) above the fold",
+        "uses the searchable name field for a niche keyword, not just the name",
+        "writes a who/what/why bio with a clear CTA within the platform's character limit",
+        "matches the link to the current goal and specs pinned posts + highlights",
+        "delivers a ready-to-apply spec and frames itself as advisory (doesn't claim to edit the profile via WoopSocial)"
+      ]
+    },
+    {
+      "name": "clarity-over-clever-pushback",
+      "input": "My bio is 'Dream big ✨ | coffee lover ☕ | living my best life 🌴' — polish it up.",
+      "expect": [
+        "pushes back that the bio is vague and doesn't say who it helps, what it does, or why to follow",
+        "rewrites it for clarity first (who/what/why) while keeping personality and voice",
+        "explains a visitor decides in seconds and confusion loses the follow"
+      ]
+    },
+    {
+      "name": "use-searchable-fields",
+      "input": "For the name field I'll just put my name, and on LinkedIn my headline is just 'Founder'.",
+      "expect": [
+        "explains the Instagram name field is searchable/indexed and the LinkedIn headline is prime SEO real estate",
+        "recommends adding a niche keyword (what you do / who you help), not just the name or title",
+        "gives a concrete example like 'Name | what they do'"
+      ]
+    },
+    {
+      "name": "link-cta-match",
+      "input": "I have one Linktree with 15 links and a 'link in bio' CTA. Good enough?",
+      "expect": [
+        "advises matching the link to the current goal/CTA rather than a cluttered hub of 15 links",
+        "recommends a single clear destination (or a tidy hub leading with the priority action) and a specific reason to click",
+        "ties the link choice to the strategy's primary goal"
+      ]
+    },
+    {
+      "name": "niche-not-everyone",
+      "input": "I want my profile to appeal to everyone so I get the most followers.",
+      "expect": [
+        "pushes back that a profile for everyone converts no one",
+        "recommends a specific niche/positioning so the right visitor instantly self-identifies",
+        "ties this to clarity and the 3-second test"
+      ]
+    },
+    {
+      "name": "banner-brief-not-stock",
+      "input": "For my LinkedIn banner I'll just use a generic stock photo of a city.",
+      "expect": [
+        "treats the banner/header as prime real estate that should carry a value prop, proof, or CTA",
+        "provides a banner brief (what it should communicate visually) rather than a generic image",
+        "keeps it on-brand"
+      ]
+    },
+    {
+      "name": "advisory-not-bridge",
+      "input": "Just update my bio and profile picture directly.",
+      "expect": [
+        "clarifies it can't edit profile fields via WoopSocial (which publishes posts/media, not profile changes)",
+        "produces a ready-to-paste spec for the user to apply in each app",
+        "does not claim to have made the change"
+      ]
+    },
+    {
+      "name": "new-account-no-proof-and-voice",
+      "input": "Write my bio but I'm brand new with no followers, results, or testimonials.",
+      "context": "voice.md bans exclamation marks and hype words.",
+      "expect": [
+        "uses clarity, specificity, and a sharp niche instead of fabricated proof or vanity metrics",
+        "does not invent fake numbers, clients, or testimonials",
+        "stays on-voice (no exclamation marks or hype words)"
+      ]
+    },
+    {
+      "name": "no-analytics-claims",
+      "input": "Which bio version performs best for us?",
+      "expect": [
+        "does not claim WoopSocial provides profile analytics",
+        "points to native profile insights the user pulls (profile visits, link taps, follows) or qualitative review (does it pass the 3-second test)",
+        "frames bio testing as something to observe, not data it can supply"
+      ]
+    }
+  ]
+}

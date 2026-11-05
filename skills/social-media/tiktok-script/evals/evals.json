@@ -1,0 +1,85 @@
+{
+  "skill": "tiktok-script",
+  "version": "1.0.0",
+  "description": "Scenario tests for tiktok-script. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-tiktok",
+      "input": "Write a TikTok about why our most-requested feature flopped.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "hooks within the first ~1-3 seconds (verbal + on-screen text), no slow intro",
+        "structures for watch-time and rewatch (fast pacing, open loop, a loop/rewatch trigger)",
+        "considers a trending or original sound where it genuinely fits",
+        "outputs a production doc (shot - on-screen text - spoken - sound - timing)",
+        "adds TikTok-search keywords in spoken/on-screen/caption and hands caption to caption-writer",
+        "routes scheduling to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "one-second-hook",
+      "input": "Give me the opening for a TikTok about saving money on SaaS.",
+      "expect": [
+        "the hook lands in the first ~1-3 seconds",
+        "combines a verbal hook with an on-screen text hook",
+        "uses a pattern interrupt; does NOT open with a logo, intro, or 'hey guys welcome back'"
+      ]
+    },
+    {
+      "name": "native-not-ad-pushback",
+      "input": "Make it a polished, professional ad-style TikTok with high production value and our tagline.",
+      "expect": [
+        "pushes back that ad-style/polished content underperforms on TikTok (make TikToks, not ads)",
+        "recommends a native, authentic approach instead",
+        "delivers a native version that still achieves the goal",
+        "does not produce a glossy ad script as requested"
+      ]
+    },
+    {
+      "name": "rewatch-and-loop",
+      "input": "How do I get more views on this TikTok?",
+      "expect": [
+        "explains watch-time, completion, and rewatches as the core FYP signals",
+        "designs a loop or rewatch trigger (the end feeds the start, or a detail rewards a second watch)",
+        "removes retention killers (slow intro, dead air, buried payoff)"
+      ]
+    },
+    {
+      "name": "sound-trend-fit-not-forced",
+      "input": "Put the current trending dance sound on our B2B compliance explainer.",
+      "expect": [
+        "does NOT force an irrelevant trend onto mismatched content",
+        "explains a trend/sound should fit the message and audience",
+        "offers a sound or format that actually fits (or original audio), and routes real trend research to trend-jacking"
+      ]
+    },
+    {
+      "name": "tiktok-seo-keywords",
+      "input": "I want this TikTok to show up when people search our topic.",
+      "expect": [
+        "treats TikTok as a search engine",
+        "places target keywords in the spoken script, on-screen text, and caption",
+        "uses relevant keyword + niche hashtags rather than generic high-volume ones"
+      ]
+    },
+    {
+      "name": "veo-pack-honest-caveat",
+      "input": "Generate this TikTok with AI video instead of filming it.",
+      "expect": [
+        "provides a Veo prompt pack mapping beats to ~8-second 9:16 prompts",
+        "flags that native filming often outperforms AI on TikTok, and recommends AI mainly for faceless niches, b-roll, or specific concepts",
+        "notes AI-disclosure (WoopSocial auto-discloses on TikTok) and points to tools/integrations/veo.md"
+      ]
+    },
+    {
+      "name": "reads-voice-thin-input",
+      "input": "make a tiktok",
+      "context": "voice.md bans exclamation marks and 'hey guys'.",
+      "expect": [
+        "asks for or infers the one concept/goal rather than padding",
+        "stays on-voice (no exclamation marks, no 'hey guys')",
+        "does not invent fake claims or fabricated stats to fill the script"
+      ]
+    }
+  ]
+}

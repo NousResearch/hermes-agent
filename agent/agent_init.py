@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from agent.agent_init_prompt_warmer import _start_prompt_warmer
+from agent.agent_init_model_warning import _warn_nonagentic_hermes_model
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_context import StreamingContextScrubber
@@ -1943,25 +1945,6 @@ def _enforce_minimum_context(agent):
         )
 
 
-def _warn_nonagentic_hermes_model(agent):
-    # Nous Hermes 3/4 are chat models, not tool-call-tuned. cli.py show_banner() already
-    # warns on the CLI, so skip platform=="cli"; non-quiet non-CLI surfaces still get it.
-    if agent.quiet_mode or (agent.platform or "cli") == "cli":
-        return
-    with suppress(Exception):
-        from hermes_cli.model_switch import _check_hermes_model_warning
-        _hermes_warn = _check_hermes_model_warning(agent.model or "")
-        if _hermes_warn:
-            _user_msg = (
-                "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
-                "lack reliable tool-calling for agent workflows (delegation, "
-                "cron, proactive tools). Consider an agentic model instead "
-                "(Claude, GPT, Gemini, Qwen-Coder, etc.)."
-            )
-            agent._emit_warning(_user_msg)
-            _ra().logger.warning(_hermes_warn)
-
-
 def _inject_context_engine_tools(agent):
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
@@ -2206,6 +2189,7 @@ def init_agent(
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
+    _start_prompt_warmer(agent)
 
 
 __all__ = ["init_agent"]

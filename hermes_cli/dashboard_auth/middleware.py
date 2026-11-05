@@ -176,7 +176,7 @@ def peek_session(request: Request):
     decide how much to show; an expired or unverifiable session reads as signed out."""
     bearer = _extract_bearer(request)
     if bearer:
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return None
         access_token, provider_hint = bearer, None
     else:
@@ -248,7 +248,7 @@ async def gated_auth_middleware(
     if bearer:
         if cookie_logout:
             return await call_next(request)
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return _unauth_response(request, reason="invalid_or_expired_session")
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)

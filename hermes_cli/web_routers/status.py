@@ -149,11 +149,23 @@ async def get_host_identity(request: Request):
             "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
+# The idle proof and retirement fence cover a standalone ``hermes serve`` child's ledgers only. On
+# the gateway's listener the agent work lives on the runner, which retires through its own idle exit
+# (``gateway/run_idle_exit.py``); there this route never proves idle nor takes the fence.
+_GATEWAY_OWNS_LIFECYCLE = "gateway_owns_lifecycle"
+
+
+def _mounted_on_gateway(request: Request) -> bool:
+    return getattr(request.app.state, "gateway_runner", None) is not None
+
+
 @router.get("/api/health/idle")
 async def get_health_idle(request: Request):
     """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
     from hermes_cli.web_server_idle_proof import idle_proof
     _require_token(request)
+    if _mounted_on_gateway(request):
+        return {"ok": True, "idle": False, "reason": _GATEWAY_OWNS_LIFECYCLE}
     return {"ok": True, **idle_proof()}
 
 
@@ -162,6 +174,8 @@ async def post_health_retirement(request: Request):
     from hermes_cli.backend_retirement import retirement
 
     _require_token(request)
+    if _mounted_on_gateway(request):
+        return {"ok": False, "idle": False, "reason": _GATEWAY_OWNS_LIFECYCLE}
     try:
         body = await request.json()
     except ValueError:

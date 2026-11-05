@@ -226,8 +226,9 @@ class PluginHost:
     def load(self, manifest: Any, ctx: Any, *, module_name: Optional[str], entrypoint: bool) -> str:
         """Import ``manifest``'s plugin in the host and replay its registrations onto ``ctx``."""
         from hermes_cli.plugins import PluginContext, manifest_key
-        channel = self.ensure_started()
         plugin_key = manifest_key(manifest)
+        # Claimed before ensure_started() can block on a host start, so a load abandoned at its deadline there
+        # cannot take the key back from a newer load of this plugin when it resumes (see the except branch).
         self._contexts[plugin_key] = ctx
         params = {
             "plugin_key": plugin_key, "plugin_id": ctx.plugin_id, "name": manifest.name,
@@ -238,17 +239,21 @@ class PluginHost:
                 "data_namespace")},
             "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
         }
-        self._loading = plugin_key
         try:
+            channel = self.ensure_started()
+            self._loading = plugin_key
             result = channel.call("load", params)
         except BaseException:
             # register() may have queued host-side on_unload callbacks before raising: run them, as
             # the in-process failure path does, so the failed load leaves nothing behind in the host.
+            # Only while this load still owns the key: a deadline-abandoned load can fail after a newer
+            # load of the same plugin took it over, and the host's state is keyed by plugin, not load.
             # Best effort: a failing cleanup must not replace the load error being re-raised.
-            try:
-                self._unload(plugin_key)
-            except Exception:
-                logger.warning("Plugin '%s' cleanup after a failed load failed", plugin_key, exc_info=True)
+            if self._contexts.get(plugin_key) is ctx:
+                try:
+                    self._unload(plugin_key)
+                except Exception:
+                    logger.warning("Plugin '%s' cleanup after a failed load failed", plugin_key, exc_info=True)
             raise
         finally:
             self._loading = None

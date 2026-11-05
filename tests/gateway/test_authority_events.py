@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.platforms("linux")
@@ -44,7 +45,7 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
     monkeypatch.setattr(event_replay, '_REPLAY_SESSIONS_MAX', 1)
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     async def answer(event):
         return event.text
     runner = SimpleNamespace(_session_db=db, session_store=store, _draining=False,
@@ -53,7 +54,7 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
     ref = SessionRef('replay', 'shared')
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='replay')
     for sid in ('shared', 'other'):
-        db.create_session(sid, source='telegram')
+        seed_session(db, sid, 'telegram')
         authority.sessions[sid] = LiveSession(source, sid)
     class Peer:
         def __init__(self):

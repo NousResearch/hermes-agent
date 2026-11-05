@@ -439,11 +439,12 @@ def hot_profile(mux, name):
 
 def lifecycle(root, verb, home):
     """``serve-profile``/``unserve-profile`` *home*. Past 5s the verb answers ``pending`` and keeps
-    running; then wait (bounded) until ``identify`` shows the transition."""
+    running; then wait (bounded) until the recorded set shows it, which is written once the verb's
+    own work completes (``identify`` drops a retiring profile before its turns are joined)."""
     serve = verb == 'serve-profile'
     reply = control(root, verb, {'name': home.name})
     if reply.get('pending'):
-        wait_until(lambda: (home.resolve() in served_homes(control(root, 'identify'))) == serve,
+        wait_until(lambda: (home.name in (recorded_served(root) or [])) == serve,
                    timeout=60, interval=.2, what=f'{verb} {home.name} after pending')
         reply = {('served' if serve else 'unserved'): home.name}
     return reply

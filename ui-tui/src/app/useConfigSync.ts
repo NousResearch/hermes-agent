@@ -2,6 +2,7 @@ import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
+import { editorReplyContextEnabled } from '../domain/editorContext.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
@@ -353,6 +354,7 @@ export const applyDisplay = (
     // of silently changing approval behavior until the next successful poll.
     ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
     detailsMode: resolveDetailsMode(d),
+    editorIncludeLastReply: editorReplyContextEnabled(d.editor_include_last_reply),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),

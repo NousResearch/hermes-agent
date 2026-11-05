@@ -804,6 +804,8 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "",
         "resume_display": "full",
+        # Opt-in: show the previous reply above the draft as `#` comments in $EDITOR (stripped on save).
+        "editor_include_last_reply": False,
         # Recap tuning for /resume and startup resume.
         "resume_exchanges": 10,            # max user+assistant pairs to show
         "resume_max_user_chars": 300,      # truncate user message text
@@ -813,8 +815,7 @@ DEFAULT_CONFIG = {
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
-        # happens.
+        # steer mode: false hides only the "Steered into current run" bubble; steering still works.
         "busy_steer_ack_enabled": True,
         # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
         # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
@@ -823,8 +824,7 @@ DEFAULT_CONFIG = {
         # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
         # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
         "interface": "cli", "cli_layout": "modern",
-        # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
-        # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
+        # Native TUI uses the primary buffer + scrollback instead of the alt-screen viewport; flags win.
         "tui_native": False,
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.

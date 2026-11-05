@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Shared vectors for the external-editor last-reply block.",
+    "Read by tests/hermes_cli/test_editor_context.py (hermes_cli/editor_context.py) and by",
+    "ui-tui/src/__tests__/editorContext.test.ts (ui-tui/src/domain/editorContext.ts)."
+  ],
+  "seed": [
+    {
+      "draft": "summarise the failing test",
+      "last_reply": "The test fails because the fixture is empty.",
+      "expected": "summarise the failing test\n\n# ── last reply (lines starting with # are removed) ──\n# The test fails because the fixture is empty.\n# ── end of last reply ──"
+    },
+    {
+      "draft": "",
+      "last_reply": "Only a reply.",
+      "expected": "# ── last reply (lines starting with # are removed) ──\n# Only a reply.\n# ── end of last reply ──"
+    },
+    {
+      "draft": "draft only",
+      "last_reply": "",
+      "expected": "draft only"
+    },
+    {
+      "draft": "two\n\nlines\n",
+      "last_reply": "line one\n\nline two\n",
+      "expected": "two\n\nlines\n\n# ── last reply (lines starting with # are removed) ──\n# line one\n#\n# line two\n# ── end of last reply ──"
+    }
+  ],
+  "strip": [
+    {
+      "text": "my prompt\n\n# ── last reply (lines starting with # are removed) ──\n# the reply\n# ── end of last reply ──",
+      "expected": "my prompt"
+    },
+    {
+      "text": "my prompt",
+      "expected": "my prompt"
+    },
+    {
+      "text": "# ── last reply (lines starting with # are removed) ──\n# reply\n# ── end of last reply ──",
+      "expected": ""
+    },
+    {
+      "text": "## Heading kept\n\n```sh\n# a shell comment kept\necho hi\n```\n\n# ── last reply (lines starting with # are removed) ──\n# reply\n# ── end of last reply ──",
+      "expected": "## Heading kept\n\n```sh\n# a shell comment kept\necho hi\n```"
+    },
+    {
+      "text": "keep me\n\n# ── last reply (lines starting with # are removed) ──\n# reply\n# ── end of last reply ──\nand keep me too",
+      "expected": "keep me\n\nand keep me too"
+    },
+    {
+      "text": "draft\n\n# ── last reply (lines starting with # are removed) ──\n# reply without an end marker",
+      "expected": "draft"
+    }
+  ]
+}

@@ -115,6 +115,14 @@ class CLIModalMixin:
             # the editor-close text-change doesn't re-collapse it.
             self._inline_pastes(target_buffer)
             self._skip_paste_collapse = True
+            # Opt-in: show the agent's previous reply above the draft as `#` comments. The buffer
+            # carries the block while the editor is open and `_submit_editor_buffer` strips it
+            # again, so the marker never reaches the model.
+            if getattr(self, "editor_include_last_reply", False):
+                from hermes_cli.editor_context import build_editor_seed
+                target_buffer.text = build_editor_seed(
+                    target_buffer.text, self._last_assistant_response_text())
+                target_buffer.cursor_position = len(target_buffer.text)
             # Submission here is driven by the custom `enter` keybinding, NOT the buffer's
             # accept_handler, so validate_and_handle can't route through it; chain a done-callback
             # that re-uses the real submit pipeline (TUI Ctrl+G parity: save == send).
@@ -135,6 +143,10 @@ class CLIModalMixin:
             text = (getattr(buffer, "text", "") or "").strip()
         except Exception:
             return
+        if getattr(self, "editor_include_last_reply", False):
+            # Drop the reply block the editor was seeded with; only the user's own lines are sent.
+            from hermes_cli.editor_context import strip_last_reply_block
+            text = strip_last_reply_block(text).strip()
         if not text:
             return
 

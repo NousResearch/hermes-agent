@@ -210,3 +210,111 @@ describe('isLikelyProseFence', () => {
     expect(isLikelyProseFence('prompt', CHINESE_NUMBERED)).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// A real language tag must stay code even when the body mixes a bullet-looking
+// line with a backtick or bold span. That shape is ordinary in real blocks
+// (PowerShell parameter lines, diff context lines, install notes), but the
+// bullet+markdown exception — which exists only for Streamdown's pseudo-tags
+// like "heads" — used to swallow every tag outside COMMON_CODE_LANGUAGES.
+// Reported by pxxD1998 and swarthyplacebo on 2026-11-05 against v0.22.7
+// (issue #141521), and confirmed as a whole class on a local build.
+const BULLET_WITH_INLINE_CODE = ['- Run the installer first', 'Then use `npm install` to set it up'].join('\n')
+const BULLET_WITH_BOLD = ['- Note: **important** step here', '- Follow the downgrade guide'].join('\n')
+
+const REAL_LANGUAGE_TAGS = [
+  'powershell',
+  'ps1',
+  'pwsh',
+  'ps',
+  'shell',
+  'console',
+  'bat',
+  'cmd',
+  'batch',
+  'dockerfile',
+  'ini',
+  'toml',
+  'nginx',
+  'log',
+  'output',
+  'kotlin',
+  'lua',
+  'dart',
+  'zsh',
+  'fish',
+  'text',
+  'plain',
+  'plaintext',
+  'prompt',
+  'patch',
+  'gitdiff'
+]
+
+describe('real language tags with bullet + inline markdown stay code', () => {
+  it.each(REAL_LANGUAGE_TAGS)('keeps %s fences with an inline-code bullet as code', tag => {
+    expect(isLikelyProseCodeBlock(tag, BULLET_WITH_INLINE_CODE)).toBe(false)
+    expect(isLikelyProseFence(tag, BULLET_WITH_INLINE_CODE)).toBe(false)
+  })
+
+  it.each(REAL_LANGUAGE_TAGS)('keeps %s fences with a bold bullet as code', tag => {
+    expect(isLikelyProseCodeBlock(tag, BULLET_WITH_BOLD)).toBe(false)
+    expect(isLikelyProseFence(tag, BULLET_WITH_BOLD)).toBe(false)
+  })
+
+  // The exception still has to hold for pseudo-tags: the upstream test locks
+  // "heads" as prose, and it must keep winning on that one tag.
+  it('still classifies a pseudo-tag with bullet + emphasis as prose (upstream contract)', () => {
+    expect(isLikelyProseCodeBlock('heads', BULLET_WITH_INLINE_CODE)).toBe(true)
+    expect(isLikelyProseCodeBlock('heads', BULLET_WITH_BOLD)).toBe(true)
+  })
+
+  // pxxD1998 (2026-11-05): diff context lines start with " - ", and the added
+  // line carries bold text, which together tripped the bullet-prose branch.
+  it('keeps a diff fence whose context lines look like markdown bullets (pxxD1998)', () => {
+    const DIFF = [
+      '--- a/SKILL.md',
+      '+++ b/SKILL.md',
+      '@@ -1,3 +1,6 @@',
+      ' - existing bullet',
+      '-version: 1.13.3',
+      '+version: 1.13.4',
+      '+**New rule**: keep this fenced.'
+    ].join('\n')
+
+    expect(isLikelyProseCodeBlock('diff', DIFF)).toBe(false)
+    expect(isLikelyProseFence('diff', DIFF)).toBe(false)
+  })
+
+  // kvnloo (2026-11-05): a PowerShell cmdlet block must keep its copy box
+  // rather than demoting to prose and letting $vars reach the math renderer.
+  it('keeps a PowerShell cmdlet fence as code (issue #141521)', () => {
+    const PS = ['Get-ChildItem -Path C:\\Temp', 'Stop-Process -Name foo', 'Write-Host done'].join('\n')
+
+    expect(isLikelyProseCodeBlock('powershell', PS)).toBe(false)
+    expect(isLikelyProseFence('powershell', PS)).toBe(false)
+  })
+
+  // #141521's own matrix: two-line blocks under every tag the reporter tried.
+  it('keeps short two-line PowerShell blocks as code for every reported tag', () => {
+    const SHORT = ['Write-Host "T1"', 'Get-Date'].join('\n')
+
+    for (const tag of ['powershell', 'ps1', 'pwsh', 'ps', 'shell', 'console', 'PowerShell', 'bat']) {
+      expect(isLikelyProseCodeBlock(tag, SHORT)).toBe(false)
+      expect(isLikelyProseFence(tag, SHORT)).toBe(false)
+    }
+  })
+
+  // Cross-check against the alias list in #58023 (danspicytaco). That PR fixes
+  // the same shell aliases by adding them to COMMON_CODE_LANGUAGES; this PR
+  // must reach the same outcome without extending that set.
+  it('covers every shell alias listed by #58023 without extending COMMON_CODE_LANGUAGES', () => {
+    const SHELL_ALIASES = ['powershell', 'ps1', 'shell', 'console', 'cmd', 'fish', 'zsh']
+    const BODY = ['- check the gateway status first', 'then `systemctl restart hermes`'].join('\n')
+
+    for (const tag of SHELL_ALIASES) {
+      expect(isLikelyProseCodeBlock(tag, BODY)).toBe(false)
+      expect(isLikelyProseFence(tag, BODY)).toBe(false)
+    }
+  })
+})

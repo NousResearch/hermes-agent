@@ -241,6 +241,46 @@ export function shikiLanguageForFilename(path: string | undefined): string {
   return SHIKI_LANGUAGE_BY_EXTENSION[filenameExtToken(path)] || ''
 }
 
+// Every tag that names a language or markup this app already supports
+// elsewhere, derived from the shiki extension map (both the extension keys and
+// the language ids they map to) plus the two classification sets above. New
+// languages therefore arrive with that map instead of needing a second,
+// hand-maintained whitelist.
+//
+// Pseudo-tags are deliberately absent: Streamdown invents tags like "heads"
+// for blocks it could not classify, and the bullet+markdown exception in
+// isLikelyProseCodeBlock exists only for those. A tag that names a real
+// language must never reach that exception, because a real code block can
+// legitimately contain both a bullet-looking line and a backtick/bold span
+// (PowerShell parameter lists, diff hunks, install notes).
+const KNOWN_LANGUAGE_TAGS = new Set<string>([
+  ...Object.keys(SHIKI_LANGUAGE_BY_EXTENSION),
+  ...Object.values(SHIKI_LANGUAGE_BY_EXTENSION),
+  ...COMMON_CODE_LANGUAGES,
+  ...NON_CODE_FENCE_LANGUAGES,
+  // Shell / console tags users actually type that the shiki map reaches only
+  // through a different key (e.g. `zsh` maps to `bash`).
+  'shell',
+  'console',
+  'bat',
+  'batch',
+  'cmd',
+  'ps',
+  'pwsh',
+  // Config, log and text-intent tags.
+  'env',
+  'properties',
+  'nginx',
+  'apache',
+  'conf',
+  'log',
+  'logs',
+  'output',
+  'prompt',
+  'patch',
+  'gitdiff'
+])
+
 function proseLineCount(body: string): number {
   return body.split('\n').filter(line => {
     const trimmed = line.trim()
@@ -396,15 +436,17 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
-  // Any explicit, valid language tag is respected as code — even when the
-  // body is a bullet list (gdscript/zsh lists were prose-classified by the
-  // bullet heuristic below, which only exempts COMMON languages). Exception:
-  // Streamdown-mislabeled unknown tags like "heads" (bullet + inline
-  // markdown emphasis) stay prose per the upstream test locked in below.
+  // Any explicit, valid language tag that names a real language is respected
+  // as code — even when the body is a bullet list (gdscript/zsh lists were
+  // prose-classified by the bullet heuristic below, which only exempts COMMON
+  // languages). The bullet+markdown exception is reserved for pseudo-tags that
+  // Streamdown invents, like "heads", which the upstream test below locks as
+  // prose; a tag in KNOWN_LANGUAGE_TAGS must never take that exception, since
+  // real blocks legitimately mix bullet-looking lines with backticks or bold.
   if (
     cleanLanguage !== '' &&
     VALID_LANGUAGE_RE.test(cleanLanguage) &&
-    !(signals.bulletLines >= 1 && signals.hasMarkdown)
+    (KNOWN_LANGUAGE_TAGS.has(cleanLanguage) || !(signals.bulletLines >= 1 && signals.hasMarkdown))
   ) {
     return false
   }

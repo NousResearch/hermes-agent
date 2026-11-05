@@ -155,12 +155,16 @@ def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
     The built-in answers via ``would_proactively_prune()``. An engine that overrides
     ``prune_tool_results_only`` owns its trigger policy, so occupying the hook is the
     precondition; the inherited ABC no-op is not an authority. A raising predicate reads as
-    "would have run": the call was withheld either way.
+    "would have run": the call was withheld either way. A hosted engine (``plugins.isolation:
+    host``) is not counted: its methods are all proxies, so an override can't be told from the no-op.
     """
     from agent.context_engine import ContextEngine
+    from hermes_cli.plugin_host import is_hosted_object
 
     prune = getattr(compressor, "prune_tool_results_only", None)
     if not callable(prune) or getattr(prune, "__func__", None) is ContextEngine.prune_tool_results_only:
+        return False
+    if is_hosted_object(compressor):
         return False
     predicate = getattr(compressor, "would_proactively_prune", None)
     if not callable(predicate):

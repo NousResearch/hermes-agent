@@ -485,3 +485,35 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+class TestDeletedProcessCwd:
+    """Regression: a gateway whose process cwd was deleted (e.g. a cron job's tmp
+    scratch workdir removed mid-run) must not die at tracker construction."""
+
+    def test_falls_back_to_hermes_home_when_cwd_deleted(self, tmp_path, monkeypatch):
+        def _raise():
+            raise FileNotFoundError(2, "No such file or directory")
+
+        monkeypatch.setattr("os.getcwd", _raise)
+        monkeypatch.setattr("agent.subdirectory_hints.get_hermes_home", lambda: tmp_path)
+
+        tracker = SubdirectoryHintTracker()
+        assert tracker.working_dir == tmp_path
+
+    def test_explicit_working_dir_still_wins(self, tmp_path, monkeypatch):
+        """An explicit working_dir is honored even under a broken process cwd."""
+        # Create the anchor BEFORE breaking os.getcwd: pytest's home_io_guard wraps
+        # mkdir and its os.path.abspath() consults os.getcwd() (raises under monkeypatch).
+        anchor = tmp_path / "anchor"
+        anchor.mkdir()
+
+        def _raise():
+            raise FileNotFoundError(2, "No such file or directory")
+
+        monkeypatch.setattr("os.getcwd", _raise)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(anchor))
+        # tmp_path is already canonical; on Windows resolve() is skipped under the
+        # broken cwd, on Linux it is a no-op on the same path.
+        assert tracker.working_dir == anchor

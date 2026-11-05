@@ -1,8 +1,6 @@
 """Read-only canonical admission fences for dispatcher reclaim paths."""
-from contextlib import closing
 import json
 from pathlib import Path
-import sqlite3
 import time
 import psutil
 
@@ -33,13 +31,18 @@ def _admission_row(receipt):
     """
     if not receipt:
         return None
+    from persistence.core.errors import STORE_FAILURES
+    from persistence_assembly import open_persistence_reader
+
     try:
-        with closing(sqlite3.connect(Path(receipt['db']).as_uri() + '?mode=ro', uri=True)) as owner:
-            row = owner.execute('SELECT status,outcome FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                                (receipt['session_id'], receipt['request_id'])).fetchone()
-    except (OSError, KeyError, TypeError, ValueError, sqlite3.Error):
+        session_id, request_id = receipt['session_id'], receipt['request_id']
+        if session_id is None or request_id is None:
+            return None  # a NULL identity names no row, while match() drops a None filter
+        with open_persistence_reader(Path(receipt['db'])) as owner:
+            rows = owner.admissions.match(session_id=session_id, request_id=request_id)
+    except (OSError, KeyError, TypeError, ValueError, *STORE_FAILURES):
         return None
-    return (row[0], row[1]) if row is not None else None
+    return (rows[0].status, rows[0].outcome) if rows else None
 
 
 def owner_reclaim_paused(conn, task_id):

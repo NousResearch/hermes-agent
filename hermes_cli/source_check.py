@@ -324,7 +324,7 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     from queue import Empty, Queue
     from threading import Thread
 
-    from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+    from hermes_cli.update_downgrade_guard import SCHEMA_SOURCES, defines_runtime
 
     deadline = time.monotonic() + _RUNTIME_LOOKUP_SECONDS
     replies: Queue[Optional[str]] = Queue()
@@ -350,15 +350,16 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
         return entries if isinstance(entries, list) else None
 
     try:
-        # Only the directories STATE_MODULES names, one small listing each (a recursive listing of a
-        # release is several MiB): the root today, src/hermes_agent/ and its hermes_state/ after the move.
+        # Only the directories SCHEMA_SOURCES names, one small listing each (a recursive listing of a
+        # release is several MiB): the root today, src/hermes_agent/ and its hermes_state/ after the move,
+        # and the SQLite backend's folder.
         listed: dict[str, list] = {}
-        for directory in dict.fromkeys(pattern.rpartition("/")[0] for pattern in STATE_MODULES):
+        for directory in dict.fromkeys(pattern.rpartition("/")[0] for pattern in SCHEMA_SOURCES):
             if not _list_directory(directory, listed, lambda: listing(sha), listing):
                 return None
         paths = [f"{prefix}/{e['path']}".lstrip("/") for prefix, entries in listed.items() for e in entries
                  if isinstance(e, dict) and e.get("type") == "blob" and isinstance(e.get("path"), str)]
-        paths = [path for path in paths if any(fnmatchcase(path, p) for p in STATE_MODULES)]
+        paths = [path for path in paths if any(fnmatchcase(path, p) for p in SCHEMA_SOURCES)]
         if not paths:
             return None  # not a recognised Hermes tree: no claim either way
         urls = iter(f"https://raw.githubusercontent.com/{repository}/{sha}/{quote(path)}" for path in paths)

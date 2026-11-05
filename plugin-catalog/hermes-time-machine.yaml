@@ -1,6 +1,6 @@
 name: hermes-time-machine
 repo: https://github.com/ddaikodaiko/hermes-time-machine
-sha: 2d2c699a59da1338b63ab94e8ae0535882630c7a
+sha: 13e0848f22eae928efd1d0d5aae4dd64a368ef94
 version: "0.1.0"
 title: Hermes Time Machine
 description: "Policy-driven workspace checkpoints for Hermes: one checkpoint before the first file-changing call of each turn and before risky commands (rm -rf, git push --force, DROP TABLE, writes outside the workspace), one-command rewind, fork into a sibling directory, and an effect ledger that refuses to hide actions a rewind cannot undo. Disclosure - writes a tar.gz snapshot of the configured workspace and JSONL journal/effect ledgers under HERMES_HOME/plugin-data/hermes-time-machine, keeps the last 10 pre-rewind copies in a trash directory, spawns no processes, makes no network calls, reads no credentials, and never blocks, approves or bypasses a tool call; a rewind moves the current workspace contents to trash and extracts the checkpoint over the workspace, refusing filesystem roots, the home directory, directories containing home, system directories, and workspaces overlapping plugin data."

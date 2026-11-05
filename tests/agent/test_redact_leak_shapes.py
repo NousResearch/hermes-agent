@@ -81,6 +81,9 @@ class TestDatabaseClientCredentials:
         out = redact_terminal_output("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core",
                                      "cat appsettings.json", force=True)
         assert "Zq7x" not in out
+        # A brace literal that opens like an identifier still carries password characters.
+        assert "ssw0rd" not in redact_terminal_output("Server=db;UID=app;PWD={P@ssw0rd!};Database=core",
+                                                      "cat appsettings.json", force=True)
         for template in ("{0}", "{cfg['pw']}", "{pw!r}", "{ get_pw() }"):
             line = f"Server=db;PWD={template};Database=x"
             assert redact_terminal_output(line, "cat app.py", force=True) == line

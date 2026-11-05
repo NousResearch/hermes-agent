@@ -42,7 +42,9 @@ _KV_SEMICOLON_FIELD_RE = re.compile(
 # ``{0}`` / ``{pw}`` / ``{cfg['pw']}`` / ``{pw!r}`` / ``{ get_pw() }``: a str.format, f-string or C#
 # interpolation slot. An ODBC-braced literal is the rest: ``;`` inside, a ``}}`` escape, or content
 # that does not open like an expression (``{Zq7x;LmP2}``).
-_FORMAT_SLOT_RE = re.compile(r"\{\s*+(?:[A-Za-z0-9_][^;{}]*+)?\}")
+# ``@ $ & #`` and a ``!`` that is not a ``!r``/``!s``/``!a`` conversion never appear in such a slot but
+# do in passwords (``{P@ssw0rd!}``, ``{Tr0ub4dor&3}``).
+_FORMAT_SLOT_RE = re.compile(r"\{\s*+(?:[A-Za-z0-9_](?:[^;{}@$&#!]|![rsa](?=\s*+[:}]))*+)?\}")
 
 
 def _kv_value_end(line: str, i: int, semicolon: bool) -> int:

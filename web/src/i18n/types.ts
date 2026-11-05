@@ -278,6 +278,14 @@ export interface Translations {
     avgPerSession: string;
     apiCalls: string;
     toolCalls: string;
+    balance: string;
+    balanceUpdated: string;
+    balanceNoKey: string;
+    balanceNoApi: string;
+    balanceError: string;
+    balanceUsed: string;
+    balanceResets: string;
+    balanceEmpty: string;
     noModelsData: string;
     startSession: string;
   };

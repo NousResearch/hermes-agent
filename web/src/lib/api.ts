@@ -141,6 +141,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/model/balance",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
@@ -621,6 +622,14 @@ export const api = {
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
+  // Balance card: ?refresh=1 busts the backend's 60 s cache.
+  getModelBalance: (refresh = false, profile = getManagementProfile()) =>
+    fetchJSON<ModelBalanceResponse>(
+      appendProfileParam(
+        `/api/model/balance${refresh ? "?refresh=1" : ""}`,
+        profile,
+      ),
+    ),
   getModelOptions: (
     profileOrOptions?: string | { profile?: string; refresh?: boolean },
   ) => {
@@ -2333,6 +2342,40 @@ export interface ModelsAnalyticsResponse {
     total_api_calls: number;
   };
   period_days: number;
+}
+
+export type ModelBalanceStatus = "ok" | "no_key" | "unsupported" | "error";
+
+export interface ModelBalancePrimary {
+  amount: number;
+  unit: string;
+  label: string;
+}
+
+export interface ProviderBalance {
+  id: string;
+  label: string;
+  configured: boolean;
+  /** The provider ships a balance probe (`ProviderProfile.balance_probe`). */
+  supported: boolean;
+  /** ok | no_key (not configured) | unsupported (no documented endpoint) | error */
+  status: ModelBalanceStatus;
+  error: string | null;
+  primary: ModelBalancePrimary | null;
+  breakdown: Record<string, unknown>;
+  /** Quota-style providers: today's used/limit/remaining + reset stamp. */
+  quota: {
+    used?: number;
+    limit?: number;
+    remaining?: number;
+    reset_at?: string;
+  };
+  extra: Record<string, unknown>;
+}
+
+export interface ModelBalanceResponse {
+  fetched_at: string;
+  providers: ProviderBalance[];
 }
 
 export interface CronJobRepeat {

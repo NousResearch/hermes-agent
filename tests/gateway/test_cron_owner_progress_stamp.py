@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import cron.executions as executions_mod
 from tests.waiting import wait_until
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
@@ -19,11 +20,9 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
     from gateway import run, session_cron
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
+    from gateway.session_authority import SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
     from gateway.session_local_recovery import local_adapter_map
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(executions_mod, 'EXECUTIONS_FILE', tmp_path / 'cron' / 'executions.db')
@@ -33,11 +32,11 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler_liveness, 'touch_execution_progress', lambda execution_id: False)
     execution = create_execution('job', source='cron')
     mark_execution_running(execution['id'])
-    db = SessionDB(tmp_path / 'state.db')
+    store = storage_handle(tmp_path)
     runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
                              adapters={})
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=store,
+                                 epoch=store.runtime.begin_epoch(instance_id='test'))
     runner.session_authority = authority
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
@@ -63,20 +62,17 @@ def test_owner_progress_reaches_the_firers_ledger_row(tmp_path, monkeypatch):
                                                           execution_id=execution['id']))
             assert await asyncio.to_thread(admitted.wait, 10), firer
             sid = next(iter(authority.sessions))
-            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            row = admission_row(store.admissions.claim(epoch=authority.epoch, session_id=sid))
             policy = local_adapter_map(authority)[Platform.LOCAL].policies[sid]
             await session_cron.execute(authority, SessionRef(authority.profile_id, sid), row, policy)
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
-                                 generation=row['generation'], outcome='completed',
-                                 result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
+            store.admissions.settle(epoch=authority.epoch, admission_id=row['admission_id'],
+                                    generation=row['generation'], outcome='completed',
+                                    result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
             assert await asyncio.wait_for(firer, 10) == (True, 'doc', 'answer', None)
         finally:
             session_cron.unbind_owner(authority)
 
-    try:
-        asyncio.run(probe())
-    finally:
-        db.close()
+    asyncio.run(probe())
     with _transaction() as conn:
         stamped = conn.execute('SELECT progress_at FROM executions WHERE id=?', (execution['id'],)).fetchone()[0]
     assert stamped is not None, "the firer's row never saw the owner's progress"

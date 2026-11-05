@@ -10,7 +10,6 @@ id stability, and the startup redelivery sweep's contract:
 """
 
 import os
-import sqlite3
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway import delivery_ledger as dl
+from persistence.authority.coordination import OBLIGATION_RETENTION_SECONDS
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture(autouse=True)
@@ -42,8 +44,17 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
     )
 
 
+def _holder():
+    """The holder of the ledger's store, for rows the tests read or force by hand."""
+    return raw_holder(storage_handle(dl._db_path().parent))
+
+
+def _execute(sql, params=()):
+    _holder()._execute_write(lambda conn: conn.execute(sql, params))
+
+
 def _row(oid):
-    with dl._connect() as conn:
+    with _holder()._read_ctx() as conn:
         r = conn.execute(
             """SELECT state, attempts, owner_pid, content, last_error
                FROM delivery_obligations WHERE obligation_id=?""",
@@ -87,41 +98,37 @@ def _blocking_probe():
 
 def _orphan(oid):
     """Make the row look like it belongs to a dead process."""
-    with dl._connect() as conn:
-        conn.execute(
-            "UPDATE delivery_obligations SET owner_pid=999999999, "
-            "owner_started_at=1 WHERE obligation_id=?",
-            (oid,),
-        )
+    _execute(
+        "UPDATE delivery_obligations SET owner_pid=999999999, "
+        "owner_started_at=1 WHERE obligation_id=?",
+        (oid,),
+    )
 
 
 class TestSchemaMigration:
     def test_adds_adapter_profile_to_existing_ledger(self):
-        conn = sqlite3.connect(dl._db_path())
-        try:
-            conn.execute(
-                """CREATE TABLE delivery_obligations (
-                    obligation_id TEXT PRIMARY KEY,
-                    session_key TEXT NOT NULL,
-                    platform TEXT NOT NULL,
-                    chat_id TEXT NOT NULL,
-                    thread_id TEXT,
-                    content TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    owner_pid INTEGER,
-                    owner_started_at INTEGER,
-                    last_error TEXT
-                )"""
-            )
-            dl._initialize_schema(conn)
+        _execute(
+            """CREATE TABLE delivery_obligations (
+                obligation_id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                thread_id TEXT,
+                content TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                owner_pid INTEGER,
+                owner_started_at INTEGER,
+                last_error TEXT
+            )"""
+        )
+        dl.mark_attempting("ob-1")  # the ledger's first use of the store's writer migrates the table
+        with _holder()._read_ctx() as conn:
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")
             }
-        finally:
-            conn.close()
 
         assert "adapter_profile" in columns
 
@@ -186,8 +193,7 @@ class TestRuntimeFailedSweep:
     def test_other_rejection_is_claimed_only_after_its_backoff(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "503 Service Unavailable")
-        with dl._connect() as conn:
-            conn.execute("UPDATE delivery_obligations SET attempts=1, updated_at=1000.0 WHERE obligation_id='ob-1'")
+        _execute("UPDATE delivery_obligations SET attempts=1, updated_at=1000.0 WHERE obligation_id='ob-1'")
 
         assert dl.sweep_failed_for_runtime("telegram", now=1000.0 + 60) == []
         assert dl.pending_retries(now=1000.0 + 60) == [
@@ -202,9 +208,8 @@ class TestRuntimeFailedSweep:
         backoff, and a row the timer abandoned would be lost for good (review on #91655)."""
         _record(platform="telegram")
         dl.mark_failed("ob-1", "503 Service Unavailable")
-        with dl._connect() as conn:
-            conn.execute("UPDATE delivery_obligations SET attempts=?, updated_at=1000.0 WHERE obligation_id='ob-1'",
-                         (dl.MAX_ATTEMPTS - 1,))
+        _execute("UPDATE delivery_obligations SET attempts=?, updated_at=1000.0 WHERE obligation_id='ob-1'",
+                 (dl.MAX_ATTEMPTS - 1,))
 
         assert dl.sweep_failed_for_runtime("telegram", now=1000.0 + 10_000) == []
         assert dl.pending_retries(now=1000.0 + 10_000) == []
@@ -241,12 +246,11 @@ class TestRuntimeFailedSweep:
     def test_other_live_owner_is_not_claimed_or_abandoned(self, monkeypatch):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_pid=?, "
-                "owner_started_at=?, attempts=? WHERE obligation_id=?",
-                (12345, 101, dl.MAX_ATTEMPTS, "ob-1"),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_pid=?, "
+            "owner_started_at=?, attempts=? WHERE obligation_id=?",
+            (12345, 101, dl.MAX_ATTEMPTS, "ob-1"),
+        )
         monkeypatch.setattr(dl, "_owner_stamp", lambda: (54321, 202))
 
         assert dl.sweep_failed_for_runtime("telegram") == []
@@ -256,12 +260,11 @@ class TestRuntimeFailedSweep:
     def test_unowned_row_is_not_claimed(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_pid=NULL, "
-                "owner_started_at=NULL WHERE obligation_id=?",
-                ("ob-1",),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_pid=NULL, "
+            "owner_started_at=NULL WHERE obligation_id=?",
+            ("ob-1",),
+        )
 
         assert dl.sweep_failed_for_runtime("telegram") == []
         assert _row("ob-1")["state"] == "failed"
@@ -269,12 +272,11 @@ class TestRuntimeFailedSweep:
     def test_missing_current_process_start_stamp_fails_closed(self, monkeypatch):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_started_at=NULL "
-                "WHERE obligation_id=?",
-                ("ob-1",),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_started_at=NULL "
+            "WHERE obligation_id=?",
+            ("ob-1",),
+        )
         monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), None))
 
         assert dl.sweep_failed_for_runtime("telegram") == []
@@ -283,12 +285,11 @@ class TestRuntimeFailedSweep:
     def test_same_pid_with_different_start_stamp_is_not_claimed(self, monkeypatch):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET owner_pid=?, owner_started_at=? "
-                "WHERE obligation_id=?",
-                (os.getpid(), 101, "ob-1"),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET owner_pid=?, owner_started_at=? "
+            "WHERE obligation_id=?",
+            (os.getpid(), 101, "ob-1"),
+        )
         monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), 202))
 
         assert dl.sweep_failed_for_runtime("telegram") == []
@@ -315,11 +316,10 @@ class TestRuntimeFailedSweep:
     def test_current_owner_row_at_attempt_cap_is_abandoned(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET attempts=? WHERE obligation_id=?",
-                (dl.MAX_ATTEMPTS, "ob-1"),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET attempts=? WHERE obligation_id=?",
+            (dl.MAX_ATTEMPTS, "ob-1"),
+        )
 
         assert dl.sweep_failed_for_runtime("telegram") == []
         assert _row("ob-1")["state"] == "abandoned"
@@ -340,12 +340,11 @@ class TestRuntimeFailedSweep:
         dl.mark_delivered("ob-1")
         # Simulate a mark_delivered that leaves the retryable error string
         # behind: even then, a delivered row must never be reclaimed.
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET last_error=? "
-                "WHERE obligation_id=?",
-                ("send_path_degraded", "ob-1"),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET last_error=? "
+            "WHERE obligation_id=?",
+            ("send_path_degraded", "ob-1"),
+        )
 
         assert dl.sweep_failed_for_runtime("telegram") == []
         row = _row("ob-1")
@@ -357,11 +356,10 @@ class TestRuntimeFailedSweep:
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")
         now = time.time()
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET created_at=? WHERE obligation_id=?",
-                (now - dl.STALE_AFTER_SECONDS - 1, "ob-1"),
-            )
+        _execute(
+            "UPDATE delivery_obligations SET created_at=? WHERE obligation_id=?",
+            (now - dl.STALE_AFTER_SECONDS - 1, "ob-1"),
+        )
 
         assert dl.sweep_failed_for_runtime("telegram", now=now) == []
         assert _row("ob-1")["state"] == "abandoned"
@@ -371,14 +369,12 @@ class TestPrune:
     def test_old_delivered_rows_pruned(self):
         _record()
         dl.mark_delivered("ob-1")
-        with dl._connect() as conn:
-            conn.execute(
-                "UPDATE delivery_obligations SET updated_at=? WHERE obligation_id=?",
-                (time.time() - dl._RETENTION_SECONDS - 60, "ob-1"),
-            )
-        # Prune has no wrapper of its own: it runs inside a writer's transaction, lock held.
-        with dl._DB_LOCK, dl._transaction() as conn:
-            dl._prune_unlocked(conn, time.time())
+        _execute(
+            "UPDATE delivery_obligations SET updated_at=? WHERE obligation_id=?",
+            (time.time() - OBLIGATION_RETENTION_SECONDS - 60, "ob-1"),
+        )
+        # Prune has no wrapper of its own: it runs inside the next record's write.
+        _record(oid="ob-2", session_key="agent:main:slack:channel:C2")
         assert _row("ob-1") is None
 
 
@@ -498,8 +494,7 @@ class TestGatewayRedeliverySweep:
                 await self._runner(first)._redeliver_pending_obligations()
             assert first.send.call_args.kwargs["content"] == "the final answer"
         else:
-            with dl._connect() as conn:
-                conn.execute("UPDATE delivery_obligations SET attempts=1 WHERE obligation_id='ob-1'")
+            _execute("UPDATE delivery_obligations SET attempts=1 WHERE obligation_id='ob-1'")
         _orphan("ob-1")
         second = self._adapter()
 
@@ -700,7 +695,7 @@ class TestAttemptsOnlySpentOnRealSends:
             _orphan("ob-1")
             assert dl.sweep_recoverable(deliverable_platforms={"discord"}) == []
 
-        with dl._connect() as conn:
+        with _holder()._read_ctx() as conn:
             state, attempts = conn.execute(
                 "SELECT state, attempts FROM delivery_obligations "
                 "WHERE obligation_id=?", ("ob-1",),

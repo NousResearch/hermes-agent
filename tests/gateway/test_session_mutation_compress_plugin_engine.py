@@ -42,13 +42,35 @@ class RecordingEngine(ContextEngine):
 
     def on_session_start(self, session_id, **kwargs):
         _record("start", session_id=session_id, boundary_reason=kwargs.get("boundary_reason"),
-                old_session_id=kwargs.get("old_session_id"))
+                old_session_id=kwargs.get("old_session_id"),
+                memory_manager=type(kwargs.get("memory_manager")).__name__)
 
     def on_session_end(self, session_id, messages):
         _record("end", session_id=session_id)
 
 def register(ctx):
     ctx.register_context_engine(RecordingEngine())
+'''
+
+MEMORY = '''
+from agent.memory_provider import MemoryProvider
+
+class StubMemory(MemoryProvider):
+    @property
+    def name(self):
+        return "stub_memory"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+def register(ctx):
+    ctx.register_memory_provider(StubMemory())
 '''
 
 
@@ -60,6 +82,8 @@ def test_manual_compress_uses_configured_plugin_engine(tmp_path, resident):
     user.mkdir()
     (home / 'plugins' / 'recording_engine').mkdir(parents=True)
     (home / 'plugins' / 'recording_engine' / '__init__.py').write_text(ENGINE)
+    (home / 'plugins' / 'stub_memory').mkdir()
+    (home / 'plugins' / 'stub_memory' / '__init__.py').write_text(MEMORY)
     log = tmp_path / 'engine.jsonl'
     peer = ThreadingHTTPServer(('127.0.0.1', 0), SummaryModel)
     peer.requests = []
@@ -67,6 +91,7 @@ def test_manual_compress_uses_configured_plugin_engine(tmp_path, resident):
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'gateway': {'multiplex_profiles': False}, 'context': {'engine': 'recording_engine'},
+           'memory': {'provider': 'stub_memory'},
            'model': {'provider': 'custom', 'default': 'original', 'base_url': url},
            'auxiliary': {'title_generation': {'enabled': False},
                          'compression': {'provider': 'custom', 'model': 'summary', 'base_url': url}},
@@ -126,4 +151,5 @@ def test_manual_compress_uses_configured_plugin_engine(tmp_path, resident):
     assert not any('context checkpoint' in json.dumps(r.get('messages')) for r in peer.requests)  # no native summary
     boundary = [e for e in events if e['event'] == 'start' and e['boundary_reason'] == 'compression']
     assert boundary == [{'event': 'start', 'session_id': result['target_session_id'],
-                         'boundary_reason': 'compression', 'old_session_id': result['previous_target_session_id']}]
+                         'boundary_reason': 'compression', 'old_session_id': result['previous_target_session_id'],
+                         'memory_manager': 'MemoryManager' if resident else 'NoneType'}]

@@ -62,6 +62,10 @@ def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model
 def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     _, bare = _wire("deepseek", "https://api.deepseek.com/v1", "deepseek-v4-flash")
     assert bare["reasoning_content"] == " "  # DeepSeek 400s without it; "" is rejected too
+    # Reflection Beam 400s on a reasoning-less turn on every host (OpenRouter probe: missing/"" 400, " " 200).
+    for provider, base_url, model in (("openrouter", "https://openrouter.ai/api/v1", "reflection/beam-1.0-501b-a23b"),
+                                      ("custom", "https://api.reflection.ai/openai/v1", "Beam-1.0-501B-A23B")):
+        assert _wire(provider, base_url, model)[1]["reasoning_content"] == " "
     gemini_alias, _ = _wire("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "my-alias")
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
 

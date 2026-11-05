@@ -656,6 +656,10 @@ _REASONING_ECHO_RULES: tuple = (
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
     # Portal stealth model that 400s on a tool-call turn without reasoning_content (f86276d2ebc).
     ("missingno", frozenset(), frozenset(), ("stealth/missingno",), ()),
+    # Reflection Beam 400s on ANY assistant turn without reasoning_content ("" too), on every host
+    # serving it; history loses reasoning on a /model switch or compaction (cline/cline#15530).
+    ("beam", frozenset(), frozenset({"reflection"}),
+     ("reflection/beam", "reflection-ai/beam", "reflection-beam", "beam-1.0", "beam-free"), ("api.reflection.ai",)),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 

@@ -113,6 +113,8 @@ def _refusal(reason, *, admitted=None):
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     from gateway.hosted_room_context import room_context, set_room_context
+    if method == 'groups.disband':
+        params = {**params, 'room_id': rooms._room_id(params.get('room_id'))}
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -259,9 +261,12 @@ def _disband(attached, service, db_path, gateway_id, params):
     from gateway import hosted_rooms as rooms
     from gateway.hosted_room_driver import list_tasks
     from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
-    room_id = params.get('room_id')
+    room_id = rooms._room_id(params.get('room_id'))
     with disband_fence(attached, room_id):
         state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+        if (state.get('disbanded_at') is None and attached is None
+                and rooms.room_has_peer_obligations(db_path, room_id=room_id)):
+            raise RuntimeStoreError('runtime_coordination_required')
         if service is not None and state.get('disbanded_at') is None:
             service.stop_room(room_id, cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)

@@ -309,6 +309,28 @@ class TestEnvFileParsing:
             "EMPTY": "",
         }
 
+    def test_load_env_file_expands_prior_assignments(self, tmp_path):
+        """Regression for #137080: scoped cron delivery must not receive a literal template."""
+        (tmp_path / ".env").write_text(
+            "CHAT_ID=12345\n"
+            "TELEGRAM_HOME_CHANNEL=${CHAT_ID}\n"
+            "FALLBACK=${MISSING:-default}\n"
+            "SINGLE='${CHAT_ID}'\n"
+        )
+
+        scope = ss.build_profile_secret_scope(tmp_path)
+        assert scope == {
+            "CHAT_ID": "12345",
+            "TELEGRAM_HOME_CHANNEL": "12345",
+            "FALLBACK": "default",
+            "SINGLE": "12345",
+        }
+        token = ss.set_secret_scope(scope)
+        try:
+            assert ss.get_secret("TELEGRAM_HOME_CHANNEL") == "12345"
+        finally:
+            ss.reset_secret_scope(token)
+
     def test_inline_comment_stripped_from_unquoted_value(self, tmp_path):
         """`KEY=value # comment` → `value` (python-dotenv semantics)."""
         (tmp_path / ".env").write_text("KEY=value # comment\nTABBED=foo\t#tabbed\n")

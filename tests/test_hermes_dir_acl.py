@@ -256,7 +256,7 @@ def test_a_recreated_dir_is_granted_again(tmp_path, monkeypatch):
 def test_media_release_then_recapture_grants_the_recreated_digest_dir(tmp_path, monkeypatch):
     """The production lifecycle behind (c): capture -> release_unheld_media -> capture again."""
     from gateway import session_ingress_media as media
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     home = tmp_path / "home"
     home.mkdir()
@@ -267,7 +267,7 @@ def test_media_release_then_recapture_grants_the_recreated_digest_dir(tmp_path, 
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda path, *_a, **_k: grants.append(str(path)))
     source = tmp_path / "sample.txt"
     source.write_text("same attachment bytes")
-    db = SessionDB(db_path=home / "state.db")
+    db = open_persistence(profile_scope(home=home))
     try:
         first = media.capture_native_media([source])
         directory = str(Path(first[0]["path"]).parent)

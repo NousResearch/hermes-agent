@@ -113,7 +113,11 @@ class Measurer:
         self.ctx = py_rules.Ctx(known_env=known_env)
         self.regex_rules = _regex_rules(repo)
 
-    def measure(self, tree: str | None, paths: list[str]) -> dict[str, FileMeasure]:
+    def measure(self, tree: str | None, paths: list[str],
+                hosted: frozenset[str] | None = None) -> dict[str, FileMeasure]:
+        """``hosted``: the paths hosted-only rules apply to (``hosted_graph.reachable``); None
+        applies them everywhere. The ratchet restricts the head and not the base, so a module a
+        new import pulls onto the hosted path keeps the debt it already had as baseline."""
         contents = {}
         for path in paths:
             if in_scope(path):
@@ -121,7 +125,7 @@ class Measurer:
                 if text is not None:
                     contents[path] = text
         if tree is None:
-            return self._measure_in(self.repo, contents)
+            return self._measure_in(self.repo, contents, hosted)
         with tempfile.TemporaryDirectory(prefix="code-health-") as tmp:
             root = Path(tmp)
             for path, text in contents.items():
@@ -130,21 +134,22 @@ class Measurer:
                 # newline="": the blob's own line endings, so ruff's line numbers match the
                 # AST's (Windows text mode would turn a CRLF blob into CR CR LF).
                 dest.write_text(text, encoding="utf-8", newline="")
-            return self._measure_in(root, contents)
+            return self._measure_in(root, contents, hosted)
 
-    def _measure_in(self, root: Path, contents: dict[str, str]) -> dict[str, FileMeasure]:
+    def _measure_in(self, root: Path, contents: dict[str, str],
+                    hosted: frozenset[str] | None) -> dict[str, FileMeasure]:
         result = {path: FileMeasure(path, lines=text.splitlines()) for path, text in contents.items()}
         py = sorted(p for p in contents if in_scope(p) == "py")
         ts = sorted(p for p in contents if in_scope(p) == "ts")
         ruff_out = run_ruff(self.ruff, root, py) if py else {}
         for path in py:
-            self._python(result[path], contents[path], ruff_out.get(path))
+            self._python(result[path], contents[path], ruff_out.get(path), hosted)
         ts_out = measure_ts(self.repo, root, ts) if ts else {}
         for path in ts:
             self._typescript(result[path], ts_out.get(path))
         return result
 
-    def _python(self, fm: FileMeasure, text: str, ruff_file) -> None:
+    def _python(self, fm: FileMeasure, text: str, ruff_file, hosted: frozenset[str] | None) -> None:
         fm.metrics["FILE_LINES"] = len(fm.lines)
         fm.comments = _python_comments(text)
         try:
@@ -164,7 +169,8 @@ class Measurer:
                 if code in RULES_BY_ID and rule_applies(RULES_BY_ID[code], fm.path):
                     fm.add_hit(code, scopes.scope(row), row)
         for rule_id, checker in py_rules.CHECKERS.items():
-            if rule_applies(RULES_BY_ID[rule_id], fm.path):
+            rule = RULES_BY_ID[rule_id]
+            if rule_applies(rule, fm.path) and (not rule.hosted or hosted is None or fm.path in hosted):
                 for row in sorted(set(checker(rules_tree, self.ctx))):
                     fm.add_hit(rule_id, scopes.scope(row), row)
         self._regex(fm, scopes, text, tree)

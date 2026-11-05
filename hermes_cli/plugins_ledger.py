@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 from registration_lifecycle import replacement_coordinator
+from registry_freeze import refuse_if_frozen
 from hermes_cli.plugins_loader import _plugin_home_scope
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key
 
@@ -225,6 +226,7 @@ class PluginLedgerMixin:
 
     def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload registrations while excluding discovery/deferred loading."""
+        refuse_if_frozen("plugin registry")
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             return self._unload_scoped(plugin)
 

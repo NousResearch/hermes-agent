@@ -12,6 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from registry_freeze import refuse_if_frozen
 from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
@@ -540,6 +541,7 @@ def register_mcp_servers(servers: dict[str, dict]) -> list[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
     from agent.safe_worker_policy import safe_worker_enabled
+    refuse_if_frozen("MCP registry")
     if safe_worker_enabled():
         # A troubleshooting worker never spawns MCP processes; nor may it borrow tools
         # another caller already connected in this process.

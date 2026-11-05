@@ -2,9 +2,41 @@ import { describe, expect, it } from "vitest";
 
 import {
   normalizePtyMobileInput,
+  resolveMobileSoftDelete,
   shouldTreatInputAsMobileReplacement,
   updatePtyInputLine,
 } from "./pty-mobile-input";
+
+describe("resolveMobileSoftDelete", () => {
+  it("maps soft-keyboard backspace to DEL", () => {
+    // Gboard fires deleteContentBackward on backspace instead of a keydown.
+    expect(resolveMobileSoftDelete("deleteContentBackward")).toBe("\x7f");
+    expect(resolveMobileSoftDelete("deleteHardTextBackward")).toBe("\x7f");
+    expect(resolveMobileSoftDelete("deleteSoftTextBackward")).toBe("\x7f");
+  });
+
+  it("maps word deletes to the readline/prompt_toolkit bindings", () => {
+    // Mirrors the desktop Ctrl+Backspace / Ctrl+Delete shortcuts in ChatPage.
+    expect(resolveMobileSoftDelete("deleteWordBackward")).toBe("\x17");
+    expect(resolveMobileSoftDelete("deleteWordForward")).toBe("\x1bd");
+    expect(resolveMobileSoftDelete("deleteContentForward")).toBe("\x1b[3~");
+  });
+
+  it("ignores insert and unknown input types", () => {
+    expect(resolveMobileSoftDelete("insertText")).toBe(null);
+    expect(resolveMobileSoftDelete("insertCompositionText")).toBe(null);
+    expect(resolveMobileSoftDelete(undefined)).toBe(null);
+  });
+
+  it("the tracked line shrinks when a soft-delete byte passes through", () => {
+    // Contract between the two layers: whatever resolveMobileSoftDelete
+    // emits must be modelled by updatePtyInputLine so a later mobile
+    // replacement is rewritten against the post-delete line.
+    const bytes = resolveMobileSoftDelete("deleteContentBackward");
+    expect(bytes).not.toBe(null);
+    expect(updatePtyInputLine("abc", bytes!)).toBe("ab");
+  });
+});
 
 describe("shouldTreatInputAsMobileReplacement", () => {
   it("recognizes explicit browser replacement input", () => {

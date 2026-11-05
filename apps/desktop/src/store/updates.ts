@@ -1014,6 +1014,21 @@ let backendUpdateInFlight: Promise<DesktopUpdateApplyResult> | null = null
 // Bumped when the poller stops, the request scope moves, or an apply takes over: a join still
 // asking across any of those never opens (A→B→A included, and a press that finished meanwhile).
 let joinGeneration = 0
+let joinScopeKey: string | undefined
+
+/** The join generation after recording the current request scope: a scope this has not seen yet
+ *  is a move, so a lookup asked before it is stale. The join records first, so the scope change
+ *  that starts it does not also invalidate it. */
+function joinGenerationForScope(): number {
+  const key = versionScopeKey()
+
+  if (key !== joinScopeKey) {
+    joinScopeKey = key
+    joinGeneration++
+  }
+
+  return joinGeneration
+}
 
 /** One running `hermes-update` action a window joined after it started (a reload, a second tab). */
 type JoinedBackendUpdate = Pick<Awaited<ReturnType<typeof updateHermes>>, 'action_id' | 'name'> & {
@@ -1238,14 +1253,13 @@ export async function joinRunningBackendUpdate(): Promise<void> {
     return
   }
 
-  const generation = joinGeneration
-  const askedFor = versionScopeKey()
+  const generation = joinGenerationForScope()
   const status = await readUpdateActionStatus()
   const running = status ? runningBackendUpdate(status) : null
 
-  // The answer belongs to the backend and profile that were asked, while the poller still runs:
-  // drop it after a switch to another scope or a stop.
-  if (!running || backendUpdateInFlight || joinGeneration !== generation || versionScopeKey() !== askedFor) {
+  // The answer belongs to the backend and profile that were asked, while the poller still runs
+  // and nothing else took over: drop it after a scope move, a stop or a new apply.
+  if (!running || backendUpdateInFlight || joinGenerationForScope() !== generation) {
     return
   }
 
@@ -1520,7 +1534,7 @@ export function startUpdatePoller(): void {
     }
 
     lastVersionScopeKey = key
-    joinGeneration++
+    joinGenerationForScope()
     void refreshDesktopVersion()
   }
 

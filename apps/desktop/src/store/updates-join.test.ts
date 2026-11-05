@@ -141,6 +141,55 @@ describe('startUpdatePoller rejoins a running backend update', () => {
   })
 })
 
+// The real order: the poller starts at mount, and the connection resolves to remote later.
+describe('a window that connects after the update poller started', () => {
+  beforeEach(() => {
+    storage.clear()
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: {
+        updates: { check: vi.fn().mockResolvedValue({ supported: true, behind: 0, fetchedAt: 0 }), onProgress: vi.fn() }
+      },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    }
+    vi.useFakeTimers()
+    stopUpdatePoller()
+    setConnection(null)
+  })
+
+  afterEach(() => {
+    stopUpdatePoller()
+    delete (globalThis as unknown as { window?: unknown }).window
+    vi.useRealTimers()
+  })
+
+  it('joins the backend update it finds running', async () => {
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({ behind: 0, update_available: false })
+    getActionStatusSpy
+      .mockReset()
+      .mockResolvedValue({ exit_code: null, lines: [], name: 'hermes-update', pid: 9, running: true })
+    $updateOverlayOpen.set(false)
+    startUpdatePoller()
+
+    setConnection({
+      baseUrl: 'http://late:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://late:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($updateOverlayOpen.get()).toBe(true)
+    getActionStatusSpy.mockResolvedValue({ exit_code: 0, lines: [], name: 'hermes-update', pid: 9, running: false })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+})
+
 describe('joinRunningBackendUpdate', () => {
   const remote = {
     baseUrl: 'http://join:9119',

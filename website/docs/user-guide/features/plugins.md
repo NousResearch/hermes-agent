@@ -464,8 +464,8 @@ a different interval.
 `hermes plugins update` with no name runs the same check and lists the
 plugins it can move: catalog installs (re-pinned to the reviewed catalog
 commit) and tracked Git installs (pulled). It names every plugin it skips and
-why: pinned, needs fixing, status unknown, or a pip distribution Hermes does
-not upgrade. In a terminal it asks once, then updates each plugin through the
+why: pinned, held with `--ref`, needs fixing, status unknown, or a pip
+distribution Hermes does not upgrade. In a terminal it asks once, then updates each plugin through the
 same path as `hermes plugins update NAME`, so new capabilities, a widened
 catalog pin and scan findings still prompt per plugin. One failure does not
 stop the rest; the summary lists what updated, what was already current and
@@ -478,12 +478,15 @@ By default, plugins only update when you run `hermes plugins update`. Turning
 on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
 apply the same catalog re-pins and tracked Git pulls on its own. Both routes
 use the update security scan, and an unattended update never accepts a widened
-catalog pin, new capabilities or a caution scan verdict on a Git update: those
+catalog pin or Git update (new tools, hooks, capabilities), new capabilities or a caution scan verdict on a Git update: those
 wait for you to run the update yourself. (A catalog re-pin accepts a caution
 verdict, because a reviewer read that pin when it was admitted to the catalog.)
 Auto-update does not manage pinned, manual, drifted, or pip-distribution rows,
-nor a catalog plugin you installed with `--ref`: that stays on the commit you
-chose until you run `hermes plugins update <name>`. It runs on the gateway's housekeeping thread, so it
+nor a catalog plugin you installed with `--ref` at a commit other than its
+catalog pin: that stays on the commit you chose until you name it
+(`hermes plugins update <name>`); every Update all, `hermes plugins update`
+with no name included, skips it. A `--ref` equal to the catalog pin is recorded
+as an ordinary catalog install, so auto-update moves it with the catalog. It runs on the gateway's housekeeping thread, so it
 never delays starting a session, and an offline check costs one warning.
 Code the scheduled check updates loads in new sessions; a running session keeps
 the code it already imported. The setting is per profile.
@@ -498,7 +501,7 @@ The same switch and an "Update all" action are on every surface:
 | Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
 
 `/plugins update`, Desktop and the dashboard update without asking per plugin,
-so a plugin that needs a review (widened pin, caution scan of a Git update) is
+so a plugin that needs a review (widened pin or Git update, caution scan of a Git update) is
 listed as "needs review" with nothing changed; update it by name to review it.
 Each plugin they update is reloaded right away, as an update from the plugin's
 own Update action is: its MCP servers and skills reach open chats now, its

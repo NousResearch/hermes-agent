@@ -1162,7 +1162,7 @@ def check_dangerous_command(command: str, env_type: str,
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
-    if _yolo_active():
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _allowlisted(command)

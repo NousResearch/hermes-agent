@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.conversation_compression_manual import compress_now, parse_compress_args
+from persistence.conversation.messages import ConversationRequest
+from tests.fixtures.storage_read import conversation
 
 
 def _aux_llm(**kwargs):
@@ -29,16 +31,16 @@ def _reply(content, prompt_tokens):
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("agent.context_compressor.call_llm", _aux_llm)
     monkeypatch.setattr("agent.title_generator.call_llm", _aux_llm)
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     with patch("agent.process_bootstrap.OpenAI"):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="test/model",
-                        quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True, skip_memory=True)
+                        quiet_mode=True, persistence=db, session_id="sid", skip_context_files=True, skip_memory=True)
     agent.client, agent.tool_delay, agent.save_trajectories = MagicMock(), 0, False
     assert agent.compression_in_place is True
     yield db, agent
@@ -52,7 +54,7 @@ def _turn(db, agent, cli, surface, n, prompt_tokens):
     if surface == "gateway":
         from gateway.run import _build_gateway_agent_history
 
-        history = _build_gateway_agent_history(db.get_messages_as_conversation("sid", repair_alternation=True))[0]
+        history = _build_gateway_agent_history(conversation(db, "sid", ConversationRequest(repair_alternation=True)))[0]
         agent.run_conversation(user_message=text, conversation_history=history, task_id="sid", persist_user_message=text)
         return
     from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
@@ -63,8 +65,14 @@ def _turn(db, agent, cli, surface, n, prompt_tokens):
     cli.conversation_history = result.get("messages", cli.conversation_history)
 
 
+def _resume(db):
+    """The model and display histories a resume of ``sid`` loads, as replay dicts."""
+    resumed = db.messages.read_resume_conversations("sid")
+    return [m.as_openai_message() for m in resumed.model], [m.as_openai_message() for m in resumed.display]
+
+
 def _replies_displayed(db):
-    return {m["content"].split(" ")[0] for m in db.get_resume_conversations("sid")[1]
+    return {m["content"].split(" ")[0] for m in _resume(db)[1]
             if m.get("role") == "assistant" and isinstance(m.get("content"), str)}
 
 
@@ -95,10 +103,10 @@ def test_manual_compress_between_turns_rewinds_every_carried_original(session):
 
     from gateway.run import _build_gateway_agent_history
 
-    history = _build_gateway_agent_history(db.get_messages_as_conversation("sid", repair_alternation=True))[0]
+    history = _build_gateway_agent_history(conversation(db, "sid", ConversationRequest(repair_alternation=True)))[0]
     assert compress_now(agent, history, parse_compress_args(""), system_message="").status == "compressed"
 
-    model_history, display_history = db.get_resume_conversations("sid")
+    model_history, display_history = _resume(db)
     live = [m["content"] for m in model_history if isinstance(m.get("content"), str)]
     carried = live[next(i for i, c in enumerate(live) if "Numbered steps" in c) + 1:]
     assert carried

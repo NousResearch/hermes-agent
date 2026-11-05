@@ -27,8 +27,10 @@ from unittest.mock import patch
 import pytest
 
 from agent.turn_context import build_turn_context
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
 
 NOTE = "[System note: Your previous turn was interrupted mid-run …]\n\nkeep going"
 
@@ -36,16 +38,16 @@ NOTE = "[System note: Your previous turn was interrupted mid-run …]\n\nkeep go
 @pytest.fixture()
 def agent_db():
     tmp = tempfile.mkdtemp(prefix="synthetic_display_kind_")
-    db = SessionDB(Path(tmp) / "state.db")
+    db = open_persistence(profile_scope(home=Path(tmp)))
     sid = "sess-synthetic"
-    db.create_session(session_id=sid, source="desktop", model="test-model")
+    seed_session(db, sid, "desktop", model="test-model")
     agent = AIAgent(
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
-        session_db=db,
+        persistence=db,
         session_id=sid,
     )
     agent._session_db_created = True
@@ -89,7 +91,7 @@ def test_row_is_typed_by_the_turn_start_persist(agent_db):
         persist_user_display_metadata={"attempt": 2},
     )
 
-    row, = [r for r in db.get_messages_as_conversation(sid) if r["role"] == "user"]
+    row, = [r for r in conversation(db, sid) if r["role"] == "user"]
     # Typed before the turn ran — a crash from here on still reads as an event.
     assert row["display_kind"] == "auto_continue"
     assert row["display_metadata"] == {"attempt": 2}
@@ -102,5 +104,5 @@ def test_a_real_user_turn_stays_untyped(agent_db):
 
     _build(agent, user_message="keep going")
 
-    row, = [r for r in db.get_messages_as_conversation(sid) if r["role"] == "user"]
+    row, = [r for r in conversation(db, sid) if r["role"] == "user"]
     assert row.get("display_kind") is None

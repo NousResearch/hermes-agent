@@ -12,8 +12,10 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_read import session_row
 
 SID = "20260913_210721_c89ac8"
 
@@ -27,7 +29,7 @@ def _response():
 
 
 def test_guard_first_writer_carries_the_agent_source(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -35,7 +37,7 @@ def test_guard_first_writer_carries_the_agent_source(tmp_path):
     ):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
-            skip_context_files=True, skip_memory=True, session_id=SID, session_db=db, platform="desktop",
+            skip_context_files=True, skip_memory=True, session_id=SID, persistence=db, platform="desktop",
         )
     agent.client = MagicMock()
     agent.client.chat.completions.create.return_value = _response()
@@ -44,17 +46,17 @@ def test_guard_first_writer_carries_the_agent_source(tmp_path):
     agent.compression_enabled = False
     agent.save_trajectories = False
 
-    # The whole first turn runs under contention: every create_session attempt is refused.
+    # The whole first turn runs under contention: every sessions.create attempt is refused.
     def locked(*_a, **_k):
         raise sqlite3.OperationalError("database is locked")
-    db.create_session = locked
+    db.sessions.create = locked
     try:
         agent.run_conversation("first prompt")
-        assert db.flush_token_counts()
-        row = db.get_session(SID)
+        assert db.usage.flush_usage()
+        row = session_row(db, SID)
         assert row is not None, "the queued token delta must materialize the row"
         assert row["source"] == "desktop"
-        assert db.list_sessions_rich(source="unknown", limit=50) == []
+        assert db.sessions.list_sessions(SessionQuery(sources=("unknown",)), SessionWindow(limit=50)) == ()
     finally:
         agent.close()
         db.close()

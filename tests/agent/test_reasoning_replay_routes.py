@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 from agent.message_sanitization import (
     apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
 )
@@ -79,6 +82,7 @@ def _agent(model, db=None):
         provider="nous", model=model, base_url="https://inference-api.nousresearch.com/v1",
         api_mode="chat_completions", _force_ascii_payload=False, _image_rejecting_models=set(),
         log_prefix="", _vprint=lambda *a, **k: None, session_id="s1" if db else None, _session_db=db,
+        persistence=db,
     )
 
 
@@ -92,10 +96,8 @@ def _recover(agent, body, sent):
 
 
 def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="cli", model="z-ai/glm-5.3-flash:US")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s1", "cli", model="z-ai/glm-5.3-flash:US")
     lane = _agent("z-ai/glm-5.3-flash:US", db)
     sent = [{"role": "user", "content": "hi"}, deepcopy(_TURN)]
     sent[1].pop("tool_calls")
@@ -119,6 +121,27 @@ def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
     # A sibling model on the same gateway keeps every carrier.
     sibling = reasoning_replay_route("chat_completions", "nous", "moonshotai/kimi-k3", lane.base_url)
     assert "reasoning_details" in sibling.carriers
+
+
+def test_a_rejection_is_stored_and_reloaded_through_the_writer_handle(tmp_path):
+    import persistence_assembly
+
+    db = storage_handle(tmp_path)
+    seed_session(db, "s1", "cli", model="z-ai/glm-5.3-flash:US")
+    sent = [{"role": "user", "content": "hi"}, deepcopy(_TURN)]
+    sent[1].pop("tool_calls")
+    body = "Extra inputs are not permitted, field: 'messages[1].reasoning_details'"
+
+    with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path)) as handle:
+        lane = _agent("z-ai/glm-5.3-flash:US", db)
+        lane.persistence = handle
+        assert _recover(lane, body, sent) is True
+        resumed = _agent(lane.model, db)
+        resumed.persistence = handle
+        assert rejected_reasoning_carriers(resumed) == {"reasoning", "reasoning_details"}
+
+    assert db.sessions.get_model_config_value("s1", "reasoning_rejected_carriers") == [
+        ["nous", "inference-api.nousresearch.com", "z-ai/glm-5.3-flash:US", ["reasoning", "reasoning_details"]]]
 
 
 def test_route_shaping_keeps_private_native_carrier_for_the_transport():

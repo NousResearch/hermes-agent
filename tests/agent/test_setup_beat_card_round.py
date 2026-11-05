@@ -12,11 +12,12 @@ import pytest
 
 from agent import onboarding_record
 from agent.agent_init import _CALLBACK_PARAMS
-from agent.onboarding_flow import Facts
+from session_rules.onboarding_flow import Facts
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_tool_round import stage_tool_call_message
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
 from tests.agent.test_run_agent import _mock_response
 from tools.setup_beat_tool import SETUP_BEAT_SCHEMA
 
@@ -70,16 +71,16 @@ def _loop_agent(db):
     agent.client = MagicMock()
     agent._disable_streaming, agent._cached_system_prompt, agent._use_prompt_caching = True, "You are helpful.", False
     agent.tool_delay, agent.compression_enabled, agent.save_trajectories = 0, False, False
-    db.create_session(agent.session_id, "desktop")
-    onboarding_record.start(db, agent.session_id, Facts(os="macos"))
-    agent._session_db = db
+    seed_session(db, agent.session_id, "desktop")
+    onboarding_record.start(db, agent.session_id, Facts(os="macos"), persistence=db)
+    agent._session_db = agent.persistence = db
     return agent
 
 
 def test_a_card_closed_by_a_message_ends_the_turn_without_another_model_call(tmp_path, monkeypatch):
     """The message runs as the user's own next turn, so the old turn must not go on to answer it."""
     monkeypatch.setattr("hermes_cli.onboarding_run.set_run", lambda *a, **k: None)
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     agent = _loop_agent(db)
     agent.setup_beat_callback = lambda payload: {"wrote_instead": True}
     calls = []

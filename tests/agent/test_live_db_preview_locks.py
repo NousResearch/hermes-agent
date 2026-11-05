@@ -10,8 +10,11 @@ import pytest
 from fastapi import HTTPException
 
 from agent.context_references import _expand_path_reference, parse_context_references
-from hermes_state import SessionDB
 from hermes_cli.web_routers.files import fs_download, fs_read_text
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.posix_lock_probe import own_posix_locks
 
 
@@ -24,14 +27,14 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
     path = tmp_path / "state.db"
     text = tmp_path / "normal.txt"
     text.write_text("ordinary readable text", encoding="utf-8")
-    db = SessionDB(path)
+    db = open_persistence(profile_scope(home=tmp_path))
     lock_fd = None
     try:
-        db.create_session("preview-test", "cli")
-        db.append_message("preview-test", "user", "before preview")
+        seed_session(db, "preview-test", "cli")
+        seed_messages(db, "preview-test", {"role": "user", "content": "before preview"})
         shm = Path(str(path) + "-shm")
         target = {"main": path, "shm": shm, "directory": tmp_path}[target_kind]
-        conn = db._conn
+        conn = raw_holder(db)._conn
         assert isinstance(conn, sqlite3.Connection)
         conn.execute("CREATE TABLE preview_markers (value TEXT)")
         conn.commit()
@@ -91,8 +94,8 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         assert [row[0] for row in conn.execute(
             "SELECT value FROM preview_markers ORDER BY rowid"
         )] == ["first process", "second process"]
-        db.append_message("preview-test", "assistant", "after preview")
-        assert len(db.get_messages("preview-test")) == 2
+        seed_messages(db, "preview-test", {"role": "assistant", "content": "after preview"})
+        assert len(transcript_rows(db, "preview-test")) == 2
     finally:
         db.close()
         if lock_fd is not None:
@@ -100,9 +103,9 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
 
 
 def test_closed_database_can_still_be_previewed(tmp_path):
-    path = tmp_path / "offline.db"
-    db = SessionDB(path)
-    db.create_session("offline", "cli")
+    path = tmp_path / "state.db"
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "offline", "cli")
     db.close()
     ref = parse_context_references(f"@file:{path}")[0]
     warning, block = _expand_path_reference(ref, tmp_path.parent)

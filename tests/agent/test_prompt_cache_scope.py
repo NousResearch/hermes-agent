@@ -11,17 +11,19 @@ derivation sites, while preserving #79161's isolation semantics for /new,
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
 from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-from hermes_state import SessionDB
+from persistence_assembly import Persistence, open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture()
 def db(tmp_path):
-    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db = open_persistence(profile_scope(home=tmp_path))
     try:
         yield session_db
     finally:
@@ -29,13 +31,15 @@ def db(tmp_path):
 
 
 def _agent(session_id, session_db=None):
-    return SimpleNamespace(session_id=session_id, _session_db=session_db)
+    # A storage interface handle is the agent's store and its interface; the doubles are bare stores.
+    persistence = session_db if isinstance(session_db, Persistence) else None
+    return SimpleNamespace(session_id=session_id, _session_db=session_db, persistence=persistence)
 
 
 def _rotate(db, parent_id: str, child_id: str) -> None:
     """Simulate a legacy-mode compression rotation parent -> child."""
-    db.end_session(parent_id, "compression")
-    db.create_session(child_id, source="webui", parent_session_id=parent_id)
+    db.sessions.end(parent_id, "compression")
+    seed_session(db, child_id, source="webui", parent_session_id=parent_id)
 
 
 class TestResolvePromptCacheScope:
@@ -49,13 +53,13 @@ class TestResolvePromptCacheScope:
 
     def test_rotation_child_inherits_root_scope(self, db):
         """THE fix: scope survives a compression rotation boundary."""
-        db.create_session("root-sess", source="webui")
+        seed_session(db, "root-sess", source="webui")
         _rotate(db, "root-sess", "rotated-1")
 
         assert resolve_prompt_cache_scope(_agent("rotated-1", db)) == "root-sess"
 
     def test_chained_rotations_share_one_scope(self, db):
-        db.create_session("root-sess", source="webui")
+        seed_session(db, "root-sess", source="webui")
         _rotate(db, "root-sess", "rotated-1")
         _rotate(db, "rotated-1", "rotated-2")
 
@@ -63,17 +67,17 @@ class TestResolvePromptCacheScope:
 
     def test_new_session_gets_fresh_scope(self, db):
         """/new starts a lineage-less session — never inherits an old scope."""
-        db.create_session("old-conv", source="webui")
+        seed_session(db, "old-conv", source="webui")
         _rotate(db, "old-conv", "old-rotated")
-        db.create_session("new-conv", source="webui")  # /new: no parent link
+        seed_session(db, "new-conv", source="webui")  # /new: no parent link
 
         assert resolve_prompt_cache_scope(_agent("new-conv", db)) == "new-conv"
 
     def test_branch_child_stays_isolated(self, db):
         """/branch children are explicit forks — own scope, not the root's."""
-        db.create_session("root-sess", source="webui")
-        db.end_session("root-sess", "compression")
-        db.create_session(
+        seed_session(db, "root-sess", source="webui")
+        db.sessions.end("root-sess", "compression")
+        seed_session(db,
             "branch-child",
             source="webui",
             parent_session_id="root-sess",
@@ -86,9 +90,9 @@ class TestResolvePromptCacheScope:
 
     def test_delegate_child_stays_isolated(self, db):
         """Delegate subagents keep per-child scopes (matches #79161 semantics)."""
-        db.create_session("parent-sess", source="webui")
-        db.end_session("parent-sess", "compression")
-        db.create_session(
+        seed_session(db, "parent-sess", source="webui")
+        db.sessions.end("parent-sess", "compression")
+        seed_session(db,
             "delegate-child",
             source="webui",
             parent_session_id="parent-sess",
@@ -101,9 +105,9 @@ class TestResolvePromptCacheScope:
         )
 
     def test_tool_child_stays_isolated(self, db):
-        db.create_session("parent-sess", source="webui")
-        db.end_session("parent-sess", "compression")
-        db.create_session(
+        seed_session(db, "parent-sess", source="webui")
+        db.sessions.end("parent-sess", "compression")
+        seed_session(db,
             "tool-child", source="tool", parent_session_id="parent-sess"
         )
 
@@ -111,16 +115,16 @@ class TestResolvePromptCacheScope:
 
     def test_memoized_per_segment(self, db):
         """The lineage walk runs once per (agent, session_id) — hot-path rule."""
-        db.create_session("root-sess", source="webui")
+        seed_session(db, "root-sess", source="webui")
         _rotate(db, "root-sess", "rotated-1")
         agent = _agent("rotated-1", db)
 
         assert resolve_prompt_cache_scope(agent) == "root-sess"
 
         calls = []
-        original = db.get_compression_lineage
-        db.get_compression_lineage = lambda sid: calls.append(sid) or original(sid)
-        try:
+        lineage = type(db.lineage)
+        original = lineage.lineage
+        with patch.object(lineage, "lineage", lambda self, sid: calls.append(sid) or original(self, sid)):
             assert resolve_prompt_cache_scope(agent) == "root-sess"
             assert calls == []  # memo hit — no second walk
             # Rotation changes the physical id -> memo invalidates, one re-walk.
@@ -128,8 +132,6 @@ class TestResolvePromptCacheScope:
             agent.session_id = "rotated-2"
             assert resolve_prompt_cache_scope(agent) == "root-sess"
             assert calls == ["rotated-2"]
-        finally:
-            db.get_compression_lineage = original
 
     def test_db_failure_falls_back_to_physical_id(self):
         class BoomDB:
@@ -149,9 +151,9 @@ class TestResolvePromptCacheScope:
         # Row doesn't exist yet -> degraded fallback, unmemoized.
         assert resolve_prompt_cache_scope(agent) == "late-row"
         # Row lands with rotation ancestry.
-        db.create_session("late-root", source="webui")
-        db.end_session("late-root", "compression")
-        db.create_session("late-row", source="webui", parent_session_id="late-root")
+        seed_session(db, "late-root", source="webui")
+        db.sessions.end("late-root", "compression")
+        seed_session(db, "late-row", source="webui", parent_session_id="late-root")
         assert resolve_prompt_cache_scope(agent) == "late-root"
 
     def test_persist_disabled_agent_is_memoized_despite_missing_row(self, db):
@@ -162,23 +164,21 @@ class TestResolvePromptCacheScope:
         assert resolve_prompt_cache_scope(agent) == "review-fork"
 
         calls = []
-        original = db.get_compression_lineage
-        db.get_compression_lineage = lambda sid: calls.append(sid) or original(sid)
-        try:
+        lineage = type(db.lineage)
+        original = lineage.lineage
+        with patch.object(lineage, "lineage", lambda self, sid: calls.append(sid) or original(self, sid)):
             assert resolve_prompt_cache_scope(agent) == "review-fork"
             assert calls == []  # memoized — no per-call re-query
-        finally:
-            db.get_compression_lineage = original
 
     def test_db_attached_later_re_resolves(self, db):
         """A DB-less memo must not survive a lazy _session_db attach."""
-        db.create_session("root-sess", source="webui")
+        seed_session(db, "root-sess", source="webui")
         _rotate(db, "root-sess", "rotated-1")
         agent = _agent("rotated-1", None)
         # No DB -> physical id, memoized for the DB-less state.
         assert resolve_prompt_cache_scope(agent) == "rotated-1"
         # Lazy attach (run_agent._get_session_db_for_recall pattern).
-        agent._session_db = db
+        agent._session_db = agent.persistence = db
         assert resolve_prompt_cache_scope(agent) == "root-sess"
 
     def test_bogus_lineage_shape_falls_back(self):
@@ -213,7 +213,7 @@ class TestRotationContinuityEndToEnd:
         return _content_cache_key(self.INSTRUCTIONS, self.TOOLS, scope)
 
     def test_rotation_keeps_prompt_cache_key_stable(self, db):
-        db.create_session("root-sess", source="webui")
+        seed_session(db, "root-sess", source="webui")
         key_before = self._key_for(_agent("root-sess", db))
 
         _rotate(db, "root-sess", "rotated-1")
@@ -223,10 +223,10 @@ class TestRotationContinuityEndToEnd:
 
 
     def test_sibling_forks_keep_distinct_keys(self, db):
-        db.create_session("parent-sess", source="webui")
-        db.end_session("parent-sess", "compression")
+        seed_session(db, "parent-sess", source="webui")
+        db.sessions.end("parent-sess", "compression")
         for child in ("delegate-a", "delegate-b"):
-            db.create_session(
+            seed_session(db,
                 child,
                 source="webui",
                 parent_session_id="parent-sess",
@@ -451,8 +451,8 @@ class TestPerResponseRunNonceIsolation:
         stable session id, or an explicit key); rows that still declare
         nothing keep resolving exactly like this.
         """
-        db.create_session(self.RESPONSE_1, source="studio")
-        db.create_session(self.RESPONSE_2, source="studio")
+        seed_session(db, self.RESPONSE_1, source="studio")
+        seed_session(db, self.RESPONSE_2, source="studio")
 
         assert resolve_prompt_cache_scope(_agent(self.RESPONSE_1, db)) == self.RESPONSE_1
         assert resolve_prompt_cache_scope(_agent(self.RESPONSE_2, db)) == self.RESPONSE_2

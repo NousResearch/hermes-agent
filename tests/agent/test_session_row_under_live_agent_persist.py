@@ -16,6 +16,12 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from gateway.session_ingress_media import native_inputs_root
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_session
+
 
 def _drop_row(db, session_id):
     """The row vanishes under the agent WITHOUT a retirement tombstone (in-place store rebuild,
@@ -23,7 +29,7 @@ def _drop_row(db, session_id):
     def _do(conn):
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         assert conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,)).rowcount == 1
-    db._execute_write(_do)
+    raw_holder(db)._execute_write(_do)
 
 
 def _make_agent(session_db, session_id):
@@ -35,7 +41,7 @@ def _make_agent(session_db, session_id):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=session_db,
+            persistence=session_db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -45,10 +51,8 @@ def _make_agent(session_db, session_id):
 def test_flush_recreates_row_deleted_under_live_agent():
     """Real turn shape (messages = history + tail, conversation_history=history): every
     deletion round replays the whole in-memory transcript onto the recreated row."""
-    from hermes_state import SessionDB
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = SessionDB(db_path=Path(tmpdir) / "test.db")
+        db = open_persistence(profile_scope(home=Path(tmpdir)))
         agent = _make_agent(db, "sess-live")
 
         history = []
@@ -60,7 +64,7 @@ def test_flush_recreates_row_deleted_under_live_agent():
             messages = list(history) + tail
             assert agent._flush_messages_to_session_db(messages, history) is True
             history = messages
-            assert [r["content"] for r in db.get_messages("sess-live")] == [m["content"] for m in history]
+            assert [r["content"] for r in transcript_rows(db, "sess-live")] == [m["content"] for m in history]
 
         # A heal during a muted notification turn hides only that turn's new rows; the replayed
         # history rows (and their in-memory dicts) keep their visibility.
@@ -68,7 +72,7 @@ def test_flush_recreates_row_deleted_under_live_agent():
         agent._mute_notification_reply = True
         tail = [{"role": "user", "content": "notif"}, {"role": "assistant", "content": "muted"}]
         assert agent._flush_messages_to_session_db(list(history) + tail, history) is True
-        rows = db.get_messages("sess-live")
+        rows = transcript_rows(db, "sess-live")
         assert [(r["content"], r.get("display_kind")) for r in rows] == (
             [(m["content"], None) for m in history] + [("notif", "hidden"), ("muted", "hidden")]
         )
@@ -82,22 +86,20 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
     failure is only healed when the row is confirmed gone, and a failed lookup is no proof."""
     import sqlite3 as _sqlite3
 
-    from hermes_state import SessionDB
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = SessionDB(db_path=Path(tmpdir) / "test.db")
+        db = open_persistence(profile_scope(home=Path(tmpdir)))
         agent = _make_agent(db, "sess-gone")
 
         turn1 = [{"role": "user", "content": "a"}]
         agent._flush_messages_to_session_db(turn1, [])
-        assert len(db.get_messages("sess-gone")) == 1
+        assert len(transcript_rows(db, "sess-gone")) == 1
         _drop_row(db, "sess-gone")
 
         # Row creation inside the heal now raises (transient store trouble).
         def _broken_create(*a, **kw):
             raise _sqlite3.OperationalError("unable to open database file")
 
-        monkeypatch.setattr(db, "create_session", _broken_create)
+        monkeypatch.setattr(db.sessions, "create", _broken_create)
 
         turn2 = turn1 + [{"role": "user", "content": "b"}]
         healed = agent._flush_messages_to_session_db(turn2, turn1)
@@ -109,7 +111,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         # replay the history prefix the failed heal left unwritten.
         turn3 = turn2 + [{"role": "assistant", "content": "c"}]
         assert agent._flush_messages_to_session_db(turn3, turn2) is True
-        assert [r["content"] for r in db.get_messages("sess-gone")] == ["a", "b", "c"]
+        assert [r["content"] for r in transcript_rows(db, "sess-gone")] == ["a", "b", "c"]
         assert agent._session_row_replay_pending is None
 
         # The heal recreates the row but its single retry write fails (lock/lease/disk): the next
@@ -118,7 +120,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         t1 = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a1"}]
         assert retry._flush_messages_to_session_db(t1, []) is True
         _drop_row(db, "sess-retry")
-        real_append, calls = db.append_messages_batch, []
+        real_append, calls = db.messages.append_batch, []
 
         def _fk_then_locked(*a, **kw):
             calls.append(1)
@@ -126,12 +128,12 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
                 raise _sqlite3.OperationalError("database is locked")
             return real_append(*a, **kw)  # call 1 hits the real FK error -> heal
 
-        monkeypatch.setattr(db, "append_messages_batch", _fk_then_locked)
+        monkeypatch.setattr(db.messages, "append_batch", _fk_then_locked)
         t2 = t1 + [{"role": "user", "content": "two"}]
         assert retry._flush_messages_to_session_db(t2, t1) is False
         t3 = t2 + [{"role": "assistant", "content": "a2"}]
         assert retry._flush_messages_to_session_db(t3, t2) is True
-        assert [r["content"] for r in db.get_messages("sess-retry")] == ["one", "a1", "two", "a2"]
+        assert [r["content"] for r in transcript_rows(db, "sess-retry")] == ["one", "a1", "two", "a2"]
         monkeypatch.undo()
 
         # FK failure while the session row still exists (e.g. a sessions-table FK): no heal, and
@@ -139,7 +141,7 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
         live = _make_agent(db, "sess-fk-live")
         history = [{"role": "user", "content": "one"}, {"role": "assistant", "content": "a1"}]
         assert live._flush_messages_to_session_db(history, []) is True
-        real_append, calls = db.append_messages_batch, []
+        real_append, calls = db.messages.append_batch, []
 
         def _fk_once(*a, **kw):
             calls.append(1)
@@ -147,27 +149,27 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
                 raise _sqlite3.IntegrityError("FOREIGN KEY constraint failed")
             return real_append(*a, **kw)
 
-        monkeypatch.setattr(db, "append_messages_batch", _fk_once)
+        monkeypatch.setattr(db.messages, "append_batch", _fk_once)
         assert live._flush_messages_to_session_db(list(history) + [{"role": "user", "content": "two"}], history) is False
-        assert [r["content"] for r in db.get_messages("sess-fk-live")] == ["one", "a1"]
+        assert [r["content"] for r in transcript_rows(db, "sess-fk-live")] == ["one", "a1"]
         monkeypatch.undo()
 
         # Delegate child whose row is gone: a raising parent-row lookup fails the flush closed
         # instead of letting the OperationalError escape.
-        db.create_session("sess-parent", source="cli")
+        seed_session(db, "sess-parent", "cli")
         child = _make_agent(db, "sess-child")
         child._parent_session_id = "sess-parent"
         assert child._flush_messages_to_session_db([{"role": "user", "content": "x"}], []) is True
-        db.delete_session("sess-parent")
-        db.delete_session("sess-child")
-        real_get = db.get_session
+        db.sessions.delete("sess-parent", media_root=str(native_inputs_root()))
+        db.sessions.delete("sess-child", media_root=str(native_inputs_root()))
+        real_get = db.sessions.get
 
         def _parent_lookup_raises(sid):
             if sid == "sess-parent":
                 raise _sqlite3.OperationalError("disk I/O error")
             return real_get(sid)
 
-        monkeypatch.setattr(db, "get_session", _parent_lookup_raises)
+        monkeypatch.setattr(db.sessions, "get", _parent_lookup_raises)
         assert child._flush_messages_to_session_db([{"role": "user", "content": "y"}], []) is False
         db.close()
 
@@ -175,16 +177,14 @@ def test_flush_fails_closed_when_row_cannot_be_recreated(monkeypatch):
 def test_retired_session_is_never_resurrected_by_a_stale_writer():
     """A canonical delete retires the id; the heal must not bring the session back from a
     leftover in-memory agent (the owner evicts live agents before retiring)."""
-    from hermes_state import SessionDB
-
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = SessionDB(db_path=Path(tmpdir) / "test.db")
+        db = open_persistence(profile_scope(home=Path(tmpdir)))
         agent = _make_agent(db, "sess-retired")
         turn1 = [{"role": "user", "content": "a"}]
         assert agent._flush_messages_to_session_db(turn1, []) is True
-        assert db.delete_session("sess-retired") is True
+        assert db.sessions.delete("sess-retired", media_root=str(native_inputs_root())) == ("sess-retired",)
         turn2 = turn1 + [{"role": "user", "content": "b"}]
         assert agent._flush_messages_to_session_db(turn2, turn1) is False
-        assert db.get_session("sess-retired") is None
-        assert db.get_messages("sess-retired") == []
+        assert session_row(db, "sess-retired") is None
+        assert transcript_rows(db, "sess-retired") == []
         db.close()

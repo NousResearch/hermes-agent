@@ -53,19 +53,11 @@ def test_run_conversation_persists_tokens_for_telegram_sessions():
     assert session_db.queue_token_counts.call_args.args[0] == "telegram-session"
 
 def test_session_search_lazily_opens_db_when_entrypoint_did_not_pass_one(monkeypatch):
-    sentinel_db = object()
+    import persistence_assembly
+
+    sentinel_db = SimpleNamespace(read_only=False)
     captured = {}
-
-    class FakeSessionDB:
-        def __new__(cls):
-            return sentinel_db
-
-    hermes_state = ModuleType("hermes_state")
-    hermes_state.SessionDB = FakeSessionDB
-    monkeypatch.setitem(sys.modules, "hermes_state", hermes_state)
-    hermes_state_registry = ModuleType("hermes_state_registry")
-    hermes_state_registry.acquire = lambda db_path=None: sentinel_db
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", hermes_state_registry)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", lambda scope, eager=False: sentinel_db)
 
     session_search_mod = ModuleType("tools.session_search_tool")
 

@@ -27,9 +27,21 @@ from agent.turn_context import _preflight_request_tokens
 from agent.usage_anchor import (
     anchored_context_tokens,
     capture_usage_anchor,
+    persisted_anchor_tokens,
     restore_usage_anchor,
     set_usage_anchor,
 )
+
+
+def _delta_from_queue_kwargs(kwargs):
+    """The interface delta carrying exactly the store's ``queue_token_counts`` keywords."""
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    kwargs = dict(kwargs)
+    tokens = TokenCounts(**{key: kwargs.pop(key) for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
+    route = BillingRoute(**{key: kwargs.pop(key) for key in (
+        "model", "billing_provider", "billing_base_url", "billing_mode")})
+    return UsageDelta(tokens=tokens, route=route, **kwargs)
 
 
 def _msg(role, content):
@@ -163,27 +175,61 @@ class TestAnchorInvalidation:
     def test_persist_and_restore_across_processes(self, tmp_path):
         """A fresh agent (desktop per-turn ``serve``, ``--resume``) adopts the persisted anchor
         while the durable transcript still matches, and clears it once it does not."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import conversation
+        from tests.fixtures.storage_seed import seed_messages, seed_session
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         sid = "anchor-restore"
-        db.create_session(sid, source="cli")
+        seed_session(db, sid, "cli")
         messages = _plain_history()
         for m in messages:
-            db.append_message(sid, m["role"], m["content"])
-        durable = db.get_messages_as_conversation(sid)
-        live = SimpleNamespace(session_id=sid, _session_db=db, _persist_disabled=False, _usage_anchor=None)
+            seed_messages(db, sid, {"role": m["role"], "content": m["content"]})
+        durable = conversation(db, sid)
+        live = SimpleNamespace(session_id=sid, _session_db=db, persistence=db, _persist_disabled=False,
+                               _usage_anchor=None)
         set_usage_anchor(live, capture_usage_anchor(10_000, 20, durable))
 
-        fresh = SimpleNamespace(session_id=sid, _session_db=db, _persist_disabled=False, _usage_anchor=None)
-        restore_usage_anchor(fresh, db.get_messages_as_conversation(sid))
+        fresh = SimpleNamespace(session_id=sid, _session_db=db, persistence=db, _persist_disabled=False,
+                                _usage_anchor=None)
+        restore_usage_anchor(fresh, conversation(db, sid))
         assert fresh._usage_anchor is not None
-        assert anchored_context_tokens(db.get_messages_as_conversation(sid), fresh._usage_anchor) == 10_020
+        assert anchored_context_tokens(conversation(db, sid), fresh._usage_anchor) == 10_020
 
         set_usage_anchor(live, None)  # compaction / reset clears the row too
-        stale = SimpleNamespace(session_id=sid, _session_db=db, _persist_disabled=False, _usage_anchor=None)
+        stale = SimpleNamespace(session_id=sid, _session_db=db, persistence=db, _persist_disabled=False,
+                                _usage_anchor=None)
         restore_usage_anchor(stale, durable)
         assert stale._usage_anchor is None
+        db.close()
+
+    def test_persist_and_restore_through_the_writer_handle(self, tmp_path):
+        """An agent with a writer's storage handle beside its store writes and reads the anchor through it."""
+        import persistence_assembly
+        from tests.fixtures.storage_read import conversation
+        from tests.fixtures.storage_seed import seed_messages, seed_session
+
+        db = persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path))
+        sid = "anchor-handle"
+        seed_session(db, sid, "cli")
+        for m in _plain_history():
+            seed_messages(db, sid, {"role": m["role"], "content": m["content"]})
+        durable = conversation(db, sid)
+        with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=tmp_path)) as handle:
+            def agent():
+                return SimpleNamespace(session_id=sid, _session_db=db, persistence=handle, _persist_disabled=False,
+                                       _usage_anchor=None)
+            live = agent()
+            set_usage_anchor(live, capture_usage_anchor(10_000, 20, durable))
+            assert db.sessions.get_model_config_value(sid, "_usage_anchor") is not None
+            assert persisted_anchor_tokens(db, sid, durable, persistence=handle) == 10_020
+
+            fresh = agent()
+            restore_usage_anchor(fresh, durable)
+            assert anchored_context_tokens(durable, fresh._usage_anchor) == 10_020
+
+            set_usage_anchor(live, None)
+            assert persisted_anchor_tokens(db, sid, durable, persistence=handle) is None
         db.close()
 
 
@@ -309,6 +355,28 @@ class TestCodexAppServerAnchor:
         messages.append(_msg("user", "follow-up"))
         got = _preflight_request_tokens(agent, messages, "")
         assert 12_000 < got < 12_200
+
+    def test_turn_usage_is_queued_through_the_writer_handle(self):
+        """With a writer's handle beside the store, the per-call delta goes to the handle's usage queue
+        carrying every keyword the store's queue would have received."""
+        from unittest.mock import MagicMock
+
+        from agent.codex_runtime import _record_codex_app_server_usage
+
+        recorded = []
+        for persistence in (None, SimpleNamespace(read_only=False, usage=MagicMock(), sessions=MagicMock())):
+            agent = self._agent()
+            agent._session_db, agent._session_db_created, agent.session_id, agent.platform = MagicMock(), True, "s1", "cli"
+            agent.persistence = persistence
+            _record_codex_app_server_usage(agent, self._turn(self._usage()), messages=_plain_history())
+            recorded.append(agent)
+        store_agent, handle_agent = recorded
+
+        handle_agent._session_db.queue_token_counts.assert_not_called()
+        (sid, delta), _ = handle_agent.persistence.usage.queue_usage.call_args
+        (store_sid,), kwargs = store_agent._session_db.queue_token_counts.call_args
+        assert sid == store_sid == "s1"
+        assert delta == _delta_from_queue_kwargs(kwargs)
 
     def test_usage_less_turn_keeps_previous_anchor(self):
         from agent.codex_runtime import _record_codex_app_server_usage

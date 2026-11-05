@@ -3,6 +3,8 @@ from copy import deepcopy
 
 import pytest
 
+from tests.fixtures.storage_read import transcript_rows
+
 
 def _agent(tmp_path, monkeypatch, ratio):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -10,7 +12,7 @@ def _agent(tmp_path, monkeypatch, ratio):
         f"agent:\n  budget_warning_ratio: {ratio}\n", encoding="utf-8"
     )
     from run_agent import AIAgent
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from model_tools import _clear_tool_defs_cache
     from tools.registry import invalidate_check_fn_cache
 
@@ -18,7 +20,7 @@ def _agent(tmp_path, monkeypatch, ratio):
     # survive a change from ordinary to dispatcher-owned construction.
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
-    return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
+    return AIAgent(persistence=open_persistence(profile_scope(home=tmp_path)),
                    model="test-model", provider="openai-compat", api_key="test",
                    base_url="http://127.0.0.1:1/v1", max_iterations=4,
                    quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -44,7 +46,7 @@ def test_checkpoint_rearms_per_turn_without_changing_budget_or_durable_rows(
                         {"role": "assistant", "tool_calls": [{"id": f"t{turn}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
                         {"role": "tool", "tool_call_id": f"t{turn}", "content": deepcopy(content)}]
             assert _flush_session_db_after_tool_progress(agent, messages, stage="checkpoint")
-            persisted = agent._session_db.get_messages(agent.session_id)
+            persisted = transcript_rows(agent._session_db, agent.session_id)
             notices = sum("iteration budget checkpoint" in str(row["content"]) for row in persisted)
             assert notices == (0 if interrupted else turn + 1)
             assert ("3 of 4" in str(messages[-1]["content"])) is not interrupted

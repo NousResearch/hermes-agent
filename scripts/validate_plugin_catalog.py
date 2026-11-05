@@ -122,7 +122,7 @@ def _is_docs_url(value: str) -> bool:
 
 
 def _check_page_fields(data: dict, errors: list[str]) -> None:
-    """``screenshots``, ``docs_url`` and ``readme`` feed the entry's page at /docs/plugins/<name>; all optional (README on by default)."""
+    """``screenshots``, ``docs_url`` and ``readme`` are shown by catalog clients; all optional (README on by default)."""
     shots = data.get("screenshots")
     if shots is not None:
         if not isinstance(shots, list) or not all(isinstance(s, str) and _is_allowed_image_url(s) for s in shots):

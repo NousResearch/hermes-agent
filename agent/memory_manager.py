@@ -22,7 +22,12 @@ from agent.redact import redact_for_egress
 from agent.memory_caller_scope import bound_scope, caller_scope, claim_instance, in_owner_home, refused_tool_message
 # Moved to agent.memory_context / agent.memory_manager_tools; still importable here because agent.memory_manager is a public
 # module for plugins (hermes_cli/plugin_validate_private_imports.py).
-from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
+from agent.memory_context import (
+    StreamingContextScrubber,
+    build_memory_context_block,
+    neutralize_user_forged_memory_context,
+    sanitize_context,
+)
 from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread

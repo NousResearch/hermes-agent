@@ -15,7 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence.conversation.sessions import MAX_TITLE_LENGTH
+from persistence.sqlite.admin import SQLiteProfileRepairAdmin
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 ROOT_KEY = "agent:main:telegram:dm:100"
 ACME_KEY = "agent:acme:telegram:dm:200"
@@ -35,25 +39,30 @@ def homes(tmp_path, monkeypatch):
     return {"default": root, "acme": root / "profiles" / "acme", "beta": root / "profiles" / "beta"}
 
 
-def _session(db: SessionDB, sid: str, key: str, *, profile: str, parent=None, messages=2, chat_id=None,
+def _store(home: Path):
+    """A storage handle on the profile store at ``home``; the caller closes it."""
+    return open_persistence(profile_scope(home=home))
+
+
+def _session(store, sid: str, key: str, *, profile: str, parent=None, messages=2, chat_id=None,
              source="telegram"):
-    db.create_session(sid, source, session_key=key, chat_id=chat_id or key.rsplit(":", 1)[-1],
-                      chat_type="dm", profile_name=profile, parent_session_id=parent, system_prompt="sys")
+    seed_session(store, sid, source, session_key=key, chat_id=chat_id or key.rsplit(":", 1)[-1],
+                 chat_type="dm", profile_name=profile, parent_session_id=parent, system_prompt="sys")
     for i in range(messages):
-        db.append_message(sid, "user" if i % 2 == 0 else "assistant", f"{sid} m{i}")
+        seed_messages(store, sid, {"role": "user" if i % 2 == 0 else "assistant", "content": f"{sid} m{i}"})
 
 
 def _seed_crossings(homes):
     """Every defect the command knows, spread over the three stores."""
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
-    beta = SessionDB(homes["beta"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
+    beta = _store(homes["beta"])
     scope = str((homes["default"] / "sessions").resolve())
 
     # healthy controls — must survive untouched
     _session(root, "ok-root", ROOT_KEY, profile="default")
     _session(acme, "ok-acme", ACME_KEY, profile="acme")
-    root.save_gateway_routing_entry(ACME_KEY, json.dumps({"session_key": ACME_KEY, "session_id": "ok-acme"}), scope=scope)
+    root.routing.upsert_routing_entry(ACME_KEY, json.dumps({"session_key": ACME_KEY, "session_id": "ok-acme"}), routing_scope=scope)
 
     # 1. label ≠ key namespace (row in the right store)
     _session(acme, "mislabelled", "agent:acme:telegram:dm:201", profile="default")
@@ -71,11 +80,11 @@ def _seed_crossings(homes):
     _session(beta, "acme-in-beta", "agent:acme:telegram:dm:204", profile="acme")
     _session(beta, "beta-child", "agent:beta:telegram:dm:301", profile="beta", parent="acme-in-beta")
     # 4. routing rows: beta's index row copied into beta's store (#66887) + a ghost row in the root
-    beta.save_gateway_routing_entry(BETA_KEY, json.dumps({"session_key": BETA_KEY, "session_id": "beta-parent"}), scope=scope)
-    root.save_gateway_routing_entry(GHOST_KEY, json.dumps({"session_key": GHOST_KEY, "session_id": "ghost"}), scope=scope)
+    beta.routing.upsert_routing_entry(BETA_KEY, json.dumps({"session_key": BETA_KEY, "session_id": "beta-parent"}), routing_scope=scope)
+    root.routing.upsert_routing_entry(GHOST_KEY, json.dumps({"session_key": GHOST_KEY, "session_id": "ghost"}), routing_scope=scope)
     # 5. profile-less topic binding + voice-mode entry for a chat only acme's bot holds
-    acme.bind_telegram_topic(chat_id="200", thread_id="7", user_id="200", session_key=ACME_KEY,
-                             session_id="ok-acme", profile_name="default")
+    acme.routing.bind_topic(chat_id="200", thread_id="7", user_id="200", session_key=ACME_KEY,
+                            session_id="ok-acme", profile_name="default")
     (homes["default"] / "gateway_voice_mode.json").write_text(json.dumps({
         "telegram:200": "all",        # acme's chat, unprefixed
         "telegram:100": "voice_only",  # the default bot's chat — legitimately unprefixed
@@ -86,8 +95,8 @@ def _seed_crossings(homes):
         "_README": "x", GHOST_KEY: {"session_key": GHOST_KEY, "session_id": "ghost"},
         ROOT_KEY: {"session_key": ROOT_KEY, "session_id": "ok-root"},
     }))
-    for db in (root, acme, beta):
-        db.close()
+    for store in (root, acme, beta):
+        store.close()
 
 
 def _dump(path: Path) -> dict:
@@ -163,43 +172,43 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
     assert _run(apply=True) == 0
     assert set(snapshots) == {"default", "acme", "beta"}
 
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
-    beta = SessionDB(homes["beta"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
+    beta = _store(homes["beta"])
     try:
         # 1. relabelled from the key
-        assert acme.get_session("mislabelled")["profile_name"] == "acme"
+        assert session_row(acme, "mislabelled")["profile_name"] == "acme"
         # 2. moved whole: parent link and every message intact in the target, gone from the source
-        assert root.get_session("stray-parent") is None and root.get_session("stray-child") is None
-        moved_child = acme.get_session("stray-child")
+        assert session_row(root, "stray-parent") is None and session_row(root, "stray-child") is None
+        moved_child = session_row(acme, "stray-child")
         assert moved_child["profile_name"] == "acme" and moved_child["parent_session_id"] == "stray-parent"
-        assert len(acme.get_messages("stray-parent")) == 3 and len(acme.get_messages("stray-child")) == 2
-        assert acme.get_session("stray-parent")["system_prompt"] == "sys"
+        assert len(transcript_rows(acme, "stray-parent")) == 3 and len(transcript_rows(acme, "stray-child")) == 2
+        assert session_row(acme, "stray-parent")["system_prompt"] == "sys"
         #    legacy agent:main row and the ghost row are left exactly as they were
-        assert acme.get_session("legacy-main")["session_key"] == "agent:main:telegram:dm:203"
-        assert root.get_session("ghost")["session_key"] == GHOST_KEY
+        assert session_row(acme, "legacy-main")["session_key"] == "agent:main:telegram:dm:203"
+        assert session_row(root, "ghost")["session_key"] == GHOST_KEY
         # 3. severed, own identity kept; the acme row it pointed at moved to acme's store
-        child = beta.get_session("beta-child")
+        child = session_row(beta, "beta-child")
         assert child["parent_session_id"] is None and child["profile_name"] == "beta"
-        assert beta.get_session("acme-in-beta") is None and acme.get_session("acme-in-beta") is not None
+        assert session_row(beta, "acme-in-beta") is None and session_row(acme, "acme-in-beta") is not None
         # 4. ghost routing row dropped, acme's healthy row kept, beta's own row kept (standalone)
         scope = str((homes["default"] / "sessions").resolve())
-        assert set(root.load_gateway_routing_entries(scope=scope)) == {ACME_KEY}
-        assert set(beta.load_gateway_routing_entries(scope=scope)) == {BETA_KEY}
+        assert set(root.routing.load_routing_entries(routing_scope=scope)) == {ACME_KEY}
+        assert set(beta.routing.load_routing_entries(routing_scope=scope)) == {BETA_KEY}
         # 5. topic binding carries acme; voice key prefixed only for acme's chat
-        assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
-        assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
+        assert acme.routing.get_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
+        assert acme.routing.get_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
         voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text())
         assert voice == {"acme:telegram:200": "all", "telegram:100": "voice_only"}
         # 6. ghost mirror entry dropped, the default's kept
         mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text())
         assert set(mirror) == {"_README", ROOT_KEY}
         # controls untouched
-        assert root.get_session("ok-root")["profile_name"] == "default"
-        assert acme.get_session("ok-acme")["profile_name"] == "acme"
+        assert session_row(root, "ok-root")["profile_name"] == "default"
+        assert session_row(acme, "ok-acme")["profile_name"] == "acme"
     finally:
-        for db in (root, acme, beta):
-            db.close()
+        for store in (root, acme, beta):
+            store.close()
 
     # idempotent: only the two report-only findings remain, and nothing is repairable
     report = _report()
@@ -227,9 +236,9 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
 
     assert _run(apply=True, legacy_main="rekey") == 0
 
-    acme = SessionDB(homes["acme"] / "state.db")
+    acme = _store(homes["acme"])
     try:
-        row = acme.get_session("legacy-main")
+        row = session_row(acme, "legacy-main")
         assert row["session_key"] == "agent:acme:telegram:dm:203" and row["profile_name"] == "acme"
     finally:
         acme.close()
@@ -241,35 +250,35 @@ def test_move_into_a_store_that_already_holds_the_title(homes, monkeypatch):
     target profile already holds used to raise on the unique-title index, fail every row of the
     batch, and leave the rows copied before it in both stores, on every run. The clash is the
     FIRST row of the batch and its title is at the length cap, so the suffix must still fit."""
-    title = "G" * SessionDB.MAX_TITLE_LENGTH
+    title = "G" * MAX_TITLE_LENGTH
     monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
         _session(root, "s-a", "agent:acme:telegram:dm:210", profile="acme")
         _session(root, "s-b", "agent:acme:telegram:dm:211", profile="acme", messages=3)
         _session(acme, "w-1", ACME_KEY, profile="acme")
         clash, other = "s-a", "s-b"
-        root.set_session_title(clash, title)
-        root.set_session_title(other, "Weekend plans")
-        acme.set_session_title("w-1", title)
+        root.sessions.set_title(clash, title)
+        root.sessions.set_title(other, "Weekend plans")
+        acme.sessions.set_title("w-1", title)
     finally:
         root.close()
         acme.close()
 
     assert _run(apply=True) == 0
 
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
-        assert root.get_session("s-a") is None and root.get_session("s-b") is None
-        assert len(acme.get_messages("s-a")) == 2 and len(acme.get_messages("s-b")) == 3
-        assert acme.get_session(other)["title"] == "Weekend plans"
+        assert session_row(root, "s-a") is None and session_row(root, "s-b") is None
+        assert len(transcript_rows(acme, "s-a")) == 2 and len(transcript_rows(acme, "s-b")) == 3
+        assert session_row(acme, other)["title"] == "Weekend plans"
         # the resident row keeps the name, so resolving it by title still finds it
-        assert acme.get_session("w-1")["title"] == title
-        assert acme.resolve_session_by_title(title) == "w-1"
-        moved = acme.get_session(clash)["title"]
-        assert moved not in (None, title) and len(moved) <= SessionDB.MAX_TITLE_LENGTH
+        assert session_row(acme, "w-1")["title"] == title
+        assert acme.sessions.resolve_by_title(title) == "w-1"
+        moved = session_row(acme, clash)["title"]
+        assert moved not in (None, title) and len(moved) <= MAX_TITLE_LENGTH
     finally:
         root.close()
         acme.close()
@@ -282,7 +291,7 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
     next run moves it whole. The failure is at import (the shape a unique-index clash takes)."""
     stage = "import"
     monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
-    root = SessionDB(homes["default"] / "state.db")
+    root = _store(homes["default"])
     try:
         _session(root, "gp", "agent:acme:telegram:dm:220", profile="acme")
         _session(root, "par", "agent:acme:telegram:dm:220", profile="acme", parent="gp")
@@ -292,7 +301,7 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
         root.close()
 
     method = "import_moved_session" if stage == "import" else "delete_moved_session"
-    real = getattr(SessionDB, method)
+    real = getattr(SQLiteProfileRepairAdmin, method)
     calls = []
 
     def flaky(self, arg, **kw):
@@ -302,34 +311,34 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
             raise sqlite3.OperationalError("disk I/O error")
         return real(self, arg, **kw)
 
-    monkeypatch.setattr(SessionDB, method, flaky)
+    monkeypatch.setattr(SQLiteProfileRepairAdmin, method, flaky)
     assert _run(apply=True) == 1
     out = capsys.readouterr().out
     assert "wrong_store par: OperationalError: disk I/O error" in out
     assert sorted(calls) == sorted(set(calls)), "the batch was re-run for a later finding"
 
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
-        assert root.get_session("lone") is None and acme.get_session("lone") is not None
+        assert session_row(root, "lone") is None and session_row(acme, "lone") is not None
         if stage == "import":
             assert "wrong_store kid:" in out
             # the child never lands parentless; the grandparent stays for the parent that points at it
-            assert acme.get_session("kid") is None and acme.get_session("par") is None
-            assert root.get_session("kid")["parent_session_id"] == "par"
-            assert root.get_session("par")["parent_session_id"] == "gp"
+            assert session_row(acme, "kid") is None and session_row(acme, "par") is None
+            assert session_row(root, "kid")["parent_session_id"] == "par"
+            assert session_row(root, "par")["parent_session_id"] == "gp"
     finally:
         root.close()
         acme.close()
 
-    monkeypatch.setattr(SessionDB, method, real)
+    monkeypatch.setattr(SQLiteProfileRepairAdmin, method, real)
     assert _run(apply=True) == 0
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
-        assert all(root.get_session(sid) is None for sid in ("gp", "par", "kid", "lone"))
-        assert acme.get_session("par")["parent_session_id"] == "gp"
-        assert acme.get_session("kid")["parent_session_id"] == "par"
+        assert all(session_row(root, sid) is None for sid in ("gp", "par", "kid", "lone"))
+        assert session_row(acme, "par")["parent_session_id"] == "gp"
+        assert session_row(acme, "kid")["parent_session_id"] == "par"
     finally:
         root.close()
         acme.close()
@@ -356,7 +365,7 @@ def test_a_ledgered_stray_is_reported_never_copied(homes, monkeypatch, status):
     leaving the conversation in BOTH stores on every run. A row with ledger history (settled or
     live) is report-only, together with the stray lineage linked to it; unrelated strays move."""
     monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
-    root = SessionDB(homes["default"] / "state.db")
+    root = _store(homes["default"])
     try:
         _session(root, "led", "agent:acme:telegram:dm:230", profile="acme")
         _session(root, "led-kid", "agent:acme:telegram:dm:230", profile="acme", parent="led")
@@ -372,13 +381,13 @@ def test_a_ledgered_stray_is_reported_never_copied(homes, monkeypatch, status):
 
     assert _run(apply=True) == 0
     assert _run(apply=True) == 0
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
         for sid in ("led", "led-kid"):
-            assert root.get_session(sid) is not None and acme.get_session(sid) is None, sid
-        assert root.get_session("led-kid")["parent_session_id"] == "led"
-        assert root.get_session("free") is None and len(acme.get_messages("free")) == 2
+            assert session_row(root, sid) is not None and session_row(acme, sid) is None, sid
+        assert session_row(root, "led-kid")["parent_session_id"] == "led"
+        assert session_row(root, "free") is None and len(transcript_rows(acme, "free")) == 2
     finally:
         root.close()
         acme.close()
@@ -388,7 +397,7 @@ def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monk
     """The fence is re-checked at export: a scan that predates the row's first admission must
     not copy it (the source delete would then fail and strand a duplicate)."""
     from hermes_cli.sessions_repair_profiles import scan_stores
-    root = SessionDB(homes["default"] / "state.db")
+    root = _store(homes["default"])
     try:
         _session(root, "late", "agent:acme:telegram:dm:240", profile="acme")
     finally:
@@ -401,10 +410,10 @@ def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monk
         session.close()
     assert [f["subject"] for f in result["failures"]] == ["late"]
     assert "admission/worker history" in result["failures"][0]["error"]
-    root = SessionDB(homes["default"] / "state.db")
-    acme = SessionDB(homes["acme"] / "state.db")
+    root = _store(homes["default"])
+    acme = _store(homes["acme"])
     try:
-        assert root.get_session("late") is not None and acme.get_session("late") is None
+        assert session_row(root, "late") is not None and session_row(acme, "late") is None
     finally:
         root.close()
         acme.close()

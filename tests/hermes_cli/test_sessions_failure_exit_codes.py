@@ -20,12 +20,13 @@ def _run_cli(monkeypatch, argv_tail):
 
 
 def _old_ended_session(db_path):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    with SessionDB(db_path=db_path) as db:
-        db.create_session("s-old", "cli")
-        db.append_message("s-old", "user", "hello")
-        db.end_session("s-old", "user_exit")
+    with open_persistence(profile_scope(home=db_path.parent)) as store:
+        seed_session(store, "s-old", "cli")
+        seed_messages(store, "s-old", {"role": "user", "content": "hello"})
+        store.sessions.end("s-old", "user_exit")
     old = time.time() - 100 * 86400
     raw = sqlite3.connect(str(db_path))
     with raw:
@@ -39,11 +40,11 @@ def _garbage_store(db_path):
 
 
 def _legacy_inline_fts_store(db_path):
-    from hermes_state_common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
+    from tests.fixtures.storage_holder import legacy_inline_fts_sql, schema_sql
 
     raw = sqlite3.connect(str(db_path))
     with raw:
-        raw.executescript(SCHEMA_SQL + LEGACY_FTS_SQL + LEGACY_FTS_TRIGRAM_SQL)
+        raw.executescript(schema_sql() + legacy_inline_fts_sql())
         raw.execute("INSERT INTO sessions (id, source, started_at) VALUES ('s-old', 'cli', ?)", (time.time(),))
         raw.execute("INSERT INTO messages (session_id, timestamp, role, content) VALUES ('s-old', ?, 'user', 'hi')",
                     (time.time(),))
@@ -51,20 +52,18 @@ def _legacy_inline_fts_store(db_path):
 
 
 def _vacuum_fails(monkeypatch):
-    from hermes_state import SessionDB
+    from persistence.sqlite.admin import SQLiteStoreAdmin
 
     def vacuum(self):
         raise sqlite3.OperationalError("database is locked")
-    monkeypatch.setattr(SessionDB, "vacuum", vacuum)
+    monkeypatch.setattr(SQLiteStoreAdmin, "vacuum", vacuum)
 
 
 def _store(monkeypatch, tmp_path, build):
-    import hermes_state
     from hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"
     build(db_path)
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", db_path)
     monkeypatch.chdir(tmp_path)
     return db_path
 
@@ -109,7 +108,7 @@ def test_confirmation_nobody_can_answer_exits_1_and_changes_nothing(monkeypatch,
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
     assert _run_cli(monkeypatch, argv) == 0
-    before = snapshot()  # after the first open: SessionDB's own schema reconcile is not the command's work
+    before = snapshot()  # after the first open: the store's own schema reconcile is not the command's work
 
     def no_stdin(_prompt=""):
         raise EOFError

@@ -196,7 +196,9 @@ class _PausingAuthority:
     with ``session_busy``) while the row stays queued for later."""
 
     def __init__(self):
-        self.db, self.native_waiters, self.waiters = None, set(), {}
+        self.native_waiters, self.waiters = set(), {}
+        self.persistence = SimpleNamespace(admissions=SimpleNamespace(
+            get=lambda admission_id: SimpleNamespace(status="queued", outcome=None)))
         self.sessions = {"sid": SimpleNamespace(pause_notified=False, source=None)}
 
     async def admit_native(self, event):
@@ -208,13 +210,9 @@ def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, r
     """The user is told the message is saved and its FIFO row stays ``queued``: no ``dropped``
     row. When this process later runs that row (a ``session_busy`` pause lifting), it counts as
     ``queued`` with its wait; after a restart the next process runs it and nothing is counted."""
-    import gateway.session_authority  # binds the real reader before the patch below
-    import hermes_state_runtime
     from gateway.session_ingress import admit_message
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
-    monkeypatch.setattr(hermes_state_runtime, "get_session_admission",
-                        lambda db, admission_id: {"status": "queued"})
     authority, replies = _PausingAuthority(), []
 
     async def runner_admits(event):
@@ -226,7 +224,7 @@ def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, r
         adapter._busy_text_mode = "interrupt"  # not a debounced burst: straight to the runner
         await dispatch_busy_burst(adapter, _message("b"), KEY)
         await asyncio.sleep(0)
-        authority.waiters["adm-p"].set_exception(RuntimeStoreError(reason))
+        authority.waiters["adm-p"].set_exception(AuthorityRefusal(reason))
         await asyncio.gather(*adapter._background_tasks)
 
     asyncio.run(scenario())
@@ -333,7 +331,7 @@ def test_a_closing_day_keeps_a_peak_reached_just_before_midnight(tmp_path, monke
 
 
 async def _real_runner(monkeypatch):
-    """Real GatewayRunner busy dispatch, real DiscordAdapter, real authority over a real SessionDB;
+    """Real GatewayRunner busy dispatch, real DiscordAdapter, real authority over a real state.db;
     the drain is not scheduled, so a queued row waits until the test runs or cancels it."""
     from gateway.config import GatewayConfig, PlatformConfig
     from gateway.platforms.base import SendResult

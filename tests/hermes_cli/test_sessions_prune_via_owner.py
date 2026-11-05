@@ -10,17 +10,20 @@ import subprocess
 import sys
 import time
 from argparse import Namespace
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
 
-import hermes_state_runtime as rt
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli import sessions_cmd
-from hermes_state import SessionDB
-from tests.hermes_state.test_target_advance_fence import _local_session, _mutate
+from persistence.authority.runtime import Reset
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 pytestmark = pytest.mark.platforms("posix")  # the holder scan the old path refused on is POSIX-only
 
@@ -28,14 +31,44 @@ _HOLDER = ("import sqlite3, sys\nconn = sqlite3.connect(sys.argv[1])\n"
            "conn.execute('SELECT count(*) FROM sqlite_master')\nprint('ready', flush=True)\nsys.stdin.readline()\n")
 
 
-def _aged(db, sid, days, *, ended=True):
+def _aged(handle, sid, days, *, ended=True):
     at = time.time() - days * 86400
 
     def write(conn):  # last activity = freshest of row activity and the latest message
         conn.execute('UPDATE sessions SET started_at=?, last_activity_at=?, ended_at=? WHERE id=?',
                      (at, at, at if ended else None, sid))
         conn.execute('UPDATE messages SET timestamp=? WHERE session_id=?', (at, sid))
-    db._execute_write(write)
+    raw_holder(handle)._execute_write(write)
+
+
+def _local_session(handle, epoch, cwd):
+    """Commit a local session (policy receipt and route), the conversation a reset publishes a fresh target for."""
+    from gateway.config import Platform
+    from gateway.session import SessionEntry, SessionSource
+    from gateway.session_lifecycle import _now
+    from gateway.session_local import commit_local_session
+    from gateway.session_policy import build_policy
+    from persistence.authority.bindings import local_session_id
+    sid = local_session_id('profile', 'human', 'r')
+    source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
+    now = _now()
+    entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
+    policy = build_policy({'source': 'cli', 'cwd': str(cwd), 'model': 'm', 'toolsets': []},
+                          {'platform_toolsets': {'cli': []}}, private_secrets={})
+    commit_local_session(handle, epoch=epoch, receipt={
+        'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,
+        'route': entry.session_key, 'entry': entry.to_dict(), 'policy': asdict(policy)})
+    return sid
+
+
+def _reset(handle, epoch, sid):
+    """Reset the local session through the runtime authority; returns the fresh physical target's id."""
+    session = handle.sessions.get(sid)
+    outcome = handle.runtime.mutate(epoch, principal_id='human', session_id=sid,
+                                    request_id='reset-' + str(session.runtime_revision),
+                                    expected_revision=session.runtime_revision, command=Reset(),
+                                    expected_generation=session.runtime_generation, owner=None)
+    return outcome.result['target_session_id']
 
 
 def _connection(authority, *, operator, native=True):
@@ -48,40 +81,44 @@ def _connection(authority, *, operator, native=True):
 @pytest.fixture
 def owned_store(monkeypatch, tmp_path):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    handle = open_persistence(profile_scope(home=tmp_path))
+    epoch = handle.runtime.begin_epoch(instance_id='owner')
     retired = []
     runner = SimpleNamespace(_draining=False, session_store=SimpleNamespace(retire_runtime_sessions=retired.extend))
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', db=db, epoch=epoch)
-    owner = _local_session(db, epoch, tmp_path)
-    child = _mutate(db, epoch, owner, 'reset')['target_session_id']  # ends `owner`, keeps it as the FIFO owner
-    db.append_message(child, 'user', 'kept turn')
-    _aged(db, owner, 200)
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owner', epoch=epoch, persistence=handle)
+    owner = _local_session(handle, epoch, tmp_path)
+    child = _reset(handle, epoch, owner)  # ends `owner`, keeps it as the FIFO owner
+    seed_messages(handle, child, {'role': 'user', 'content': 'kept turn'})
+    _aged(handle, owner, 200)
     for sid, source, days in (('old-cli', 'cli', 200), ('old-cron', 'cron', 200), ('fresh-cli', 'cli', 1)):
-        db.create_session(sid, source)
-        db.append_message(sid, 'user', sid)
-        _aged(db, sid, days)
+        seed_session(handle, sid, source)
+        seed_messages(handle, sid, {'role': 'user', 'content': sid})
+        _aged(handle, sid, days)
     authority.sessions['old-cli'] = LiveSession(None, 'route-old-cli')  # resident in owner memory
-    with closing(db):
-        yield SimpleNamespace(db=db, authority=authority, owner=owner, child=child, retired=retired,
+    with handle:
+        yield SimpleNamespace(handle=handle, authority=authority, owner=owner, child=child, retired=retired,
                               path=tmp_path / 'state.db')
 
 
 def test_prune_under_the_live_owner_is_applied_by_the_owner_not_refused(owned_store, monkeypatch, capsys):
     from hermes_cli import gateway_client
     from hermes_cli import gateway_runtime
-    import hermes_state
+    import persistence_assembly
     from hermes_cli.gateway_client import rpc_error
     store = owned_store
     holder = subprocess.Popen([sys.executable, '-c', _HOLDER, str(store.path)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     assert holder.stdout.readline().strip() == 'ready'
     opened = []
-    real_db = hermes_state.SessionDB
+    real_reader, real_writer = persistence_assembly.open_persistence_reader, persistence_assembly.open_persistence
 
-    def recording_db(*args, **kwargs):
-        opened.append(kwargs.get('read_only', False))
-        return real_db(*args, **kwargs)
+    def recording_reader(*args, **kwargs):
+        opened.append(True)
+        return real_reader(*args, **kwargs)
+
+    def recording_writer(*args, **kwargs):
+        opened.append(False)
+        return real_writer(*args, **kwargs)
 
     @asynccontextmanager
     async def owner_socket(*_args, **_kwargs):
@@ -100,7 +137,8 @@ def test_prune_under_the_live_owner_is_applied_by_the_owner_not_refused(owned_st
     monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint',
                         lambda home, **_: gateway_runtime.GatewayDiscovery('ready', endpoint=object()))
     monkeypatch.setattr(gateway_client, 'connect_gateway', owner_socket)
-    monkeypatch.setattr(hermes_state, 'SessionDB', recording_db)
+    monkeypatch.setattr(persistence_assembly, 'open_persistence_reader', recording_reader)
+    monkeypatch.setattr(persistence_assembly, 'open_persistence', recording_writer)
     args = Namespace(sessions_action='prune', dry_run=False, yes=True, force=False, never_active=False,
                      include_archived=False, include_pinned=False,
                      **{name: None for name in sessions_cmd._FILTER_ARGS})
@@ -112,11 +150,11 @@ def test_prune_under_the_live_owner_is_applied_by_the_owner_not_refused(owned_st
         holder.wait(timeout=10)
     out = capsys.readouterr().out
     assert 'Refusing' not in out and 'Pruned 2 session(s).' in out, out
-    db = store.db
+    handle = store.handle
     # --older-than honoured; the retained reset child's logical owner and its history survive.
-    assert db.get_session('old-cli') is None and db.get_session('old-cron') is None
-    assert db.get_session('fresh-cli') is not None and db.get_session(store.owner) is not None
-    assert [m['content'] for m in db.get_messages(store.child)] == ['kept turn']
+    assert session_row(handle, 'old-cli') is None and session_row(handle, 'old-cron') is None
+    assert session_row(handle, 'fresh-cli') is not None and session_row(handle, store.owner) is not None
+    assert [m['content'] for m in transcript_rows(handle, store.child)] == ['kept turn']
     # The CLI never opened a writer; the owner retired the deleted ids from its own memory too.
     assert opened == [True], opened
     assert 'old-cli' not in store.authority.sessions and set(store.retired) == {'old-cli', 'old-cron'}
@@ -134,4 +172,4 @@ async def test_owner_prune_is_local_operator_only(owned_store, grant):
     finally:
         await connection.close()
     assert refused['error']['message'] == 'permission_denied', refused
-    assert owned_store.db.get_session('old-cli') is not None
+    assert session_row(owned_store.handle, 'old-cli') is not None

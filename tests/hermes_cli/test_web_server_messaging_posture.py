@@ -39,14 +39,12 @@ def _gateway_state(home: Path) -> None:
 def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    import hermes_state
     import hermes_constants
     import gateway.status as _gw_status
     from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     home = get_hermes_home()
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     # Liveness is a verified identity: this pytest process passes as the gateway
     # only while its probed command line matches the home being asked about

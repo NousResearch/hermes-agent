@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -96,3 +98,47 @@ def test_termux_interactive_fast_launch_still_writes_the_profile(tmp_path: Path)
     assert result.returncode == 0, result.stderr[-1000:]
     assert pstats.Stats(str(target)).total_calls > 0
 
+
+def test_in_place_relaunch_still_writes_the_profile(tmp_path: Path):
+    """``relaunch`` replaces the process with ``exec`` on POSIX (atexit skipped); the profile must still be written."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    target = tmp_path / "relaunch.prof"
+    code = (
+        "import sys\n"
+        "from hermes_cli.cpu_profile import enable_cpu_profile\n"
+        f"enable_cpu_profile({str(target)!r})\n"
+        "import hermes_cli.relaunch as relaunch\n"
+        "relaunch.build_relaunch_argv = lambda *a, **k: [sys.executable, '-c', 'pass']  # exec a no-op\n"
+        "relaunch.relaunch(['--resume', 'x'])\n"
+    )
+
+    result = _run(["-c", code], hermes_home)
+
+    assert result.returncode == 0, result.stderr[-1000:]
+    assert pstats.Stats(str(target)).total_calls > 0
+
+
+@pytest.mark.platforms("posix")  # Windows reroutes through Popen + wait, which atexit already covers
+def test_named_profile_dashboard_reroute_still_writes_the_profile(tmp_path: Path):
+    """A named profile's dashboard re-execs into the machine dashboard (atexit skipped); the profile must be written."""
+    profile_home = tmp_path / ".hermes" / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    target = tmp_path / "dashboard.prof"
+    code = (
+        "import argparse, os, sys\n"
+        "from hermes_cli.cpu_profile import enable_cpu_profile\n"
+        f"enable_cpu_profile({str(target)!r})\n"
+        "import hermes_cli.main_dashboard as md\n"
+        "real_exec = os.execvpe\n"
+        "os.execvpe = lambda file, argv, env: real_exec(sys.executable, [sys.executable, '-c', 'pass'], env)\n"
+        "args = argparse.Namespace(port=9119, host='127.0.0.1', no_open=True, isolated=False, open_profile='')\n"
+        "md._route_named_profile_dashboard(args, False, None, None)\n"
+        "sys.exit('the named profile was not rerouted')\n"
+    )
+
+    result = _run(["-c", code], profile_home, HOME=str(tmp_path))
+
+    assert result.returncode == 0, result.stderr[-1000:]
+    assert pstats.Stats(str(target)).total_calls > 0

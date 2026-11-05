@@ -1029,6 +1029,9 @@ def _route_named_profile_dashboard(
         proc = subprocess.Popen(reexec_argv, env=env)
         sys.exit(proc.wait())
     else:
+        from hermes_cli.cpu_profile import write_cpu_profile
+
+        write_cpu_profile()  # exec skips atexit
         os.execvpe(sys.executable, reexec_argv, env)
 
 

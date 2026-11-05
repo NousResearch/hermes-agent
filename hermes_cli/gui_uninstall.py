@@ -44,6 +44,16 @@ def source_built_gui_artifacts(hermes_home: Path) -> list[Path]:
             hermes_home / "desktop-build-stamp.json"]
 
 
+def prune_legacy_desktop_build_stamp() -> None:
+    """Prune obsolete legacy desktop-build-stamp.json from HERMES_HOME if present."""
+    try:
+        legacy_stamp = get_hermes_home() / "desktop-build-stamp.json"
+        if legacy_stamp.is_file() or legacy_stamp.is_symlink():
+            legacy_stamp.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def desktop_install_record() -> Path:
     """Where ``hermes update`` records the installed ``Hermes.app`` copies it keeps current. The apps
     are machine-wide, so the record sits under the default root whichever profile runs; deleting it

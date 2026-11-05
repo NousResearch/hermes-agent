@@ -676,7 +676,9 @@ def delegate_task(
     )
     if err:
         # No child was built or run: the one-shot budget charged above must not stick.
-        _refund_oneshot_spawn_budget(parent_agent, len(task_list))
+        # Refund exactly what was charged — len(runnable), the refused routes' tasks were
+        # never charged, and over-refunding would erase siblings' prior spend.
+        _refund_oneshot_spawn_budget(parent_agent, len(runnable))
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,

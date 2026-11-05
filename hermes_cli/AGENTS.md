@@ -96,6 +96,7 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
 - **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
+  In daemon, RPC and tick code catch `ConfigBackendUnavailable` explicitly: it is a `SystemExit`, so `except Exception` won't stop it.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

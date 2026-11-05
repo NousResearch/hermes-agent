@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -395,9 +396,16 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+                   error: Any = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
-    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
+    A stream cut by ``agent.stream_max_lifetime`` names the setting: the provider was responding,
+    so neither waiting nor a backup provider helps."""
+    if isinstance(error, StreamLifetimeExceeded):
+        return (f"The response was still streaming when agent.stream_max_lifetime ({error.cap:g}s) cut it, "
+                f"on all {attempts} attempts. Raise agent.stream_max_lifetime, or set it to 0 to turn the "
+                "cap off, if this model legitimately streams this long.")
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)

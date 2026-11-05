@@ -108,6 +108,7 @@ On macOS, `F7` means the physical F7 function key. MacBook keyboards may use tha
 - A standing **`/goal`** gets its own row above the live dock (`⊙ goal · 3/20 turns · 2 subgoals · …`, or `⏳ goal parked` / `⏸ goal paused` with the reason); it repaints as soon as anything changes the goal, a tool mid-turn included, and leaves once the goal is done or cleared. Queued follow-ups are listed above it.
 - **`Ctrl+R`** toggles the live dock between its default preview and one summary line. **`F7`** remains an optional alias where the terminal sends function keys through. This does not open the monitor or move composer focus; the choice lasts for this TUI process without changing config.
 - **Mouse drag** highlights text with a uniform selection background.
+- **`Ctrl+P`** expands a collapsed paste (`[[ … [60 lines] … ]]`) back into editable text so you can read or change it; press it again (or send) to fold it back into a chip, and the model receives the text as edited. A sent message keeps the chip with a **Pasted text #N** row under it: click the row to open it, or press `Ctrl+P` on an empty composer to open/close every sent paste.
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
@@ -248,6 +249,7 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
 ```
 
 Runtime toggles:

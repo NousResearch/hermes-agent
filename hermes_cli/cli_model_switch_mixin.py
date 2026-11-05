@@ -169,9 +169,10 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        from agent.context_pin import context_pin_suffix
-        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}"
-                f"{context_pin_suffix(ctx, getattr(agent, '_config_context_length', None) if agent else None)}")
+        from agent.context_pin import context_window_suffix
+        _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}" + context_window_suffix(
+            ctx, getattr(agent, '_config_context_length', None) if agent else None, model=result.new_model,
+            provider=result.target_provider, base_url=result.base_url or cli.base_url or ""))
     if mi:
         if mi.max_output:
             _cprint(f"    {t('gateway.model.max_output_label', tokens=f'{mi.max_output:,}')}")
@@ -261,6 +262,18 @@ _MODEL_USAGE_ROWS = (
     ("/model --provider <slug>", "cli.model.usage_switch_provider"),
     ("/model --refresh", "cli.model.usage_refresh"))
 _MODEL_USAGE_COL = 36
+
+
+def _configured_default_route() -> tuple[str, str]:
+    """``(model, provider)`` config.yaml names NOW (``/model reset``'s target). A fresh read, not the
+    startup snapshot: the dashboard or another surface may have changed the default since launch."""
+    from hermes_cli.config import load_config_readonly
+    model_cfg = (load_config_readonly() or {}).get("model")
+    if not isinstance(model_cfg, dict):
+        return (model_cfg.strip() if isinstance(model_cfg, str) else ""), ""
+    provider = str(model_cfg.get("provider") or "").strip()
+    return (str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
+            "" if provider.lower() == "auto" else provider)
 
 
 def _picker_reasoning_rows() -> list[tuple[str, str]]:
@@ -965,6 +978,7 @@ class CLIModelSwitchMixin:
           /model <name> --provider <provider> — switch provider + model
           /model <name> --reasoning <level>   — switch and set reasoning effort in one step
           /model --provider <provider>        — switch to provider, auto-detect model
+          /model reset                        — back to config.yaml's model (keeps history)
 
         Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
         """
@@ -977,8 +991,20 @@ class CLIModelSwitchMixin:
             # CLI decoration: "  ✗ " prefix over the canonical error copy.
             _cprint(f"  ✗ {request.error_messages()[0]}")
             return
+        target, explicit_provider = request.target, request.explicit_provider
+        if request.is_reset:
+            # Session-scoped switch back to config.yaml's model; drops an armed --once restore,
+            # which would otherwise re-plant the model being reset away from after the next turn.
+            target, explicit_provider = _configured_default_route()
+            if not target:
+                _cprint(f"  ✗ {t('cli.model.reset_no_default')}")
+                return
+            if target == self.model and explicit_provider in ("", self.provider):
+                self._pending_one_turn_model_restore = None
+                _cprint(f"  {t('cli.model.reset_none', model=target)}")
+                return
         one_turn = request.is_once
-        persist_global = resolve_persist_behavior(
+        persist_global = not request.is_reset and resolve_persist_behavior(
             request.is_global, request.is_session, is_once=one_turn,
             explicit_provider=request.explicit_provider)
 
@@ -1007,8 +1033,7 @@ class CLIModelSwitchMixin:
             return _show_model_picker(self, ctx, request.force_refresh)
 
         result = _switch_model_from(
-            self, request.target, is_global=persist_global,
-            explicit_provider=request.explicit_provider,
+            self, target, is_global=persist_global, explicit_provider=explicit_provider,
             user_providers=user_provs, custom_providers=custom_provs)
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")

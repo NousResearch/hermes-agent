@@ -20,15 +20,16 @@ const data = JSON.parse(process.argv[1]);
 const context = JSON.parse(process.argv[2]);
 const instruction = {innerText: context.instruction, visible: context.visible,
   getClientRects() { return this.visible ? [1] : []; }};
-const form = {querySelectorAll() { return context.sameForm ? [instruction] : []; }};
+const form = {tagName: 'FORM', querySelectorAll() { return context.sameForm ? [instruction] : []; }};
 const inputs = context.labels.map((label, i) => ({
   type: 'text', tagName: 'INPUT', id: 'floatingLabelInput' + i, name: '', autocomplete: context.autocomplete,
   labels: [{textContent: label}], form, maxLength: -1,
   getClientRects() { return [1]; }, getAttribute() { return ''; },
   setAttribute(k,v) {this[k] = v;}, removeAttribute(k) {delete this[k];},
-  focus() {}, dispatchEvent() {},
+  getRootNode() {return document;}, focus() {}, dispatchEvent() {},
 }));
 const document = {forms: [form], querySelectorAll(sel) {
+  if (sel === '*') return [form, ...inputs];
   if (sel === 'input, select') return inputs;
   return inputs.filter(el => sel.includes(el['data-hermes-vault-slot']));
 }, getElementById() {return null;}};

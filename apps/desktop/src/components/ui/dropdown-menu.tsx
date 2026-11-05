@@ -198,11 +198,14 @@ function DropdownMenuSearch({
   const hoverSubmenus = React.useContext(HoverSubmenusContext)
 
   return (
-    <div className="px-2.5 py-1.5" data-slot="dropdown-menu-search">
+    <div
+      className="px-2.5 py-1.5 has-[>input:focus]:shadow-[inset_0_-1px_0_var(--color-ring)]"
+      data-slot="dropdown-menu-search"
+    >
       <input
         autoFocus
         className={cn(
-          'h-4 w-full bg-transparent text-xs leading-none text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none',
+          'h-4 w-full bg-transparent text-xs leading-none text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-hidden',
           className
         )}
         onChange={event => {
@@ -457,7 +460,7 @@ function DropdownMenuSubTrigger({
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
         searchHoverClass,
-        "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[inset]:pl-7 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary)",
+        "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs focus-visible:outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[inset]:pl-7 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary)",
         className
       )}
       data-inset={inset}

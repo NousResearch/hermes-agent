@@ -95,22 +95,23 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
     for root in search_roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
-        fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, store.root):
-            continue
-        binary = package.binary(store.entry(fact["entry"]), target)
-        if binary is not None and not binary.is_file():
-            continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
-            continue
-        if verify and not _entry_verified(package, fact, store, target):
-            continue
-        if facts.installed(package.name, lockfile.version(package.name), store.root,
-                           _identity(lockfile, package.name, target)):
-            return facts, store
-        if (allow_outdated and fact.get("target") == target
-                and fact.get("artifacts") and fact.get("digest")):
-            fallback = facts, store
+        for fact in facts.variants(package.name):
+            chosen = facts.selected(package.name, fact)
+            if not chosen.installed(package.name, None, store.root):
+                continue
+            binary = package.binary(store.entry(fact["entry"]), target)
+            if binary is not None and not binary.is_file():
+                continue
+            if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
+                continue
+            if verify and not _entry_verified(package, fact, store, target):
+                continue
+            if chosen.installed(package.name, lockfile.version(package.name), store.root,
+                                _identity(lockfile, package.name, target)):
+                return chosen, store
+            if (allow_outdated and fact.get("target") == target
+                    and fact.get("artifacts") and fact.get("digest")):
+                fallback = chosen, store
     return fallback
 
 
@@ -404,9 +405,11 @@ def _refresh_found_env(package, location, target, operation) -> None:
         return
     with nullcontext() if operation is not None else store.install_lock():
         facts.reload()
-        previous = facts.get(package.name)
-        if previous and previous.get("entry") == entry.name:
-            _refresh_recorded_env(package, facts, store, entry, previous, target)
+        previous = next((row for row in facts.variants(package.name)
+                         if row["entry"] == entry.name), None)
+        if previous is not None:
+            _refresh_recorded_env(package, facts.selected(package.name, previous),
+                                  store, entry, previous, target)
 
 
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
@@ -471,13 +474,17 @@ def _install(
         if facts is not None:
             facts.reload()
         previous = facts.get(package.name) if facts is not None else None
+        if facts is not None:
+            previous = next((row for row in facts.variants(package.name)
+                             if row["entry"] == entry_name), previous)
+        selected_facts = facts.selected(package.name, previous) if previous is not None else facts
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
         _settle_previous_entry(package, store, entry, previous_entry, previous, target)
         _reclaim_set_aside(store)
-        if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
+        if (_entry_current(package, lockfile, selected_facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             if facts is not None:
-                _refresh_recorded_env(package, facts, store, entry, previous, target)
+                _refresh_recorded_env(package, selected_facts, store, entry, previous, target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:

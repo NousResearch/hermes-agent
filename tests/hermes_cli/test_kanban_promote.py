@@ -111,3 +111,42 @@ def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
             assert kb.get_task(conn, c).status == "ready"
 
 
+
+
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_promote_refuses_failed_gate_and_names_result(conn, result, dry_run):
+    child, (parent,) = _stuck_todo(conn)
+    assert kb.edit_task(conn, parent, result=result)
+    blockers = kb.unsatisfied_parents(conn, child)
+    assert blockers and blockers[0][0] == parent and result in blockers[0][1]
+    ok, err = kb.promote_task(conn, child, actor="tester", dry_run=dry_run)
+    assert not ok and parent in err and result in err
+    assert kb.get_task(conn, child).status == "todo"
+    assert not any(e.kind == "promoted_manual" for e in kb.list_events(conn, child))
+
+
+def test_promote_rechecks_gate_inside_write_transaction(conn, monkeypatch):
+    from contextlib import contextmanager
+    child, (parent,) = _stuck_todo(conn)
+    original = kb.write_txn
+    @contextmanager
+    def change_gate_before_begin(c, **kwargs):
+        # Another committed writer wins immediately before promotion's BEGIN.
+        c.execute("UPDATE tasks SET result = 'PORTABLE_GATE_FAIL' WHERE id = ?", (parent,))
+        with original(c, **kwargs):
+            yield c
+    monkeypatch.setattr(kb, "write_txn", change_gate_before_begin)
+    ok, err = kb.promote_task(conn, child, actor="tester")
+    assert not ok and parent in err and "PORTABLE_GATE_FAIL" in err
+    assert kb.get_task(conn, child).status == "todo"
+
+
+@pytest.mark.parametrize("result", ["GATE_FAIL", "PORTABLE_GATE_FAIL"])
+def test_link_failed_gate_retracts_ready_child(conn, result):
+    parent = kb.create_task(conn, title="gate")
+    assert kb.complete_task(conn, parent, result=result)
+    child = kb.create_task(conn, title="ready child")
+    assert kb.link_tasks(conn, parent, child)
+    assert kb.get_task(conn, child).status == "todo"
+    assert not kb.claim_task(conn, child)

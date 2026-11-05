@@ -1,6 +1,6 @@
 name: injection-guard
 repo: https://github.com/moneya/hermes-injection-guard
-sha: 049f5fe91c9119ba4254fe122677a8d763a89bd6
+sha: 7434066baef3cbd55f98c1d8c70310cceee0162c
 description: >-
   Prompt-injection firewall for tool output. A tool_execution middleware scans results from
   web, browser, file-reading and mail tools for instructions addressed to the model, redacts

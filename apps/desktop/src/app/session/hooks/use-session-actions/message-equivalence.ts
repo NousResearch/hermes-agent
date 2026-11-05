@@ -36,6 +36,9 @@ const COMPARED_FIELDS = [
   // Structured failure layer — drives the error card's title and action row,
   // so a change (e.g. resume replay attaching the descriptor) must repaint.
   'errorSurface',
+  // Safety-refused display block — drives the greyed notice, so attaching or
+  // changing it (resume replay) must repaint, like errorSurface.
+  'contentRefused',
   'hidden',
   'branchGroupId',
   'interim',
@@ -179,6 +182,9 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
     (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
     (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
+    // Safety-refused block: compare presence and notice (fresh object per resume).
+    Boolean(a.contentRefused) !== Boolean(b.contentRefused) ||
+    (a.contentRefused?.notice ?? null) !== (b.contentRefused?.notice ?? null) ||
     a.hidden !== b.hidden ||
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||

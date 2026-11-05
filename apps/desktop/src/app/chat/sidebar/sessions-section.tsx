@@ -29,7 +29,7 @@ import {
 } from '@/store/layout'
 import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 
 import { SIDEBAR_FOCUS_VISIBLE, SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -434,7 +434,11 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => {
+                const bucket = sessionStatusBucket(dotStates[entry.session.id])
+
+                return bucket === 'working' || bucket === 'needs-input'
+              },
               statusDividerLabels
             )
           : toSessionRows(displayEntries)

@@ -9,8 +9,10 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -547,34 +549,43 @@ def _scan_meta(mode: str, total: int, *, rescanned: int = 0, reused: int = 0, sc
 def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] = None, progress_every: int = 250) -> dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
-    ``limit=None`` (default) scans the ENTIRE history (SQLite ``LIMIT -1``); a former cap
-    of 200 silently shrank lifetime totals on long-running installs. The checkpoint stores
+    ``limit=None`` (default) scans the ENTIRE history (a window of ``sys.maxsize`` rows); a former
+    cap of 200 silently shrank lifetime totals on long-running installs. The checkpoint stores
     per-session stats keyed by ``(started_at, last_active)`` fingerprint so warm scans only
     re-analyze changed sessions. ``progress_callback(partial_sessions, scanned_so_far,
     total)`` fires every ``progress_every`` sessions so background scans can publish
     intermediate snapshots.
     """
+    handles = ExitStack()
     try:
-        from hermes_state import SessionDB
+        from persistence.conversation.messages import TranscriptRead, TranscriptView
+        from persistence.conversation.sessions import SessionQuery, SessionWindow
+        from persistence_assembly import open_persistence_reader, profile_scope
 
         # The scan only reads. A writable open here was a second writer connection (schema
         # init, write lock, close-time checkpoint) beside the dashboard's own store on every
-        # scan, and counted toward the "live SessionDB handles" precursor (#100896).
-        db = SessionDB(read_only=True)
+        # scan, and counted toward the live store-handle warning precursor (#100896).
+        store = handles.enter_context(open_persistence_reader(profile_scope().profile_dir))
+        store.ready()
     except Exception as exc:
-        return {"sessions": [], "aggregate": {}, "error": f"Could not open SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
+        handles.close()
+        return {"sessions": [], "aggregate": {}, "error": f"Could not open the session store: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
     previous_checkpoint = load_checkpoint()
     previous_sessions = previous_checkpoint["sessions"]  # load_checkpoint guarantees a dict
     checkpoint_is_current = int(previous_checkpoint.get("schema_version") or 0) == _CHECKPOINT_SCHEMA_VERSION
     reused = rescanned = 0
-    db_limit = -1 if (limit is None or limit <= 0) else int(limit)
+    db_limit = sys.maxsize if (limit is None or limit <= 0) else int(limit)
     try:
-        sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
-        total_sessions = len(sessions_meta)
+        entries = store.sessions.list_sessions(
+            SessionQuery(include_children=True, project_compression_tips=False), SessionWindow(limit=db_limit))
+        total_sessions = len(entries)
         sessions: list[dict[str, Any]] = []
         checkpoint_sessions: dict[str, Any] = {}
-        for idx, meta in enumerate(sessions_meta, start=1):
+        for idx, entry in enumerate(entries, start=1):
+            row = entry.session
+            meta = {"id": row.session_id, "title": row.title, "preview": entry.preview, "started_at": row.started_at,
+                    "last_active": entry.last_active, "source": row.source, "model": row.model}
             sid = meta.get("id")
             if not sid:
                 continue
@@ -589,7 +600,8 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                 # Compaction-archived display history too (deduped, no Undo/Rewind rows): the active
                 # window shrinks after compaction, and stats read from it were never monotonic
                 # (#112273). Rewound rows stay out — that work was undone.
-                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_compacted=True))
+                transcript = store.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.DISPLAY))
+                stats = analyze_messages(sid, title or "Untitled", [r.as_wire_row() for r in transcript])
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
@@ -612,7 +624,7 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                     pass  # Advisory — a broken publisher must never abort the scan.
         _write_json(CHECKPOINT_FILE, {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
     finally:
-        db.close()
+        handles.close()
     return {
         "sessions": sessions,
         "aggregate": aggregate_stats(sessions),

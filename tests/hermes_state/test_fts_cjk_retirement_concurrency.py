@@ -127,7 +127,6 @@ def test_a_full_temporary_volume_is_neither_healthy_nor_damage(cjk_db, monkeypat
     """The probe judges a copy of the store; a copy that does not fit says nothing either way about the store."""
     import argparse
 
-    import hermes_state
     from hermes_cli import sessions_cmd
 
     before = _store_snapshot(cjk_db)
@@ -138,7 +137,7 @@ def test_a_full_temporary_volume_is_neither_healthy_nor_damage(cjk_db, monkeypat
     monkeypatch.setattr(repair, "_copy_database_snapshot", full_volume)
     assert isinstance(repair._db_opens_cleanly(cjk_db), repair.HealthCheckUnavailable)
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", cjk_db)
+    monkeypatch.setenv("HERMES_HOME", str(cjk_db.parent))
     for check_only in (True, False):
         assert sessions_cmd._cmd_repair(argparse.Namespace(check_only=check_only, no_backup=True)) == 1
         assert "Could not check" in capsys.readouterr().out

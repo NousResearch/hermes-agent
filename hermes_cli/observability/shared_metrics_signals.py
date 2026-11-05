@@ -12,10 +12,11 @@ Features no counter can see report through :func:`record_feature_used`.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+from persistence.core.errors import STORE_FAILURES
 
 from . import shared_metrics_contract as contract
 
@@ -108,7 +109,7 @@ def days_since_install_bucket(home: Path) -> str:
 
     try:
         first = _first_session_started_at(home)
-    except (sqlite3.Error, OSError, TypeError, ValueError):  # unreadable, or a non-numeric started_at
+    except (*STORE_FAILURES, OSError, TypeError, ValueError):  # unreadable, or a non-numeric started_at
         return "unknown"
     age = contract._non_negative_number(time.time() - first) if first is not None else None
     return "unknown" if age is None else contract._bucket(age, _DAYS_SINCE_INSTALL_THRESHOLDS, "gte_90d")

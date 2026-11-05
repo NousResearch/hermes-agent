@@ -50,6 +50,10 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     if not task:
         return {}
     config = _task_config(str(task), _seen)
+    # One chain implementation owns routing, credentials, context limits and retries.
+    # Keep the established spelling authoritative when both keys are present.
+    if "fallback_providers" in config and "fallback_chain" not in config:
+        config = {**config, "fallback_chain": config["fallback_providers"]}
     if getattr(task, "route_authoritative", False):
         return {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
     return config

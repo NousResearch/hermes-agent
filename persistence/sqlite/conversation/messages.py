@@ -6,7 +6,7 @@ import json
 from contextlib import contextmanager
 from typing import Any, ContextManager, Iterator, Mapping, Optional, Sequence
 
-from hermes_state_errors import classify_persistence_error
+from persistence.sqlite._state.errors import classify_persistence_error
 from persistence import (
     CooldownRestoreRefused, PersistenceError, RewindRefused, RowVisibility, SessionRowMissing,
 )

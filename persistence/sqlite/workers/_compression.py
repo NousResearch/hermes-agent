@@ -49,9 +49,9 @@ def worker_compression_lock(holder, conn, sid, payload, *, action):
         raise AuthorityRefusal('invalid_params')
     if action == 'acquire':
         from ..authority.coordination import _claim_lease_row
-        from ..conversation._store.core import _compression_lock_holder_process_is_dead
+        from process_identity import holder_process_is_dead
         value = _claim_lease_row(conn, 'compression_locks', 'session_id', sid, lease_holder, now, now + ttl,
-                                lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))[0]
+                                lambda h, e: e < now or holder_process_is_dead(h))[0]
     else:
         value = conn.execute('UPDATE compression_locks SET expires_at=? WHERE session_id=? AND holder=?',
                              (now + ttl, sid, lease_holder)).rowcount > 0

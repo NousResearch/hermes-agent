@@ -611,7 +611,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
     handle.aio.sessions.get.assert_awaited_once_with("sess-1")
-    agent.context_compressor.bind_session_state.assert_called_once_with(handle, "sess-1")
+    agent.context_compressor.bind_session_state.assert_called_once_with(handle, "sess-1", persistence=handle)
     # In-place compaction already persisted via archive_and_compact() —
     # rewrite_transcript would replace_messages(active_only=False) and DELETE
     # the just-archived rows (#61145). The hygiene handler must skip it.

@@ -64,7 +64,7 @@ def test_a_value_that_is_no_command_refuses_invalid_params(store):
 @pytest.mark.parametrize("key", [None, "", "agent", "agent:main:x", "agent::x", "agent:main~:y", "agent:work:z",
                                  "foo:bar", 12, "agent:default:q"])
 def test_the_branch_route_profile_matches_m1(key):
-    from hermes_state_keys import profile_from_session_key
+    from persistence.sqlite._state.keys import profile_from_session_key
     from persistence.sqlite.authority._mutation_publish import _profile_from_session_key
 
     assert _profile_from_session_key(key) == profile_from_session_key(key)

@@ -469,7 +469,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # ledger probes and read-only URI, and the stored FTS layout read.
         "persistence/core/admin.py",
         "persistence/sqlite/admin/_backup.py",
-        "hermes_state_holders.py",
+        "persistence/sqlite/_state/holders.py",
         "persistence/sqlite/admin/_maintenance.py",
         "persistence/sqlite/_schema_ddl.py",
         "hermes_cli/_old_updater",

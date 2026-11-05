@@ -39,7 +39,7 @@ from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
-from agent.agent_init_session import _publish_session_id
+from agent.agent_init_session import _publish_session_id, stand_in_interface
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -1848,12 +1848,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
-        # The built-in compressor also takes the store's interface handle; a plugin engine's bind takes its SessionDB.
-        _handle = {"persistence": persistence} if isinstance(agent.context_compressor, ContextCompressor) else {}
-        from agent.conversation_compression import context_engine_session_db
+        from agent.conversation_compression import context_engine_persistence, context_engine_session_db
         with suppress(Exception):
             _bind_session_state(session_db=context_engine_session_db(agent, session_db), session_id=agent.session_id,
-                                **_handle)
+                                **context_engine_persistence(_bind_session_state, persistence))
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
@@ -2158,6 +2156,7 @@ def init_agent(
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
+    persistence = persistence if persistence is not None else stand_in_interface(session_db)
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,

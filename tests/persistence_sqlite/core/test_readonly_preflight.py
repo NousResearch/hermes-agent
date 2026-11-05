@@ -24,7 +24,7 @@ import pytest
 
 import storage_user_copy
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_repair import preflight_db_writability
+from persistence.sqlite._state.repair import preflight_db_writability
 
 pytestmark = [
     pytest.mark.platforms("posix"),  # POSIX chmod semantics

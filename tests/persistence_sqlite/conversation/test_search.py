@@ -12,8 +12,8 @@ from typing import Any, Callable
 
 import pytest
 
-import hermes_state_common
-from hermes_state_common import fts_rebuild_admission
+from persistence.sqlite._state import common as hermes_state_common
+from persistence.sqlite._state.common import fts_rebuild_admission
 from persistence import SessionId
 from persistence.conversation.messages import NewMessage
 from persistence.conversation.search import SearchIndexRebuildStatus

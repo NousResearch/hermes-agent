@@ -2,10 +2,11 @@
 
 
 from typing import Any, Optional
-from hermes_state_keys import (
-    CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job, prefix_range,
+from persistence.sqlite._state.keys import (
+    CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
+    prefix_range,
 )
-from hermes_state_common import _shape_preview
+from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema import _parse_schema_columns
 from persistence.sqlite._schema_ddl import SCHEMA_SQL

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+from persistence.sqlite._state.repair import _db_opens_cleanly, repair_state_db_schema
 from persistence.sqlite.conversation._store.messages import append_message
 from persistence.sqlite.conversation._store.sessions import create_session
 

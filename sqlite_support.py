@@ -1,6 +1,6 @@
 """SQLite helpers shared by the storage backend and the other SQLite stores.
 
-Opening a connection with the journal-mode policy (WAL, its DELETE fallbacks and the never-live-downgrade rule), column migration, file permissions, the writability preflight, durability barriers, and the diagnostics callers print about SQLite builds, filesystems and lock holders.
+Opening a connection with the journal-mode policy (WAL, its DELETE fallbacks and the never-live-downgrade rule), the configured PRAGMAs and ``sessions.*`` settings, column migration, file permissions, the writability preflight, durability barriers, and the diagnostics callers print about SQLite builds, filesystems and lock holders.
 """
 
 from __future__ import annotations
@@ -173,6 +173,26 @@ def resolve_journal_mode() -> str:
         return "wal"
     mode = raw.strip().lower() if isinstance(raw, str) else ""
     return mode if mode in ("wal", "delete") else "wal"
+
+
+def routed_sessions_setting(key: str, env_var: str) -> Any:
+    """``sessions.<key>`` for the profile whose state.db this process is touching.
+
+    ``gateway/run.py`` bridges the LAUNCH profile's ``sessions.*`` into ``env_var`` (the cross-process
+    carrier CLI/cron children read). Under a multiplexer a routed turn runs with a HERMES_HOME override
+    and that env slot holds the default profile's value, so a served profile with different
+    ``sessions.*`` settings must read its own config.yaml. Unscoped: the env bridge, as before.
+    Returns ``None`` when neither source sets the key.
+    """
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override():
+        try:
+            from hermes_cli.config import load_config_readonly
+            return (load_config_readonly().get("sessions") or {}).get(key)
+        except Exception:
+            return None
+    return os.environ.get(env_var)
 
 
 class WalUnsupportedError(sqlite3.OperationalError):
@@ -650,10 +670,31 @@ def _apply_synchronous_pragma(conn: sqlite3.Connection, raw_value: Any, *, db_la
 
 
 def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.db") -> None:
-    """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml`` (``hermes_state_wal``'s)."""
-    from hermes_state_wal import apply_database_pragmas as apply
+    """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
 
-    apply(conn, db_label=db_label)
+    Journal mode is NOT handled here (owned by :func:`apply_wal_with_fallback`). ``database:`` keys: ``cache_size``
+    (negative = KiB, positive = pages), ``mmap_size`` (bytes, 0 = off), ``temp_store`` (0-3), ``wal_autocheckpoint``
+    (pages), ``journal_size_limit`` (bytes), ``synchronous`` (unset leaves the compile-time default, which differs
+    between bundled/distro/Homebrew builds). Best-effort: failures are ignored so DB init never breaks on a
+    malformed section. Applied to ALL connection types: writer, read_only, WAL readers."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly  # local: avoids a circular import
+        cfg = load_config_readonly()
+    except Exception:
+        return
+    for pragma_name in ("cache_size", "mmap_size", "temp_store", "wal_autocheckpoint", "journal_size_limit"):
+        if (raw_value := cfg_get(cfg, "database", pragma_name, default=None)) is None:
+            continue
+        try:
+            value = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            logger.warning("%s: ignoring non-integer database.%s=%r", db_label, pragma_name, raw_value)
+            continue
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(f"PRAGMA {pragma_name}={value}")
+    # Last: sizing pragmas cannot change durability (see _apply_synchronous_pragma).
+    if (raw_synchronous := cfg_get(cfg, "database", "synchronous", default=None)) is not None:
+        _apply_synchronous_pragma(conn, raw_synchronous, db_label=db_label)
 
 
 def _version_tuple(parts: Iterable[object]) -> tuple[int, int, int]:

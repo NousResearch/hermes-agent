@@ -4,7 +4,7 @@
 import json
 import time
 from persistence.core.errors import AuthorityRefusal
-from hermes_state_keys import admission_fingerprint
+from persistence.sqlite._state.keys import admission_fingerprint
 from persistence.core.canonical import canonical_json as _json
 
 

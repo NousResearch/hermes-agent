@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 from session_rules.activity import ActivityProvenance, bound_activity_description, normalize_activity_provenance
-from hermes_state_errors import SessionActiveWriteGuardError
-from hermes_state_common import _shape_preview
+from persistence.sqlite._state.errors import SessionActiveWriteGuardError
+from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _sql_json_extract
 from persistence.sqlite.conversation._store.sql_common import (

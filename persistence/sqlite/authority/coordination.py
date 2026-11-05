@@ -24,10 +24,10 @@ from persistence.authority.coordination import (
     DelegationRecovery, DeliveryState, FinishedDelegationRow, HandoffState, HandoffStatus, InflightDelegation,
     OrphanCompletion, OwnerStamp, PendingCompletion, PendingHandoff, RecordedOwner,
 )
+from process_identity import holder_process_is_dead
 
 from .._backend import SQLiteStore, register_repository, translated
 from ..conversation._store.compression import _session_turn_lease_key_on_conn
-from ..conversation._store.core import _compression_lock_holder_process_is_dead
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._delivery_ledger import LEDGER_PATIENCE_S, DeliveryObligationVerbs
 
@@ -170,7 +170,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs):
         def _do(conn):
             return _claim_lease_row(
                 conn, "compression_locks", "session_id", session_id, holder, now, expires_at,
-                lambda h, e: e < now or _compression_lock_holder_process_is_dead(h))
+                lambda h, e: e < now or holder_process_is_dead(h))
 
         try:
             with translated():
@@ -237,7 +237,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs):
             conversation_id = _session_turn_lease_key_on_conn(self._store.holder(), conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
-                lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
+                lambda h, e: float(e) <= now or holder_process_is_dead(h),
             )[0]
         with translated():
             return bool(self._store.holder()._execute_write(_do, patience_s=patience_s))

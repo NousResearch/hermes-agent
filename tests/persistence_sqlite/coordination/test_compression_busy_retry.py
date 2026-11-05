@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from hermes_state_errors import CompressionSessionBusyError
+from persistence.sqlite._state.errors import CompressionSessionBusyError
 from persistence.sqlite.conversation._store.compression import publish_compression_child
 from persistence.sqlite.conversation._store.messages import append_message, get_messages
 from persistence.sqlite.conversation._store.sessions import create_session

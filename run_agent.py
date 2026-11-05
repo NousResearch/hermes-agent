@@ -444,9 +444,10 @@ class AIAgent(
         if (engine is not None and hasattr(engine, "bind_session_state") and target_session_id
                 and target_session_id != getattr(engine, "_session_id", "")):
             try:
-                from agent.conversation_compression import context_engine_session_db
+                from agent.conversation_compression import context_engine_persistence, context_engine_session_db
                 engine.bind_session_state(context_engine_session_db(self, getattr(self, "_session_db", None)),
-                                          target_session_id)
+                                          target_session_id, **context_engine_persistence(
+                                              engine.bind_session_state, getattr(self, "persistence", None)))
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 

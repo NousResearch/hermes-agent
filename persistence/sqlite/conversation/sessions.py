@@ -29,7 +29,7 @@ from .._backend import SQLiteStore, register_repository
 from .._holder import StoreHolder
 from .._schema import TITLE_SOURCE_USER
 from .._schema_ddl import _RESET_CHILD_SQL, _sql_json_extract
-from hermes_state_common import _shape_preview
+from .._state.common import _shape_preview
 from ._store import stored_reads
 from ._store.compression import _compression_tip_on, reopen_if_explicitly_closed
 from ._store.core import is_kanban_owned_session, retag_kanban_worker_sessions

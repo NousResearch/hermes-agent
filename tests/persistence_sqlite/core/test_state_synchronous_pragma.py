@@ -14,8 +14,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state_wal as wal_module
-from hermes_state_wal import apply_database_pragmas
+import sqlite_support
+from sqlite_support import apply_database_pragmas
 from sqlite_support import resolve_synchronous_level
 
 
@@ -179,7 +179,7 @@ class TestMacOSFloor:
         _config(monkeypatch, {"synchronous": "NORMAL"})
         conn = _wal_conn(tmp_path)
         try:
-            wal_module._enforce_macos_synchronous_full(conn)
+            sqlite_support._enforce_macos_synchronous_full(conn)
             assert _level(conn) == 2
             with caplog.at_level("WARNING"):
                 apply_database_pragmas(conn, db_label="state.db")

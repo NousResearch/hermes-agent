@@ -40,3 +40,20 @@ def test_legacy_docs_outputs_stay_ignored_but_catalog_changes_remain_visible(tmp
     assert git("status", "--porcelain", "--untracked-files=all") == ""
     catalog.write_text('{"version": 2}\n', encoding="utf-8")
     assert git("status", "--porcelain", "--untracked-files=all").strip() == "M website/static/api/model-catalog.json"
+
+
+def test_other_website_paths_stay_trackable(tmp_path):
+    """The upgrade E2E publishes website/e2e-hostile-pause-i.txt with a plain
+    `git add`; only the named Docusaurus leftovers may be ignored."""
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    shutil.copyfile(ROOT / ".gitignore", repo / ".gitignore")
+    fixture = repo / "website/e2e-hostile-pause-i.txt"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("release i\n", encoding="utf-8")
+    added = subprocess.run(
+        ["git", "-C", str(repo), "add", "--", "website/e2e-hostile-pause-i.txt"],
+        check=False, capture_output=True, text=True,
+    )
+    assert added.returncode == 0, added.stderr

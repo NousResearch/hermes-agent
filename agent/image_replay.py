@@ -1,6 +1,6 @@
 """Re-attach user images on turns whose history was rebuilt from the session DB.
 
-The DB stores user rows as text (``session_persistence._durable_content``): an image part becomes a
+The DB stores user rows as text (``session_rules.turns._durable_content``): an image part becomes a
 ``[screenshot]`` line at its position (``[screenshot detail=low]`` when the caller chose a detail).
 A turn rebuilt from the DB (every API-server request, ``--resume``, a gateway restart) therefore
 showed the model that placeholder instead of the photo the user asked about one message earlier.
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REPLAY_RECENT_IMAGES = 3
 _HINT_RE = re.compile(r"^\[Image attached(?P<local> at)?: (?P<ref>.+)\]$")
-# ``session_persistence._image_marker``: the live part's ``detail`` rides on its marker.
+# ``session_rules.turns._image_marker``: the live part's ``detail`` rides on its marker.
 _MARKER_RE = re.compile(r"^\[screenshot(?: detail=(?P<detail>low|high|auto))?\]$")
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 

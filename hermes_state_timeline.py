@@ -6,7 +6,7 @@ import re
 from contextlib import contextmanager
 
 from agent.compaction_display import project_compaction_message_for_display
-from agent.context_compressor import user_originated_turn_view
+from session_rules.turns import user_originated_turn_view
 from hermes_state_compaction_display import not_a_later_tool_copy_sql
 from hermes_state_messages import DISPLAY_VISIBLE_SQL
 
@@ -86,7 +86,7 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
 
 
 def _register_functions(db, conn):
-    from agent.context_compressor import split_user_originated_turn
+    from session_rules.turns import split_user_originated_turn
 
     def identity_content(content, display_kind):
         handoff, live = split_user_originated_turn({

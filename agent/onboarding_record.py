@@ -1,6 +1,5 @@
 """Where a first-run onboarding run lives: one ``onboarding_run`` key in the session's
-``sessions.model_config`` (no schema change; a compression rotation carries it, see
-``hermes_state_compression._CONVERSATION_MODEL_CONFIG_KEYS``).
+``sessions.model_config`` (no schema change; a compression rotation carries it to the continuation).
 
 ``advance`` is the one writer after ``start``: load, ``onboarding_flow.apply``, save, and when the
 run ends write the install-level flag in the root config so the next launch does not reopen it.
@@ -15,7 +14,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent.onboarding_flow import (
+from session_rules.onboarding_flow import (
     Applied, End, Event, Facts, Step, applies_to, apply, is_active, new_record,
 )
 from agent.onboarding_text import reminder
@@ -33,8 +32,20 @@ def on_ended(listener: Callable[[dict], None]) -> None:
     _ended_listeners.append(listener)
 
 
-def load(db, session_id: str) -> dict | None:
-    record = db.get_session_model_config_value(session_id, KEY) if db is not None and session_id else None
+def _reader(db, persistence):
+    """The handle a read goes through: the writer's handle beside ``db``, or ``db`` itself when it is a
+    storage handle (a reader on another profile's store); None when ``db`` is a client store."""
+    from agent.agent_init_session import writer_interface
+    from persistence_assembly import Persistence
+    return writer_interface(persistence, db) or (db if isinstance(db, Persistence) else None)
+
+
+def load(db, session_id: str, *, persistence=None) -> dict | None:
+    if db is None or not session_id:
+        return None
+    store = _reader(db, persistence)
+    record = (store.sessions.get_model_config_value(session_id, KEY) if store is not None
+              else db.get_session_model_config_value(session_id, KEY))
     return record if isinstance(record, dict) else None
 
 
@@ -44,8 +55,8 @@ def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
         listener(ended)
 
 
-def _transition(db, session_id: str, event: Event) -> Step | None:
-    """Apply *event* and write the result in one database transaction at the compression tip, so Skip
+def _transition(db, session_id: str, event: Event, *, persistence=None) -> Step | None:
+    """Apply *event* and write the result atomically at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
     read before a rotation published still lands on the copy the chat reads. An ended run then closes the
     install flag (a Skip or Done retried after a failed config write repairs it), unless another run
@@ -60,12 +71,19 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
         holder["step"] = apply(current, event, Facts.from_stored(current["facts"]), now=time.time())
         return holder["step"].record
 
-    db.update_conversation_model_config_value(session_id, KEY, update)
+    from agent.agent_init_session import writer_interface
+    store = writer_interface(persistence, db)
+    if store is None:
+        db.update_conversation_model_config_value(session_id, KEY, update)
+    else:
+        advanced = store.sessions.advance_onboarding_run(session_id, event, now=time.time())
+        if advanced.step is not None:
+            holder.update(was_active=advanced.was_active, step=advanced.step)
     step = holder.get("step")
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
         _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
-    if step is not None and not is_active(step.record) and active_session_id(db) is None:
+    if step is not None and not is_active(step.record) and active_session_id(db, persistence=persistence) is None:
         _close_install_flag()
     return step
 
@@ -84,54 +102,67 @@ def _close_install_flag() -> None:
         set_run(False, mark_profile_offered=True)
 
 
-def start(db, session_id: str, facts: Facts) -> dict:
+def start(db, session_id: str, facts: Facts, *, persistence=None) -> dict:
     """Write a fresh run record (the row must exist) and mark the install as mid-onboarding, so a
     crash or a quit before the end runs onboarding again on the next launch (which starts over:
     ``onboarding.start`` with ``fresh_launch``)."""
     from hermes_cli.onboarding_run import set_run
 
+    from agent.agent_init_session import writer_interface
+
     record = new_record(facts, now=time.time(), run_id=uuid.uuid4().hex)
-    db.patch_session_model_config(session_id, {KEY: record})
+    store = writer_interface(persistence, db)
+    patch = store.sessions.patch_model_config if store is not None else db.patch_session_model_config
+    patch(session_id, {KEY: record})
     set_run(True)
     return record
 
 
-def advance(db, session_id: str, event: Event) -> Step:
+def advance(db, session_id: str, event: Event, *, persistence=None) -> Step:
     """Apply one event to the stored run; LookupError when this session has no run."""
-    step = _transition(db, session_id, event) if db is not None and session_id else None
+    step = _transition(db, session_id, event, persistence=persistence) if db is not None and session_id else None
     if step is None:
         raise LookupError(f"session {session_id} has no onboarding run")
     return step
 
 
-def open_session_ids(db) -> list[str]:
+def open_session_ids(db, *, persistence=None) -> list[str]:
     """The chats whose run is still in progress, newest first. Rotation leaves the active copy on the
     compression parent, so each id is read at its compression tip."""
+    store = _reader(db, persistence)
     tips: set[str] = set()
     open_ids: list[str] = []
-    for sid in db.session_ids_with_model_config_key(KEY):
-        tip = db.resolve_resume_session_id(sid) or sid
+    if store is not None:
+        ids, resolve = store.sessions.session_ids_with_model_config_key(KEY), store.lineage.resolve_resume_target
+    else:
+        ids, resolve = db.session_ids_with_model_config_key(KEY), db.resolve_resume_session_id
+    for sid in ids:
+        tip = resolve(sid) or sid
         if tip not in tips:
             tips.add(tip)
-            if is_active(load(db, tip)):
+            if is_active(load(db, tip, persistence=persistence)):
                 open_ids.append(tip)
     return open_ids
 
 
-def active_session_id(db) -> str | None:
-    return next(iter(open_session_ids(db)), None)
+def active_session_id(db, *, persistence=None) -> str | None:
+    return next(iter(open_session_ids(db, persistence=persistence)), None)
 
 
-def delete_chat(db, session_id: str, delete: Callable[[], bool]) -> bool:
+def delete_chat(db, session_id: str, delete: Callable[[], bool], *, persistence=None) -> bool:
     """Run *delete*; when it removed the chat holding the live run, end that run (``deleted``) on every
     compression copy and tell windows once. Only the compression tip holds the live run, so deleting an
     older copy ends nothing. The install flag closes before the delete when no other run is open: a
     failed flag write keeps the chat for a retry, and a refused delete sets the flag again."""
     from hermes_cli.onboarding_run import set_run
 
-    record = load(db, session_id)
-    live = is_active(record) and (db.resolve_resume_session_id(session_id) or session_id) == session_id
-    last = live and all(sid == session_id for sid in open_session_ids(db))
+    from agent.agent_init_session import writer_interface
+
+    store = writer_interface(persistence, db)
+    record = load(db, session_id, persistence=persistence)
+    resolve = store.lineage.resolve_resume_target if store is not None else db.resolve_resume_session_id
+    live = is_active(record) and (resolve(session_id) or session_id) == session_id
+    last = live and all(sid == session_id for sid in open_session_ids(db, persistence=persistence))
     if last:
         _close_install_flag()
     deleted = False
@@ -145,9 +176,13 @@ def delete_chat(db, session_id: str, delete: Callable[[], bool]) -> bool:
     if live:
         # Each older copy is written on its own row: a tip-routed write would land every copy on the
         # newest one left.
-        for sid in db.session_ids_with_model_config_key(KEY) if record.get("run_id") else ():
-            if ((older := load(db, sid)) or {}).get("run_id") == record["run_id"]:
-                db.patch_session_model_config(sid, {KEY: _end_deleted(older)})
+        if store is not None:
+            scan, patch = store.sessions.session_ids_with_model_config_key, store.sessions.patch_model_config
+        else:
+            scan, patch = db.session_ids_with_model_config_key, db.patch_session_model_config
+        for sid in scan(KEY) if record.get("run_id") else ():
+            if ((older := load(db, sid, persistence=persistence)) or {}).get("run_id") == record["run_id"]:
+                patch(sid, {KEY: _end_deleted(older)})
         _announce(record.get("run_id"), session_id, "deleted")
     return True
 
@@ -165,11 +200,13 @@ def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) 
     settled a beat."""
     if not applies_to(name) or "setup_beat" not in (getattr(agent, "valid_tool_names", None) or ()):
         return result
+    from agent.agent_init_session import agent_interface
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", "") or ""
+    persistence = agent_interface(agent)
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed, dict) and load(db, session_id) is not None:
-            step = advance(db, session_id, Applied(name, dict(args or {}), parsed))
+        if isinstance(parsed, dict) and load(db, session_id, persistence=persistence) is not None:
+            step = advance(db, session_id, Applied(name, dict(args or {}), parsed), persistence=persistence)
             text = reminder(step.reminder, step.record, Facts.from_stored(step.record["facts"]))
             if text and isinstance(result, str):
                 return json.dumps({**parsed, "reminder": text}, ensure_ascii=False)

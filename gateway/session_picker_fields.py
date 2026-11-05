@@ -22,8 +22,8 @@ def _last_reply(candidates):
     read projects it (``project_compaction_message_for_display``): a pure handoff the compressor wrote as an
     assistant row shows nothing, so the reply before it stands; a carrier shows the reply it wraps."""
     from agent.compaction_display import project_compaction_message_for_display
-    from agent.message_content import flatten_message_text
     from hermes_state_common import _shape_preview
+    from session_rules.turns import flatten_message_text
     for content, summary in candidates:
         shown = project_compaction_message_for_display(
             {'role': 'assistant', 'content': content, '_compressed_summary': summary})

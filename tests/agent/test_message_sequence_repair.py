@@ -221,7 +221,7 @@ def test_repair_keeps_tool_matching_only_call_id():
 
 def test_repair_keeps_tool_result_keyed_by_response_item_id():
     """The normalized call id must still pair the raw Responses item id."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do it"},
@@ -247,7 +247,7 @@ def test_repair_keeps_tool_result_keyed_by_response_item_id():
 
 def test_coalesce_tool_call_id_uses_call_half_of_composite_id():
     """Raw bridge ids must use their canonical call half for tool results."""
-    from agent.message_sanitization import coalesce_tool_call_id
+    from session_rules.turns import coalesce_tool_call_id
 
     assert coalesce_tool_call_id({"id": "call_ABC|fc_123"}) == "call_ABC"
 
@@ -302,7 +302,7 @@ def test_sanitize_keeps_parallel_results_keyed_by_responses_id_variant():
 
 def test_repair_keeps_two_parallel_calls_answered_by_mixed_variants():
     """Consuming one alias group must not orphan a different parallel call."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "do both"},
@@ -799,7 +799,7 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     replayed on the next turn and 400s strict providers (DeepSeek v4). The
     merge's union branches only ever set non-empty lists or leave the key
     untouched, so the empty array survives into the persisted state."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -829,7 +829,7 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     the legitimate tool result as an orphan and silently deleted it —
     corrupting the persisted history and leaving the assistant's
     tool_calls unanswered (itself a strict-provider HTTP 400 trigger)."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     class SDKToolCall:
         def __init__(self, call_id):
@@ -1590,7 +1590,7 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
     text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
     from hermes_state import SessionDB
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     parts = [
         {"type": "text", "text": "look at this"},

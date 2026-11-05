@@ -185,7 +185,7 @@ def test_persist_override_keeps_the_uid(db):
 
 
 def test_consecutive_user_merge_keeps_the_first_uid_and_records_the_absorbed_ones():
-    from agent.agent_runtime_helpers import _merge_consecutive_users
+    from session_rules.turns import _merge_consecutive_users
 
     a = {"role": "user", "content": "first", "message_uid": "a" * UID_LEN}
     b = {"role": "user", "content": "second", "message_uid": "b" * UID_LEN}
@@ -216,7 +216,7 @@ def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
     messages = history + [prompt]
     agent._persist_user_message_idx = 1
     agent._persist_session(messages, conversation_history=history)  # the turn-start flush of the prompt
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
     repair_message_sequence(agent, messages)
     assert len(messages) == 1 and messages[0]["message_uid"] == dangling_uid
     assert messages[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
@@ -272,7 +272,7 @@ def test_the_live_list_walk_binds_a_result_to_the_nearest_call_that_names_it():
 def test_a_superseded_verification_candidate_is_not_a_witness_constituent():
     """Alternation repair DISCARDS a provisional verification candidate in favour of the final answer; its
     row is retired like an absorbed row, but its uid is not a constituent of anything."""
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from session_rules.turns import _merge_consecutive_assistants
 
     candidate = {"role": "assistant", "content": "provisional", "finish_reason": "verification_required",
                  "message_uid": "p" * UID_LEN, "_row_id": 7}
@@ -287,7 +287,7 @@ def test_a_superseded_verification_candidate_is_not_a_witness_constituent():
 
 
 def test_assistant_merge_keeps_the_absorbed_turns_tool_call_uids():
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from session_rules.turns import _merge_consecutive_assistants
 
     first = {"role": "assistant", "content": "a",
              "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
@@ -311,8 +311,7 @@ def _reused_call(content, occurrence_uid=None):
 def test_assistant_merge_keeps_every_occurrence_of_a_reused_provider_id():
     """Two folded turns that reuse a provider id (llama.cpp) both keep their call AND their occurrence uid;
     the ids on the wire are untouched, and a following result pairs with the nearest (later) call."""
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
-    from agent.message_metadata import index_tool_call_uids, resolve_tool_call_uid
+    from session_rules.turns import _merge_consecutive_assistants, index_tool_call_uids, resolve_tool_call_uid
 
     first, second = _reused_call("", "1" * UID_LEN), _reused_call("", "2" * UID_LEN)
     merged, repairs = _merge_consecutive_assistants([first, second])
@@ -327,7 +326,7 @@ def test_assistant_merge_keeps_every_occurrence_of_a_reused_provider_id():
 def test_a_reused_id_merge_survives_rewrite_and_restore(db):
     """The per-occurrence map a fold produces is what the survivor's rewrite persists and a restore returns;
     the result keeps the uid of the call it answered."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     sid = "20260928_120600_reused"
     db.create_session(sid, "cli", model="test/model")
@@ -359,7 +358,7 @@ def test_a_reused_id_merge_survives_rewrite_and_restore(db):
 def test_an_assistant_fold_that_discards_the_later_text_is_no_witness(kept, dropped):
     """Multimodal content is never joined: the later turn's row is retired, but its uid must not be
     claimed as a constituent of text it does not contain."""
-    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from session_rules.turns import _merge_consecutive_assistants
 
     survivor = {"role": "assistant", "content": kept, "message_uid": "a" * UID_LEN}
     later = {"role": "assistant", "content": dropped, "message_uid": "b" * UID_LEN, "_row_id": 9}
@@ -371,7 +370,7 @@ def test_an_assistant_fold_that_discards_the_later_text_is_no_witness(kept, drop
 
 def test_a_fold_ignores_a_non_dict_uid_map_on_either_turn():
     """A plugin-built dict can carry a malformed map; the fold keeps the well-formed side instead of raising."""
-    from agent.agent_runtime_helpers import _merge_assistant_into
+    from session_rules.turns import _merge_assistant_into
 
     def turn(call_id, uids):
         return {"role": "assistant", "content": "",
@@ -475,7 +474,7 @@ def test_micro_compactions_adjacent_user_merge_records_the_witness():
 def test_an_assistant_merge_rewrite_persists_the_unioned_tool_call_uids(db):
     """Alternation repair unions two flushed assistant turns' tool calls; the survivor's row-addressed
     rewrite must carry the unioned uid map (it follows ``tool_calls``), and a restore must return it."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     sid = "20260928_120500_union"
     db.create_session(sid, "cli", model="test/model")

@@ -46,7 +46,7 @@ def test_repair_alternation_merges_user_pair(holder):
 def test_repaired_load_is_stable_under_prerequest_repair(holder):
     """The restored list must yield ZERO further repairs: this is the whole
     point: the pre-request defensive repair stops firing every turn."""
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     _seed_wedged_session(holder)
     messages = get_messages_as_conversation(holder, "s1", repair_alternation=True)

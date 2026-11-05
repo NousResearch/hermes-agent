@@ -4,7 +4,7 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 // dokterdok N92 (Ink half): /retry validates the target turn BEFORE rewinding it, as the classic chat
-// and main's retry_last do (agent/context_compressor_retry.py::retryable_user_text): an image turn is
+// and main's retry_last do (session_rules/turns.py::retryable_user_text): an image turn is
 // refused with nothing archived; a text-parts turn is resubmitted as its own text, never as whatever
 // this view typed last.
 

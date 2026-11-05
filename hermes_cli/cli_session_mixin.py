@@ -24,8 +24,7 @@ from typing import Any, Dict, List, Optional
 def _user_turn_indices(history: list) -> list[int]:
     """Indices of *real* user turns: excludes ephemeral scaffolding, display_kind timeline
     rows and compaction handoffs — the same predicate as resume turn counting."""
-    from agent.context_compressor import user_originated_turn_view
-    from agent.session_persistence import _is_ephemeral_scaffolding
+    from session_rules.turns import user_originated_turn_view, _is_ephemeral_scaffolding
 
     return [
         i for i, m in enumerate(history)
@@ -779,9 +778,9 @@ class CLISessionMixin:
             print(t("cli.session.retry_no_messages"))
             return None
 
-        from agent.context_compressor import (
-            history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import (
+            history_before_user_originated_turn, retryable_user_text, sanitize_context,
+        )
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)
@@ -860,7 +859,7 @@ class CLISessionMixin:
         or None after printing ``failure_key`` when the durable rewind refused (history untouched).
         """
         from cli import logger
-        from agent.context_compressor import history_before_user_originated_turn
+        from session_rules.turns import history_before_user_originated_turn
 
         warm_history = list(self.conversation_history)
         cut_idx = _user_turn_indices(warm_history)[target_ordinal]

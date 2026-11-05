@@ -23,6 +23,7 @@ from agent.tool_result_classification import (
     tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
+from session_rules.turns import _is_multimodal_tool_result, _is_text_part, _multimodal_text_summary
 
 logger = logging.getLogger(__name__)
 
@@ -316,30 +317,6 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return left_parts[:common_len] == right_parts[:common_len]
 
 
-def _is_multimodal_tool_result(value: Any) -> bool:
-    """True for the multimodal envelope: dict with ``_multimodal=True`` and a ``content`` list."""
-    return isinstance(value, dict) and value.get("_multimodal") is True and isinstance(value.get("content"), list)
-
-
-def _is_text_part(p: Any) -> bool:
-    return isinstance(p, dict) and p.get("type") == "text"
-
-
-def _multimodal_text_summary(value: Any) -> str:
-    """Plain-text view of a tool result (logging, previews, string-only providers)."""
-    if isinstance(value, str):
-        return value
-    if _is_multimodal_tool_result(value):
-        if value.get("text_summary"):
-            return str(value["text_summary"])
-        parts = [str(p.get("text", "")) for p in value.get("content") or [] if _is_text_part(p)]
-        return "\n".join(parts) if parts else "[multimodal tool result]"
-    try:
-        return json.dumps(value, default=str)
-    except Exception:
-        return str(value)
-
-
 def _append_subdir_hint_to_multimodal(value: dict[str, Any], hint: str) -> None:
     """Append a subdir hint to the envelope's first text part (and ``text_summary``) in place."""
     if not _is_multimodal_tool_result(value):
@@ -616,9 +593,7 @@ __all__ = [
     "_extract_parallel_scope_path",
     "_extract_parallel_scope_paths",
     "_is_destructive_command",
-    "_is_multimodal_tool_result",
     "_maybe_append_elision_notice",
-    "_multimodal_text_summary",
     "_paths_overlap",
     "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",

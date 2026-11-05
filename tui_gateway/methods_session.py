@@ -2009,7 +2009,7 @@ def _(rid, params: dict, session: dict) -> dict:
             return busy
         history = _history_without_ephemeral_scaffolding(session.get("history", []))
         # Truncate from the last *real* user turn (not a timeline marker / compaction handoff).
-        from agent.context_compressor import user_originated_turn_view
+        from session_rules.turns import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
                 removed = (rewound := _rewind_active_session_history(session, user_turns - 1))[2]

@@ -1951,7 +1951,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_context import sanitize_context
+        from session_rules.turns import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "

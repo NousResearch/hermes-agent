@@ -91,6 +91,18 @@ def test_upload_blocks_when_redactor_fails(monkeypatch):
     upload_mock.assert_not_called()
 
 
+def test_no_token_message_points_at_the_real_entrypoint(monkeypatch):
+    for var in trace_upload._TOKEN_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    msg = upload_session_trace("s1")
+
+    assert "hermes sessions export --format trace --upload" in msg
+    # Neither "/upload-trace" nor "hermes trace" is a real command (#132076).
+    assert "/upload-trace" not in msg
+    assert "hermes trace upload" not in msg
+
+
 def test_converter_keeps_secrets_when_redact_disabled():
     secret = "sk-abc123def456ghi789jklmno"
     msgs = [{"role": "user", "content": f"key OPENAI_API_KEY={secret} end"}]

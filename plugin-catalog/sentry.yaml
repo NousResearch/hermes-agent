@@ -1,7 +1,7 @@
 name: sentry
 title: Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
-sha: e489943016b939b854edb41ad74fb13b96d663bf
+sha: e1b2e679c28cd4dc43e1108ce40a383f6b6451b5
 version: "0.1.0"
 description: >-
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came

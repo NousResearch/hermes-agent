@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ Deine manuellen Änderungen behalten: {files} (/rollback kann sie wiederherstellen)"
     not_captured: "Nicht zurückgesetzt (kein Checkpoint von vor dem Zug): {files}"
     other_writers: "↷ Nicht zurückgesetzt (auch eine andere Unterhaltung oder ein späterer Zug hat sie geschrieben): {files}"
+    linked: "↷ Nicht zurückgesetzt (beide Hälften einer verschobenen Datei müssen zusammen zurückgesetzt werden, eine kann es nicht): {files}"
     failed: "⚠ Zurücksetzen der Dateien fehlgeschlagen: {error}"

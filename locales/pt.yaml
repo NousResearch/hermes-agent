@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ Suas edições manuais foram mantidas: {files} (/rollback pode restaurá-las)"
     not_captured: "Não revertido (sem checkpoint de antes do turno): {files}"
     other_writers: "↷ Não revertido (outra conversa ou um turno posterior também o escreveu): {files}"
+    linked: "↷ Não revertido (as duas metades de um arquivo movido devem ser revertidas juntas, e uma não pode): {files}"
     failed: "⚠ Falha ao reverter arquivos: {error}"

@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ Elle yaptığın düzenlemeler korundu: {files} (/rollback bunları geri yükleyebilir)"
     not_captured: "Geri döndürülmedi (turdan önceki kontrol noktası yok): {files}"
     other_writers: "↷ Geri döndürülmedi (başka bir konuşma veya sonraki bir tur da yazdı): {files}"
+    linked: "↷ Geri döndürülmedi (taşınan bir dosyanın iki yarısı birlikte geri döndürülmeli ve biri döndürülemiyor): {files}"
     failed: "⚠ Dosya geri döndürme başarısız: {error}"

@@ -161,7 +161,6 @@ DEFAULT_EXCLUDES = [
     "agent-browser-chrome-*/",
 ]
 
-_EMPTY_TREE_PREFIX = "4b825dc642cb"
 # Paths Hermes passes to git are file names: ``a*.txt`` must never also match ``another.txt``.
 _LITERAL_PATHSPECS = {"GIT_LITERAL_PATHSPECS": "1"}
 
@@ -304,27 +303,6 @@ def _unstage_excluded(store: Path, working_dir, index_file: Path) -> None:
     for i in range(0, len(paths), 200):
         _run_git(["rm", "--cached", "-q", "--ignore-unmatch", "--", *paths[i:i + 200]],
                  store, working_dir, index_file=index_file, extra_env=_LITERAL_PATHSPECS)
-
-
-# Earlier turns' last writes kept per file: the newest writer's entry plus one per older turn,
-# bounded like the turn marks /undo can still reach.
-_LEDGER_TURN_HISTORY = 50
-
-
-def _turn_write_history(previous: Optional[dict], turn: dict) -> list[dict]:
-    """The ``history`` for a file's new ledger entry: one entry per EARLIER turn that wrote it, so
-    repeated writes in one turn never evict an older turn's (undoing to it keeps the file revertible)."""
-    if not isinstance(previous, dict) or previous.get("turn_ts") is None:
-        return []
-    history = [h for h in previous.get("history", []) if isinstance(h, dict)]
-    if not _same_turn(previous, turn):
-        history.append({k: previous[k] for k in ("sha256", "turn_ts", "session", "pre") if k in previous})
-    return history[-_LEDGER_TURN_HISTORY:]
-
-
-def _same_turn(previous: Optional[dict], turn: dict) -> bool:
-    return (isinstance(previous, dict)
-            and (previous.get("turn_ts"), previous.get("session")) == (turn["turn_ts"], turn.get("session") or ""))
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -914,12 +892,14 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: set[str] = set()
-        # The user turn now running ({"turn_ts", "session"}); tags ledger writes and turn marks so
+        # The user turn now running ({"turn_ts", "session", "uid"}); tags each ledger write record so
         # /undo can put back exactly what that turn wrote (tools/checkpoint_turns.py).
         self._turn: Optional[dict] = None
-        self._marked_dirs: set[str] = set()
         # path -> the file as it was right before the write now in flight (note_pending_write).
         self._pending_pre: dict[str, dict] = {}
+        # Paths a file tool recorded exactly this iteration (checkpoint_write_ledger.record): the
+        # post-tool hook's record_agent_write for them must not re-hash the disk later.
+        self._exact_recorded: set[str] = set()
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -929,12 +909,13 @@ class CheckpointManager:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
         self._pending_pre.clear()
+        self._exact_recorded.clear()
 
-    def begin_turn(self, turn_ts: float, session_id: Optional[str]) -> None:
-        """Start a user turn: ``turn_ts`` is its user message's timestamp (the value its transcript
-        row stores), so /undo of that message finds the files this turn wrote."""
-        self._turn = {"turn_ts": float(turn_ts), "session": session_id or ""}
-        self._marked_dirs.clear()
+    def begin_turn(self, turn_ts: float, session_id: Optional[str], uid: Optional[str] = None) -> None:
+        """Start a user turn. ``uid``: its user message's ``message_uid`` (the stored row carries it),
+        the identity /undo selects this turn's writes by; ``turn_ts`` + ``session`` identify a turn
+        begun without one (two turns may share a timestamp, so /undo then refuses ambiguous ones)."""
+        self._turn = {"turn_ts": float(turn_ts), "session": session_id or "", **({"uid": uid} if uid else {})}
 
     def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
         """Explain why host checkpoints are off limits for a container-backed session.
@@ -954,24 +935,57 @@ class CheckpointManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def note_pending_write(self, file_path: str) -> None:
-        """Remember ``file_path`` as it is right before a file tool writes it: whether it existed,
-        its hash and the blob id a snapshot would store. ``record_agent_write`` keeps this on the
-        ledger as the turn's ``pre`` state, the only proof /undo accepts that the turn created a
-        file (delete) or which snapshot blob was its prior content (restore). Never raises."""
+    def note_pending_write(self, file_path: str, link: Optional[str] = None) -> None:
+        """Remember ``file_path`` as it is right before a write that ``record_agent_write`` will
+        record afterwards (callers outside the file tools' own recording). ``link``: shared by the
+        halves of one move, which /undo reverts together or not at all. Never raises."""
+        if (pre := self.capture_pre(file_path)) is not None:
+            self._pending_pre[str(_normalize_path(file_path))] = {**pre, **({"link": link} if link else {})}
+
+    def capture_pre(self, file_path: str) -> Optional[dict]:
+        """``file_path``'s pre-image for a write about to happen (existed, sha256, snapshot blob id,
+        and the newest ledger record already there), or None with no turn running or when it cannot
+        be read. A symlink entry is never restorable (its target was what got hashed). Never raises."""
         if not self.enabled or self._turn is None:
-            return
+            return None
         try:
-            path = _normalize_path(file_path)
-            existed = path.exists() or path.is_symlink()
-            pre = {"existed": existed, "sha256": _hash_file(path) if existed else None, "oid": None}
-            if pre["sha256"] is not None:
-                from tools.checkpoint_turns import worktree_oid
-                workdir = self.get_working_dir_for_path(str(path))
-                pre["oid"] = worktree_oid(_store_path(), workdir, path.relative_to(workdir).as_posix())
-            self._pending_pre[str(path)] = pre
-        except (OSError, ValueError) as exc:  # unreadable, or outside its working dir: no pre-state, not revertible
-            logger.debug("note_pending_write failed for %s: %s", file_path, exc)
+            from tools.checkpoint_write_ledger import last_seq, pre_image
+            if Path(file_path).is_symlink():
+                pre = {"existed": True, "sha256": None, "oid": None}
+            else:
+                path = _normalize_path(file_path)
+                pre = pre_image(self, path, self.get_working_dir_for_path(str(path)))
+            key = str(_normalize_path(file_path))
+            pre["after_seq"] = last_seq(_load_ledger(_store_path(), self._ledger_key(key)), key)
+            return pre
+        except (OSError, ValueError) as exc:  # unreadable, or outside its working dir: not revertible
+            logger.debug("capture_pre failed for %s: %s", file_path, exc)
+            return None
+
+    def record_exact_writes(self, items: list) -> None:
+        """Append one ledger write record per ``(path, pre, post, link)`` a file tool just made, with
+        the pre/post images it captured inside its own per-path lock. Never raises."""
+        from tools.checkpoint_write_ledger import append, next_seq, store_lock_waiting
+        try:
+            with store_lock_waiting():
+                store = _store_path()
+                by_project: dict[str, dict] = {}
+                for raw, pre, post, link in items:
+                    path = str(_normalize_path(raw))
+                    self._exact_recorded.add(path)
+                    self._pending_pre.pop(path, None)
+                    if post is None:
+                        continue  # untouched by the call (a no-op patch): nothing to record
+                    dir_hash = self._ledger_key(path)
+                    ledger = by_project.setdefault(dir_hash, _load_ledger(store, dir_hash))
+                    write = {"seq": next_seq(store), **(self._turn or {}), "pre": pre, "post": post}
+                    if link:
+                        write["link"] = link
+                    append(ledger, path, write)
+                for dir_hash, ledger in by_project.items():
+                    _save_ledger(store, dir_hash, ledger)
+        except Exception as exc:  # health: allow BLE001 -- bookkeeping: a lost record makes the write unrevertible, never fails it
+            logger.debug("record_exact_writes failed: %s", exc)
 
     def record_agent_write(self, file_path: str) -> None:
         """Record the content hash of a file Hermes just successfully wrote.
@@ -979,37 +993,38 @@ class CheckpointManager:
         Feeds the agent-write ledger used by :meth:`restore` in safe mode:
         at restore time, a file whose current content no longer matches the
         recorded hash was hand-edited by the user after Hermes last touched
-        it, and is skipped instead of clobbered.
+        it, and is skipped instead of clobbered. A write the file tool already
+        recorded exactly (``record_exact_writes``) is not re-hashed here: the
+        disk may already hold a later writer's bytes.
 
         Never raises — the ledger is best-effort bookkeeping.
         """
         if not self.enabled:
             return
         try:
-            from tools.checkpoint_pruning import store_lock
-
             path = _normalize_path(file_path)
-            digest = _hash_file(path)
-            if digest is None:
+            if str(path) in self._exact_recorded:
                 return
-            with store_lock(_resolve_checkpoint_base()):
+            digest = _hash_file(path)
+            pre = self._pending_pre.pop(str(path), None)
+            # A file the write removed (a V4A delete, a move's source) is recorded only with its
+            # pre-image: /undo puts it back from there.
+            if digest is None and not (self._turn is not None and pre is not None and pre.get("existed")):
+                return
+            from tools.checkpoint_write_ledger import append, next_seq, store_lock_waiting
+            with store_lock_waiting():
                 store = _store_path()
                 dir_hash = self._ledger_key(str(path))
                 ledger = _load_ledger(store, dir_hash)
-                entry = {"sha256": digest, "ts": time.time()}
-                pre = self._pending_pre.pop(str(path), None)
-                if self._turn is not None:  # the newest writing turn: /undo of it or any earlier one reverts this
-                    previous = ledger.get(str(path))
-                    entry.update(self._turn)
-                    entry["history"] = _turn_write_history(previous, self._turn)
-                    if _same_turn(previous, self._turn):
-                        # The state before this turn's FIRST write, while nothing else changed the
-                        # file between its writes (otherwise no pre-state is proven: not revertible).
-                        unchanged = pre is None or pre.get("sha256") == previous.get("sha256")
-                        pre = previous.get("pre") if unchanged else None
-                    if pre is not None:
-                        entry["pre"] = pre
-                ledger[str(path)] = entry
+                if self._turn is None:
+                    ledger[str(path)] = {**(ledger.get(str(path)) or {}), "sha256": digest, "ts": time.time()}
+                else:
+                    link = pre.pop("link", None) if pre else None
+                    write = {"seq": next_seq(store), **self._turn, "pre": pre,
+                             "post": {"existed": digest is not None, "sha256": digest}, **({"link": link} if link else {})}
+                    # Hashed after the write returned: a writer recorded in between makes these bytes
+                    # unprovable as this turn's (append flags that interleaving from ``pre``).
+                    append(ledger, str(path), write)
                 _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -1105,9 +1120,8 @@ class CheckpointManager:
         try:
             from tools.checkpoint_pruning import store_lock
 
-            mark = self._turn if abs_dir not in self._marked_dirs else None
             with store_lock(_resolve_checkpoint_base()):
-                return self._take(abs_dir, reason, mark=mark)
+                return self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1582,9 +1596,8 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str, *, prune: bool = True, mark: Optional[dict] = None) -> bool:
-        """Take a snapshot.  Returns True on success. ``mark``: the user turn whose pre-state this is;
-        recorded whenever the tree is known (a new snapshot, an unchanged tip, an empty tree)."""
+    def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
+        """Take a snapshot.  Returns True on success."""
         store = _store_path()
 
         err = _init_store(store, working_dir)
@@ -1660,7 +1673,6 @@ class CheckpointManager:
             )
             if ok_diff:
                 logger.debug("Checkpoint skipped: no changes in %s", working_dir)
-                self._mark_turn(store, working_dir, mark, ref_commit + "^{tree}", index_file)
                 return False
         else:
             # No ref yet — skip only if the index is empty.
@@ -1671,8 +1683,6 @@ class CheckpointManager:
             )
             if ok_ls and not ls_out.strip():
                 logger.debug("Checkpoint skipped: empty tree in %s", working_dir)
-                from tools.checkpoint_turns import EMPTY_TREE
-                self._mark_turn(store, working_dir, mark, EMPTY_TREE, index_file)
                 return False
 
         # Write tree from per-project index.
@@ -1722,24 +1732,12 @@ class CheckpointManager:
             return False
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
-        self._mark_turn(store, working_dir, mark, tree_sha, index_file)
 
         # Count and size budgets share one failure boundary.
         if prune:
             self._prune(store, working_dir, ref)
 
         return True
-
-    def _mark_turn(self, store: Path, working_dir: str, mark: Optional[dict], tree: str,
-                   index_file: Path) -> None:
-        if mark is None:
-            return
-        if not tree.startswith(_EMPTY_TREE_PREFIX):
-            tree = _git_out(["rev-parse", "--verify", tree], store, working_dir) or ""
-        if tree:
-            from tools.checkpoint_turns import record_turn_mark
-            record_turn_mark(store, working_dir, tree, mark)
-            self._marked_dirs.add(str(_normalize_path(working_dir)))
 
     def _exceeds_size_cap(self, path: Path) -> bool:
         """Whether *path* is larger than ``max_file_size_mb``.

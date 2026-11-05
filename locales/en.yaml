@@ -4102,4 +4102,5 @@ checkpoints:
     kept_edits: "↷ Kept your hand edits: {files} (/rollback can restore them)"
     not_captured: "Not reverted (no checkpoint from before the turn): {files}"
     other_writers: "↷ Not reverted (another conversation or a later turn also wrote it): {files}"
+    linked: "↷ Not reverted (a moved file's two halves must be reverted together, and one cannot be): {files}"
     failed: "⚠ File revert failed: {error}"

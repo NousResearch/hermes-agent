@@ -4312,4 +4312,5 @@ checkpoints:
     kept_edits: "↷ Vos modifications manuelles sont conservées : {files} (/rollback peut les restaurer)"
     not_captured: "Non restauré (aucun point de contrôle d'avant le tour) : {files}"
     other_writers: "↷ Non restauré (une autre conversation ou un tour ultérieur l'a aussi écrit) : {files}"
+    linked: "↷ Non restauré (les deux moitiés d'un fichier déplacé doivent être restaurées ensemble, et l'une ne peut pas l'être) : {files}"
     failed: "⚠ Échec de la restauration des fichiers : {error}"

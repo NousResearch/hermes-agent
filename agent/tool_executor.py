@@ -97,13 +97,15 @@ def _record_persisted_path_for_stub(agent, tool_call_id: str, function_result) -
 def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effective_task_id: str) -> None:
     """Checkpoint the same workspace path that the file tool will mutate, resolved the way
     file tools do (against the task's live cwd, which differs from the process cwd in Docker)."""
-    file_path = function_args.get("path", "")
-    if not file_path:
-        return
     from agent.file_safety import is_nt_namespace_path
     from agent.tool_dispatch_helpers import _extract_file_mutation_targets
     from tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
 
+    # A V4A patch names its files only in its headers (``path`` is optional there).
+    targets = _extract_file_mutation_targets(function_name, function_args)
+    file_path = function_args.get("path", "") or next(iter(targets), "")
+    if not file_path:
+        return
     if container_backend_for_task(effective_task_id or "default") is not None:
         return  # container paths: nothing to checkpoint on the host
 
@@ -116,9 +118,14 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
         agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path)), f"before {function_name}",
     )
     # Each target's state right before the write: /undo deletes or restores only what this proves.
-    for target in _extract_file_mutation_targets(function_name, function_args) or [file_path]:
+    # The file tool records the exact images itself (checkpoint_write_ledger); this is the fallback
+    # for a caller that only runs record_agent_write afterwards. A move's halves share a link.
+    from tools.checkpoint_write_ledger import move_links
+    links = move_links(function_args.get("patch") if function_name == "patch" else None)
+    for target in targets or [file_path]:
         if not is_nt_namespace_path(target):
-            agent._checkpoint_mgr.note_pending_write(str(_resolve_path_for_task(target, effective_task_id or "default")))
+            agent._checkpoint_mgr.note_pending_write(
+                str(_resolve_path_for_task(target, effective_task_id or "default")), link=links.get(target.strip()))
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -748,11 +755,25 @@ def _dispatch_authorized_once(
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
-    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
+    with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use, \
+            _write_recording(agent, ref):
         try:
             return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
         finally:
             state.data_use = frozenset(data_use)
+
+
+def _write_recording(agent, ref: _ToolCallRef):
+    """Bind the checkpoint manager for a host file tool, which then records each write's exact
+    pre/post images inside its own path lock (the proof /undo reverts by)."""
+    from tools import checkpoint_write_ledger
+    mgr = getattr(agent, "_checkpoint_mgr", None)
+    if ref.name not in {"write_file", "patch"} or mgr is None or not getattr(mgr, "enabled", False):
+        return contextlib.nullcontext()
+    from tools.file_tools_paths import container_backend_for_task
+    if container_backend_for_task(ref.task_id or "default") is not None:
+        return contextlib.nullcontext()  # container paths carry no host ledger entry
+    return checkpoint_write_ledger.recording(mgr)
 
 
 def _run_agent_tool_execution_middleware(

@@ -26,6 +26,7 @@ from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from tools import file_state
+from tools import checkpoint_write_ledger as write_ledger
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
@@ -899,7 +900,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            file_ops = _get_file_ops(task_id)
+            # /undo's proof of this write, taken inside the path lock (tools/checkpoint_write_ledger.py).
+            pres = write_ledger.capture([_resolved]) if _resolved and _file_ops_uses_host_paths(file_ops) else {}
+            result = file_ops.write_file(_resolved or path, content)
+            if pres and not result.error:
+                write_ledger.record(pres, {_resolved: write_ledger.post_of(_resolved, result._content_sha256)})
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -1001,12 +1007,19 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
                 _replace_target = _path_to_resolved.get(path) or path
+                pres = write_ledger.capture([_replace_target]) if _file_ops_uses_host_paths(file_ops) else {}
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
+                if pres and not result.error:
+                    write_ledger.record(pres, {w[0]: write_ledger.post_of(w[0], w[2]) for w in result._writes})
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                host_patch = _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops)
+                pres = (write_ledger.capture([*_path_to_resolved.values(), *_path_to_entry.values()])
+                        if _file_ops_uses_host_paths(file_ops) else {})
+                result = file_ops.patch_v4a(host_patch)
+                if pres and not result.error:
+                    write_ledger.record(pres, *write_ledger.v4a_posts(host_patch, result._writes, pres))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 

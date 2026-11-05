@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ Coinníodh d'eagarthóireacht láimhe: {files} (is féidir le /rollback iad a athchóiriú)"
     not_captured: "Níor cuireadh ar ais (gan seicphointe ó roimh an seal): {files}"
     other_writers: "↷ Níor cuireadh ar ais (scríobh comhrá eile nó seal níos déanaí é freisin): {files}"
+    linked: "↷ Níor cuireadh ar ais (caithfear dhá leath comhaid a bogadh a chur ar ais le chéile, agus ní féidir le ceann acu): {files}"
     failed: "⚠ Theip ar chur ar ais na gcomhad: {error}"

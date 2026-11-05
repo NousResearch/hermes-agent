@@ -4004,4 +4004,5 @@ checkpoints:
     kept_edits: "↷ A kézi szerkesztéseid megmaradtak: {files} (a /rollback visszaállíthatja őket)"
     not_captured: "Nincs visszaállítva (nincs a kör előtti ellenőrzőpont): {files}"
     other_writers: "↷ Nincs visszaállítva (egy másik beszélgetés vagy egy későbbi kör is írta): {files}"
+    linked: "↷ Nincs visszaállítva (egy áthelyezett fájl két felét együtt kell visszaállítani, és az egyik nem állítható vissza): {files}"
     failed: "⚠ A fájlok visszaállítása sikertelen: {error}"

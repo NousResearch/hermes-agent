@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ 已保留你的手動修改：{files}（可用 /rollback 還原）"
     not_captured: "未還原（沒有該輪之前的檢查點）：{files}"
     other_writers: "↷ 未還原（另一個對話或之後的輪次也寫入了它）：{files}"
+    linked: "↷ 未還原（移動的檔案兩端必須一起還原，其中一端無法還原）：{files}"
     failed: "⚠ 檔案還原失敗：{error}"

@@ -3987,4 +3987,5 @@ checkpoints:
     kept_edits: "↷ 手動の編集は保持しました: {files}（/rollback で復元できます）"
     not_captured: "元に戻していません（ターン前のチェックポイントがありません）: {files}"
     other_writers: "↷ 元に戻していません（別の会話または後のターンも書き込みました）: {files}"
+    linked: "↷ 元に戻していません（移動したファイルの両側は一緒に戻す必要があり、片方を戻せません）: {files}"
     failed: "⚠ ファイルの復元に失敗しました: {error}"

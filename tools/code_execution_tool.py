@@ -413,9 +413,10 @@ def _get_or_create_env(task_id: str):
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
+    from tools.environments.sandbox_scope import admit_env
     def _cached():
         with _env_lock:
-            env = _active_environments.get(effective_task_id)
+            env = admit_env(_active_environments.get(effective_task_id))
             if env is not None:
                 _last_activity[effective_task_id] = time.time()
         return env
@@ -784,7 +785,9 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
-    if env_type != "local":
+    from tools.environments.sandbox_scope import hosted_scope
+    # A hosted agent's code runs only in its sandbox, never in a kernel on this host.
+    if env_type != "local" or hosted_scope() is not None:
         return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above

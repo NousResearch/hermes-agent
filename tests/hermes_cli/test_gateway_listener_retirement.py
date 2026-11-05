@@ -25,14 +25,9 @@ def _fresh_fence(monkeypatch):
 RPC = {"id": "test", "method": "test.retirement", "params": {}}
 
 
-def test_busy_gateway_listener_is_never_idle_and_refuses_retirement(monkeypatch):
+def test_gateway_listener_is_never_idle_and_refuses_retirement(monkeypatch):
     fence, server = _fresh_fence(monkeypatch)
     client = native_desktop_client(monkeypatch)
-    from hermes_cli import web_server
-
-    runner = web_server.app.state.gateway_runner
-    runner._active_work_count = lambda: 1  # one agent running on the gateway
-    runner._running = True
 
     idle = client.get("/api/health/idle")
     assert idle.status_code == 200, idle.text

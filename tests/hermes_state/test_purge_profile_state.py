@@ -105,6 +105,28 @@ class TestPurgeProfileState:
         assert db._read_one(
             "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?", ("gone",))["n"] == 0
 
+    def test_main_profile_purge_uses_marked_namespace(self, db):
+        db.save_gateway_routing_entry(
+            "agent:main:feishu:dm:default",
+            json.dumps({"session_key": "agent:main:feishu:dm:default"}),
+            scope="/root/sessions")
+        db.save_gateway_routing_entry(
+            "agent:main~:feishu:dm:named",
+            json.dumps({"session_key": "agent:main~:feishu:dm:named"}),
+            scope="/root/sessions")
+        db.save_gateway_routing_entry(
+            "agent:other:feishu:dm:other",
+            json.dumps({"session_key": "agent:other:feishu:dm:other"}),
+            scope="/root/sessions")
+
+        counts = db.purge_profile_state("main")
+
+        assert counts["gateway_routing"] == 1
+        routing = db.load_gateway_routing_entries(scope="/root/sessions")
+        assert "agent:main:feishu:dm:default" in routing
+        assert "agent:main~:feishu:dm:named" not in routing
+        assert "agent:other:feishu:dm:other" in routing
+
     def test_abandons_pending_deliveries_instead_of_deleting_them(self, db, monkeypatch):
         """A pending obligation is delivery state, not identity: terminalize it, never drop it."""
         _write_obligation(db, monkeypatch, "ob-gone", "agent:gone:feishu:dm:chatA", "chatA", "gone")

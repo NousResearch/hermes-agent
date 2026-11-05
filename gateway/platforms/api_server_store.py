@@ -1,7 +1,7 @@
 """Runtime-bound API storage selection; borrowed stores are never adapter-owned. Without a runtime the adapter caches
 one storage interface handle per profile home and closes it. An authority's handle for the API and webhook doors:
 :func:`authority_store`."""
-from pathlib import Path
+import contextlib
 
 
 def selected_session_db(adapter, home):
@@ -18,9 +18,9 @@ def selected_session_db(adapter, home):
 
 def adapter_persistence(adapter, home=None):
     """The storage interface handle for the store ``_ensure_store`` answers for ``home`` (the active profile home
-    when None): the reserving authority's under a runtime, else the adapter's cached handle, or one opened beside its
-    explicit ``_session_db`` override; :func:`close_cached_stores` closes the adapter's. None without a store, beside an
-    override without a file path, or when the handle cannot open (the next call tries again)."""
+    when None): the reserving authority's under a runtime, else the adapter's cached handle, or its explicit
+    ``_session_db`` override when that is a handle; :func:`close_cached_stores` closes the adapter's. None without a
+    store or beside an override that is not a handle."""
     if home is None:
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
@@ -35,20 +35,11 @@ def adapter_persistence(adapter, home=None):
     if override is None:
         with adapter._session_db_cache_lock:
             return None if adapter._session_db_cache_closed else adapter._home_stores.get(str(home))
-    path = getattr(override, "db_path", None)
-    if not isinstance(path, (str, Path)):
-        return None
-    home = Path(path).parent
-    from persistence_beside import open_beside
-    key = str(home)
+    from persistence_assembly import Persistence
     with adapter._session_db_cache_lock:
         if adapter._session_db_cache_closed:
             return None
-        handles = adapter.__dict__.setdefault("_persistence_handles", {})
-        handle = handles.get(key)
-        if handle is None and (handle := open_beside(Path(home))) is not None:
-            handles[key] = handle
-        return handle
+    return override if isinstance(override, Persistence) else None
 
 
 def authority_store(authority):
@@ -75,11 +66,12 @@ def delete_session(store, session_id, sessions_dir) -> bool:
 
 
 def close_cached_stores(adapter) -> None:
-    """Close the storage interface handles ``adapter``'s profile cache holds and those opened beside its override."""
-    from persistence_beside import close_beside
+    """Close the storage interface handles ``adapter``'s profile cache holds."""
     with adapter._session_db_cache_lock:
         adapter._session_db_cache_closed = True
-        handles = [*adapter._home_stores.values(), *adapter.__dict__.pop("_persistence_handles", {}).values()]
+        handles = list(adapter._home_stores.values())
         adapter._home_stores.clear()
     for handle in handles:
-        close_beside(handle)
+        if handle is not None:
+            with contextlib.suppress(Exception):
+                handle.close()

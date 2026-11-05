@@ -48,12 +48,14 @@ def test_repeated_and_many_grants_for_one_member_keep_a_few_rows(tmp_path):
     assert rows[-1][1] == now + 3600 + 49
 
 
-def test_an_owed_revoke_that_never_lands_is_dropped_after_its_attempts(tmp_path):
-    db = tmp_path / "state.db"
-    _owe(db, _grant(time.time() + 3600, "unreachable"))
-    for _ in range(hosted_rooms.MAX_OWED_REVOKE_ATTEMPTS):
-        owed, = hosted_rooms.due_room_grant_revokes(db, limit=5, now=time.time() + 10)
+def test_an_owed_revoke_is_retried_until_its_grant_expires(tmp_path):
+    db, now = tmp_path / "state.db", time.time()
+    _owe(db, _grant(now + 30 * 86400, "unreachable"))
+    for attempt in range(200):
+        owed, = hosted_rooms.due_room_grant_revokes(db, limit=5, now=now + attempt + 1)
         hosted_rooms.settle_room_grant_revoke(
             db, room_id=owed["room_id"], member_id=owed["member_id"], grant_digest=owed["grant_digest"],
-            retry_at=time.time())
+            retry_at=now + attempt + 1)
+    assert [attempts for _member, _expires, attempts in _rows(db)] == [200]
+    assert hosted_rooms.due_room_grant_revokes(db, limit=5, now=now + 30 * 86400 + 1) == []
     assert _rows(db) == []

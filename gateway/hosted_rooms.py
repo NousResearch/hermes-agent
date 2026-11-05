@@ -712,11 +712,11 @@ _OWE_REVOKE = """INSERT INTO hosted_room_owed_revokes(
 # keeps at most a few (its scope revocation covers every grant issued before it, so the longest-lived
 # one is enough); and the table has a ceiling, where expired rows make room first and a grant that
 # still finds none is revoked by the caller at once (``HostedRoomService.owe_grant_revoke``). A
-# revoke that never lands is dropped after its backed-off attempts (``settle_room_grant_revoke``).
+# revoke that never lands is retried, with capped backoff, until its grant expires: the grant passes
+# at its member's gateway until then.
 MAX_OWED_REVOKE_SECONDS = 30 * 24 * 60 * 60
 MAX_OWED_REVOKES_PER_MEMBER = 4
 MAX_OWED_REVOKES = 512
-MAX_OWED_REVOKE_ATTEMPTS = 48
 
 
 class OwedRevokesFullError(HostedRoomError):
@@ -818,8 +818,6 @@ def settle_room_grant_revoke(
         else:
             conn.execute("""UPDATE hosted_room_owed_revokes SET attempts=attempts+1, next_attempt_at=?
                              WHERE room_id=? AND member_id=? AND grant_digest=?""", (float(retry_at), *key))
-            conn.execute("""DELETE FROM hosted_room_owed_revokes WHERE room_id=? AND member_id=? AND grant_digest=?
-                             AND attempts>=?""", (*key, MAX_OWED_REVOKE_ATTEMPTS))
 
 
 def _claim_values(claims: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, str]:

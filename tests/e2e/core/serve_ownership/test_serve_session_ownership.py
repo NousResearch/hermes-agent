@@ -42,7 +42,9 @@ from tests.e2e.core.chaos._helpers import (
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, _handler_for
 from tests.waiting import wait_until
 
-pytestmark = pytest.mark.platforms("linux")  # caller attribution reads /proc/net/tcp
+# The gateway child is spawned and reaped by this module (fake HOME, no systemd bus in its env).
+pytestmark = [pytest.mark.platforms("linux"),  # caller attribution reads /proc/net/tcp
+              pytest.mark.spawns_gateway_lookalike]
 
 BOOT_S = 180.0
 TURN_S = 90.0

@@ -13,9 +13,9 @@ from threading import Event, Thread
 import pytest
 
 from hermes_cli import config
-from hermes_state_wal import apply_wal_with_fallback
+from sqlite_support import apply_wal_with_fallback
 from utils import atomic_yaml_write
-import hermes_state_wal as wal
+import sqlite_support
 
 
 def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
@@ -29,7 +29,7 @@ def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
         import os, sqlite3
 
         import providers
-        import hermes_state_wal as wal
+        import sqlite_support
 
         listed = []
         providers.list_providers = lambda: listed.append(1) or []
@@ -50,7 +50,7 @@ def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
 
         def opener():
             with sqlite3.connect(database) as connection:
-                outcomes.append(f"open:{wal.apply_wal_with_fallback(connection)}")
+                outcomes.append(f"open:{sqlite_support.apply_wal_with_fallback(connection)}")
 
         threads = [Thread(target=importer), Thread(target=opener)]
         for t in threads:
@@ -94,7 +94,7 @@ def test_existing_database_does_not_wait_for_config_writer(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: vulnerable)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: vulnerable)
     config.save_config({"database": {"journal_mode": mode}, "marker": "before"})
     config.load_config_readonly()
     path = tmp_path / "existing.db"
@@ -159,26 +159,26 @@ def test_unestablished_or_strict_modes_still_wait_for_real_policy(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: False)
     config.save_config({"database": {"journal_mode": "wal"}})
     path = tmp_path / "policy.db"
     if state != "empty":
         with closing(sqlite3.connect(path)) as conn:
             conn.execute("CREATE TABLE existing (value TEXT)")
     if state == "unknown":
-        monkeypatch.setattr(wal, "_on_disk_journal_mode", lambda _conn: None)
+        monkeypatch.setattr(sqlite_support, "_on_disk_journal_mode", lambda _conn: None)
     resolving = Event()
-    original = wal.resolve_journal_mode
+    original = sqlite_support.resolve_journal_mode
 
     def resolve():
         resolving.set()
         return original()
 
-    monkeypatch.setattr(wal, "resolve_journal_mode", resolve)
+    monkeypatch.setattr(sqlite_support, "resolve_journal_mode", resolve)
 
     def opener():
         with closing(sqlite3.connect(path)) as conn:
-            return wal.apply_wal_with_fallback(conn, require_wal=state == "required_wal")
+            return sqlite_support.apply_wal_with_fallback(conn, require_wal=state == "required_wal")
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with config._CONFIG_LOCK:
@@ -192,7 +192,7 @@ def test_deferred_mode_change_is_applied_after_writer_finishes(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(wal, "is_sqlite_wal_reset_vulnerable", lambda: False)
+    monkeypatch.setattr(sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda: False)
     config.save_config({"database": {"journal_mode": "wal"}})
     path = tmp_path / "deferred.db"
     with closing(sqlite3.connect(path)) as conn:
@@ -200,7 +200,7 @@ def test_deferred_mode_change_is_applied_after_writer_finishes(tmp_path, monkeyp
 
     def opener():
         with closing(sqlite3.connect(path)) as conn:
-            return wal.apply_wal_with_fallback(conn)
+            return sqlite_support.apply_wal_with_fallback(conn)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with config._CONFIG_LOCK:

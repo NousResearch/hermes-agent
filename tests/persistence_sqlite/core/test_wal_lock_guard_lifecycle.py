@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-import hermes_state_lockguard as lg
+from persistence.sqlite._state import lockguard as lg
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.messages import append_message
 from tests.persistence_sqlite.core._wal_generation import make_db, pin_wal, require_wal

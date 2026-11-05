@@ -1,6 +1,6 @@
 name: hermes-watchdog
 repo: https://github.com/33hodl/hermes-watchdog
-sha: d64d01568de779c4320a16e0264788754c235017
+sha: 0bcc7ff6d05e449ea8c444b03f54c0e06e6b7ee9
 title: Watchdog
 description: "Cron jobs that fix themselves: match each open cron incident to a playbook, run the repair (rerun the job, pause it, run a user-authored check, or escalate), then verify the failure actually cleared against Hermes's own incident and execution records, with a durable attempt ledger and a per-incident daily budget. Ships three tools, a /watchdog command, an on_session_end hook that repairs a failing cron turn in place, a bundled skill, and a Desktop pane plus status-bar chip. Disclosure — reads this profile's cron store read-only (jobs, incidents, executions) through late imports that degrade to \"upstream unavailable\" when a module moves, and fires the failing job through Hermes's own cronjob tool (the same path `hermes cron run` uses) or pauses it; a playbook 'check' step runs the argv list you authored, no shell, one bounded timeout per step; writes only its own plugin-data directory (a repair ledger SQLite DB and the playbooks you save); it never edits a job's prompt or schedule and never messages on your behalf."
 maintainer: 33hodl

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 
 class _Bridge:
@@ -42,20 +44,20 @@ async def test_retry_refuses_an_unresendable_turn_before_rewinding(tmp_path, mon
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
-    db = authority.db
+    db = authority.persistence
     try:
         connection = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'fixture'})
         ref = create_local_session(authority, connection.actor, {
             'request_id': 'cli', 'source': 'cli', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
-        db.append_message(ref.session_id, 'user', content)
-        db.append_message(ref.session_id, 'assistant', 'earlier answer')
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': content},
+                      {'role': 'assistant', 'content': 'earlier answer'})
         view = SimpleNamespace(client=_Bridge(connection), session_id=ref.session_id,
                                mutations=PreparedMutations(), submit=AsyncMock(), generation=0)
-        active = lambda: len(db.get_messages(ref.session_id))
+        active = lambda: len(transcript_rows(db, ref.session_id))
         if submitted is None:
             with pytest.raises(GatewayClientError, match=r'^/retry: retry does not support media'):
                 await run_command(view, '/retry', '')

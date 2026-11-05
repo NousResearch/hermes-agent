@@ -580,29 +580,30 @@ class TestDeleteProfile:
         enters the routing index, resolves a profile whose directory is gone, and logs
         ``Profile '<name>' does not exist`` on every subsequent event.
         """
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_holder import raw_holder
         import time
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
         create_profile("keepme", no_alias=True)
         scope = str(tmp_path / ".hermes" / "sessions")
-        db = SessionDB(tmp_path / ".hermes" / "state.db")
-        db.save_gateway_routing_entry(
+        db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        db.routing.upsert_routing_entry(
             "agent:gone:feishu:dm:chatA",
             json.dumps({"session_key": "agent:gone:feishu:dm:chatA",
                         "origin": {"platform": "feishu", "chat_id": "chatA",
                                    "profile": "gone"}}),
-            scope=scope)
-        db.save_gateway_routing_entry(
+            routing_scope=scope)
+        db.routing.upsert_routing_entry(
             "agent:keepme:feishu:dm:chatB",
             json.dumps({"session_key": "agent:keepme:feishu:dm:chatB",
                         "origin": {"platform": "feishu", "chat_id": "chatB",
                                    "profile": "keepme"}}),
-            scope=scope)
-        db.register_backend_heartbeat(
+            routing_scope=scope)
+        db.maintenance.register_backend_heartbeat(
             backend_id="be-gone", pid=1, started_at=time.time(), profile="gone", host="h")
-        db.register_backend_heartbeat(
+        db.maintenance.register_backend_heartbeat(
             backend_id="be-keep", pid=2, started_at=time.time(), profile="keepme", host="h")
         db.close()
 
@@ -611,16 +612,17 @@ class TestDeleteProfile:
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
             delete_profile("gone", yes=True)
 
-        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        check = open_persistence(profile_scope(home=tmp_path / ".hermes"))
         try:
-            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+            assert set(check.routing.load_routing_entries(routing_scope=scope)) == {
                 "agent:keepme:feishu:dm:chatB"}
-            assert check._read_one(
-                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
-                ("gone",))["n"] == 0
-            assert check._read_one(
-                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
-                ("keepme",))["n"] == 1
+            with raw_holder(check)._read_ctx() as conn:
+                assert conn.execute(
+                    "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                    ("gone",)).fetchone()["n"] == 0
+                assert conn.execute(
+                    "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                    ("keepme",)).fetchone()["n"] == 1
         finally:
             check.close()
 
@@ -631,17 +633,17 @@ class TestDeleteProfile:
         would be undone by its next save. When it cannot be reached the delete is NOT a clean
         success: the identity settlement is reported as pending, with the retry named.
         """
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
         from hermes_cli.profiles import ProfileIdentitySettlementPending
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
         scope = str(tmp_path / ".hermes" / "sessions")
-        db = SessionDB(tmp_path / ".hermes" / "state.db")
-        db.save_gateway_routing_entry(
+        db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        db.routing.upsert_routing_entry(
             "agent:gone:feishu:dm:chatA",
             json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}),
-            scope=scope)
+            routing_scope=scope)
         db.close()
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
@@ -658,10 +660,10 @@ class TestDeleteProfile:
         assert isinstance(ei.value, RuntimeError)  # the CLI handler catches RuntimeError
 
         assert "hermes profile purge-identity gone" in capsys.readouterr().err
-        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        check = open_persistence(profile_scope(home=tmp_path / ".hermes"))
         try:
             # The CLI left the identity alone rather than racing the live owner.
-            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+            assert set(check.routing.load_routing_entries(routing_scope=scope)) == {
                 "agent:gone:feishu:dm:chatA"}
         finally:
             check.close()
@@ -1249,22 +1251,24 @@ class TestRenameProfile:
         """No live gateway → the CLI performs the durable rekey itself so a renamed profile's session
         keys / profile_name / routing rows follow the new name (else inbound events on the old name's
         chats resolve to a nonexistent profile and flood errors.log)."""
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import session_row
+        from tests.fixtures.storage_seed import seed_session
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
         # Seed a session owned by the old profile in the profile's own store + the root routing index.
-        pdb = SessionDB(old_dir / "state.db")
-        pdb.create_session(
-            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+        pdb = open_persistence(profile_scope(home=old_dir))
+        seed_session(
+            pdb, "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
             profile_name="oldname", chat_id="chatA", chat_type="dm")
         pdb.close()
-        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
-        root_db.save_gateway_routing_entry(
+        root_db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        root_db.routing.upsert_routing_entry(
             "agent:oldname:feishu:dm:chatA",
             json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
                         "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
-            scope=str(tmp_path / ".hermes" / "sessions"))
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         root_db.close()
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1272,15 +1276,14 @@ class TestRenameProfile:
             rename_profile("oldname", "newname")
 
         new_dir = tmp_path / ".hermes" / "profiles" / "newname"
-        moved_db = SessionDB(new_dir / "state.db")
-        row = moved_db._read_one(
-            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        moved_db = open_persistence(profile_scope(home=new_dir))
+        row = session_row(moved_db, "sess1")
         assert row["session_key"] == "agent:newname:feishu:dm:chatA"
         assert row["profile_name"] == "newname"
         moved_db.close()
-        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
-        routing = root_db2.load_gateway_routing_entries(
-            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db2 = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        routing = root_db2.routing.load_routing_entries(
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
@@ -1295,13 +1298,13 @@ class TestRenameProfile:
              patch("hermes_cli.profiles._notify_multiplexer"), \
              patch("gateway.control_socket.migrate_gateway_profile_identity",
                    return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
-             patch("hermes_state_registry.acquire") as acquire:
+             patch("persistence_assembly.open_persistence") as open_store:
             rename_profile("oldname", "newname")
 
         # Delegated to the gateway; the CLI's own durable-rewrite branch never ran.
         assert verb.call_count == 1
         assert verb.call_args.args[1:] == ("oldname", "newname")
-        acquire.assert_not_called()
+        open_store.assert_not_called()
 
 
 
@@ -1310,22 +1313,24 @@ class TestRenameProfile:
         migrate-identity <old> <new>` rekeys the durable rows once no gateway holds the store, and
         is idempotent (a second run has nothing left to rekey but still succeeds)."""
         from hermes_cli.profile_cmd import cmd_profile
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import session_row
+        from tests.fixtures.storage_seed import seed_session
         from argparse import Namespace
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
-        pdb = SessionDB(old_dir / "state.db")
-        pdb.create_session(
-            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+        pdb = open_persistence(profile_scope(home=old_dir))
+        seed_session(
+            pdb, "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
             profile_name="oldname", chat_id="chatA", chat_type="dm")
         pdb.close()
-        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
-        root_db.save_gateway_routing_entry(
+        root_db = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        root_db.routing.upsert_routing_entry(
             "agent:oldname:feishu:dm:chatA",
             json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
                         "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
-            scope=str(tmp_path / ".hermes" / "sessions"))
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         root_db.close()
 
         # Rename under a live multiplexer whose control verb answers nothing: the CLI warns and
@@ -1346,16 +1351,15 @@ class TestRenameProfile:
             cmd_profile(Namespace(profile_action="migrate-identity",
                                   old_name="oldname", new_name="newname"))
 
-        moved_db = SessionDB(tmp_path / ".hermes" / "profiles" / "newname" / "state.db")
-        row = moved_db._read_one(
-            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        moved_db = open_persistence(profile_scope(home=tmp_path / ".hermes" / "profiles" / "newname"))
+        row = session_row(moved_db, "sess1")
         assert row is not None
         assert row["session_key"] == "agent:newname:feishu:dm:chatA"
         assert row["profile_name"] == "newname"
         moved_db.close()
-        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
-        routing = root_db2.load_gateway_routing_entries(
-            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db2 = open_persistence(profile_scope(home=tmp_path / ".hermes"))
+        routing = root_db2.routing.load_routing_entries(
+            routing_scope=str(tmp_path / ".hermes" / "sessions"))
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()

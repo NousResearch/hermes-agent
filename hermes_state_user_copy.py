@@ -40,6 +40,16 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "the session database file is read-only or not writable",
         _DOCTOR,
     ),
+    # SQLITE_IOERR / EIO: the device or the file failed the write. Free space and file
+    # permissions are both ruled out, so neither the disk-full nor the read-only copy is
+    # the right lead (#RIC-103).
+    "io_error": (
+        "storage_io_error",
+        "the storage device or the session database file failed an I/O operation",
+        "Check the disk holding the Hermes store for hardware errors (`dmesg`), then run "
+        "`hermes {profile_arg}doctor`; if the database file is damaged, restore a copy from "
+        "the Hermes backups directory.",
+    ),
     "corrupt": (
         "storage_corrupt",
         "the session database file is damaged",

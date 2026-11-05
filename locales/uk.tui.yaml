@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "вихід недоступний у ча
 slashCmd.core.redraw.done: "UI перемальовано"
 slashCmd.core.retry.nothing: "нема що повторювати"
 slashCmd.core.save.failed: "не вдалося зберегти"
-slashCmd.core.save.legacyRefused: "не збережено: цей шлюз старший за експорт /save і не може записати приховану, іменовану чи md/html-копію. Оновіть шлюз або виконайте /save без параметрів, щоб записати сирий JSON на хості шлюзу."
+slashCmd.core.save.legacyRefused: "не збережено: цей шлюз не підтримує експорт /save (старіший шлюз або sidecar без повноважень сеансу), тож не може записати приховану, іменовану чи md/html-копію. Під'єднайтеся до шлюзу, якому належить сеанс, або оновіть його, чи виконайте /save без параметрів, щоб записати сирий JSON на хості шлюзу."
 slashCmd.core.save.noActiveSession: "немає активного сеансу — нема що зберігати"
 slashCmd.core.save.noConversation: "розмови ще немає"
 slashCmd.core.save.saved: "розмову збережено в: {0}"

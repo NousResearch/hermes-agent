@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "호스팅 대시보드 채팅에서는 �
 slashCmd.core.redraw.done: "UI를 다시 그렸어요"
 slashCmd.core.retry.nothing: "다시 시도할 내용이 없어요"
 slashCmd.core.save.failed: "저장에 실패했어요"
-slashCmd.core.save.legacyRefused: "저장하지 않음: 이 게이트웨이는 /save 내보내기 이전 버전이라 마스킹된 사본, 이름 지정 사본, md/html 사본을 쓸 수 없습니다. 게이트웨이를 업데이트하거나, 옵션 없이 /save를 실행해 게이트웨이 호스트에 원본 JSON을 저장하세요."
+slashCmd.core.save.legacyRefused: "저장하지 않음: 이 게이트웨이는 /save 내보내기를 제공하지 않아(이전 버전 게이트웨이이거나 세션 권한이 없는 사이드카) 마스킹된 사본, 이름 지정 사본, md/html 사본을 쓸 수 없습니다. 세션을 소유한 게이트웨이에 연결하거나 업데이트하거나, 옵션 없이 /save를 실행해 게이트웨이 호스트에 원본 JSON을 저장하세요."
 slashCmd.core.save.noActiveSession: "활성 세션이 없어요 — 저장할 내용이 없어요"
 slashCmd.core.save.noConversation: "아직 대화가 없어요"
 slashCmd.core.save.saved: "대화를 저장했어요: {0}"

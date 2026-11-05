@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "salir está desactivado en el chat del pa
 slashCmd.core.redraw.done: "interfaz redibujada"
 slashCmd.core.retry.nothing: "nada que reintentar"
 slashCmd.core.save.failed: "no se pudo guardar"
-slashCmd.core.save.legacyRefused: "no se guardó: este gateway es anterior a la exportación de /save y no puede escribir una copia redactada, con nombre o en md/html. Actualiza el gateway o usa /save sin opciones para escribir JSON sin procesar en el host del gateway."
+slashCmd.core.save.legacyRefused: "no se guardó: este gateway no ofrece la exportación de /save (un gateway antiguo o un sidecar sin la autoridad de sesión), así que no puede escribir una copia redactada, con nombre o en md/html. Conéctate al gateway que posee la sesión o actualízalo, o usa /save sin opciones para escribir JSON sin procesar en el host del gateway."
 slashCmd.core.save.noActiveSession: "no hay sesión activa — nada que guardar"
 slashCmd.core.save.noConversation: "aún no hay conversación"
 slashCmd.core.save.saved: "conversación guardada en: {0}"

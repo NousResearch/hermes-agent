@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "a kilépés le van tiltva a hosztolt irá
 slashCmd.core.redraw.done: "felület újrarajzolva"
 slashCmd.core.retry.nothing: "nincs mit újrapróbálni"
 slashCmd.core.save.failed: "a mentés nem sikerült"
-slashCmd.core.save.legacyRefused: "nincs mentve: ez az átjáró régebbi a /save exportnál, ezért nem tud kitakart, elnevezett vagy md/html másolatot írni. Frissítsd az átjárót, vagy futtasd a sima /save parancsot, amely nyers JSON-t ír az átjáró gépére."
+slashCmd.core.save.legacyRefused: "nincs mentve: ez az átjáró nem szolgálja ki a /save exportot (régebbi átjáró, vagy munkamenet-jogosultság nélküli sidecar), ezért nem tud kitakart, elnevezett vagy md/html másolatot írni. Csatlakozz a munkamenetet birtokló átjáróhoz, vagy frissítsd, illetve futtasd a sima /save parancsot, amely nyers JSON-t ír az átjáró gépére."
 slashCmd.core.save.noActiveSession: "nincs aktív munkamenet — nincs mit menteni"
 slashCmd.core.save.noConversation: "még nincs beszélgetés"
 slashCmd.core.save.saved: "beszélgetés mentve ide: {0}"

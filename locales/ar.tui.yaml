@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "الخروج معطّل في دردشة �
 slashCmd.core.redraw.done: "أُعيد رسم الواجهة"
 slashCmd.core.retry.nothing: "لا شيء لإعادة المحاولة"
 slashCmd.core.save.failed: "فشل الحفظ"
-slashCmd.core.save.legacyRefused: "لم يُحفظ: هذه البوابة أقدم من تصدير /save، لذا لا يمكنها كتابة نسخة منقّحة أو مسمّاة أو بصيغة md/html. حدّث البوابة، أو شغّل /save دون خيارات لكتابة JSON خام على مضيف البوابة."
+slashCmd.core.save.legacyRefused: "لم يُحفظ: هذه البوابة لا تقدّم تصدير /save (بوابة أقدم، أو خدمة جانبية بلا سلطة الجلسة)، لذا لا يمكنها كتابة نسخة منقّحة أو مسمّاة أو بصيغة md/html. اتصل بالبوابة التي تملك الجلسة أو حدّثها، أو شغّل /save دون خيارات لكتابة JSON خام على مضيف البوابة."
 slashCmd.core.save.noActiveSession: "لا توجد جلسة نشطة — لا شيء للحفظ"
 slashCmd.core.save.noConversation: "لا توجد محادثة بعد"
 slashCmd.core.save.saved: "حُفظت المحادثة في: {0}"

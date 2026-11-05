@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "sair está desativado no chat hospedado d
 slashCmd.core.redraw.done: "interface redesenhada"
 slashCmd.core.retry.nothing: "nada para tentar novamente"
 slashCmd.core.save.failed: "falha ao salvar"
-slashCmd.core.save.legacyRefused: "não salvo: este gateway é anterior à exportação do /save e não consegue gravar uma cópia redigida, nomeada ou em md/html. Atualize o gateway ou use /save sem opções para gravar JSON bruto no host do gateway."
+slashCmd.core.save.legacyRefused: "não salvo: este gateway não oferece a exportação do /save (um gateway antigo ou um sidecar sem a autoridade de sessão), então não consegue gravar uma cópia redigida, nomeada ou em md/html. Conecte-se ao gateway dono da sessão ou atualize-o, ou use /save sem opções para gravar JSON bruto no host do gateway."
 slashCmd.core.save.noActiveSession: "nenhuma sessão ativa — nada para salvar"
 slashCmd.core.save.noConversation: "ainda não há conversa"
 slashCmd.core.save.saved: "conversa salva em: {0}"

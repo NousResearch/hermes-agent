@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "ホスト型ダッシュボードチャ�
 slashCmd.core.redraw.done: "UI を再描画しました"
 slashCmd.core.retry.nothing: "再試行するものがありません"
 slashCmd.core.save.failed: "保存に失敗しました"
-slashCmd.core.save.legacyRefused: "保存していません: このゲートウェイは /save エクスポートより古いため、マスク済み・名前付き・md/html のコピーを書き出せません。ゲートウェイを更新するか、オプションなしの /save でゲートウェイホストに生の JSON を書き出してください。"
+slashCmd.core.save.legacyRefused: "保存していません: このゲートウェイは /save エクスポートを提供していないため（古いゲートウェイ、またはセッション権限を持たないサイドカー）、マスク済み・名前付き・md/html のコピーを書き出せません。セッションを所有するゲートウェイに接続するか更新するか、オプションなしの /save でゲートウェイホストに生の JSON を書き出してください。"
 slashCmd.core.save.noActiveSession: "アクティブなセッションがありません — 保存するものがありません"
 slashCmd.core.save.noConversation: "まだ会話がありません"
 slashCmd.core.save.saved: "会話を保存しました: {0}"

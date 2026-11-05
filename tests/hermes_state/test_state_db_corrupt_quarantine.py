@@ -13,6 +13,7 @@ import sqlite3
 
 import pytest
 
+from persistence.sqlite import _registry as holders
 from hermes_state import (
     DeletedWalGenerationError,
     SessionDB,
@@ -132,7 +133,7 @@ class TestQuarantinedHandleStopsTouchingTheFile:
         db, _real_conn = _quarantined_db(tmp_path)
         db.close()
         reopen = MagicMock()
-        monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
+        monkeypatch.setattr("persistence.sqlite._holder._connect_tracked_db", reopen)
         with pytest.raises(StateDbCorruptError, match="structural corruption"):
             db.create_session(session_id="s4", source="cli", model="test")
         reopen.assert_not_called()
@@ -203,12 +204,12 @@ def _clean_registry():
     import hermes_state_registry as registry
 
     registry.close_all()
-    registry._generations.clear()
-    registry._retired.clear()
+    holders._generations.clear()
+    holders._retired.clear()
     yield registry
     registry.close_all()
-    registry._generations.clear()
-    registry._retired.clear()
+    holders._generations.clear()
+    holders._retired.clear()
 
 
 class TestSharedRegistry:

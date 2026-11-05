@@ -1246,6 +1246,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
+            # A fork that holds the provider only for the checkpoint gate (memory_agent_context="subagent",
+            # skip_memory=False) keeps MEMORY.md/USER.md out of its prompt, as skip_memory=True did; a
+            # requested memory toolset still gets the store, exactly as with the gate off.
+            if getattr(agent, "memory_agent_context", None) == "subagent" and not _memory_toolset_requested:
+                agent._memory_enabled = agent._user_profile_enabled = False
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 agent._memory_store = MemoryStore(

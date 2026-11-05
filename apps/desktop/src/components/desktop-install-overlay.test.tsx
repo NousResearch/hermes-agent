@@ -259,6 +259,30 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(screen.getByText('Install Hermes locally')).toBeTruthy()
   })
 
+  it('remote-only: offers only the existing-gateway route, never a local install', async () => {
+    installDesktopMock(
+      bootstrapState({
+        light: true,
+        setupChoice: {
+          platform: 'win32',
+          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes',
+          local: 'none',
+          bundled: false,
+          light: true
+        }
+      })
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Set up Hermes Desktop')).toBeTruthy()
+    expect(screen.getByText('Connect to existing Hermes')).toBeTruthy()
+    // The installer offer and its install target must not exist on a
+    // remote-only artifact: there is no runtime to install here.
+    expect(screen.queryByText('Install Hermes locally')).toBeNull()
+    expect(screen.queryByText('Will install to')).toBeNull()
+  })
+
   it('requires a successful token connection test before applying remote config', async () => {
     const desktop = installDesktopMock(
       bootstrapState({

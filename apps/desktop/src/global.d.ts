@@ -1590,6 +1590,8 @@ export interface DesktopBootstrapSetupChoice {
   local: 'none' | 'installed' | 'bundled'
   /** This artifact is a bundled install (payload ships in-app). */
   bundled: boolean
+  /** This artifact is remote-only: no local card, no installer. */
+  light?: boolean
 }
 
 export interface DesktopBootstrapState {
@@ -1604,6 +1606,8 @@ export interface DesktopBootstrapState {
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
   /** This artifact is a bundled install (payload ships in-app). */
   bundled: boolean
+  /** This artifact is the light (remote-only) variant: no local runtime. */
+  light?: boolean
 }
 
 export type DesktopBootstrapEvent =
@@ -1615,6 +1619,7 @@ export type DesktopBootstrapEvent =
       activeRoot?: string
       local?: DesktopBootstrapSetupChoice['local']
       bundled?: boolean
+      light?: boolean
     }
   | { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null }
   | {

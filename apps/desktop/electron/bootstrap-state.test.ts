@@ -27,12 +27,13 @@ test.each(['bundled', 'bootstrap', 'light'] as const)(
   payload => {
     const artifact = stamp(payload)
     const state = { error: 'backend exited before setup', setupChoice: null }
-    expect(bootstrapSnapshot(state, artifact)).toEqual({ ...state, bundled: payload === 'bundled' })
+    const shape = { bundled: payload === 'bundled', light: payload === 'light' }
+    expect(bootstrapSnapshot(state, artifact)).toEqual({ ...state, ...shape })
     expect(bootstrapSnapshot({ error: null, setupChoice: null }, artifact).bundled).toBe(payload === 'bundled')
+    expect(bootstrapSnapshot({ error: null, setupChoice: null }, artifact).light).toBe(payload === 'light')
     expect(state).not.toHaveProperty('bundled')
     expect(bootstrapSnapshot(state, null).bundled).toBe(false)
-    expect(bootstrapSnapshot({ ...state, bundled: payload !== 'bundled' }, artifact).bundled).toBe(
-      payload === 'bundled'
-    )
+    expect(bootstrapSnapshot(state, null).light).toBe(false)
+    expect(bootstrapSnapshot({ ...state, ...shape }, artifact)).toEqual({ ...state, ...shape })
   }
 )

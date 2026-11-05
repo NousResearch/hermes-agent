@@ -2521,7 +2521,8 @@ function broadcastBootstrapEvent(ev) {
           platform: ev.platform,
           activeRoot: ev.activeRoot,
           local: ev.local || 'none',
-          bundled: installShape() === 'bundled'
+          bundled: installShape() === 'bundled',
+          light: installShape() === 'light'
         }
       : null
     bootstrapState.unsupportedPlatform = null
@@ -2567,7 +2568,8 @@ function promptFirstRunSetupChoice(backend) {
     platform: backend.platform || process.platform,
     activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT,
     local: backend.local || 'none',
-    bundled: installShape() === 'bundled'
+    bundled: installShape() === 'bundled',
+    light: installShape() === 'light'
   })
 }
 

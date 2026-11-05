@@ -192,7 +192,8 @@ const EMPTY_STATE: DesktopBootstrapState = {
   completedAt: null,
   setupChoice: null,
   unsupportedPlatform: null,
-  bundled: false
+  bundled: false,
+  light: false
 }
 
 function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): DesktopBootstrapState {
@@ -212,11 +213,13 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
             platform: ev.platform || state.setupChoice?.platform || 'unknown',
             activeRoot: ev.activeRoot || state.setupChoice?.activeRoot || '',
             local: ev.local || state.setupChoice?.local || 'none',
-            bundled: Boolean(ev.bundled)
+            bundled: Boolean(ev.bundled),
+            light: Boolean(ev.light)
           }
         : null,
       unsupportedPlatform: null,
-      bundled: Boolean(ev.bundled)
+      bundled: Boolean(ev.bundled),
+      light: Boolean(ev.light)
     }
   }
 
@@ -414,6 +417,13 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       return false
     }
 
+    // A remote-only artifact has no bootstrap to report: the only first-run
+    // surface it owns is the gateway choice. Never paint install progress,
+    // installer output or a "local install failed" retry here.
+    if (state.light) {
+      return Boolean(state.setupChoice)
+    }
+
     if (state.active) {
       return true
     }
@@ -444,6 +454,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   if (state.setupChoice) {
     const localState = state.setupChoice.local
     const localPres = localCardPresentation(localState)
+    const light = state.light || state.setupChoice.light
 
     return (
       <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
@@ -453,12 +464,16 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <div className="min-w-0">
               <h2 className="text-xl font-semibold tracking-tight">{copy.setupChoiceTitle}</h2>
               <p className="mt-1.5 text-sm text-muted-foreground">
-                {localState === 'none' ? copy.setupChoiceDesc : copy.setupChoiceDescLocal}
+                {light
+                  ? copy.connectExistingDesc
+                  : localState === 'none'
+                    ? copy.setupChoiceDesc
+                    : copy.setupChoiceDescLocal}
               </p>
             </div>
           </div>
 
-          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          <div className={light ? 'mt-6 grid gap-3' : 'mt-6 grid gap-3 sm:grid-cols-2'}>
             <button
               className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover)"
               onClick={() => setRemoteOpen(true)}
@@ -471,36 +486,38 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy.connectExistingDesc}</p>
             </button>
 
-            <button
-              className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={localStarting}
-              onClick={async () => {
-                setLocalStart({ root: activeRoot, starting: true, error: null })
+            {light ? null : (
+              <button
+                className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={localStarting}
+                onClick={async () => {
+                  setLocalStart({ root: activeRoot, starting: true, error: null })
 
-                try {
-                  const desktop = window.hermesDesktop
+                  try {
+                    const desktop = window.hermesDesktop
 
-                  if (!desktop || typeof desktop.continueBootstrapLocal !== 'function') {
-                    throw new Error(copy.localStartUnavailable)
+                    if (!desktop || typeof desktop.continueBootstrapLocal !== 'function') {
+                      throw new Error(copy.localStartUnavailable)
+                    }
+
+                    await desktop.continueBootstrapLocal()
+                  } catch (err) {
+                    setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
                   }
-
-                  await desktop.continueBootstrapLocal()
-                } catch (err) {
-                  setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
-                }
-              }}
-              type="button"
-            >
-              <div className="flex items-center gap-2 text-sm font-medium">
-                {localStarting ? (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                ) : (
-                  <Monitor className="size-4 text-muted-foreground" />
-                )}
-                <span>{copy[localPres.title]}</span>
-              </div>
-              <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy[localPres.desc]}</p>
-            </button>
+                }}
+                type="button"
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {localStarting ? (
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  ) : (
+                    <Monitor className="size-4 text-muted-foreground" />
+                  )}
+                  <span>{copy[localPres.title]}</span>
+                </div>
+                <p className="mt-2 text-sm leading-5 text-muted-foreground">{copy[localPres.desc]}</p>
+              </button>
+            )}
           </div>
 
           {localStartError ? (
@@ -510,7 +527,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </div>
           ) : null}
 
-          {localPres.showInstallTo ? (
+          {!light && localPres.showInstallTo ? (
             <div className="mt-6 text-xs text-muted-foreground">
               {copy.installTo}{' '}
               <code className="font-mono text-(--ui-text-secondary)">{state.setupChoice.activeRoot}</code>
@@ -617,7 +634,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
         {/* Scrollable middle: progress, stages, error block, log */}
         <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-2">
-          {totalCount > 0 && (
+          {!state.light && totalCount > 0 && (
             <div className="mb-4">
               <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
                 <span>

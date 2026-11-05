@@ -80,8 +80,11 @@ async def _run(monkeypatch, tmp_path, *, queued_reply_expected=None, queued=Fals
     ({"reply_expected": True}, True),
     ({}, True),  # unknown addressing on a human turn: the marker would warn
     ({"reply_expected": False}, False),
-    ({"reply_expected": True, "persist_user_display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND}, False),
-], ids=["addressed", "unknown", "not-addressed", "machinery"])
+    ({"persist_user_display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND}, False),
+    # A human message folded into the machinery turn (steer/redirect) makes answering it this
+    # turn's obligation, so the marker must warn instead of vanishing (#149679).
+    ({"reply_expected": True, "persist_user_display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND}, True),
+], ids=["addressed", "unknown", "not-addressed", "machinery", "machinery-answers-a-human"])
 async def test_flag_follows_the_turns_silence_verdict(monkeypatch, tmp_path, turn_kwargs, expected):
     seen = await _run(monkeypatch, tmp_path, **turn_kwargs)
 

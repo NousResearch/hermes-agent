@@ -1,0 +1,16 @@
+name: arena-skill
+repo: https://github.com/J182Razor/hermes-arena-skill
+sha: 5e7708588cda898503f2ce128e3c18c62daa5f34
+description: 'Tournament of N sub-agents competing to produce the best answer. Portable Agent Plugins v1 package (skills/ only). Adapted from Jakeschincariol/arena-skill (MIT) to use Hermes delegate_task. Disclosure - spawns many sub-agent calls (cost scales).'
+maintainer: J182Razor
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/J182Razor/hermes-arena-skill

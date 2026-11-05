@@ -1,0 +1,41 @@
+{
+ "family": "admin_doctor",
+ "legacy_modules": [
+  "hermes_state_repair.py::_db_opens_cleanly",
+  "gateway/lifecycle_ledger.py::check_state_db_integrity",
+  "hermes_cli/doctor_state.py::_state_db_wal",
+  "hermes_cli/doctor_state.py::_session_count"
+ ],
+ "units": [
+  {
+   "backend": "persistence/sqlite/admin/_doctor.py::DoctorAdmin.integrity_check",
+   "legacy": "gateway/lifecycle_ledger.py::check_state_db_integrity#0"
+  },
+  {
+   "backend": "persistence/sqlite/admin/_doctor.py::_db_opens_cleanly",
+   "legacy": "hermes_state_repair.py::_db_opens_cleanly#0,1,2,3,4,5,6,7,8"
+  },
+  {
+   "backend": "persistence/sqlite/admin/_doctor.py::SQLiteRepairGuard.wal_checkpoint_passive",
+   "legacy": "hermes_cli/doctor_state.py::_state_db_wal#0"
+  },
+  {
+   "backend": "persistence/sqlite/admin/_doctor.py::DoctorAdmin.session_row_count",
+   "legacy": "hermes_cli/doctor_state.py::_session_count#0"
+  }
+ ],
+ "builders": [
+  {
+   "backend": "persistence/sqlite/_schema.py::_is_fts5_unavailable_error",
+   "legacy": "hermes_state_fts.py::SessionFtsSetupMixin._is_fts5_unavailable_error",
+   "names": {
+    "SessionFtsSetupMixin._is_trigram_unavailable_error": "_is_trigram_unavailable_error"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/_schema.py::_is_trigram_unavailable_error",
+   "legacy": "hermes_state_fts.py::SessionFtsSetupMixin._is_trigram_unavailable_error"
+  }
+ ],
+ "not_moved": []
+}

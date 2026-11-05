@@ -1,0 +1,286 @@
+{
+ "family": "admin_profile_repair",
+ "legacy_modules": [
+  "hermes_state_profile_repair.py"
+ ],
+ "units": [
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.count_messages_all",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.count_messages_all#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.delete_gateway_routing_rows",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.delete_gateway_routing_rows#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.delete_moved_session",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.delete_moved_session#0,1,2,3,4",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.export_session_for_move",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.export_session_for_move#0,1,2,3",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.find_crossed_profile_sessions",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.find_crossed_profile_sessions#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.find_profile_less_telegram_topic_rows",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.find_profile_less_telegram_topic_rows#0,1",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.import_moved_session",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.import_moved_session#0,1,2",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.insert_gateway_routing_rows_if_absent",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.insert_gateway_routing_rows_if_absent#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.key_profiles_for_chat",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.key_profiles_for_chat#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.list_gateway_routing_rows",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.list_gateway_routing_rows#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.rekey_legacy_main_sessions",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.rekey_legacy_main_sessions#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.relabel_sessions_to_key_profile",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.relabel_sessions_to_key_profile#0,1",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.relabel_telegram_topic_rows",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.relabel_telegram_topic_rows#0,1,2,3,4",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::SQLiteProfileRepairAdmin.sever_crossed_parents",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin.sever_crossed_parents#0,1",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::_insert_row",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin._insert_row#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::_ledgered_session_ids",
+   "legacy": "hermes_state_profile_repair.py::SessionProfileRepairMixin._ledgered_session_ids#0,1,2",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  },
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::_table_columns",
+   "legacy": "hermes_state_profile_repair.py::_table_columns#0",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  }
+ ],
+ "builders": [
+  {
+   "backend": "persistence/sqlite/admin/profile_repair.py::_table_columns",
+   "legacy": "hermes_state_profile_repair.py::_table_columns",
+   "names": {
+    "self._read_all": "holder._read_all",
+    "self._read_one": "holder._read_one",
+    "self._execute_write": "holder._execute_write",
+    "self._read_retrying_ioerr": "holder._read_retrying_ioerr",
+    "self._store_system_prompt": "StoreHolder._store_system_prompt",
+    "self._insert_row": "_insert_row",
+    "self._ledgered_session_ids": "_ledgered_session_ids",
+    "self._delete_unreferenced_system_prompts": "_delete_unreferenced_system_prompts",
+    "self.MAX_TITLE_LENGTH": "MAX_TITLE_LENGTH"
+   }
+  }
+ ],
+ "not_moved": [
+  {
+   "legacy": "hermes_state_profile_repair.py::session_key_profile",
+   "reason": "The key codec profile repair reads is persistence/core/keys.py::session_key_profile, the contract package's copy of main's, which lies outside the backend package the checker reads."
+  }
+ ]
+}

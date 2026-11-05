@@ -382,28 +382,6 @@ def _resumable_stored_cwd(cwd, profile_home) -> str:
     return cwd
 
 
-def _heal_dead_cwd(cwd: str) -> str:
-    """Resolve a session cwd inside a now-deleted directory (e.g. a removed linked worktree, which probes to no branch
-    while the sidebar folds it to the main lane): walk up to the first existing ancestor and take its common git root.
-    Local backends only — a remote/SSH cwd may legitimately not exist on the host, so callers skip healing there."""
-    raw = (cwd or "").strip()
-    if not raw or os.path.isdir(raw):
-        return raw
-    probe = raw
-    for _ in range(64):
-        parent = os.path.dirname(probe)
-        if not parent or parent == probe:
-            break
-        probe = parent
-        if os.path.isdir(probe):
-            break
-    if not os.path.isdir(probe):
-        return raw
-    with contextlib.suppress(Exception):
-        return git_probe.common_repo_root(probe) or git_probe.repo_root(probe) or probe
-    return probe
-
-
 def _session_is_local_backend(session: dict | None) -> bool:
     """Whether THIS session's cwd can be stat'ed / git-probed here. A session bound to a named ssh profile never can,
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
@@ -430,7 +408,8 @@ def _display_session_cwd(session: dict | None) -> str:
     cwd = _session_cwd(session)
     if not _session_is_local_backend(session):
         return cwd
-    healed = _heal_dead_cwd(cwd)
+    # Local backends only: a remote/SSH cwd may legitimately not exist on this host.
+    healed = git_probe.nearest_live_cwd(cwd)
     if healed and healed != cwd and session is not None:
         session["cwd"] = healed
         _persist_session_cwd_and_schedule_git_meta(session, healed)

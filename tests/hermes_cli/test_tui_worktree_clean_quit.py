@@ -127,7 +127,7 @@ def _scheduled(kind, status='active'):
 def test_quit_keeps_a_clean_tree_while_the_gateway_has_scheduled_work_for_its_session(tmp_path, monkeypatch, kind):
     """N8 review F4: ``/loop`` / ``/heartbeat`` / an active ``/goal`` on the ``--tui -w`` session
     keeps running on the gateway after the viewer quits; between ticks no admission is pending, and
-    removing the tree made the next tick run in a missing cwd (``workspace_unavailable``)."""
+    removing the tree made the next tick run outside it."""
     def prepare(db, _cwd):
         db.set_meta(f'{kind}:tui-wt', _scheduled(kind))
         db.end_session('tui-wt', 'tui_shutdown')

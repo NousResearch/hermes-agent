@@ -119,6 +119,21 @@ def common_repo_root(cwd: str) -> str:
     return _cache.resolve(f"common:{cwd}", _probe)
 
 
+def nearest_live_cwd(cwd: str) -> str:
+    """*cwd*, or for a deleted directory (a removed linked worktree) the checkout it belonged to: the
+    first existing ancestor's common repo root, else that ancestor. Unchanged when nothing above exists."""
+    raw = (cwd or "").strip()
+    if not raw or os.path.isdir(raw):
+        return raw
+    probe = raw
+    while not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if not parent or parent == probe:
+            return raw
+        probe = parent
+    return common_repo_root(probe) or probe
+
+
 def resolve(cwd: str) -> dict | None:
     """Inject-able resolver for ``project_tree.build_tree``: ``{repo_root: <common root>,
     worktree_root: <this checkout>}`` or None outside a repo (equal roots = main checkout)."""

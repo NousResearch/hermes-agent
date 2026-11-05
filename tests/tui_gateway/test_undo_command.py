@@ -3,7 +3,7 @@
 The TUI routes ``/undo`` through ``command.dispatch`` (it's in
 ``_PENDING_INPUT_COMMANDS`` because the CLI handler queues input the
 slash-worker subprocess can't read). The server handles it directly,
-mutates SessionDB to soft-delete rows, refreshes the in-memory session
+mutates the session store to soft-delete rows, refreshes the in-memory session
 history, fires the memory-provider hook with ``rewound=True``, and
 returns ``{"type": "prefill", "message": <text>, "notice": ...}`` so
 the Ink client drops the message into the composer for editing.
@@ -20,7 +20,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.fixture()
@@ -61,7 +63,7 @@ def server(hermes_home):
 
 @pytest.fixture()
 def db(hermes_home):
-    return SessionDB(db_path=hermes_home / "state.db")
+    return storage_handle(hermes_home)
 
 
 @pytest.fixture()
@@ -69,11 +71,11 @@ def session_with_history(server, db):
     """Build a session with 3 user turns + assistant replies persisted in DB."""
     sid = "sid-undo"
     session_key = "tui-undo-1"
-    db.create_session(session_key, source="tui")
+    seed_session(db, session_key, "tui")
     for i in range(1, 4):
-        db.append_message(session_key, "user", f"question {i}")
-        db.append_message(session_key, "assistant", f"answer {i}")
-    history = db.get_messages_as_conversation(session_key)
+        seed_messages(db, session_key, {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}"})
+    history = conversation(db, session_key)
     agent = MagicMock()
     agent._memory_manager = MagicMock()
     agent._last_flushed_db_idx = len(history)

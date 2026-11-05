@@ -6,6 +6,7 @@ of the dispatcher's ownership env, invisible to the Kanban board.
 """
 
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -48,41 +49,42 @@ def server():
 
 
 class _KanbanDB:
-    """Fake profile session store: classifies `worker-1` as kanban-owned, `chat-1` not."""
+    """Fake profile session store and the storage handle beside it: classifies `worker-1` as
+    kanban-owned, `chat-1` not."""
 
     def __init__(self):
         self.reads = []
+        self.sessions = SimpleNamespace(
+            get=lambda session_id: SimpleNamespace(as_session_row=lambda: {"id": session_id}),
+            get_by_title=lambda _title: None, is_kanban_owned=self._is_kanban_owned,
+            retire_undrained_queue_rows=lambda _session_id: 0)
+        self.lineage = SimpleNamespace(resolve_resume_target=lambda session_id: session_id,
+                                       ancestor_display_prefix=lambda _session_id: ())
+        self.messages = SimpleNamespace(assert_resume_safe=self._assert_resume_safe,
+                                        read_resume_conversations=self._read_resume_conversations,
+                                        read_conversation=self._read_conversation)
 
-    def get_session(self, session_id):
-        return {"id": session_id}
-
-    def get_session_by_title(self, _title):
-        return None
-
-    def resolve_resume_session_id(self, session_id):
-        return session_id
-
-    def is_kanban_owned_session(self, session_id):
+    def _is_kanban_owned(self, session_id):
         self.reads.append(("kanban-probe", session_id))
         return session_id == "worker-1"
 
-    def assert_resume_safe(self, _session_id, **_kwargs):
-        self.reads.append(("size-guard", _session_id))
+    def _assert_resume_safe(self, session_id, **_kwargs):
+        self.reads.append(("size-guard", session_id))
+        return 0
 
-    def get_resume_conversations(self, _session_id):
-        self.reads.append(("lineage", _session_id))
-        return ([], [])
+    def _read_resume_conversations(self, session_id):
+        self.reads.append(("lineage", session_id))
+        return SimpleNamespace(model=(), display=())
 
-    def get_messages_as_conversation(self, session_id, **_kwargs):
+    def _read_conversation(self, session_id, _request=None):
         self.reads.append(("tip", session_id))
-        return []
-
-    def get_ancestor_display_prefix(self, _session_id):
-        return []
+        return ()
 
 
 def _resume(server, monkeypatch, db, session_id):
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_persistence_beside", lambda store: store)
+    monkeypatch.setattr(server, "_release_persistence", lambda _handle: None)
     return server.handle_request({
         "id": f"r-{session_id}",
         "method": "session.resume",

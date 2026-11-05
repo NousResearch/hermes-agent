@@ -8,10 +8,19 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
+from persistence_assembly import open_persistence, profile_scope
 
 
-def _service(db, monkeypatch):
-    service = HostedRoomService(_server(), db_path=db)
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
+def _service(store, monkeypatch):
+    service = HostedRoomService(_server(), store=store, placement="profile")
     rpc = _FakeRPC()
     monkeypatch.setattr(service, "rpc", rpc)
     monkeypatch.setattr(service.runtime, "rpc", rpc)
@@ -21,10 +30,9 @@ def _service(db, monkeypatch):
 
 @pytest.mark.parametrize("legacy_prompt", [False, True])
 def test_restart_publishes_addressed_pass_once_without_reexecuting(
-    tmp_path, monkeypatch, legacy_prompt
+    tmp_path, monkeypatch, legacy_prompt, store
 ):
-    db = tmp_path / "state.db"
-    service = _service(db, monkeypatch)
+    service = _service(store, monkeypatch)
     service.create_room(
         room_id="room-1",
         name="Release room",
@@ -49,9 +57,9 @@ def test_restart_publishes_addressed_pass_once_without_reexecuting(
                 lambda **kwargs: 'Old room prompt: reply "(pass)" if idle.',
             )
         service.prepare_room(binding)
-    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    task = driver.list_tasks(store, placement="profile", room_id="room-1", status="queued")[0]
     lease = driver.acquire_lease(
-        db,
+        store, placement="profile",
         room_id="room-1",
         gateway_id=binding.gateway_id,
         authority_epoch=binding.authority_epoch,
@@ -60,11 +68,11 @@ def test_restart_publishes_addressed_pass_once_without_reexecuting(
         clock=time.time,
     )
     attempt = driver.start_task(
-        db, task["identity"], lease, expected_cancel_generation=0, clock=time.time
+        store, task["identity"], lease, placement="profile", expected_cancel_generation=0, clock=time.time
     )
     driver.settle_task(
-        db,
-        attempt,
+        store,
+        attempt, placement="profile",
         settlement_id="reply-1",
         status="settled",
         result={"text": "(pass)"},
@@ -72,7 +80,7 @@ def test_restart_publishes_addressed_pass_once_without_reexecuting(
     )
 
     # Crash after the execution receipt, before its room publication.
-    restored = _service(db, monkeypatch)
+    restored = _service(store, monkeypatch)
     restored.prepare_room(restored.bindings()[0])
     events = restored._events("room-1")
     failures = [e for e in events if e["kind"] == "turn.failed"]
@@ -81,11 +89,11 @@ def test_restart_publishes_addressed_pass_once_without_reexecuting(
     assert not any(e["kind"] == "message.member" for e in events)
 
     # Another restart and a duplicate delivery must reuse that same outcome.
-    replayed = _service(db, monkeypatch)
+    replayed = _service(store, monkeypatch)
     replayed.send(**send)
     replayed.prepare_room(replayed.bindings()[0])
     assert replayed._events("room-1") == events
-    tasks = driver.list_tasks(db, room_id="room-1")
+    tasks = driver.list_tasks(store, placement="profile", room_id="room-1")
     assert len(tasks) == 1
     assert tasks[0]["identity"] == task["identity"]
     assert tasks[0]["execution_generation"] == 1

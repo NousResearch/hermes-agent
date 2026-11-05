@@ -67,6 +67,18 @@ with a name allows that one name only.
 | `tools.browser_supervisor_capture` | whole module | developer-guide / plugins docs |
 | `tools.computer_use.backend` | whole module | developer-guide / plugins docs |
 | `tools.registry` | whole module | developer-guide / plugins docs |
+| `persistence` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.messages` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.search` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.conversation.sessions` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.housekeeping.maintenance` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence.housekeeping.state_meta` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `persistence_assembly` | whole module | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `apply_wal_with_fallback` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `sqlite_support` | `apply_database_pragmas` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `classify_persistence_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `is_sqlite_lock_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
+| `storage_errors` | `is_malformed_db_error` | developer-guide/plugins/index.md § `hermes_state` deprecated: the storage interface replacements |
 | `agent.context_references` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.plugin_llm` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.transcription_provider` | whole module | PluginContext (hermes_cli/plugins_context.py) |

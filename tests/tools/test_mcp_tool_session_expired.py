@@ -79,6 +79,21 @@ def test_is_session_expired_walks_group_chain():
     assert _is_session_expired_error(group) is False
 
 
+@pytest.mark.parametrize("code, message, expired", [
+    (-32603, "upload failed: remote storage reported broken pipe", False),  # the tool's own failure text
+    (-32602, "Invalid params: Invalid or expired session", True),  # #13383: the server GC'd our session
+    (-32600, "Session terminated", True),  # the SDK's spelling of a 404 on a known session id
+    (-32000, "Connection closed", True),  # the SDK's synthesized closure, never sent by a peer
+])
+def test_answered_http_error_counts_only_when_it_names_the_session(code, message, expired):
+    """An HTTP server that ANSWERED with a JSON-RPC error proved the transport alive: a network-error
+    name in its message is the tool's failure, not ours, so it must not trigger a reconnect."""
+    exceptions = pytest.importorskip("mcp.shared.exceptions", reason="MCP SDK not installed")
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    assert _is_session_expired_error(exceptions.MCPError(code=code, message=message)) is expired
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------

@@ -21,8 +21,8 @@ import re
 # (``Environment=CONN=Server=db;…``, ``printenv`` output, a ``docker run -e CONN=…`` argv dump)
 # puts the first key right after it. It is deliberately NOT added to _KV_KEY_BOUNDARY: a
 # ``password=``/``pwd=`` key behind ``=`` is ``note=password=…`` prose far more often than a
-# field. The assigned form also has to prove it is one run — a ``;`` between the companion and
-# the password key — so ``env X=host=db PWD=/home/app/project`` stays verbatim.
+# field. For assigned forms, only a password key immediately after ``;`` is eligible,
+# so ``env X=host=db PWD=/home/app/project`` stays verbatim.
 _KV_KEY_BOUNDARY = r"(?<![^\s;\"'])"
 _KV_ASSIGNED_KEY_BOUNDARY = r"(?<![^\s;\"'=])"
 _KV_CONNSTR_PW_RE = re.compile(
@@ -38,12 +38,9 @@ _KV_CONNSTR_COMPANION_RE = re.compile(
     _KV_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
 _KV_CONNSTR_ASSIGNED_COMPANION_RE = re.compile(
     _KV_ASSIGNED_KEY_BOUNDARY + r"(?:" + _KV_CONNSTR_KEYS + r")[ \t]*=", re.IGNORECASE)
-# One ``;``-delimited field of an assigned connection string: ``Server=db;``, ``User Id=app;``.
-# The value may not contain ``=``: in the ``;`` grammar an unescaped ``=`` inside a value is what
-# a neighbouring assignment looks like (``host=db OPTIONS=';sslmode=require'``), and treating it
-# as part of the run is how the ``PWD=`` next door got masked.
-_KV_RUN_FIELD_RE = re.compile(
-    r"[ \t]*(?:" + _KV_CONNSTR_KEYS + r"|password|pwd)[ \t]*=[^;=\r\n]*;", re.IGNORECASE)
+# Do not parse preceding fields: arbitrary options and quoted/braced values are legal.
+_KV_ASSIGNED_PW_RE = re.compile(
+    r"(?<=;)[ \t]*(?:password|pwd)[ \t]*=[ \t]*", re.IGNORECASE)
 # ``;``-delimited grammar (ADO.NET/ODBC/JDBC) when a ``;`` is followed by a known field.
 # libpq values may contain a bare ``;`` (``password=a;b dbname=x``), so a ``;`` alone
 # does not decide the grammar.
@@ -117,38 +114,22 @@ def _kv_value_end(line: str, i: int, semicolon: bool) -> int:
     return min(j, n)
 
 
-def _assigned_run_end(line: str, start: int) -> int:
-    """End of the ``;``-delimited run that starts at ``start``; ``start`` when it is not one."""
-    pos = start
-    while True:
-        m = _KV_RUN_FIELD_RE.match(line, pos)
-        if m is None or m.end() == pos:
-            return pos
-        pos = m.end()
-
-
 def _redact_kv_connection_line(line: str, code_file: bool) -> str:
     if not _KV_CONNSTR_GATE_RE.search(line):
         return line
     semicolon = _KV_SEMICOLON_FIELD_RE.search(line) is not None
     plain_companion = _KV_CONNSTR_COMPANION_RE.search(line) is not None
-    # A ``=``-prefixed companion key is evidence only for the run it starts: the password key has
-    # to open a field of that same ``;``-delimited run. Another variable's ``OPTIONS=';sslmode=…'``
-    # or a bare ``env X=host=db PWD=…`` therefore never activates the path.
-    assigned_runs = ([(m.start(), _assigned_run_end(line, m.start()))
-                      for m in _KV_CONNSTR_ASSIGNED_COMPANION_RE.finditer(line)]
-                     if not plain_companion else [])
-    if not plain_companion and not assigned_runs:
+    if not plain_companion and not _KV_CONNSTR_ASSIGNED_COMPANION_RE.search(line):
         return line
+    # Assigned companions only license semicolon-prefixed passwords, not a neighbouring PWD
+    # environment variable. A single scan avoids rescanning overlapping runs for every key.
+    pw_re = _KV_CONNSTR_PW_RE if plain_companion else _KV_ASSIGNED_PW_RE
     out, pos = [], 0
-    for m in _KV_CONNSTR_PW_RE.finditer(line):
+    for m in pw_re.finditer(line):
         if m.start() < pos:  # inside a value already masked
             continue
-        in_run = any(start <= m.start() <= end for start, end in assigned_runs)
-        if not plain_companion and not in_run:
-            continue
-        # A field of an assigned ``;`` run is read with the ``;`` grammar, not the libpq one.
-        field_semicolon = semicolon or in_run
+        # A semicolon-prefixed assigned field uses the ADO.NET/ODBC grammar, not libpq.
+        field_semicolon = semicolon or not plain_companion
         vstart = m.end()
         vend = _kv_value_end(line, vstart, field_semicolon)
         value = line[vstart:vend]

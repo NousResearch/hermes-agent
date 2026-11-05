@@ -46,6 +46,23 @@ class TestAssignedConnectionStrings:
         _assert_masked(text)
 
     @pytest.mark.parametrize("text", [
+        f"X=host=db;Encrypt=true;Password={PW};",
+        f"X=host=db;CustomOption=value;Password={PW};",
+        f"X=host=db=primary;Password={PW};",
+        f'X=host="db;primary";Password={PW};',
+        f"X=host={{db;primary}};Password={PW};",
+        f"X=host=db;Password={PW}==;",
+        f'X=host=db;Password="{PW};inside";',
+        f"X=host=db;Password={{{PW};inside}};",
+        f"X=host=db;Encrypt=true;Password={PW};\r\n",
+        f"X=host=db;Encrypt=true;Password={PW}",
+        f"X=hOsT=db;EnCrYpT=true;pWd={PW};",
+        f"X=host={'d' * 100_000};Encrypt=true;Password={PW};",
+    ])
+    def test_arbitrary_fields_and_value_grammars(self, text):
+        _assert_masked(text)
+
+    @pytest.mark.parametrize("text", [
         "X=host=db",                      # companion key, no password field
         "MODE=password=off",              # a password key with no companion: not a conninfo
         "PWD=/home/app/project",

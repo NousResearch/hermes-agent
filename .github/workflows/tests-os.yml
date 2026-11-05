@@ -122,7 +122,9 @@ jobs:
           # Installer stage tests inherit setup-pm's HERMES_RUNTIME_DIR. Prepare
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
-          packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
+          # pnpm (and with it PM's Node): tests that drive the real
+          # scripts/build/node-deps.mjs and source builds need it on PATH.
+          packages: ${{ matrix.marker == 'windows' && 'git,ripgrep,pnpm' || 'ripgrep,pnpm' }}
           # keychain: the vault-key tests run against the host's real Keychain / Credential Manager.
           extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'

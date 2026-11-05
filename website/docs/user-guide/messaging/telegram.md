@@ -12,6 +12,8 @@ Hermes Agent integrates with Telegram as a full-featured conversational bot. Onc
 
 The **Messaging → Telegram** page in the [dashboard](../features/web-dashboard.md) and the [desktop app](../desktop.md) has a **Create with QR** button. Scan the code (or open the link) in Telegram; Hermes creates the bot for you, detects your Telegram user ID, writes `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` into your profile's `.env`, and restarts the gateway. If you prefer to create the bot yourself, follow the manual steps below.
 
+From a terminal or chat, run `hermes gateway setup telegram --quick` and open the printed link in Telegram to create a bot without pasting a token. Give that link only to the intended owner, never to a group: whoever opens it becomes the owner. `--allow IDS` adds comma-separated numeric Telegram user IDs to the detected owner, `--replace` allows replacing an existing bot, and `--timeout SECONDS` changes the default 180-second wait. The command saves the settings and prints the next command (`hermes gateway ensure` or `hermes gateway restart`); run it to activate the connection. On Team Gateway, link Telegram through the desktop app instead.
+
 ## Hermes Cloud with Team Gateway
 
 On a Hermes Cloud instance with Team Gateway on, Telegram (and Discord and Slack) reach your agent through a shared Hermes bot. A bot of your own does not run there: the gateway switches direct connections off at every start so the instance can sleep when idle. The Telegram card shows **Via Team Gateway** instead of **Create with QR**.

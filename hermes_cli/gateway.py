@@ -5051,7 +5051,7 @@ def _cmd_run(args):
 
 
 def _cmd_setup(args):
-    gateway_setup()
+    gateway_setup(args)
 
 
 _WSL_FOREGROUND_HINT = (

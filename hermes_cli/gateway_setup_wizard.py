@@ -528,11 +528,14 @@ def _wizard_post_setup() -> None:
         _gw()._print_info_lines(*(line.format(home=home) for line in _WIZARD_NO_SERVICE_LINES[reason]))
 
 
-def gateway_setup():
+def gateway_setup(args=None):
     """Interactive setup for messaging platforms + gateway service."""
     if _gw().is_managed():
         _gw().managed_error("run gateway setup")
         return
+    if getattr(args, "platform", None):
+        from hermes_cli.gateway_setup_direct import run_platform_setup
+        sys.exit(run_platform_setup(args))
 
     print()
     for banner_line in _WIZARD_BANNER:

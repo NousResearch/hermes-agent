@@ -324,10 +324,12 @@ Subcommands:
 | `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
-| `setup` | Interactive messaging-platform setup. |
+| `setup [platform]` | Configure one messaging platform; with no arguments, open the interactive wizard. |
 | `migrate` | Fold per-profile standalone gateways onto the one host gateway (`--multiplex`, the only mode — `hermes update` runs it automatically unless a real boundary blocks it). Re-running it converges a half-migrated host; a manifest on disk is the resume record, never a rollback (there is no `--standalone`). Runs a preflight (duplicate bot tokens, secondary port-binders without a `/p/<profile>/` ingress) and changes nothing when blocked. Flags: `--dry-run`, `-y`/`--yes`. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways). |
 | `migrate-legacy` | Remove legacy `hermes.service` units left over from pre-rename installs. Profile units (`hermes-gateway-<profile>.service`) and unrelated services are never touched. Flags: `--dry-run`, `-y`/`--yes`. |
 | `enroll` | Experimental: enroll this gateway with a relay connector and save relay credentials for connector-backed platforms. See [Hermes Relay](../user-guide/messaging/relay.md). |
+
+Run `hermes gateway setup telegram --quick` to create a managed bot by opening the printed link in Telegram, without pasting a token. Share the link only with the intended owner, never in a group. `--allow IDS` adds comma-separated numeric Telegram user IDs to the detected owner, `--replace` permits replacing an existing bot, and `--timeout SECONDS` changes the 180-second wait. Setup saves the settings and prints `hermes gateway ensure` or `hermes gateway restart` as the next step; it does not run either command. Other platforms use `hermes gateway setup <platform>` in a terminal.
 
 Options:
 

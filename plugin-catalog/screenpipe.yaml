@@ -1,6 +1,6 @@
 name: screenpipe
 repo: https://github.com/vdimarco/hermes-screenpipe
-sha: a1f391b10b5456a30f9118618302bcdbdddbe9a1
+sha: 1df1a3852462ddcdacdc250330e6f1a4013a607e
 description: Ambient retro-recall from the user's local Screenpipe screen+audio corpus — fail-silent pre-turn context injection, search/timeline/status tools, /recall.
 maintainer: vdimarco
 tier: community

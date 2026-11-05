@@ -262,7 +262,9 @@ _AUTH_COPY: dict[str, str] = {
 
 CONTENT_POLICY_NEXT_STEPS = (
     "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "model with /model. If new messages keep getting blocked no matter what you send, an "
+    "earlier part of this conversation is what the safety filter is reacting to — clear the "
+    "recent messages with /undo (repeat it until a message goes through) or start a fresh chat."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------

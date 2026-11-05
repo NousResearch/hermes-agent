@@ -437,3 +437,35 @@ describe('browse footer at narrow widths (Codex drops hints, never cuts one)', (
     instance.unmount()
   })
 })
+
+describe('leaving an armed edit', () => {
+  const arm = () =>
+    $pendingRewind.set({ send: vi.fn(), sid: 'owner', target: { rowId: 13, text: 'BETA please', turn: 2 } })
+
+  it('Esc Esc on an emptied composer cancels the edit instead of browsing; the next message sends plainly', () => {
+    const { actions, esc } = escHarness()
+
+    arm()
+    const { send } = $pendingRewind.get()!
+
+    expect(esc()).toBe(true)
+    expect(hintFrame()).toBe('↺ Editing prompt 2 — Enter rewinds here and sends · Esc Esc cancels')
+    expect(esc()).toBe(true)
+    expect(actions.openBacktrack).not.toHaveBeenCalled()
+    expect($pendingRewind.get()).toBeNull()
+    expect(actions.sys).toHaveBeenCalledWith('↺ Rewind cancelled; nothing was removed.')
+    expect(sendPendingRewind(edit('an ordinary message'), 'owner')).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('opening browse again drops the earlier armed edit', async () => {
+    const { request, slash } = slashHarness()
+
+    arm()
+    slash('/rewind')
+    expect($pendingRewind.get()).toBeNull()
+    await flush()
+    expect($overlayState.get().rewind).toBeTruthy()
+    expect(mutations(request)).toHaveLength(0)
+  })
+})

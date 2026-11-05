@@ -570,6 +570,15 @@ class _LocalOriginCORSMiddleware(CORSMiddleware):
         return _is_trusted_local_origin(origin)
 
 
+from hermes_cli.web_server_gzip import DashboardGZipMiddleware
+
+# Finite JSON/text reads only (Content-Length present, no ranges/downloads/streams).
+# Level 1 compresses a transcript in about half the time of level 5 for ~8% more bytes.
+# Sits inside CORS and outside the auth/BaseHTTPMiddleware stack: those re-chunk bodies
+# but preserve Content-Length, which the compressibility gate depends on.
+app.add_middleware(DashboardGZipMiddleware, minimum_size=4096, compresslevel=1)
+
+
 # CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
 # rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
 # read/modify config and secrets; any local port would let a page on another port read

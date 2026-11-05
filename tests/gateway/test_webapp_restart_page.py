@@ -1,8 +1,8 @@
 """A browser's page load during a drain or after a failed Webapp rebuild gets a page, not JSON.
 
-`hermes update` drains the gateway that serves a Webapp tab; a tab reloaded in that window used to show
-the bare ``{"error":"gateway_not_ready"}`` body as the whole page, and after an update whose rebuild
-failed ``/`` showed the stale-bundle reason the same way. API callers keep the JSON contract.
+`hermes update` drains the gateway that serves a Webapp tab. A tab reloaded during the drain, or on a
+bundle the update could not rebuild, gets a page that explains it instead of the bare JSON refusal;
+API callers keep the JSON contract.
 """
 from types import SimpleNamespace
 
@@ -73,6 +73,7 @@ async def test_the_page_runs_only_its_own_hashed_script_and_polls_the_app_root_n
     assert f"script-src 'sha256-{digest}';" in csp and "script-src 'unsafe-inline'" not in csp
     assert f'<main data-root="{root}" data-kind="restarting">' in body
     assert "fetch(c.root" in script and "redirect:'manual'" in script and "location.href" not in script
+    assert "sessionStorage" in script  # the backoff survives a reload onto a still-refused page
     assert path not in script
 
 

@@ -32,11 +32,17 @@ _NO_STORE = "no-store, no-cache, must-revalidate"  # the Cache-Control value web
 # (``X-Forwarded-Prefix``) plus ``/``. It reloads once the root answers OK, redirects (the app is up but
 # signed out; following the redirect would start a sign-in and replace the callback's PKCE state), or
 # answers another page kind (the restart is over but the bundle is stale: show that page instead).
+# A redirect may also be the proxy's own (``/hermes/`` -> ``/hermes``) while Hermes is still down, so
+# the poll count survives the reload in sessionStorage: a page that comes back refused within 30 s
+# keeps backing off instead of restarting at one second. An older count (a later restart) is ignored.
 # The root and kind come from ``<main>``'s data attributes, so the script and its hash are constant.
 _SCRIPT = (
-    "(function(){var c=document.querySelector('main').dataset,tries=0;"
+    "(function(){var c=document.querySelector('main').dataset,K='hermes-restart-page-tries',tries=0;"
+    "function store(f){try{f(window.sessionStorage);}catch(e){}}"
+    "store(function(s){var v=(s.getItem(K)||'').split(':');if(Date.now()-v[1]<30000)tries=+v[0]||0;});"
     "function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
-    "function poll(){tries++;fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
+    "function poll(){tries++;store(function(s){s.setItem(K,tries+':'+Date.now());});"
+    "fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
     "headers:{accept:'text/html'}}).then(function(r){var k=r.headers.get('" + _KIND_HEADER.lower() + "');"
     "if(r.ok||r.type==='opaqueredirect'||(k&&k!==c.kind)){location.reload();}else{later();}},later);}"
     "later();})();"

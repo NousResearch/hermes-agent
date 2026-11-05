@@ -462,9 +462,9 @@ def serve_hot(root, home):
 
 
 def unserve_hot(root, home):
-    """Retire *home* by the verb, then park it as ``hermes -p <name> gateway stop`` does. Parking
-    after the verb keeps the watcher from retiring it first; a tick in between that re-served it is
-    retired by a second verb, which waits out any in-flight watcher reconcile (one lock)."""
+    """Retire *home* by the verb, then park it. ``gateway stop`` parks first; unserving first keeps
+    the watcher from retiring it ahead of the verb. A tick in between that re-served it is retired
+    by a second verb, which waits out any in-flight watcher reconcile (one lock)."""
     reply = lifecycle(root, 'unserve-profile', home)
     (home / 'gateway.parked').touch()
     again = lifecycle(root, 'unserve-profile', home)

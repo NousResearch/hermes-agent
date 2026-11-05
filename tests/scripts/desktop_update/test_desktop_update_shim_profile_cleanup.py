@@ -20,6 +20,12 @@ def test_shim_removes_only_its_owned_profile(tmp_path, outcome):
         'while :; do sleep 0.1; done\n', encoding="utf-8",
     )
     browser.chmod(0o755)
+    xdg_settings = bin_dir / "xdg-settings"
+    xdg_settings.write_text(
+        '#!/bin/sh\n[ "$1" = get ] && { printf "%s\\n" google-chrome.desktop; exit 0; }\nexit 1\n',
+        encoding="utf-8",
+    )
+    xdg_settings.chmod(0o755)
     if outcome == "allocation-failed":
         allocator = bin_dir / "mktemp"
         allocator.write_text('#!/bin/sh\nprintf "%s\\n" "$HOME"\nexit 1\n', encoding="utf-8")

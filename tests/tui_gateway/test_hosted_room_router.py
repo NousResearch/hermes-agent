@@ -12,7 +12,9 @@ import pytest
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_router as router
+from gateway import hosted_rooms
 from gateway.hosted_room_context import set_room_context
+from tests.waiting import wait_until
 from tui_gateway import hosted_room_router_call as router_call
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -39,12 +41,11 @@ def _send(service: HostedRoomService, event_id: str, text: str, thread_id: str |
     service.send(room_id=ROOM_ID, event_id=event_id, payload={"text": text, "thread_id": thread_id or event_id})
 
 
-def _wait_router(service: HostedRoomService) -> None:
-    deadline = time.monotonic() + 10
-    while any(service._router_calls.inflight((ROOM_ID, f"user:{key}")) or service._router_calls.inflight((ROOM_ID, key))
-              for key in ("m1", "m2", "m3")):
-        assert time.monotonic() < deadline, "router call never finished"
-        time.sleep(0.01)
+def _wait_router(*services: HostedRoomService) -> None:
+    wait_until(lambda: not any(service._router_calls.inflight((ROOM_ID, f"user:{key}"))
+                               or service._router_calls.inflight((ROOM_ID, key))
+                               for service in services for key in ("m1", "m2", "m3")),
+               what="router call finished")
 
 
 def _queued(service: HostedRoomService) -> list[str]:
@@ -145,6 +146,42 @@ def test_a_reply_in_an_existing_thread_is_not_routed(tmp_path, answers):
     assert len(answers.calls) == 1
 
 
+def test_two_workers_on_one_store_make_one_router_call(tmp_path, answers):
+    """Workers sharing the room store each prepare the room before any lease; only one pays the router."""
+    first, second = _service(tmp_path), _service(tmp_path)
+    _room(first)
+    release = threading.Event()
+
+    def slow(**_kwargs):
+        assert release.wait(10)
+        return ("build",)
+    answers.script.append(slow)
+    _send(first, "m1", "Fix CI")
+    wait_until(lambda: answers.calls, what="first worker asked the router")
+    second.prepare_room(second.bindings()[0])
+    release.set()
+    _wait_router(first, second)
+    assert len(answers.calls) == 1 and len(_kinds(first, "room.routed")) == 1
+    second.prepare_room(second.bindings()[0])
+    assert _queued(second) == ["build"]
+
+
+def test_a_router_claim_left_by_a_dead_worker_expires(tmp_path):
+    now = [1000.0]
+    key, asked = (ROOM_ID, "user:m1"), []
+    dead = router_call.RouterCalls(tmp_path / "state.db", clock=lambda: now[0])
+    hung = threading.Event()
+    assert dead.start(key, lambda: hung.wait(10) and None, lambda _picked: None)
+    live = router_call.RouterCalls(tmp_path / "state.db", clock=lambda: now[0])
+    done = threading.Event()
+    assert not live.start(key, lambda: asked.append(1), lambda _picked: done.set())
+    now[0] += router_call.CLAIM_TTL_SECONDS + 1
+    assert live.start(key, lambda: asked.append(1), lambda _picked: done.set())
+    assert done.wait(10) and asked == [1]
+    hung.set()
+    wait_until(lambda: not dead.inflight(key), what="dead worker's call returned")
+
+
 def test_stop_during_the_router_call_discards_its_answer(tmp_path, answers):
     service = _service(tmp_path)
     _room(service)
@@ -228,6 +265,52 @@ def test_continue_is_refused_once_the_pause_is_moot(tmp_path, after):
         service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
     with pytest.raises(Exception, match="not paused"):
         service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
+
+
+def _land_in_the_continue_gap(service: HostedRoomService, monkeypatch, *appends) -> None:
+    """Run ``appends`` (raw log writes, as Stop and Send make without the policy lock) right after
+    continue_room's first read of the log: the deterministic interleave of a racing Stop/Send."""
+    read = service._events
+    pending = list(appends)
+
+    def events(room_id):
+        rows = read(room_id)
+        while pending:
+            pending.pop(0)()
+        return rows
+    monkeypatch.setattr(service, "_events", events)
+
+
+def _raw_user_message(service: HostedRoomService, event_id: str, thread_id: str):
+    gateway_id, epoch = service._owned_authority(ROOM_ID)
+    return lambda: hosted_rooms.append_event(
+        service.db_path, room_id=ROOM_ID, event_id=event_id, kind="message.user",
+        actor={"kind": "user", "id": "desktop"}, payload={"text": "new ask", "thread_id": thread_id},
+        authority_gateway_id=gateway_id, authority_epoch=epoch)
+
+
+def test_stop_and_a_new_message_racing_continue_keep_the_new_message(tmp_path, monkeypatch):
+    service = _bounded_room(tmp_path)
+    discussion_id = _kinds(service, "room.activity")[0]["payload"]["discussion_event_id"]
+    gateway_id, epoch = service._owned_authority(ROOM_ID)
+    _land_in_the_continue_gap(
+        service, monkeypatch,
+        lambda: hosted_rooms.request_room_stop(service.db_path, room_id=ROOM_ID, cancel_id="stop-gap",
+                                               expected_gateway_id=gateway_id, expected_epoch=epoch),
+        _raw_user_message(service, "m2", "m1"))
+    with pytest.raises(hosted_rooms.HostedRoomError, match="not paused"):
+        service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
+    assert _kinds(service, "room.continued") == []
+    service.prepare_room(service.bindings()[0])
+    assert _queued(service) == ["research"]  # the new message's own discussion
+
+
+def test_an_unrelated_event_in_the_continue_gap_still_continues(tmp_path, monkeypatch):
+    service = _bounded_room(tmp_path)
+    discussion_id = _kinds(service, "room.activity")[0]["payload"]["discussion_event_id"]
+    _land_in_the_continue_gap(service, monkeypatch, _raw_user_message(service, "other", "other"))
+    event = service.continue_room(ROOM_ID, discussion_event_id=discussion_id)
+    assert event["kind"] == "room.continued" and event["seq"] == max(e["seq"] for e in service._events(ROOM_ID))
 
 
 def test_continue_stops_at_the_continue_limit(tmp_path, monkeypatch):

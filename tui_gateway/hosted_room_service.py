@@ -41,6 +41,8 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+# A Continue re-reads the pause when an unrelated event lands between its read and its write.
+_CONTINUE_APPEND_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 
 
@@ -138,7 +140,7 @@ class HostedRoomService:
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
         self._prepare_stalls = prepare_stall.PrepareStallTracker()
-        self._router_calls = router_call.RouterCalls()
+        self._router_calls = router_call.RouterCalls(self.db_path)
         try:
             self._load_stored_links()
         except Exception as exc:
@@ -583,18 +585,7 @@ class HostedRoomService:
         """The user's Continue on a discussion paused at its cap: one more budget of rounds and messages."""
         gateway_id, epoch = self._owned_authority(room_id)
         with self._policy_lock:
-            events = self._events(room_id)
-            paused = router.paused_discussion(events, discussion_event_id)
-            if paused is None:
-                raise hosted_rooms.HostedRoomError("This discussion is not paused.")
-            if paused["grant"] > router.MAX_DISCUSSION_CONTINUES:
-                raise hosted_rooms.HostedRoomError("This discussion already used every Continue.")
-            event = hosted_rooms.append_event(
-                self.db_path, room_id=room_id, event_id=f"dcontinue:{discussion_event_id}:{paused['grant']}",
-                kind=router.CONTINUED_EVENT_KIND, actor={"kind": "gateway", "id": gateway_id},
-                payload={"discussion_event_id": discussion_event_id, "thread_id": paused["thread_id"],
-                         "grant": paused["grant"]},
-                authority_gateway_id=gateway_id, authority_epoch=epoch)
+            event = self._append_continue(room_id, discussion_event_id, gateway_id, epoch)
         self._prepare_stalls.clear(room_id)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is not None:
@@ -602,6 +593,29 @@ class HostedRoomService:
                 self._prepare_tracked(binding)
         self.runtime.wakeup()
         return event
+
+    def _append_continue(self, room_id: str, discussion_event_id: str, gateway_id: str, epoch: int) -> dict[str, Any]:
+        """Append ``room.continued`` only onto the exact log the pause was read from. Stop and Send append
+        without the policy lock, so a Stop or a newer message landing between the read and the write must
+        refuse the Continue (re-read once more), never reopen the discussion over them."""
+        for _attempt in range(_CONTINUE_APPEND_ATTEMPTS):
+            events = self._events(room_id)
+            paused = router.paused_discussion(events, discussion_event_id)
+            if paused is None:
+                raise hosted_rooms.HostedRoomError("This discussion is not paused.")
+            if paused["grant"] > router.MAX_DISCUSSION_CONTINUES:
+                raise hosted_rooms.HostedRoomError("This discussion already used every Continue.")
+            try:
+                return hosted_rooms.append_event(
+                    self.db_path, room_id=room_id, event_id=f"dcontinue:{discussion_event_id}:{paused['grant']}",
+                    kind=router.CONTINUED_EVENT_KIND, actor={"kind": "gateway", "id": gateway_id},
+                    payload={"discussion_event_id": discussion_event_id, "thread_id": paused["thread_id"],
+                             "grant": paused["grant"]},
+                    authority_gateway_id=gateway_id, authority_epoch=epoch,
+                    expected_latest_seq=max((int(event["seq"]) for event in events), default=0))
+            except hosted_rooms.EventCursorConflictError:
+                continue
+        raise hosted_rooms.HostedRoomError("The room kept changing; try Continue again.")
 
     def _prepare_tracked(self, binding: HostedRoomBinding, *, retry_stalled: bool = False) -> None:
         """``prepare_room`` with its failures counted per room: a stalled room is skipped (not retried)

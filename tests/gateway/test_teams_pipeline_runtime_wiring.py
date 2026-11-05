@@ -73,6 +73,9 @@ def test_build_pipeline_runtime_skips_sender_when_adapter_layer_is_unavailable(m
         ModuleType("plugins.platforms.teams.adapter"),
     )
 
+    # Target the imported module itself: another test may already have loaded
+    # summary_writer before this adapter-unavailable fixture runs.
+    monkeypatch.setitem(sys.modules, "plugins.platforms.teams.summary_writer", None)
     runtime = build_pipeline_runtime(gateway)
 
     assert runtime.teams_sender is None

@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from persistence.sqlite import _schema, _schema_ddl
-import hermes_state_common as common
+from persistence.sqlite._state import common
 from tests.persistence_sqlite._legacy_store import legacy_store
 from tests.persistence_sqlite.conversation._copies import Catalog, core_members, receiver_form
 from tests.persistence_sqlite.core._moved import strip_moved_allows
@@ -193,7 +193,7 @@ SUBSTITUTIONS = {
     "_reap_inactive_orphan_desktop_holders": {
         "from hermes_state import psutil": None,
         "from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder": (
-            "from hermes_state_dbfile import _concrete_state_db_holder_pids, "
+            "from persistence.sqlite._state.dbfile import _concrete_state_db_holder_pids, "
             "_is_inactive_orphan_desktop_holder"),
         "from hermes_cli.dashboard_procs import _is_ephemeral_port_zero_backend":
             "from ._dashboard_procs import _is_ephemeral_port_zero_backend",

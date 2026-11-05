@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_health import mark_storage_corrupt
+from persistence.sqlite._state.health import mark_storage_corrupt
 from persistence import CorruptStoreError, DeclarativeDrift, PermanentStoreError, ProfileScope
 from persistence.core import admin as admin_contract
 from persistence.sqlite import SQLiteBackend
@@ -29,7 +29,7 @@ _ADDED_COLUMNS = (("sessions", "runtime_revision"), ("sessions", "runtime_genera
 @pytest.fixture(autouse=True)
 def _volume_headroom(monkeypatch):
     """The backup and snapshot guards reserve 2% of the volume, and the holder scan sees every process on the host."""
-    import hermes_state_repair as repair
+    from persistence.sqlite._state import repair
     monkeypatch.setattr(repair, "_REPAIR_BACKUP_FREE_FRACTION", 0.0)
     monkeypatch.setattr(repair, "_live_writer_holds_db", lambda _path: False)
 

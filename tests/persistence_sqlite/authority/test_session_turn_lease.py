@@ -13,7 +13,7 @@ import pytest
 from persistence import DiskFull
 from persistence.authority.coordination import acquire_turn_lease_waiting
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_errors import SessionTurnLeaseLostError
+from persistence.sqlite._state.errors import SessionTurnLeaseLostError
 from persistence.sqlite.conversation._store.compression import _session_turn_lease_key_on_conn
 from persistence.sqlite.conversation._store.messages import append_message, append_messages_batch, get_messages
 from persistence.sqlite.conversation._store.sessions import create_session, end_session
@@ -486,7 +486,7 @@ def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
     db, lease = store.holder(), store.coordination
     create_session(db, "shared", "test")
 
-    from hermes_state_pidns import holder_namespace_token
+    from persistence.sqlite._state.pidns import holder_namespace_token
     dead_holder = f"pid=424242{holder_namespace_token()}:turn=dead:platform=test"
     assert lease.try_acquire_turn_lease(
         session_id="shared", holder=dead_holder, ttl_seconds=300

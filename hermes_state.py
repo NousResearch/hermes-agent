@@ -1,591 +1,414 @@
-#!/usr/bin/env python3
-"""SQLite state store for Hermes Agent: session metadata, message history, model
-config, FTS5 search. WAL mode (concurrent readers + one writer); compression
-splits sessions via parent_session_id chains; sessions are source-tagged
-('cli', 'telegram', ...). Batch-runner / RL trajectories live elsewhere.
+"""Compatibility module for outside plugins that still import ``hermes_state``; removed in v0.26.0.
+
+Session storage sits behind the storage interface (``persistence`` and ``persistence_assembly``). This module forwards
+the names the plugin guide lists under "``hermes_state`` deprecated: use the storage interface" to that interface and
+holds no SQL, database connection or state of its own. The first use of any of its names emits one
+``DeprecationWarning`` per process naming that name's replacement and the removal release. Every other public name
+raises ``AttributeError`` pointing at the guide, so the module's own helpers are underscore names.
 """
 
-import asyncio
-import hashlib
-import json
-import logging
-import os
-import re
-import sqlite3
-import sys
-import threading
-from pathlib import Path
-from hermes_dir_acl import make_user_dir
+import asyncio as _asyncio
+import importlib as _importlib
+import json as _json
+import typing as _typing
+import warnings as _warnings
+from contextlib import ExitStack as _ExitStack
+from pathlib import Path as _Path
 
-from hermes_constants import get_hermes_home
-from typing import Any, Optional
+if _typing.TYPE_CHECKING:
+    from pathlib import Path
+    from typing import Any, Optional
 
-from hermes_state_common import (
-    TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
-    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, _placeholders,
-)
-from hermes_state_pidns import holder_pid_checkable
-from hermes_state_dbfile import _connect_tracked_db
-from hermes_state_errors import (
-    _STATE_DB_CORRUPT_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
-    StateDbReplacedError, classify_persistence_error, is_malformed_db_error,
-)
-from hermes_state_sessions import SessionSessionsMixin
-from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
-from hermes_state_portability import SessionPortabilityMixin
-from hermes_state_telegram import SessionTelegramTopicsMixin
-from hermes_state_profile_repair import SessionProfileRepairMixin
-from hermes_state_schema import SessionSchemaMixin
-from hermes_state_messages import SessionMessagesMixin
-from hermes_state_prune_rewrite import SessionPruneRewriteMixin
-from hermes_state_api_content import SessionApiContentMixin
-from hermes_state_coverage import SessionCoverageMixin
-from hermes_state_rewind import SessionRewindMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS
-from hermes_state_repair import preflight_db_writability
-from hermes_state_titles import SessionTitlesMixin
-from hermes_state_prompt_refresh import SessionPromptRefreshMixin
-from hermes_state_usage import SessionUsageMixin
-from hermes_state_maintenance import SessionMaintenanceMixin
-from hermes_state_gateway import SessionGatewayMixin
-from hermes_state_compression import SessionCompressionMixin
-from hermes_state_search import SessionSearchMixin
-from persistence.sqlite._holder import StoreHolder, _secure_state_db_files
-from storage_user_copy import get_last_init_error
-
-try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
-    import psutil
-except ImportError:  # pragma: no cover - stripped/scaffold installs only
-    psutil = None  # type: ignore[assignment]
-
-logger = logging.getLogger(__name__)
-
-_MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
-
-
-def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
-    """``sessions.<key>`` from config.yaml (lazy import: circular at load), else *fallback*; 0 disables."""
-    try:
-        from hermes_cli.config import load_config_readonly
-        value = (load_config_readonly().get("sessions") or {}).get(key)
-        if value is None:
-            return fallback
-        limit = int(value)
-        return limit if limit >= 0 else fallback
-    except Exception:
-        return fallback
-
-
-def resolved_max_resume_messages() -> int:
-    return _configured_transcript_limit("max_resume_messages")
-
-
-def resolved_max_export_messages() -> int:
-    return _configured_transcript_limit("max_export_messages")
-
-
-class SessionResumeTooLargeError(ValueError):
-    def __init__(
-        self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
-    ):
-        self.message_count, self.limit = message_count, limit
-        self.scope = scope
-        super().__init__(
-            f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
-            "Start a fresh chat and keep a copy with the dashboard Sessions page's Export action or "
-            "`hermes sessions export --format md --session-id <id>` (neither is capped), or raise the limit "
-            "with `hermes config set sessions.max_resume_messages 0`."
-        )
-
-
-class SessionExportTooLargeError(ValueError):
-    def __init__(self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES):
-        self.session_id, self.message_count, self.limit = session_id, message_count, limit
-        # User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console).
-        super().__init__(
-            f"Session '{session_id}' has more than {limit:,} exportable messages; the JSON/JSONL "
-            "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
-            "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
-        )
-
-
-def _compression_lock_holder_process_is_dead(holder: str) -> bool:
-    """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
-    Reclaim on kernel proof only: unstructured/same-process holders (another
-    thread's live lease) and any probe doubt keep the lease until TTL expiry
-    (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
-    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
-    match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
-    pid = int(match.group(1)) if match else 0
-    if pid <= 0 or pid == os.getpid():
-        return False
-    if not holder_pid_checkable(holder):
-        return False  # foreign / unknown namespace: defer to TTL
-    if psutil is not None:
-        try:
-            return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
-        except Exception:
-            return False
-    # psutil-less fallback is POSIX-only: on Windows os.kill(pid, 0) maps sig=0 to
-    # CTRL_C_EVENT and can kill the target's console group.
-    if os.name == "nt":
-        return False
-    try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
-    except ProcessLookupError:
-        return True
-    except (OSError, OverflowError):  # PermissionError is an OSError: alive but foreign
-        return False
-    return False
-
-
-# Billing buckets that aren't a routable provider identity: a session that persisted only
-# one of these (never ran /model) falls back to the config default. Shared by
-# session_gateway_runtime and tui_gateway.server so they cannot drift.
-_BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
-
-
-# Import-time snapshot lets _default_db_path() detect a re-pointed DEFAULT_DB_PATH
-# (tests monkeypatch the constant directly).
-DEFAULT_DB_PATH = _IMPORT_DEFAULT_DB_PATH = get_hermes_home() / "state.db"
-
-
-def _default_db_path() -> Path:
-    """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else
-    ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import)."""
-    return DEFAULT_DB_PATH if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH else get_hermes_home() / "state.db"
-
-
-
-# Openings of the background-review harness prompts (agent/background_review.py).
-_REVIEW_HARNESS_PREFIXES = (
-    "Review the conversation above and update the skill library",
-    "Review the conversation above and consider saving to memory",
+_REMOVAL_RELEASE = "v0.26.0"
+_MIGRATION_GUIDE = (
+    "https://hermes-agent.nousresearch.com/docs/developer-guide/plugins#hermes_state-deprecated-use-the-storage-interface"
 )
 
+_warned = False
 
-def _is_background_review_harness_message(msg: dict[str, Any]) -> bool:
-    """Persisted harness prompt (older builds wrote the forked curator's turns
-    into real sessions; replaying them hijacks the session)."""
-    if not isinstance(msg, dict) or msg.get("role") not in {"user", "system"}:
-        return False
-    content = msg.get("content")
-    return isinstance(content, str) and content.lstrip().startswith(_REVIEW_HARNESS_PREFIXES)
+# Each carried name with the replacement its deprecation warning names.
+_REPLACEMENTS = {
+    "SessionDB": "persistence_assembly.open_persistence(profile_scope()), or open_persistence_reader(...) for read_only",
+    "AsyncSessionDB": "the store handle's aio attribute",
+    "DEFAULT_DB_PATH": "persistence_assembly.store_location(profile_scope())",
+    "StateDbCorruptError": "persistence.StoreQuarantined",
+    "StateDbReplacedError": "persistence.StoreReplaced",
+    "SessionCompressionInProgressError": "persistence.CompressionInProgress",
+    "DeletedWalGenerationError": "persistence.DeletedWalGeneration",
+    "SessionResumeTooLargeError": "persistence.conversation.messages.ResumeTooLarge",
+    "SessionExportTooLargeError": "persistence.ExportTooLarge",
+    "classify_persistence_error": "storage_errors.classify_persistence_error",
+    "is_sqlite_lock_error": "storage_errors.is_sqlite_lock_error",
+    "is_malformed_db_error": "storage_errors.is_malformed_db_error",
+    "apply_wal_with_fallback": "sqlite_support.apply_wal_with_fallback",
+    "apply_database_pragmas": "sqlite_support.apply_database_pragmas",
+    "storage_state": "persistence_assembly.storage_health(profile_scope()).storage_state()",
+    "storage_corrupt_reason": "persistence_assembly.storage_health(profile_scope()).storage_state()",
+    "get_hermes_home": "hermes_constants.get_hermes_home",
+    "mkdir_under_hermes_home": "hermes_constants.mkdir_under_hermes_home",
+}
 
+# Names that are another module's object under a new name.
+_FORWARDED = {
+    "StateDbCorruptError": ("persistence", "StoreQuarantined"),
+    "StateDbReplacedError": ("persistence", "StoreReplaced"),
+    "SessionCompressionInProgressError": ("persistence", "CompressionInProgress"),
+    "DeletedWalGenerationError": ("persistence", "DeletedWalGeneration"),
+    "SessionResumeTooLargeError": ("persistence.conversation.messages", "ResumeTooLarge"),
+    "SessionExportTooLargeError": ("persistence", "ExportTooLarge"),
+    "classify_persistence_error": ("storage_errors", "classify_persistence_error"),
+    "is_sqlite_lock_error": ("storage_errors", "is_sqlite_lock_error"),
+    "is_malformed_db_error": ("storage_errors", "is_malformed_db_error"),
+    "apply_wal_with_fallback": ("sqlite_support", "apply_wal_with_fallback"),
+    "apply_database_pragmas": ("sqlite_support", "apply_database_pragmas"),
+    "get_hermes_home": ("hermes_constants", "get_hermes_home"),
+    "mkdir_under_hermes_home": ("hermes_constants", "mkdir_under_hermes_home"),
+}
 
-def _strip_background_review_harness(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop harness messages and the curator-mode assistant reply that immediately followed each."""
-    if not messages:
-        return messages
-    out: list[dict[str, Any]] = []
-    skip_next_assistant = False
-    previous_was_harness = False
-    for msg in messages:
-        if _is_background_review_harness_message(msg):
-            # A consecutive harness prompt occupies the preceding prompt's
-            # immediate reply slot, so it must not arm another assistant skip.
-            skip_next_assistant = not previous_was_harness
-            previous_was_harness = True
-            continue
-        if skip_next_assistant:
-            skip_next_assistant = False
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                previous_was_harness = False
-                continue  # the curator-mode reply to the harness prompt
-        previous_was_harness = False
-        out.append(msg)
-    return out
-
-
-# Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
-_STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
-
-
-def _is_stale_tool_call_marker_message(msg: dict[str, Any]) -> bool:
-    """Assistant tool-call turn whose content is a bare ``[marker]`` (an older
-    conversation_loop persisted a local template's marker as the final response)."""
-    if not isinstance(msg, dict) or msg.get("role") != "assistant" or not msg.get("tool_calls"):
-        return False
-    content = msg.get("content")
-    return isinstance(content, str) and bool(_STALE_TOOL_CALL_MARKER_RE.fullmatch(content.strip()))
+__all__ = sorted(_REPLACEMENTS)
 
 
-def _strip_stale_tool_call_markers(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Blank stale ``[marker]`` assistant content (replaying it teaches the model
-    to keep emitting it); tool_call/result pairing stays intact."""
-    repaired = 0
-    for msg in filter(_is_stale_tool_call_marker_message, messages):
-        msg["content"] = ""
-        repaired += 1
-    if repaired:
-        logger.info(
-            "Cleared %d stale tool-call marker message(s) while restoring session (#78148)", repaired,
-        )
-    return messages
+def _transcript_view(include_inactive: "bool", include_compacted: "bool") -> "Any":
+    from persistence.conversation.messages import TranscriptView
+
+    if include_inactive:
+        return TranscriptView.ALL
+    return TranscriptView.DISPLAY if include_compacted else TranscriptView.ACTIVE
 
 
-_SESSION_DB_CONSEQUENCE = "Sessions will not be saved until this is fixed."
-_NETWORK_DRIVE_HINT = " If the database lives on a network drive, move it to a local disk."
-_NETWORK_DRIVE_GLOSS = "the session database could not be opened; it may be on a network or unsupported drive"
-_NETWORK_DRIVE_ACTION = (
-    "Move it to a local disk (`hermes {profile_arg}doctor` shows where it is), then start Hermes again."
-)
+def _media_root() -> "str":
+    from gateway.session_ingress_media import native_inputs_root
+
+    return str(native_inputs_root())
 
 
-def format_session_db_unavailable(
-    prefix: str = "Hermes can't open its session history right now",
-    *,
-    details: bool = False,
-) -> str:
-    """User-facing one-liner: ``<prefix>: <gloss>. <consequence> <action>[ network hint]``.
+def _scope_of(db_path: "Any") -> "Any":
+    from persistence_assembly import profile_scope
 
-    The cause table lives in ``hermes_state_user_copy`` so CLI, gateway and TUI agree. Chat
-    surfaces (gateway, TUI) get the one-liner; ``details=True`` (the CLI banner) appends a
-    ``Details: <raw cause>`` line for the raw SQLite text. Network filesystems (NFS/SMB/FUSE/ZFS)
-    cannot host SQLite's write-ahead log: when the raw cause carries one of those markers the
-    message names the network-drive suspicion, because ``hermes doctor --fix`` cannot repair a
-    mount — only moving the file can."""
-    from hermes_constants import profile_cli_selector
+    return profile_scope() if db_path is None else profile_scope(home=_Path(db_path).parent)
 
-    profile_arg = profile_cli_selector()
-    cause = get_last_init_error()
-    if not cause:
-        return (
-            f"{prefix}. {_SESSION_DB_CONSEQUENCE} Run `hermes {profile_arg}doctor` to check the "
-            "storage location."
-        )
-    from hermes_state_user_copy import describe_storage_failure
-    failure = describe_storage_failure(cause)
-    gloss, action, hint = failure.gloss, failure.action, ""
-    if any(m in cause.lower() for m in _WAL_INCOMPAT_MARKERS):
-        if failure.cause == "unknown":
-            gloss, action = _NETWORK_DRIVE_GLOSS, _NETWORK_DRIVE_ACTION.replace("{profile_arg}", profile_arg)
+
+class _SessionDB:
+    """``SessionDB`` over one store handle: ``open_persistence`` for a writable store (``db_path`` must name a
+    ``state.db``), ``open_persistence_reader`` with ``read_only``. Each method forwards to the handle's repositories
+    and returns the dict, list or scalar shapes the old class returned."""
+
+    def __init__(self, db_path: "Optional[Path]" = None, read_only: "bool" = False) -> None:
+        from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+
+        self._stack = _ExitStack()
+        if read_only:
+            target = _Path(db_path) if db_path is not None else profile_scope().profile_dir
+            store = self._stack.enter_context(open_persistence_reader(target))
+            try:
+                store.ready()
+            except BaseException:
+                self._stack.close()
+                raise
         else:
-            hint = _NETWORK_DRIVE_HINT
-    text = f"{prefix}: {gloss}. {_SESSION_DB_CONSEQUENCE} {action}{hint}"
-    if details:
-        from hermes_state_user_copy import storage_failure_details
-        text += f"\nDetails: {storage_failure_details(cause)}"
-    return text
+            if db_path is not None and _Path(db_path).name != "state.db":
+                raise ValueError(
+                    f"hermes_state.SessionDB opens a profile's state.db only, not {str(db_path)!r}; open the profile "
+                    "folder's store with persistence_assembly.open_persistence(profile_scope(home=...))"
+                )
+            store = self._stack.enter_context(open_persistence(_scope_of(db_path), eager=True))
+        self._store = store
+        self.read_only = read_only
 
-
-# Auto-repair at most once per DB path per process (no repair loops; serialises concurrent
-# web_server / gateway opens on the same malformed file).
-_repair_attempted_paths: set[str] = set()
-_repair_attempt_lock = threading.Lock()
-# Cross-process schema-surgery lock timeout (``_repair_attempt_lock`` covers one interpreter
-# only); sized for the slowest legitimate holder (VACUUM, multi-GB DB).
-_REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
-_IS_WINDOWS = sys.platform == "win32"
-
-
-
-def divert_session_transcript_jsonl(session_id: str, messages) -> Optional[Path]:
-    """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
-    live process). Returns the path, or None if nothing to write."""
-    sid = str(session_id or "").strip()
-    if not sid or not messages:
-        return None
-    sessions_dir = get_hermes_home() / "sessions"
-    make_user_dir(sessions_dir, parents=True, exist_ok=True)
-    path = sessions_dir / f"{sid}.jsonl"
-    with path.open("a", encoding="utf-8") as handle:
-        for msg in messages:
-            if msg is not None:
-                record = msg if isinstance(msg, dict) else {"content": str(msg)}
-                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-    return path
-
-
-# Process-wide shared registry (#90837): long-lived in-process callers (gateway, tui_gateway, cron, in-process
-# tools) share ONE store holder per resolved path via hermes_state_registry.acquire(); CLI one-shots, recovery
-# flows, and read-only cross-profile opens use SessionDB() directly with their own close().
-
-
-class SessionDB(
-    SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
-    SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
-    SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionPruneRewriteMixin, SessionApiContentMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
-    SessionPromptRefreshMixin,
-):
-    """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
-
-    # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
-    # sources have their own lifecycle owners; unknown sources fail closed.
-    # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
-    # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
-    _AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
-    )
-
-    # Imports cap lower than exports: an import holds one BEGIN IMMEDIATE.
-    _IMPORT_MAX_SESSIONS, _IMPORT_MAX_MESSAGES_PER_SESSION, _IMPORT_MAX_TOTAL_MESSAGES = 500, 10_000, 50_000
-    _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
-
-    @staticmethod
-    def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
-        if system_prompt is None:
-            return None
-        prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
-        conn.execute(
-            "INSERT OR IGNORE INTO system_prompts (hash, prompt) VALUES (?, ?)",
-            (prompt_hash, system_prompt),
-        )
-        return prompt_hash
-
-    @staticmethod
-    def _delete_unreferenced_system_prompts(conn) -> None:
-        conn.execute(
-            "DELETE FROM system_prompts WHERE NOT EXISTS ("
-            "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
-            "SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)"
+    def __getattr__(self, name: "str") -> "Any":
+        raise AttributeError(
+            f"hermes_state.SessionDB has no attribute {name!r}: it carries only the methods the plugin guide lists; "
+            f"use the storage interface instead ({_MIGRATION_GUIDE})"
         )
 
-    @staticmethod
-    def _session_row_dict(row: sqlite3.Row) -> dict[str, Any]:
-        data = dict(row)
-        for column in ("system_prompt", "tool_names"):
-            if f"_{column}_resolved" in data:
-                resolved = data.pop(f"_{column}_resolved")
-                if column in data:
-                    data[column] = resolved
-        # Lift /new vs /branch markers out of model_config so list payloads
-        # (which strip that heavy field) can still tell a reset sibling from
-        # a genuine fork. Keep this a local helper: tests sometimes replace
-        # the SessionDB name with a factory lambda.
-        if not (data.get("_reset_from") and data.get("_branched_from")):
-            raw = data.get("model_config")
-            cfg = None
-            if isinstance(raw, str) and raw:
-                try:
-                    cfg = json.loads(raw)
-                except (TypeError, ValueError):
-                    cfg = None
-            elif isinstance(raw, dict):
-                cfg = raw
-            if isinstance(cfg, dict):
-                if not data.get("_reset_from"):
-                    value = cfg.get("_reset_from")
-                    if isinstance(value, str) and value.strip():
-                        data["_reset_from"] = value.strip()
-                if not data.get("_branched_from"):
-                    value = cfg.get("_branched_from")
-                    if isinstance(value, str) and value.strip():
-                        data["_branched_from"] = value.strip()
-        return data
+    def close(self) -> None:
+        self._stack.close()
 
-    def __init__(self, db_path: Path | None = None, read_only: bool = False, *, holder: Optional[StoreHolder] = None):
-        """Open *db_path* on a store holder of its own, or serve through *holder* (the registry lends one per file)."""
-        # Keep only the opening call site, never a frame (which pins caller locals).
-        creation_site = "unknown"
-        caller = None
-        try:
-            caller = sys._getframe(1)
-            creation_site = f"{caller.f_globals.get('__name__', '?')}.{caller.f_code.co_name}:{caller.f_lineno}"
-        except Exception:
-            pass  # Diagnostic metadata must not prevent opening the database.
-        finally:
-            del caller
-        if holder is None:
-            holder = StoreHolder(db_path or _default_db_path(), read_only, creation_site=creation_site)
-        self._holder = holder
-
-    def __enter__(self) -> "SessionDB":
-        """``with SessionDB(path) as db:`` closes on exit; owners must release deterministically.
-
-        Ownership of a SessionDB should be released explicitly. Historically an instance with a started
-        token writer pinned ITSELF (bound-method writer target plus a strong ``atexit`` drain hook), so
-        ``__del__`` never ran for exactly the instances that leaked descriptors (#88033). The writer now
-        retires after an idle window and the atexit hook holds only a weak reference, so abandoned handles
-        are eventually collectible — but "eventually, after the idle window and a GC cycle" is not a release
-        policy. Call sites owning a handle are still expected to close it deterministically (see the
-        ownership comments in ``run_agent.py`` and ``tui_gateway/methods_session.py``).
-        """
+    def __enter__(self) -> "_SessionDB":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, *exc: object) -> None:
         self.close()
-        return False  # never suppress the caller's exception
 
-    def close(self):
-        """Close this handle's store holder; on a registry-lent one, release one reference instead."""
-        self._holder.close()
+    # -- sessions --------------------------------------------------------------------------
+    def create_session(self, session_id: "str", source: "str", **kwargs: "Any") -> "str":
+        from persistence.conversation.sessions import NewSession
 
-    MAX_TITLE_LENGTH = 100
+        origin_json = kwargs.pop("origin_json", None)
+        if origin_json is not None:
+            kwargs["origin"] = _json.loads(origin_json)
+        return self._store.sessions.create(NewSession(session_id=session_id, source=source, **kwargs))
 
-    # Title provenance, lowest to highest authority: auto-titling may only replace a
-    # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
-    TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED
-    TITLE_SOURCE_LLM = _TITLE_SOURCE_LLM
-    TITLE_SOURCE_USER = _TITLE_SOURCE_USER
-    _TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
+    def end_session(self, session_id: "str", end_reason: "str") -> None:
+        self._store.sessions.end(session_id, end_reason)
 
-    # Bot Mode's canonical chat is resolved by exact-title lookup: the title IS the identity,
-    # so _set_session_title refuses renames of a hidden row holding it.
-    # Bot Mode's forever-chat registry: the session titled exactly this, on a bot's profile, IS the bot's
-    # canonical chat — resolved by exact-title lookup on every open (no session-id pointer exists). See
-    # #92473.
-    CANONICAL_BOT_CHAT_TITLE = "Bot Chat"
+    def reopen_session(self, session_id: "str") -> None:
+        self._store.sessions.reopen(session_id)
 
-    # ── Message storage constants (SessionMessagesMixin) ──
-    # Prefix marking JSON-encoded structured content; NUL cannot collide with text.
-    _CONTENT_JSON_PREFIX = "\x00json:"
-    #: Reactions live inside ``display_metadata`` so they survive row rewrites.
-    REACTIONS_METADATA_KEY = "reactions"
-    # Columns every conversation projection decodes; ``active`` rides along so a display read
-    # can split compaction-archived rows without a second query. Contract: must include every
-    # ``agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps
-    # ``transcript_row_snapshot(row)`` from these rows (token_count is hashed there, not decoded).
-    _CONVERSATION_ROW_COLUMNS = (
-        "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
-        "finish_reason, reasoning, reasoning_content, reasoning_details, "
-        "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
-        "_compressed_summary, timestamp, token_count, active, api_content, display_kind, display_metadata, message_uid, "
-        "absorbed_message_uids, tool_call_uids, tool_call_uid"
-    )
+    def get_session(self, session_id: "str") -> "Optional[dict[str, Any]]":
+        record = self._store.sessions.get(session_id)
+        return None if record is None else record.as_session_row()
 
-    # ── Meta key/value (scheduler bookkeeping) ──
+    def list_sessions_rich(
+        self, source: "Optional[str]" = None, sources: "Optional[list[str]]" = None,
+        exclude_sources: "Optional[list[str]]" = None, cwd_prefix: "Optional[str]" = None, limit: "int" = 20,
+        offset: "int" = 0, include_children: "bool" = False, min_message_count: "int" = 0,
+        project_compression_tips: "bool" = True, order_by_last_active: "bool" = False,
+        include_archived: "bool" = False, archived_only: "bool" = False, id_query: "Optional[str]" = None,
+        search_query: "Optional[str]" = None, compact_rows: "bool" = False, include_pinned: "bool" = False,
+        session_key: "Optional[str]" = None, include_hidden: "bool" = False, include_subagents: "bool" = False,
+        local_created_sources: "Optional[list[str]]" = None,
+    ) -> "list[dict[str, Any]]":
+        from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
 
-    def get_meta(self, key: str) -> Optional[str]:
-        """Read state_meta[key] on self._lock (not _read_ctx): fts_rebuild_step reads progress before its
-        write transaction and a WAL reader would not see it."""
-        with self._lock:
-            row = self._conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
-        return None if row is None else row[0]
+        requested = sources if sources else ([source] if source else None)
+        query = SessionQuery(
+            sources=tuple(requested) if requested else None, exclude_sources=tuple(exclude_sources or ()),
+            cwd_prefix=cwd_prefix, include_children=include_children, min_message_count=min_message_count,
+            project_compression_tips=project_compression_tips,
+            order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
+            include_archived=include_archived, archived_only=archived_only, id_query=id_query,
+            search_text=search_query, include_pinned=include_pinned, session_key=session_key,
+            include_hidden=include_hidden, include_subagents=include_subagents,
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None)
+        entries = self._store.sessions.list_sessions(query, SessionWindow(limit=limit, offset=offset),
+                                                     compact_rows=compact_rows)
+        return [entry.as_list_row() for entry in entries]
 
-    def set_meta(self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None) -> None:
-        """Upsert state_meta[key]; with ``cursor`` the write is inline (the caller already holds a
-        transaction — nesting BEGIN IMMEDIATE would deadlock)."""
-        sql = (
-            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-        )
-        if cursor is not None:
-            cursor.execute(sql, (key, value))
-        else:
-            self._write_sql(sql, (key, value))
+    def session_count(
+        self, source: "Optional[str]" = None, sources: "Optional[list[str]]" = None,
+        cwd_prefix: "Optional[str]" = None, min_message_count: "int" = 0, include_archived: "bool" = False,
+        archived_only: "bool" = False, exclude_children: "bool" = False,
+        exclude_sources: "Optional[list[str]]" = None, include_subagents: "bool" = False,
+        local_created_sources: "Optional[list[str]]" = None,
+    ) -> "int":
+        from persistence.conversation.sessions import SessionCountQuery
 
-    def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
-        """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
-        root; gated once per root via state_meta. Returns rows retagged."""
-        prefix = str(workspaces_root).rstrip("/\\")
-        if not prefix:
-            return 0
-        gate = f"kanban_worker_source_retagged:{prefix}"
-        if self.get_meta(gate) == "1":
-            return 0
-        def _do(conn):
-            esc = _escape_like(prefix)
-            cursor = conn.execute(
-                "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
-                "OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, f"{esc}/%", f"{esc}\\\\%"),
-            )
-            # rowcount BEFORE set_meta reuses this cursor for its INSERT.
-            retagged = cursor.rowcount or 0
-            self.set_meta(gate, "1", cursor=cursor)
-            return retagged
-        return self._execute_write(_do)
+        requested = sources if sources else ([source] if source else None)
+        return self._store.sessions.count_sessions(SessionCountQuery(
+            sources=tuple(requested) if requested else None, exclude_sources=tuple(exclude_sources or ()),
+            cwd_prefix=cwd_prefix, min_message_count=min_message_count, include_archived=include_archived,
+            archived_only=archived_only, exclude_children=exclude_children, include_subagents=include_subagents,
+            local_created_sources=tuple(local_created_sources) if local_created_sources else None))
 
-    def is_kanban_owned_session(self, session_id: str) -> bool:
-        """True when this session — or any segment of the compression lineage a resume would
-        materialize — belongs to the Kanban dispatcher (``source``/``created_source`` =
-        ``'kanban'``): the transcript of a worker run, not a human conversation (#68779).
+    def set_session_title(self, session_id: "str", title: "str") -> "bool":
+        return self._store.sessions.set_title(session_id, title)
 
-        Both columns are checked: ``source`` is live routing state the dispatcher tags
-        (``HERMES_SESSION_SOURCE=kanban``) and the legacy retag rewrites, while immutable
-        ``created_source`` survives later surface flips. The lineage is the VERIFIED
-        compression chain (``_resume_lineage_ids``) — exactly the rows a resume loads — so a
-        worker transcript stays kanban-owned across rotations, while a delegate/branch child
-        of a worker (a DIFFERENT conversation) is not swept in. Plain classification, not a
-        gate: the resume-time guard (``hermes_cli/kanban_resume_guard.py``) owns the decision
-        and the dispatcher-owned exemption."""
-        lineage = self._resume_lineage_ids(session_id)
-        if not lineage:
-            return False
-        rows = self._read_all(
-            f"SELECT 1 FROM sessions WHERE id IN ({_placeholders(lineage)}) "
-            "AND (source = 'kanban' OR created_source = 'kanban') LIMIT 1",
-            tuple(lineage))
-        return bool(rows)
+    def resolve_session_by_title(self, title: "str") -> "Optional[str]":
+        return self._store.sessions.resolve_by_title(title)
 
-    def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
-        """``[(key, value), ...]`` for state_meta keys starting with the literal
-        ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""
+    def get_next_title_in_lineage(self, base_title: "str") -> "str":
+        return self._store.sessions.next_title_in_lineage(base_title)
+
+    def delete_session(
+        self, session_id: "str", sessions_dir: "Optional[Path]" = None,
+        expected_delete_ids: "Optional[list[str]]" = None,
+        expected_display_messages: "Optional[dict[str, list[dict[str, Any]]]]" = None,
+        exclude_active_write_guards: "bool" = False, include_compression_chain: "bool" = False,
+    ) -> "bool":
+        from session_retention import after_sessions_removed
+
+        removed = self._store.sessions.delete(
+            session_id, expected_ids=expected_delete_ids, expected_display=expected_display_messages,
+            refuse_guarded=exclude_active_write_guards, include_compression_chain=include_compression_chain,
+            media_root=_media_root())
+        after_sessions_removed(self._store, self._store.scope.profile_dir, removed, reason="delete",
+                               primary=session_id, sessions_dir=sessions_dir)
+        return bool(removed)
+
+    # -- messages --------------------------------------------------------------------------
+    def append_message(
+        self, session_id: "str", role: "str", content: "Any" = None, tool_name: "Optional[str]" = None,
+        tool_calls: "Any" = None, tool_call_id: "Optional[str]" = None, token_count: "Optional[int]" = None,
+        finish_reason: "Optional[str]" = None, reasoning: "Optional[str]" = None,
+        reasoning_content: "Optional[str]" = None, reasoning_details: "Any" = None,
+        codex_reasoning_items: "Any" = None, codex_message_items: "Any" = None,
+        platform_message_id: "Optional[str]" = None, observed: "bool" = False,
+        effect_disposition: "Optional[str]" = None, _compressed_summary: "bool" = False, timestamp: "Any" = None,
+        api_content: "Optional[str]" = None, display_kind: "Optional[str]" = None,
+        display_metadata: "Optional[dict[str, Any]]" = None, compression_lock_holder: "Optional[str]" = None,
+        turn_lease_holder: "Optional[str]" = None, turn_lease_ttl_seconds: "float" = 300.0,
+        message_uid: "Optional[str]" = None,
+    ) -> "int":
+        from persistence.conversation.messages import NewMessage
+
+        message = dict(
+            role=role, content=content, tool_name=tool_name, tool_calls=tool_calls, tool_call_id=tool_call_id,
+            token_count=token_count, finish_reason=finish_reason, reasoning=reasoning,
+            reasoning_content=reasoning_content, reasoning_details=reasoning_details,
+            codex_reasoning_items=codex_reasoning_items, codex_message_items=codex_message_items,
+            platform_message_id=platform_message_id, observed=observed, effect_disposition=effect_disposition,
+            _compressed_summary=_compressed_summary, timestamp=timestamp, api_content=api_content,
+            display_kind=display_kind, display_metadata=display_metadata, message_uid=message_uid)
+        return self._store.messages.append(
+            session_id, NewMessage.from_live(message), compression_lock_holder=compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+
+    def get_messages(
+        self, session_id: "str", include_inactive: "bool" = False, include_compacted: "bool" = False,
+        limit: "Optional[int]" = None, offset: "int" = 0, latest: "bool" = False, after_id: "Optional[int]" = None,
+        include_ancestors: "bool" = False,
+    ) -> "list[dict[str, Any]]":
+        from persistence.conversation.messages import TranscriptRead
+
+        request = TranscriptRead(view=_transcript_view(include_inactive, include_compacted), limit=limit,
+                                 offset=offset, latest=latest, after_id=after_id, include_lineage=include_ancestors)
+        return [row.as_wire_row() for row in self._store.messages.read_transcript(session_id, request)]
+
+    def get_messages_as_conversation(
+        self, session_id: "str", include_ancestors: "bool" = False, include_inactive: "bool" = False,
+        repair_alternation: "bool" = False, include_row_ids: "bool" = False, include_compacted: "bool" = False,
+    ) -> "list[dict[str, Any]]":
+        from persistence.conversation.messages import ConversationRequest
+
+        request = ConversationRequest(view=_transcript_view(include_inactive, include_compacted),
+                                      include_lineage=include_ancestors, repair_alternation=repair_alternation,
+                                      include_row_ids=include_row_ids)
+        return [message.as_openai_message() for message in self._store.messages.read_conversation(session_id, request)]
+
+    def clear_messages(self, session_id: "str") -> None:
+        from persistence.conversation.messages import ReplaceMode
+
+        self._store.messages.replace_transcript(session_id, (), ReplaceMode.DESTRUCTIVE)
+
+    def search_messages(
+        self, query: "str", source_filter: "Optional[list[str]]" = None,
+        exclude_sources: "Optional[list[str]]" = None, role_filter: "Optional[list[str]]" = None, limit: "int" = 20,
+        offset: "int" = 0, sort: "Optional[str]" = None, include_inactive: "bool" = False, fields: "Any" = None,
+        after_ts: "Optional[int]" = None, before_ts: "Optional[int]" = None,
+    ) -> "list[dict[str, Any]]":
+        from persistence.conversation.search import SEARCH_RESULT_FIELDS, SearchSort
+
+        hits = self._store.search.search_messages(
+            query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter, limit=limit,
+            offset=offset, sort=SearchSort.RELEVANCE if sort is None else SearchSort(sort),
+            include_inactive=include_inactive, fields=fields, after_ts=after_ts, before_ts=before_ts)
+        names = SEARCH_RESULT_FIELDS if fields is None else tuple(f for f in SEARCH_RESULT_FIELDS if f in set(fields))
+        return [_hit_dict(hit, names) for hit in hits]
+
+    # -- export and prune ------------------------------------------------------------------
+    def export_session(self, session_id: "str", include_compacted: "bool" = False,
+                       include_inactive: "bool" = False) -> "Optional[dict[str, Any]]":
+        from hermes_cli.session_export import to_legacy_export_dict
+
+        export = self._store.maintenance.export_session(session_id, include_compacted, include_inactive)
+        return None if export is None else to_legacy_export_dict(export)
+
+    def export_all(self, source: "Optional[str]" = None, include_compacted: "bool" = False,
+                   include_inactive: "bool" = False) -> "list[dict[str, Any]]":
+        from hermes_cli.session_export import to_legacy_export_dict
+
+        return [to_legacy_export_dict(export)
+                for export in self._store.maintenance.export_all(source, include_compacted, include_inactive)]
+
+    def prune_sessions(
+        self, older_than_days: "Optional[float]" = 90, source: "Optional[str]" = None,
+        sessions_dir: "Optional[Path]" = None, exclude_active_write_guards: "bool" = False,
+        deleted_ids: "Optional[list]" = None, **filters: "Any",
+    ) -> "int":
+        from persistence.housekeeping.maintenance import PruneCriteria
+        from session_retention import after_sessions_removed
+
+        outcome = self._store.maintenance.prune_sessions(
+            older_than_days, source, criteria=PruneCriteria(**filters),
+            exclude_active_write_guards=exclude_active_write_guards, media_root=_media_root())
+        after_sessions_removed(self._store, self._store.scope.profile_dir, outcome.deleted_ids, reason="prune",
+                               sessions_dir=sessions_dir)
+        if deleted_ids is not None:
+            deleted_ids.extend(outcome.deleted_ids)
+        return outcome.count
+
+    # -- state_meta ------------------------------------------------------------------------
+    def get_meta(self, key: "str") -> "Optional[str]":
+        return self._store.state_meta.get(key)
+
+    def set_meta(self, key: "str", value: "str") -> None:
+        self._store.state_meta.set(key, value)
+
+    def list_meta_prefix(self, prefix: "str") -> "list[tuple[str, str]]":
         if not prefix:
             return []
-        rows = self._read_all(
-            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
-        )
-        return [(row[0], row[1]) for row in rows]
+        return [(entry.key, entry.value) for entry in self._store.state_meta.list_prefix(prefix)]
 
 
-class _HolderMember:
-    """A member of the store holder a SessionDB serves through: read, written and deleted on the handle's holder,
-    read from StoreHolder on the class."""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __get__(self, db, owner=None):
-        return getattr(StoreHolder if db is None else db._holder, self.name)
-
-    def __set__(self, db, value) -> None:
-        setattr(db._holder, self.name, value)
-
-    def __delete__(self, db) -> None:
-        delattr(db._holder, self.name)
+def _hit_dict(hit: "Any", names: "tuple[str, ...]") -> "dict[str, Any]":
+    """One search hit as the old result dict: ``id`` is the message id, ``context`` a list of role/content dicts."""
+    row = {}
+    for name in names:
+        if name == "id":
+            row[name] = hit.message_id
+        elif name == "context":
+            row[name] = [{"role": item.role, "content": item.content} for item in hit.context]
+        else:
+            row[name] = getattr(hit, name)
+    return row
 
 
-# The connection core a SessionDB serves through: writer connection and lock, transactions, the read pool,
-# file and WAL-generation guards, quarantine, the accounting queue and the state the schema code keeps there.
-for _name in (
-    "db_path", "read_only", "_creation_site", "_shared_registry_owned",
-    "_WRITE_PATIENCE_S", "_TRANSCRIPT_WRITE_PATIENCE_S", "_ACTIVITY_WRITE_PATIENCE_S", "_COMPRESSION_BUSY_WAIT_S",
-    "_WRITE_RETRY_MIN_S", "_WRITE_RETRY_MAX_S", "_WRITE_RETRY_SLOW_AFTER_S", "_WRITE_RETRY_SLOW_MIN_S",
-    "_WRITE_RETRY_SLOW_MAX_S", "_CHECKPOINT_EVERY_N_WRITES", "_FTS_MERGE_EVERY_N_WRITES",
-    "_FTS_MERGE_MAX_PAGES_PER_INDEX", "_FTS_MERGE_COMMANDS_PER_PASS",
-    "_conn", "_lock", "_wal_active", "_write_count", "_wal_lock_guard",
-    "_read_pool", "_read_budget", "_read_permits", "_read_conns_lock", "_read_conns_closed", "_read_open_failed_at",
-    "_db_file_identity", "_db_file_application_id", "_db_sidecar_identity", "_db_replaced", "_db_wal_generation_lost",
-    "_retired_generation_capture", "_retired_capture_lock", "_retire_connection", "_connection_pinned",
-    "_db_corrupt", "_db_corrupt_reason",
-    "_fts_enabled", "_fts_stale", "_trigram_available", "_fts_cjk_loaded", "_fts_cjk_available",
-    "_fts_unavailable_warned", "_trigram_unavailable_warned", "_fts_usermerge_floor_applied",
-    "_fts_deferred_holder_pids", "_fts_stale_retry_after", "_fts_stale_retry_interval",
-    "_close_connection_quietly", "_close_conn_logged", "_open_writer", "_open_read_only", "_connect_read_only",
-    "_handle_quarantine_if_invalid", "_open_writer_conn", "_connect_and_init", "_connect_and_init_with_lock_patience",
-    "_get_read_conn", "_evict_one_idle_read_conn", "_close_read_conn", "_checkout_read_conn", "_read_ctx",
-    "_reopen_after_close_locked", "_execute_write", "_write_sql", "_write_rowcount", "_read_one", "_read_all",
-    "_log_reopen_notice",
-    "_read_retrying_ioerr", "_ensure_db_file_generation", "_record_db_file_identity", "_db_file_was_replaced",
-    "_wal_generation_was_lost", "_halt_if_db_generation_changed", "_capture_retired_generation",
-    "_raise_if_db_replaced", "_is_structural_corruption_error", "_corrupt_error", "_halt_db_corrupt",
-    "_disable_close_time_checkpoint", "_pin_connection", "_settle_lost_generation_locked", "_raise_if_db_corrupt",
-    "_sleep_before_write_retry", "_foreign_state_db_holders", "_quarantine_reason", "_try_wal_checkpoint",
-    "_TOKEN_DELTA_SUM_FIELDS", "_TOKEN_DELTA_COST_FIELDS", "_TOKEN_DELTA_ROUTE_FIELDS", "_TOKEN_WRITER_IDLE_SECONDS",
-    "_token_queue", "_token_queue_cond", "_token_writer_thread", "_token_writer_stop", "_token_writer_busy",
-    "_token_atexit_hook", "queue_token_counts", "_apply_claimed_batch", "flush_token_counts", "_token_writer_loop",
-    "_apply_token_batch", "_coalesce_token_deltas", "_stop_token_writer", "_drain_token_queue_at_exit",
-):
-    setattr(SessionDB, _name, _HolderMember(_name))
-del _name
+class _AsyncSessionDB:
+    """Async door onto ``SessionDB``: every call runs through ``asyncio.to_thread``."""
 
-
-class AsyncSessionDB:
-    """Async door onto SessionDB: every call runs via asyncio.to_thread so a blocking SQLite call
-    never freezes the event loop (no method returns a live cursor)."""
-
-    def __init__(self, db: SessionDB) -> None:
+    def __init__(self, db: "_SessionDB") -> None:
         self._db = db
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: "str") -> "Any":
         attr = getattr(self._db, name)
         if not callable(attr):
             return attr
-        async def _offloaded(*args, **kwargs):
-            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        async def _offloaded(*args: "Any", **kwargs: "Any") -> "Any":
+            return await _asyncio.to_thread(attr, *args, **kwargs)
         return _offloaded
+
+
+def _storage_state(db_path: "Any") -> "str":
+    """``"corrupt"`` once this process latched structural damage on the store at ``db_path``, else ``"ok"``."""
+    from persistence_assembly import storage_health
+
+    return storage_health(_scope_of(db_path)).storage_state().value
+
+
+def _storage_corrupt_reason(db_path: "Any") -> "Optional[str]":
+    """``None`` while the store at ``db_path`` is not latched corrupt, else ``"corrupt"``: the interface keeps no
+    latched error text."""
+    state = _storage_state(db_path)
+    return None if state == "ok" else state
+
+
+_LOCAL = {
+    "SessionDB": _SessionDB,
+    "AsyncSessionDB": _AsyncSessionDB,
+    "storage_state": _storage_state,
+    "storage_corrupt_reason": _storage_corrupt_reason,
+}
+
+
+def _resolve(name: "str") -> "Any":
+    if name == "DEFAULT_DB_PATH":
+        from persistence_assembly import profile_scope, store_location
+
+        return store_location(profile_scope())
+    if name in _LOCAL:
+        return _LOCAL[name]
+    module, attr = _FORWARDED[name]
+    return getattr(_importlib.import_module(module), attr)
+
+
+def __getattr__(name: "str") -> "Any":
+    global _warned
+    if name not in _REPLACEMENTS:
+        raise AttributeError(
+            f"module 'hermes_state' has no attribute {name!r}: the old session store was removed and this module "
+            f"carries only the names the plugin guide lists ({_MIGRATION_GUIDE})"
+        )
+    value = _resolve(name)
+    if not _warned:
+        _warned = True
+        _warnings.warn(
+            f"hermes_state.{name} is deprecated and is removed in {_REMOVAL_RELEASE}; use {_REPLACEMENTS[name]} "
+            f"instead ({_MIGRATION_GUIDE}).",
+            DeprecationWarning, stacklevel=2)
+    return value
+
+
+def __dir__() -> "list[str]":
+    return sorted({*globals(), *_REPLACEMENTS})

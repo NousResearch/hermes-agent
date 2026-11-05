@@ -2,7 +2,7 @@ from . import Copy
 
 COPY = (
     Copy(
-        legacy='hermes_state_common',
+        legacy='persistence.sqlite._state.common',
         doc='The SQL fragments, builders and statement helpers the store functions share.',
         names=(
             'escape_like',

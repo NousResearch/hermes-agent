@@ -8,7 +8,7 @@ import re
 import sqlite3
 from typing import Any
 from persistence.sqlite.conversation._store.sql_common import escape_like as _escape_like, _placeholders
-from hermes_state_pidns import holder_pid_checkable
+from persistence.sqlite._state.pidns import holder_pid_checkable
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
 except ImportError:  # pragma: no cover - stripped/scaffold installs only

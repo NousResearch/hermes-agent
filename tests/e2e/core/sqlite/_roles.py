@@ -1,7 +1,7 @@
 """Child-process roles for the SQLite torture chamber.
 
 Run as ``python _roles.py <role> <json-args>``. Every role is a real OS process that opens the shared
-``state.db`` through the production ``SessionDB`` (or, for the non-hermes opener, a bare ``sqlite3``
+``state.db`` through the production store opened with ``open_persistence`` (or, for the non-hermes opener, a bare ``sqlite3``
 connection) and reports through append-only files, so a ``kill -9`` loses nothing it already reported:
 
 * ``<name>.journal`` — writers: ``I <tok> <sid> <nrows>`` before an append, ``A <tok>`` once it returned.
@@ -11,7 +11,7 @@ Tokens are single FTS words (``TK`` + alnum) so the test can look every acknowle
 through ``messages`` and through the FTS indexes.
 
 Journal-mode seam: with ``HERMES_E2E_SQLITE_VERSION_PIN`` set, the production version probe
-``hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
+``persistence.sqlite._state.wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
 the real range predicate and ``apply_wal_with_fallback`` then decide the journal mode as they would there.
 """
 
@@ -34,7 +34,7 @@ _stop_requested = False
 
 
 def _on_sigterm(_signum, _frame):
-    # Gateway/TUI shape: SIGTERM is a graceful shutdown that ends in SessionDB.close() (checkpoint on close).
+    # Gateway/TUI shape: SIGTERM is a graceful shutdown that ends in the store's close (checkpoint on close).
     global _stop_requested
     _stop_requested = True
 
@@ -60,34 +60,61 @@ def _apply_sqlite_version_pin() -> None:
     pin = os.environ.get("HERMES_E2E_SQLITE_VERSION_PIN")
     if not pin:
         return
-    import hermes_state_wal
+    from persistence.sqlite._state import wal as state_wal
 
     pinned = tuple(int(p) for p in pin.split("."))
-    probe = hermes_state_wal.is_sqlite_wal_reset_vulnerable
+    probe = state_wal.is_sqlite_wal_reset_vulnerable
 
     def is_sqlite_wal_reset_vulnerable(version_info=None):
         return probe(pinned if version_info is None else version_info)
 
-    hermes_state_wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
+    state_wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
 
 
 def _patient(a: dict, out: Out, op: str, fn, *, deadline: float = 90.0):
     """Run ``fn()``; in the DELETE arm (``busy_ok``) a SQLITE_BUSY refusal is reported as a ``busy`` event and
-    retried. DELETE mode is documented to block readers on writes (hermes_state_wal), so a busy read/open is an
+    retried. DELETE mode is documented to block readers on writes (the backend's wal module), so a busy read/open is an
     availability event there, never an integrity one. In the WAL arm it propagates and fails the role."""
+    from persistence import PersistenceError
+
     end = time.monotonic() + deadline
     while True:
         try:
             return fn()
-        except sqlite3.OperationalError as exc:
+        except (sqlite3.OperationalError, PersistenceError) as exc:
+            # The store raises SQLite's refusal as a persistence error chained from it; judge the SQLite error.
+            error = exc if isinstance(exc, sqlite3.OperationalError) else exc.__cause__
             # By result code, not text: SQLITE_BUSY also surfaces as "vtable constructor failed:
             # messages_fts" when the FTS5 table's config read hits the lock during an open.
-            busy = getattr(exc, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or any(
-                m in str(exc).lower() for m in ("database is locked", "database is busy"))
+            busy = isinstance(error, sqlite3.OperationalError) and (
+                getattr(error, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or any(
+                    m in str(error).lower() for m in ("database is locked", "database is busy")))
             if not (busy and a.get("busy_ok")) or time.monotonic() > end:
                 raise
             out.report(event="busy", op=op, error=repr(exc))
             time.sleep(0.05)
+
+
+def _open(db_path: Path, *, eager: bool = False):
+    """A storage interface handle on the store at ``db_path``; with ``eager`` the store opens here."""
+    from persistence_assembly import open_persistence, profile_scope
+
+    return open_persistence(profile_scope(home=db_path.parent), eager=eager)
+
+
+def _message_count(db, session_id: str | None = None) -> int:
+    """Stored message rows (every row, active or not), optionally of one session, on the store's read connection."""
+    from tests.fixtures.storage_holder import raw_holder
+
+    sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")
+    with raw_holder(db)._read_ctx() as conn:
+        return conn.execute(sql, (session_id,) if session_id else ()).fetchone()[0]
+
+
+def _wal_active(db) -> bool:
+    from tests.fixtures.storage_holder import raw_holder
+
+    return bool(raw_holder(db)._wal_active)
 
 
 def _fd_count() -> int:
@@ -110,15 +137,16 @@ def _stopping(stop_file: Path) -> bool:
 
 def role_writer(a: dict, out: Out) -> int:
     """Long-lived writer (gateway- or TUI-like): appends until told to stop, journaling intent + ack."""
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
     tag = a["tag"]
-    db = SessionDB(db_path=db_path)
+    db = _open(db_path)
     for sid in a["sessions"]:
-        if db.get_session(sid) is None:
-            db.create_session(sid, a.get("source", "cli"))
-    out.report(event="ready", wal=bool(getattr(db, "_wal_active", False)), fds=_fd_count())
+        if db.sessions.get(sid) is None:
+            seed_session(db, sid, a.get("source", "cli"))
+    out.report(event="ready", wal=_wal_active(db), fds=_fd_count())
     i = 0
     max_appends = int(a.get("max_appends", 10**9))
     try:
@@ -133,13 +161,13 @@ def role_writer(a: dict, out: Out) -> int:
                 ]
                 out.journal(f"I {tok}u {sid} 1")
                 out.journal(f"I {tok}t {sid} 1")
-                db.append_messages_batch(sid, msgs)
+                db.messages.append_batch(sid, [NewMessage.from_live(m) for m in msgs])
                 out.journal(f"A {tok}u")
                 out.journal(f"A {tok}t")
             else:
                 role = ("user", "assistant")[i % 2]
                 out.journal(f"I {tok} {sid} 1")
-                db.append_message(sid, role=role, content=f"{tok} turn {i} of {tag}")
+                seed_messages(db, sid, {"role": role, "content": f"{tok} turn {i} of {tag}"})
                 out.journal(f"A {tok}")
             i += 1
             if a.get("stray_every") and i % a["stray_every"] == 0:
@@ -160,20 +188,20 @@ def role_writer(a: dict, out: Out) -> int:
 
 
 def role_reader(a: dict, out: Out) -> int:
-    """Dashboard-like reader: opens a writable SessionDB at startup and polls until stopped. Reports any
+    """Dashboard-like reader: opens a writable store at startup and polls until stopped. Reports any
     per-session count that went DOWN (no compaction runs in this chamber) and its fd count per pass."""
-    from hermes_state import SessionDB
+    from persistence.conversation.sessions import SessionQuery, SessionWindow
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
-    db = _patient(a, out, "open", lambda: SessionDB(db_path=db_path))
-    out.report(event="ready", wal=bool(getattr(db, "_wal_active", False)), fds=_fd_count())
+    db = _patient(a, out, "open", lambda: _open(db_path, eager=True))
+    out.report(event="ready", wal=_wal_active(db), fds=_fd_count())
     seen: dict[str, int] = {}
     passes = 0
 
     def _pass() -> None:
-        for row in db.list_sessions_rich(limit=200):
-            sid = row["id"]
-            n = db.message_count(sid)
+        for entry in db.sessions.list_sessions(SessionQuery(), SessionWindow(limit=200)):
+            sid = entry.session.session_id
+            n = _message_count(db, sid)
             if n < seen.get(sid, 0):
                 out.report(event="error", error=f"count went down for {sid}: {seen[sid]} -> {n}")
             seen[sid] = max(n, seen.get(sid, 0))
@@ -196,18 +224,16 @@ def role_reader(a: dict, out: Out) -> int:
 
 def role_churn(a: dict, out: Out) -> int:
     """`hermes sessions list` / doctor / cron-guard shape: open, read, close — ``iterations`` times in one
-    process, alternating the production SessionDB with a bare sqlite3 opener (sqlite3 shell, backup tool).
+    process, alternating the production store with a bare sqlite3 opener (sqlite3 shell, backup tool).
     The fd count must not grow with the number of cycles."""
-    from hermes_state import SessionDB
-
     db_path = Path(a["db"])
     start_fds = _fd_count()
     fds_after_warmup = None
 
     def _hermes_cycle() -> None:
-        db = SessionDB(db_path=db_path)
+        db = _open(db_path, eager=True)
         try:
-            db.message_count()
+            _message_count(db)
         finally:
             db.close()
 
@@ -242,10 +268,9 @@ def role_opener(a: dict, out: Out) -> int:
                 return conn.execute("SELECT count(*) FROM messages").fetchone()[0]
             finally:
                 conn.close()
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=db_path)
+        db = _open(db_path, eager=True)
         try:
-            return db.message_count()
+            return _message_count(db)
         finally:
             db.close()
 
@@ -271,14 +296,14 @@ def _raw_count(db_path: Path) -> int:
 
 
 def role_fts(a: dict, out: Out) -> int:
-    """Maintenance pass: full FTS rebuild + optimize through SessionDB (cross-process admission)."""
-    from hermes_state import SessionDB
+    """Maintenance pass: full FTS rebuild + optimize through the store's holder (cross-process admission)."""
+    from tests.fixtures.storage_holder import optimize_fts, rebuild_fts
 
-    db = _patient(a, out, "open", lambda: SessionDB(db_path=Path(a["db"])))
+    db = _patient(a, out, "open", lambda: _open(Path(a["db"]), eager=True))
     out.report(event="ready")
     try:
-        rebuilt = _patient(a, out, "fts", db.rebuild_fts)
-        optimized = _patient(a, out, "fts", db.optimize_fts)
+        rebuilt = _patient(a, out, "fts", lambda: rebuild_fts(db))
+        optimized = _patient(a, out, "fts", lambda: optimize_fts(db))
     except BaseException as exc:
         out.report(event="error", error=repr(exc), tb=traceback.format_exc()[-3000:])
         return 2
@@ -289,7 +314,7 @@ def role_fts(a: dict, out: Out) -> int:
 
 def role_repair(a: dict, out: Out) -> int:
     """`repair_state_db_schema` as the CLI/doctor/startup recovery calls it."""
-    from hermes_state_repair import repair_state_db_schema
+    from persistence.sqlite._state.repair import repair_state_db_schema
 
     db_path = Path(a["db"])
     try:
@@ -313,16 +338,16 @@ def role_agent(a: dict, out: Out) -> int:
     slash command does, and journals ``C <kept bases…>``. ``resume`` reloads history from state.db first
     (a fresh process resuming the session)."""
     from agent.conversation_compression_manual import compress_now, parse_compress_args
-    from hermes_state import SessionDB
     from run_agent import AIAgent
+    from tests.fixtures.storage_read import conversation
 
     stop_file = Path(a["stop"])
-    db = SessionDB(db_path=Path(a["db"]))
+    db = _open(Path(a["db"]))
     agent = AIAgent(base_url=a["base_url"], api_key="sk-fake-e2e", model="fake-model", quiet_mode=True,
-                    session_db=db, session_id=a["session_id"], skip_context_files=True, skip_memory=True)
-    history = db.get_messages_as_conversation(a["session_id"]) if a.get("resume") else None
+                    persistence=db, session_id=a["session_id"], skip_context_files=True, skip_memory=True)
+    history = conversation(db, a["session_id"]) if a.get("resume") else None
     out.report(event="ready", micro=bool(getattr(agent.context_compressor, "_micro_compact_enabled", False)),
-               resumed=len(history or []), wal=bool(getattr(db, "_wal_active", False)))
+               resumed=len(history or []), wal=_wal_active(db))
     bases: list[str] = []
     try:
         for i in range(int(a["turns"])):

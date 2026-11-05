@@ -34,8 +34,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state_repair import repair_state_db_schema
-from hermes_state_repair import _connect_repair_durable
+from persistence.sqlite._state.repair import repair_state_db_schema
+from persistence.sqlite._state.repair import _connect_repair_durable
 
 
 def _make_db(tmp_path: Path) -> Path:

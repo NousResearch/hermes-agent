@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 import pytest
 
-from hermes_state_errors import StateDbReplacedError
+from persistence.sqlite._state.errors import StateDbReplacedError
 from persistence import PersistenceError, StoreReplaced
 from tests.persistence_sqlite.conftest import store_for
 

@@ -53,6 +53,10 @@
    "legacy": "hermes_cli/sqlite_util.py::add_column_if_missing"
   },
   {
+   "backend": "sqlite_support.py::apply_database_pragmas",
+   "legacy": "hermes_state_wal.py::apply_database_pragmas"
+  },
+  {
    "backend": "sqlite_support.py::open_db",
    "legacy": "hermes_cli/sqlite_util.py::open_db"
   },

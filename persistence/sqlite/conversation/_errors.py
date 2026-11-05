@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from hermes_state_errors import (
-    CompressionSessionBusyError, CompressionSessionClosedError, HeldRowRewrittenError, PruneRowStaleError, PruneRowUnresolvedError, SessionActiveWriteGuardError, SessionCompressionInProgressError, SessionTurnLeaseLostError,
+from persistence.sqlite._state.errors import (
+    CompressionSessionBusyError, CompressionSessionClosedError, HeldRowRewrittenError, PruneRowStaleError,
+    PruneRowUnresolvedError, SessionActiveWriteGuardError, SessionCompressionInProgressError,
+    SessionTurnLeaseLostError,
 )
 from persistence import (
     AuthorityRefusal, CompressionBusy, CompressionClosed, CompressionInProgress, ExportTooLarge, HeldRowRewritten,

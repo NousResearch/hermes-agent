@@ -7,8 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
-from hermes_state_common import routed_sessions_setting
-from hermes_state_keys import CRON_PRINCIPAL_ID
+from sqlite_support import routed_sessions_setting
+from persistence.sqlite._state.keys import CRON_PRINCIPAL_ID
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")

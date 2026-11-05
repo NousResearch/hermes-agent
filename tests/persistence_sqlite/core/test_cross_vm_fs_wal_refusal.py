@@ -10,8 +10,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state_wal as state_wal
-from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
+from persistence.sqlite._state import wal as state_wal
+from persistence.sqlite._state.wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
 
 
 def _mountinfo(tmp_path, lines):

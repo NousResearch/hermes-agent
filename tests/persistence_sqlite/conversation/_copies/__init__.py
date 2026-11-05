@@ -78,14 +78,14 @@ def load_specs() -> dict[str, tuple[Copy, ...]]:
 # Spec legacy modules that main holds under another name.
 MAIN_MODULES = {
     "hermes_state_shared": "hermes_state_common",
-    "hermes_state_common": "hermes_state_common",
+    "persistence.sqlite._state.common": "hermes_state_common",
     "hermes_state_transcript_repair": "agent.transcript_repair",
 }
 
 # Main's legacy modules the backend holds whole: any name imported from one comes from the backend's module.
 MODULE_COPIES = {
-    "hermes_state_errors": "hermes_state_errors",
-    "hermes_state_keys": "hermes_state_keys",
+    "hermes_state_errors": "persistence.sqlite._state.errors",
+    "hermes_state_keys": "persistence.sqlite._state.keys",
 }
 
 
@@ -105,9 +105,9 @@ CORE_COPIES = {
 # Names a legacy module only re-exports, imported from the module that defines them; ``module:name`` imports a
 # differently named definition under the legacy name.
 REEXPORTS = {
-    ("hermes_state", "SessionCompressionInProgressError"): "hermes_state_errors",
+    ("hermes_state", "SessionCompressionInProgressError"): "persistence.sqlite._state.errors",
     ("hermes_state_messages", "_placeholders"): f"{STORE_PACKAGE}.sql_common",
-    ("hermes_state_runtime", "admission_fingerprint"): "hermes_state_keys",
+    ("hermes_state_runtime", "admission_fingerprint"): "persistence.sqlite._state.keys",
     ("hermes_state_runtime", "_json"): "persistence.core.canonical:canonical_json",
 }
 

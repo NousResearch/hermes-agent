@@ -11,7 +11,7 @@ COPY = Copy(
     ),
     # The expected session id is the binding contract's ``local_session_id``, the derivation ``local_identity`` makes.
     substitutions={'validate_local_lineage': (
-        ("    from hermes_state_keys import local_identity\n", "    from persistence.authority.bindings import local_session_id\n"),
+        ("    from persistence.sqlite._state.keys import local_identity\n", "    from persistence.authority.bindings import local_session_id\n"),
         ("receipt['session_id'] != local_identity(", "receipt['session_id'] != local_session_id("),
     )},
 )

@@ -17,7 +17,7 @@ from persistence import (
 )
 from persistence.sqlite import SQLiteBackend, translated
 from persistence.sqlite import _registry
-from hermes_state_errors import StateDbCorruptError, StateDbReplacedError
+from persistence.sqlite._state.errors import StateDbCorruptError, StateDbReplacedError
 from tests.persistence_sqlite.conftest import store_for
 
 

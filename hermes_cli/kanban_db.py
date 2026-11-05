@@ -3122,6 +3122,26 @@ def edit_task(
     return True
 
 
+# The reviewer skill the review lane force-loads on every dispatched reviewer worker. Defined once
+# so the dispatcher, the gateway's worker policy and the preflight checker cannot drift apart.
+REVIEW_LANE_SKILLS: tuple[str, ...] = ("sdlc-review",)
+
+
+def worker_skill_identifiers(
+    skills: Optional[Iterable[str]], *, review_lane: bool = False,
+) -> list[str]:
+    """The exact identifiers a dispatched worker receives in ``context['skills']``.
+
+    ``skills`` are the task's pinned skills. A review-lane dispatch appends
+    :data:`REVIEW_LANE_SKILLS`; nothing else is injected (the kanban lifecycle travels in the
+    worker's system prompt, not in the preload list). Order is stable and duplicates drop, so
+    the dispatcher, the gateway and a preflight all hand the worker the same list.
+    """
+    pinned = [str(skill).strip() for skill in (skills or ()) if str(skill).strip()]
+    lane = list(REVIEW_LANE_SKILLS) if review_lane else []
+    return list(dict.fromkeys([*pinned, *lane]))
+
+
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
@@ -3139,12 +3159,20 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    A ``review`` card with no live claim is also accepted (operator/orchestrator
+    path, ``expected_run_id=None``): a gate whose reviewer worker died before its
+    first turn sat in ``review`` where neither this nor :func:`request_review`
+    accepted it, so the gate could never be re-routed or parked. The claim-less
+    widening never applies to a caller asserting run ownership — a worker must
+    still match a ``running``/``ready`` card.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
@@ -3170,7 +3198,13 @@ def block_task(
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
             return True
-        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else (
+            "review" if cur_row["status"] == "review" else "ready")
+        # A stranded review gate (reviewer died pre-turn, no live claim) has no run to protect, so
+        # an operator/orchestrator may park it. ``source_status='review'`` keeps ``unblock`` honest:
+        # the card resumes into the review lane, not the implementer lane.
+        park_review = (cur_row["status"] == "review" and expected_run_id is None
+                       and not _claim_is_live(cur_row))
         requested_kind = kind
         rekind_reason = None
         # ``dependency`` only waits on incomplete parents. A worker filing that
@@ -3187,6 +3221,7 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        statuses = "('running', 'ready', 'review')" if park_review else "('running', 'ready')"
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3195,7 +3230,7 @@ def block_task(
                        worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN {statuses}
                 """
         params = (*params, task_id)
         if expected_run_id is not None:
@@ -3277,6 +3312,13 @@ def request_review(
     upload. A declared artifact that cannot be preserved raises
     :class:`ArtifactPreservationError`, rolling the whole transition back: the
     task stays ``running`` and retryable, with no attachments and no event.
+
+    A card already in ``review`` is accepted too when the caller names a different
+    *reviewer*, asserts no run ownership and no claim is live: that is the recovery
+    path for a gate whose reviewer worker died before its first turn. ``unblock``
+    used to be the only accepted transition there, which returned the card to the
+    same under-provisioned reviewer; the implementer provenance is preserved and
+    the card stays in ``review`` under a reviewer that can actually start.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3320,6 +3362,13 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # A gate whose reviewer died before its first turn sits in ``review`` with a dead run.
+            # Re-route it to a provisioned reviewer: no live claim to protect, an explicit
+            # different reviewer, and no run-ownership assertion (the worker path is unchanged).
+            reroute = (trow["status"] == "review" and expected_run_id is None and not force
+                       and reviewer is not None
+                       and _canonical_assignee(trow["assignee"]) != reviewer
+                       and not _claim_is_live(trow))
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,
@@ -3329,7 +3378,24 @@ def request_review(
             # routes on this field, and it already refuses a handoff that
             # carries no implementer provenance.
             implementer = None
-            if trow["current_run_id"] is not None:
+            if reroute:
+                # The card still names the dead *reviewer* attempt, so reading the run would
+                # record the reviewer that could not start as the implementer — and
+                # request_changes() routes back on this field. Keep the provenance the original
+                # handoff recorded instead.
+                prior = conn.execute(
+                    "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'review_requested' "
+                    "ORDER BY id DESC LIMIT 1", (task_id,),
+                ).fetchone()
+                prior_payload = _json_dict(_row_get(prior, "payload")) if prior else {}
+                implementer = prior_payload.get("implementer") or None
+                if not implementer:
+                    arow = conn.execute(
+                        "SELECT profile FROM task_runs WHERE id = ? AND outcome = 'review_requested'",
+                        (trow["current_run_id"],),
+                    ).fetchone()
+                    implementer = arow["profile"] if arow else None
+            elif trow["current_run_id"] is not None:
                 arow = conn.execute(
                     "SELECT profile FROM task_runs WHERE id = ?",
                     (trow["current_run_id"],),
@@ -3343,6 +3409,7 @@ def request_review(
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
+            statuses = "('running', 'ready', 'review')" if reroute else "('running', 'ready')"
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -3350,9 +3417,9 @@ def request_review(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL
-                """ + assignee_sql + """
+                """ + assignee_sql + f"""
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN {statuses}
                 """ + run_guard,
                 params,
             )

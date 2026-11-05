@@ -1,0 +1,21 @@
+name: proofgate
+repo: https://github.com/Whydiriki700/proofgate
+sha: b07f2fe5ee019a5d6e3fd24ad3b61dbce6302fec
+title: ProofGate
+description: 'No proof, no done. Verifies an agent''s completion claims (file created, message sent, command ran, tests passed, figures quoted) against the tool evidence recorded in the same session, before the final reply is delivered. Unproven claims are flagged as unverified or withheld, fail closed, and every verdict is written to an append-only ledger stored locally in $HERMES_HOME/proofgate/. Disclosure: observes every tool call and final reply in sessions of profiles where it is enabled, stores redacted argument and result summaries locally only, makes no network calls, and in enforce mode holds reply streaming while the deterministic check runs.'
+maintainer: Whydiriki700
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/proofgate
+platforms: []
+capabilities:
+  provides_tools:
+    - proof_status
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

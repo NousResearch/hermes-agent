@@ -14,19 +14,24 @@ from gateway import session_cron
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
 from tests.fakes.cron_owner import admit_fire, cron_owner
+from tests.gateway.fixtures.storage_handles import close_storage_handles
 
 
 @pytest.fixture()
 def owner(tmp_path, monkeypatch):
     """A real SessionAuthority over ``tmp_path/state.db`` that admits cron fires without running them."""
-    authority = cron_owner(tmp_path, monkeypatch)
-    yield authority
-    authority.db.close()
+    return cron_owner(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def db(tmp_path):
+    """A SessionDB on the owner's ``state.db``."""
+    with SessionDB(tmp_path / 'state.db') as handle:
+        yield handle
 
 
 @pytest.mark.asyncio
-async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(owner):
-    db = owner.db
+async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(owner, db):
     alpha = jobs.create_job(prompt='alpha report', schedule='every 1h', deliver='local')['id']
     beta = jobs.create_job(prompt='beta report', schedule='every 1h', deliver='local')['id']
     legacy = f'cron_{alpha}_20261011_120000'
@@ -50,7 +55,7 @@ async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(o
 
 
 @pytest.mark.asyncio
-async def test_a_fresh_execution_id_with_a_colon_is_refused_before_it_can_misfile_a_run(owner):
+async def test_a_fresh_execution_id_with_a_colon_is_refused_before_it_can_misfile_a_run(owner, db):
     """``cron:<job>:<execution>`` splits at its last ``:``, so a fire ``x:y`` of job ``a`` would read
     as job ``a:x``: missing from ``a``'s history while its detail names another job."""
     job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
@@ -58,8 +63,8 @@ async def test_a_fresh_execution_id_with_a_colon_is_refused_before_it_can_misfil
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         await session_cron.operation(owner, 'submit', params)
     assert await session_cron.operation(owner, 'recover', params) == {'status': 'missing', 'result': None}
-    assert owner.db.list_cron_job_runs(job) == []
-    assert owner.db.list_cron_job_runs(f'{job}:fire') == []
+    assert db.list_cron_job_runs(job) == []
+    assert db.list_cron_job_runs(f'{job}:fire') == []
 
 
 class _PreUpgradeRequestId(str):
@@ -70,7 +75,7 @@ class _PreUpgradeRequestId(str):
 
 
 @pytest.mark.asyncio
-async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_its_admission(owner):
+async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_its_admission(owner, db):
     """A durable ``cron:<job>:fire:1`` admission from before the guard is still recovered and
     retried under its original identity: same admission back, a changed payload refused, nothing
     replayed, and history files it under its job by the stored policy, not the last ``:``."""
@@ -80,7 +85,7 @@ async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_it
         owner, 'submit', dict(params, request_id=_PreUpgradeRequestId('fire:1')))
 
     def admissions():
-        return owner.db._conn.execute('SELECT admission_id, request_id FROM session_admissions').fetchall()
+        return db._conn.execute('SELECT admission_id, request_id FROM session_admissions').fetchall()
     before = [tuple(r) for r in admissions()]
 
     assert await session_cron.operation(owner, 'submit', params) == receipt
@@ -92,10 +97,10 @@ async def test_an_execution_id_admitted_with_a_colon_before_the_upgrade_keeps_it
     assert [tuple(r) for r in admissions()] == before == [(receipt['admission_id'], f'cron:{job}:fire:1')]
 
     sid = receipt['session_id']
-    assert [(r['id'], r['cron_job_id'], r['cron_execution_id']) for r in owner.db.list_cron_job_runs(job)] == [
+    assert [(r['id'], r['cron_job_id'], r['cron_execution_id']) for r in db.list_cron_job_runs(job)] == [
         (sid, job, 'fire:1')]
-    assert owner.db.list_cron_job_runs(f'{job}:fire') == []
-    assert owner.db.cron_run_identity(sid) == {'cron_job_id': job, 'cron_execution_id': 'fire:1'}
+    assert db.list_cron_job_runs(f'{job}:fire') == []
+    assert db.cron_run_identity(sid) == {'cron_job_id': job, 'cron_execution_id': 'fire:1'}
 
 
 def test_legacy_runs_of_a_job_whose_id_extends_another_stay_with_their_own_job(tmp_path):

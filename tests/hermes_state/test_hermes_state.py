@@ -17,6 +17,7 @@ import hermes_state
 import hermes_state_wal
 import hermes_state_common
 import hermes_state_schema
+from persistence.sqlite import _holder, _schema
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_state import SessionDB
 from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
@@ -191,16 +192,16 @@ class TestConnectionLifecycle:
 
         db_path = tmp_path / "state.db"
         opened = []
-        real_connect = hermes_state._connect_tracked_db
+        real_connect = _holder._connect_tracked_db
 
         def capture_connect(*args, **kwargs):
             conn = real_connect(*args, **kwargs)
             opened.append(conn)
             return conn
 
-        monkeypatch.setattr(hermes_state, "_connect_tracked_db", capture_connect)
+        monkeypatch.setattr(_holder, "_connect_tracked_db", capture_connect)
         monkeypatch.setattr(
-            SessionDB,
+            _holder,
             "_init_schema",
             mock.Mock(side_effect=RuntimeError("schema init failed")),
         )
@@ -225,8 +226,8 @@ class TestConnectionLifecycle:
         db_path = tmp_path / "state.db"
         db = SessionDB(db_path=db_path)
         opened = []
-        real_connect = hermes_state._connect_tracked_db
-        real_pragmas = hermes_state.apply_database_pragmas
+        real_connect = _holder._connect_tracked_db
+        real_pragmas = _holder.apply_database_pragmas
 
         def capture_connect(*args, **kwargs):
             conn = real_connect(*args, **kwargs)
@@ -236,8 +237,8 @@ class TestConnectionLifecycle:
         def fail_pragmas(*args, **kwargs):
             raise RuntimeError("read setup failed")
 
-        monkeypatch.setattr(hermes_state, "_connect_tracked_db", capture_connect)
-        monkeypatch.setattr(hermes_state, "apply_database_pragmas", fail_pragmas)
+        monkeypatch.setattr(_holder, "_connect_tracked_db", capture_connect)
+        monkeypatch.setattr(_holder, "apply_database_pragmas", fail_pragmas)
         before = dict(sqlite_safe_read._live_connections)
         db._wal_active = True
 
@@ -246,9 +247,7 @@ class TestConnectionLifecycle:
                 db._get_read_conn()
             assert sqlite_safe_read._live_connections == before
         finally:
-            monkeypatch.setattr(
-                hermes_state, "apply_database_pragmas", real_pragmas
-            )
+            monkeypatch.setattr(_holder, "apply_database_pragmas", real_pragmas)
             for conn in opened:
                 try:
                     conn.close()
@@ -380,7 +379,7 @@ class TestConnectionLifecycle:
         writable.create_session("wal-race", source="cli")
         writable.close()
 
-        real_connect = hermes_state._connect_tracked_db
+        real_connect = _holder._connect_tracked_db
         attempts = []
 
         def flaky_connect(*args, **kwargs):
@@ -390,10 +389,10 @@ class TestConnectionLifecycle:
                 raise sqlite3.OperationalError("disk I/O error")
             return real_connect(*args, **kwargs)
 
-        monkeypatch.setattr(hermes_state, "_connect_tracked_db", flaky_connect)
+        monkeypatch.setattr(_holder, "_connect_tracked_db", flaky_connect)
         # Keep the test fast: one backoff tick is enough; the retry budget
         # itself is exercised by the attempt count below.
-        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+        monkeypatch.setattr(_holder, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
 
         read_only = SessionDB(db_path=db_path, read_only=True)
         try:
@@ -427,9 +426,9 @@ class TestConnectionLifecycle:
             attempts.append(1)
             raise sqlite3.OperationalError("disk I/O error")
 
-        monkeypatch.setattr(hermes_state, "_connect_tracked_db", bad_connect)
-        monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
-        budget = hermes_state._READ_ONLY_IOERR_RETRY_ATTEMPTS
+        monkeypatch.setattr(_holder, "_connect_tracked_db", bad_connect)
+        monkeypatch.setattr(_holder, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+        budget = _holder._READ_ONLY_IOERR_RETRY_ATTEMPTS
 
         with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
             SessionDB(db_path=db_path, read_only=True)
@@ -1797,7 +1796,7 @@ class TestSessionTitleIndexRepair:
                 [(*row, sid) for sid, row in seed.items()],
             )
         if broken_rename:
-            monkeypatch.setattr(hermes_state_schema, "next_title_in_lineage", lambda conn, title: title)
+            monkeypatch.setattr(_schema, "next_title_in_lineage", lambda conn, title: title)
         reopened = SessionDB(db_path=db_path)
         try:
             titles = dict(reopened._conn.execute("SELECT id, title FROM sessions").fetchall())
@@ -2019,6 +2018,13 @@ class TestAsyncDelegationsSchemaAgreement:
         finally:
             ref.close()
 
+    def _ledger_write(self, async_delegation, db_path):
+        """One delegation ledger write, which opens ``db_path`` through the store."""
+        from unittest.mock import patch
+
+        with patch.object(async_delegation, "_db_path", lambda: db_path):
+            async_delegation.mark_completion_delivered("schema-probe")
+
     def _legacy_db(self, db_path):
         """A database created before origin_session_id existed, carrying a
         pre-existing delegation row that must survive every opening order."""
@@ -2065,7 +2071,7 @@ class TestAsyncDelegationsSchemaAgreement:
     def test_fresh_session_db_then_tool(self, tmp_path):
         import sqlite3
 
-        from tools.async_delegation import _initialize_schema
+        from tools import async_delegation
 
         db_path = tmp_path / "state.db"
         db = SessionDB(db_path=db_path)
@@ -2074,8 +2080,7 @@ class TestAsyncDelegationsSchemaAgreement:
         conn = sqlite3.connect(db_path)
         try:
             shape_before = self._table_info(conn)
-            _initialize_schema(conn)
-            conn.commit()
+            self._ledger_write(async_delegation, db_path)
             assert self._table_info(conn) == shape_before
             self._assert_canonical(conn)
         finally:
@@ -2094,17 +2099,12 @@ class TestAsyncDelegationsSchemaAgreement:
     def test_legacy_store_then_tool_then_session_db(self, tmp_path):
         import sqlite3
 
-        from tools.async_delegation import _initialize_schema
+        from tools import async_delegation
 
-        db_path = tmp_path / "legacy-tool-state.db"
+        db_path = tmp_path / "legacy-tool" / "state.db"
+        db_path.parent.mkdir()
         self._legacy_db(db_path)
-
-        conn = sqlite3.connect(db_path)
-        try:
-            _initialize_schema(conn)
-            conn.commit()
-        finally:
-            conn.close()
+        self._ledger_write(async_delegation, db_path)
 
         db = SessionDB(db_path=db_path)
         try:
@@ -2161,7 +2161,7 @@ class TestReconcileColumnsErrorHandling:
         db_path = self._db_missing_column(tmp_path)
         conn = sqlite3.connect(str(db_path))
         try:
-            stale = SessionDB.__new__(SessionDB)
+            stale = SessionDB(holder=_holder.StoreHolder.__new__(_holder.StoreHolder))
             stale._conn = conn
             cursor = self._FailingAlterCursor(
                 conn.cursor(),
@@ -2179,7 +2179,7 @@ class TestReconcileColumnsErrorHandling:
         db_path = self._db_missing_column(tmp_path)
         conn = sqlite3.connect(str(db_path))
         try:
-            stale = SessionDB.__new__(SessionDB)
+            stale = SessionDB(holder=_holder.StoreHolder.__new__(_holder.StoreHolder))
             stale._conn = conn
             cursor = self._FailingAlterCursor(
                 conn.cursor(),
@@ -2202,7 +2202,7 @@ class TestReconcileColumnsErrorHandling:
         db_path = self._db_missing_column(tmp_path)
         conn = sqlite3.connect(str(db_path))
         try:
-            stale = SessionDB.__new__(SessionDB)
+            stale = SessionDB(holder=_holder.StoreHolder.__new__(_holder.StoreHolder))
             stale._conn = conn
             cursor = self._FailingAlterCursor(
                 conn.cursor(),
@@ -2232,19 +2232,19 @@ class TestReconcileColumnsErrorHandling:
         """
         db_path = self._db_missing_column(tmp_path)
 
-        original = SessionDB._reconcile_columns
+        original = _schema._reconcile_columns
         calls = {"n": 0}
 
-        def flaky_reconcile(self, cursor):
+        def flaky_reconcile(cursor, home):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise sqlite3.OperationalError("database is locked")
-            return original(self, cursor)
+            return original(cursor, home)
 
-        monkeypatch.setattr(SessionDB, "_reconcile_columns", flaky_reconcile)
+        monkeypatch.setattr(_schema, "_reconcile_columns", flaky_reconcile)
         # Keep the retry fast — patience budget is 20s by default.
-        monkeypatch.setattr(SessionDB, "_WRITE_RETRY_SLOW_MIN_S", 0.001)
-        monkeypatch.setattr(SessionDB, "_WRITE_RETRY_SLOW_MAX_S", 0.005)
+        monkeypatch.setattr(_holder.StoreHolder, "_WRITE_RETRY_SLOW_MIN_S", 0.001)
+        monkeypatch.setattr(_holder.StoreHolder, "_WRITE_RETRY_SLOW_MAX_S", 0.005)
 
         healed = SessionDB(db_path=db_path)
         try:
@@ -3857,14 +3857,14 @@ class TestOptimizeFts:
         db._FTS_MERGE_EVERY_N_WRITES = 5
         calls = []
 
-        def _counting_merge(*, max_pages):
+        def _counting_merge(holder, *, max_pages):
             calls.append(max_pages)
             return 0
 
         def _unexpected_optimize():
             raise AssertionError("routine cadence must not call optimize")
 
-        monkeypatch.setattr(db, "_merge_fts_incrementally", _counting_merge)
+        monkeypatch.setattr(_schema, "_merge_fts_incrementally", _counting_merge)
         monkeypatch.setattr(db, "optimize_fts", _unexpected_optimize)
         db.create_session(session_id="s1", source="cli")
         for i in range(3):
@@ -5371,7 +5371,7 @@ def test_find_session_by_origin_matching_rules(db):
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(time, "time", lambda: 1000.0)
     assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
 
     original_expires = db._conn.execute(
@@ -5379,7 +5379,7 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
         ("s1",),
     ).fetchone()[0]
 
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 1005.0)
+    monkeypatch.setattr(time, "time", lambda: 1005.0)
     assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
     refreshed_expires = db._conn.execute(
         "SELECT expires_at FROM compression_locks WHERE session_id = ?",
@@ -5389,7 +5389,7 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     assert db.refresh_compression_lock("s1", "holder-b", ttl_seconds=10.0) is False
 
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
+    monkeypatch.setattr(time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
 
 
@@ -5403,11 +5403,11 @@ def test_refresh_cannot_resurrect_a_lock_already_reclaimed(db, monkeypatch):
     """
     db.create_session("s1", "cli")
 
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(time, "time", lambda: 1000.0)
     assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
 
     # holder-a's lease lapses and holder-b legitimately reclaims it.
-    monkeypatch.setattr(hermes_state.time, "time", lambda: 1020.0)
+    monkeypatch.setattr(time, "time", lambda: 1020.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
 
     # holder-a coming back late must NOT steal it back.
@@ -6020,7 +6020,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6033,7 +6033,7 @@ class TestApplyDatabasePragmas:
 
     def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6050,7 +6050,7 @@ class TestApplyDatabasePragmas:
 
     def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6065,7 +6065,7 @@ class TestApplyDatabasePragmas:
         """journal_mode is owned by apply_wal_with_fallback — a database:
         journal_mode entry must NOT cause a second, unguarded mode switch."""
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6078,7 +6078,7 @@ class TestApplyDatabasePragmas:
 
     def test_ignores_non_integer_values(self, tmp_path, monkeypatch):
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:
@@ -6095,7 +6095,7 @@ class TestApplyDatabasePragmas:
     def test_ignores_non_integer_performance_values(self, tmp_path, monkeypatch):
         """Garbage cache_size/mmap_size/temp_store values must be rejected."""
         import sqlite3
-        from hermes_state import apply_database_pragmas
+        from hermes_state_wal import apply_database_pragmas
 
         conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
         try:

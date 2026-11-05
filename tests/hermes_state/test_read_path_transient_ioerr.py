@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state
 from hermes_state import SessionDB
+from persistence.sqlite import _holder
 
 
 _STATE = {"failures_left": 0, "attempts": 0, "fail_prefix": "SELECT"}  # module-level: the tracking factory subclasses _FlakyReads
@@ -25,20 +25,20 @@ class _FlakyReads(sqlite3.Connection):
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    monkeypatch.setattr(hermes_state, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
+    monkeypatch.setattr(_holder, "_READ_ONLY_IOERR_RETRY_BACKOFF_S", 0.0)
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s", "cli")
     if not db._wal_active:
         db.close()
         pytest.skip("read pool needs WAL")
-    real_connect = hermes_state._connect_tracked_db
+    real_connect = _holder._connect_tracked_db
 
     def flaky_connect(path, *args, **kwargs):
         if str(path).startswith("file:"):
             kwargs["factory"] = _FlakyReads
         return real_connect(path, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state, "_connect_tracked_db", flaky_connect)
+    monkeypatch.setattr(_holder, "_connect_tracked_db", flaky_connect)
     while db._evict_one_idle_read_conn():  # the next read opens through the flaky factory
         pass
     _STATE.update(failures_left=0, attempts=0, fail_prefix="SELECT")
@@ -58,7 +58,7 @@ def test_persistent_ioerr_propagates_after_the_budget(db):
     _STATE["failures_left"] = 10 ** 6
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         db.get_session("s")
-    assert _STATE["attempts"] == hermes_state._READ_ONLY_IOERR_RETRY_ATTEMPTS + 1
+    assert _STATE["attempts"] == _holder._READ_ONLY_IOERR_RETRY_ATTEMPTS + 1
     assert db._db_corrupt is False  # busy/EIO is not corruption: no quarantine
 
 

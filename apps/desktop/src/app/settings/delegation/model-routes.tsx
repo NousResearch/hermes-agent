@@ -2,12 +2,13 @@ import { useState } from 'react'
 
 import { ActionsMenu, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DelegationModelMap, DelegationModelRoute, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Box, MoreHorizontal, Plus } from '@/lib/icons'
 import { confirm } from '@/store/confirm'
 
-import { Pill, SectionHeading } from '../primitives'
+import { ListRow, Pill, SectionHeading } from '../primitives'
 
 import { ModelRouteDialog } from './model-route-dialog'
 import { removeRoute, setDefaultRoute, upsertRoute } from './routes'
@@ -29,13 +30,11 @@ export function ModelRoutesEditor({ scope, routes, providerNames }: ModelRoutesE
 
   const askDelete = async (route: DelegationModelRoute) => {
     const next = removeRoute(routes, route.name)
-    const movesDefault = routes.default === route.name && next.default
 
     const ok = await confirm({
       confirmLabel: r.deleteConfirmAction,
-      description: movesDefault
-        ? `${r.deleteConfirmBody} ${r.deleteConfirmNextDefault(next.default!)}`
-        : r.deleteConfirmBody,
+      description:
+        routes.default === route.name ? `${r.deleteConfirmBody} ${r.inactiveModelMapNoDefault}` : r.deleteConfirmBody,
       destructive: true,
       title: r.deleteConfirmTitle(route.name)
     })
@@ -57,6 +56,29 @@ export function ModelRoutesEditor({ scope, routes, providerNames }: ModelRoutesE
         icon={Box}
         title={r.modelRoutesTitle}
       />
+      {routes.options.length > 0 && (
+        <ListRow
+          action={
+            <Select
+              onValueChange={value => void save(setDefaultRoute(routes, value === 'inherit' ? null : value.slice(6)))}
+              value={routes.default ? `route:${routes.default}` : 'inherit'}
+            >
+              <SelectTrigger aria-label={r.defaultBadge}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">{t.settings.model.subagents.inherit}</SelectItem>
+                {routes.options.map(route => (
+                  <SelectItem key={route.name} value={`route:${route.name}`}>
+                    {route.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+          title={r.defaultBadge}
+        />
+      )}
       {routes.options.length === 0 ? (
         <p className="py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           {r.modelRoutesEmpty}

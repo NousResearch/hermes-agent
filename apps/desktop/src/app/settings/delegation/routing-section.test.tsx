@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DelegationRouting } from '@/api/delegation'
 import type { HermesApiRequest } from '@/global'
@@ -25,6 +25,7 @@ function backend(names: string[]): DelegationRouting['backends'] {
 }
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn()
   queryClient.clear()
   writes.length = 0
   routing = {
@@ -53,6 +54,13 @@ beforeEach(() => {
         routing = { ...routing, configured: name, blocked_reason: null }
 
         return { ok: true, backend: name }
+      }
+
+      if (request.path === '/api/delegation/backends/model_map') {
+        writes.push(request)
+        routing = { ...routing, model_map: request.body as DelegationRouting['model_map'] }
+
+        return { ok: true, model_map: structuredClone(routing.model_map) }
       }
 
       if (request.path.startsWith('/api/model/options')) {
@@ -116,6 +124,38 @@ describe('Subagents routing', () => {
     await waitFor(() => expect(screen.queryByText('Not used in this mode')).toBeNull())
     expect(screen.getByTestId('subagent-model-row').closest('[inert]')).toBeNull()
     expect(routing.configured).toBe('default')
+  })
+
+  it('lets the user clear a model-route default and preserves inheritance through an edit', async () => {
+    routing = {
+      ...routing,
+      configured: 'model_map',
+      backends: backend(['default', 'model_map']),
+      model_map: {
+        options: [{ name: 'fast', description: 'Quick', provider: 'openrouter', model: 'm' }],
+        default: 'fast'
+      }
+    }
+    mount()
+
+    const defaultPicker = await screen.findByRole('combobox', { name: 'Default' })
+    fireEvent.keyDown(defaultPicker, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Inherit from main agent' }))
+
+    await waitFor(() => expect(routing.model_map.default).toBeNull())
+    expect(writes[0].profile).toBe('work')
+    expect(routing.model_map.options).toHaveLength(1)
+    await screen.findByText(/Subagents that pick no route use the main agent's model/)
+
+    fireEvent.click(screen.getByRole('button', { name: /fastQuick/ }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'When to use it' }), {
+      target: { value: 'Updated description' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save route' }))
+
+    await waitFor(() => expect(writes).toHaveLength(2))
+    expect(routing.model_map.default).toBeNull()
+    expect(routing.model_map.options[0].description).toBe('Updated description')
   })
 
   it('keeps a saved mode that cannot run selected, says subagents will not start, and offers the fixes', async () => {

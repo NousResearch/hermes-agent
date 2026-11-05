@@ -1,0 +1,28 @@
+# Catalog entry — hermes-bim-studio
+#
+# PR target: NousResearch/hermes-agent at `plugin-catalog/hermes-bim-studio.yaml`
+name: hermes-bim-studio
+label: Hermes BIM Studio
+version: 0.1.0
+description: >
+  Building Information Modeling (BIM) inspection, deterministic 5D quantity
+  takeoff, and interactive 3D WebGL building model viewer for AEC engineering.
+author: stupidburgers
+license: MIT
+homepage: https://github.com/stupidburgers/hermes-bim-studio
+category: engineering
+
+repo: https://github.com/stupidburgers/hermes-bim-studio
+ref: main
+sha: 2316e79d9481294f88599090f501dc668529729a
+
+requires_hermes: ">=0.22.0"
+
+capabilities:
+  provides_tools:
+    - bim_inspect
+    - bim_takeoff
+    - bim_render_view
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

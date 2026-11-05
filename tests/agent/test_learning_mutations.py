@@ -278,3 +278,35 @@ def test_archive_stays_inside_the_profile_skills_dir(home, tmp_path):
     (outside / "lnk").symlink_to(tmp_path / "real2", target_is_directory=True)
     assert not lm.archive_user_skill("foreign-link")["ok"]
     assert (outside / "lnk").is_symlink()
+
+
+def _linked_skill_target(tmp_path, name):
+    target = tmp_path / "dotfiles" / name
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\ndescription: x\n---\n", encoding="utf-8")
+    return target
+
+
+@pytest.mark.platforms("posix")  # unprivileged symlink creation is POSIX-only
+def test_archive_moves_only_the_link_of_a_symlinked_skill_dir(home, tmp_path):
+    """A skill dir linked in from elsewhere archives: the link moves into .archive/, its target stays put."""
+    target = _linked_skill_target(tmp_path, "linked-skill")
+    (home / "skills" / "linked-skill").symlink_to(target, target_is_directory=True)
+
+    assert lm.archive_user_skill("linked-skill")["ok"]
+    assert (home / "skills" / ".archive" / "linked-skill").is_symlink()
+    assert (target / "SKILL.md").is_file()
+
+
+@pytest.mark.platforms("windows")
+def test_archive_moves_only_the_junction_of_a_junctioned_skill_dir(home, tmp_path):
+    """Windows' unprivileged directory link is a junction, which is_symlink() does not report."""
+    import _winapi
+    from pm.filesystem import is_junction
+
+    target = _linked_skill_target(tmp_path, "junction-skill")
+    _winapi.CreateJunction(str(target), str(home / "skills" / "junction-skill"))
+
+    assert lm.archive_user_skill("junction-skill")["ok"]
+    assert is_junction(home / "skills" / ".archive" / "junction-skill")
+    assert (target / "SKILL.md").is_file()

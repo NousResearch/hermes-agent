@@ -182,7 +182,7 @@ class Facts:
         return (fact, *(row for row in previous if isinstance(row, dict) and "entry" in row))
 
     def selected(self, name: str, fact: dict) -> "Facts":
-        """Read-only selection for one install; do not replace the shared selection."""
+        """Return a per-install view without changing the shared selection."""
         view = Facts.__new__(Facts)
         view.path = self.path
         view._packages = {**self._packages, name: {k: v for k, v in fact.items() if k != "previous"}}

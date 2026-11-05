@@ -1,7 +1,5 @@
 """Regression for NousResearch/hermes-agent#149497: shared tool-store pins stay usable."""
 
-from pathlib import Path
-
 from pm import install, paths
 from pm._uv import _toolchain
 from pm.lock import Facts, Lockfile
@@ -59,3 +57,8 @@ def test_two_installs_keep_independent_tool_pins_and_gc_roots(tmp_path, monkeypa
     repinned.set_pin("uv", "1.0", {target: {"url": "https://invalid.test/changed",
                                           "sha256": "a" * 64}})
     assert install._installed_location(get_package("uv"), repinned, target) is None
+    # Outdated fallback remains the last selected install, not an older variant.
+    fallback = install._installed_location(get_package("uv"), repinned, target,
+                                           allow_outdated=True)
+    assert fallback is not None
+    assert fallback[0].get("uv")["version"] == "2.0"

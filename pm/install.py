@@ -111,7 +111,8 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                 return chosen, store
             if (allow_outdated and fact.get("target") == target
                     and fact.get("artifacts") and fact.get("digest")):
-                fallback = chosen, store
+                if fallback is None or fallback[1].root != store.root:
+                    fallback = chosen, store
     return fallback
 
 

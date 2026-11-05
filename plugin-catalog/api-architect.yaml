@@ -1,6 +1,6 @@
 name: api-architect
 repo: https://github.com/monyinet/api-architect
-sha: "297a6ed4d3f1205acb6f821e5fe60c2cb241383e"
+sha: "fe3a195002802bcc0a5722938779fc934753f91e"
 description: >-
   Compile API specs into first-class Hermes tools. Takes any OpenAPI 3 / Swagger 2 /
   Postman v2.1 spec by URL, compiles endpoints + params with per-endpoint provenance
@@ -19,7 +19,7 @@ description: >-
   store the slot NAME, never the value; no .env / auth.json / keychain reads; no
   OAuth flows. Safety: non-GET endpoints always require interactive approval and
   fail clean under unattended runs (cron/gateway); the spec's own metadata never
-  authorizes anything. Zero python_dependencies (stdlib only). 247 stdlib tests at
+  authorizes anything. Zero python_dependencies (stdlib only). 248 stdlib tests at
   the pinned commit + real E2E (learn → draft refusal → commit → HTTP 200 call;
   destructive confirm gate; invented endpoints and SSRF refused).
 maintainer: monyinet
@@ -27,7 +27,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 version: "0.1.0"
-image: "https://raw.githubusercontent.com/monyinet/api-architect/297a6ed4d3f1205acb6f821e5fe60c2cb241383e/assets/hero.png"
+image: "https://raw.githubusercontent.com/monyinet/api-architect/fe3a195002802bcc0a5722938779fc934753f91e/assets/hero.png"
 capabilities:
   provides_tools:
   - architect_learn

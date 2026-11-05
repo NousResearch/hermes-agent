@@ -1,6 +1,6 @@
 name: hermes-flow
 repo: https://github.com/rewanthtammana/hermes-flow
-sha: 17cab2b3cbdde6e04d08ca13478ef32034d31642
+sha: 32a0ba9898ac650e5d38b0d22d8222f3d9a44828
 description: Reconstruct Hermes agent sessions as local graphs and compare them with trusted paths.
 maintainer: rewanthtammana
 tier: community
@@ -8,8 +8,8 @@ category: general
 version: "0.1.0"
 requires_hermes: ">=0.21.6"
 screenshots:
-  - https://raw.githubusercontent.com/rewanthtammana/hermes-flow/17cab2b3cbdde6e04d08ca13478ef32034d31642/docs/flow.png
-  - https://raw.githubusercontent.com/rewanthtammana/hermes-flow/17cab2b3cbdde6e04d08ca13478ef32034d31642/docs/trusted-paths.png
+  - https://raw.githubusercontent.com/rewanthtammana/hermes-flow/32a0ba9898ac650e5d38b0d22d8222f3d9a44828/docs/flow.png
+  - https://raw.githubusercontent.com/rewanthtammana/hermes-flow/32a0ba9898ac650e5d38b0d22d8222f3d9a44828/docs/trusted-paths.png
 capabilities:
   provides_tools: []
   provides_hooks: []

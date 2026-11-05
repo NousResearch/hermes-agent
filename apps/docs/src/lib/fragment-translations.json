@@ -97,6 +97,9 @@
     "skill-settings": "技能设置",
     "webapp": null
   },
+  "/user-guide/docker": {
+    "webapp-behind-a-proxy": null
+  },
   "/user-guide/features/context-files": {
     "security-prompt-injection-protection": "安全性prompt-注入防护"
   },

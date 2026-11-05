@@ -65,7 +65,8 @@ import {setApiRequestProfile,setApiRequestConnection} from '${repo}/apps/desktop
 setApiRequestProfile('profile-b');setApiRequestConnection('fixture-remote');
 const queryClient=new QueryClient({defaultOptions:{queries:{retry:false}}});function Probe(){const [profile,setProfile]=React.useState('profile-b');const [shown,setShown]=React.useState(true);window.cancelFlow=()=>setProfile('profile-c');window.unmountFlow=()=>setShown(false);return <QueryClientProvider client={queryClient}>{shown && <McpTab gateway={null} profile={{connectionId:'fixture-remote',profile}} />}</QueryClientProvider>};createRoot(document.getElementById('root')).render(<Probe/>);`
 const bundle = await build({
-  stdin: { contents: entry, resolveDir: repo, loader: 'tsx' },
+  // The probe's bare imports (react, react-query) resolve like the desktop's own sources.
+  stdin: { contents: entry, resolveDir: path.join(repo, 'apps/desktop'), loader: 'tsx' },
   bundle: true,
   write: false,
   format: 'esm',

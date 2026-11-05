@@ -17,7 +17,7 @@ IDOR guard (which requires the row's chat_id/thread_id to match the
 caller's) can never authorize a manual recovery either.
 
 This test drives the REAL _handle_branch_command against a REAL SessionStore
-+ SessionDB (SQLite in a tmp_path, no mocks on the DB/session-store layer)
+and its real store (SQLite, no mocks on the DB/session-store layer)
 and asserts the branched child's routing columns are present in state.db
 immediately after create_session() returns — before switch_session() ever
 runs — closing the gap the same way the compression fix does.
@@ -30,17 +30,17 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, SessionStore, build_session_key
-from hermes_state import AsyncSessionDB, SessionDB
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    """Real SessionStore backed by a real SessionDB (SQLite in tmp_path)."""
-    import hermes_state
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+def store(tmp_path):
+    """Real SessionStore backed by the real store (SQLite in the test HERMES_HOME)."""
     config = GatewayConfig()
-    return SessionStore(sessions_dir=tmp_path, config=config)
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    yield store
+    store.close_all_db_handles()
 
 
 def _make_source() -> SessionSource:
@@ -58,17 +58,20 @@ def _make_event(text: str) -> MessageEvent:
 
 
 def _make_branch_runner(store: SessionStore):
-    """Minimal GatewayRunner stub wired to a REAL session_store/session_db."""
+    """Minimal GatewayRunner stub wired to a REAL session_store and its storage handle."""
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the session store's storage interface handle, set below
+
+    runner = object.__new__(_Runner)
     runner.adapters = {}
     runner.config = {}
     runner._background_tasks = set()
     runner._running_agents = {}
     runner._agent_cache_lock = None
     runner.session_store = store
-    runner._session_db = AsyncSessionDB(store._db)
+    runner.persistence = store.persistence
     runner._pending_skills_reload_notes = {}
     return runner
 
@@ -89,8 +92,8 @@ class TestBranchRoutingColumns:
         """
         source = _make_source()
         parent_entry = store.get_or_create_session(source)
-        store._db.append_message(parent_entry.session_id, role="user", content="hello")
-        store._db.append_message(parent_entry.session_id, role="assistant", content="world")
+        seed_messages(store.persistence, parent_entry.session_id, {"role": "user", "content": "hello"},
+                      {"role": "assistant", "content": "world"})
 
         runner = _make_branch_runner(store)
 
@@ -113,7 +116,7 @@ class TestBranchRoutingColumns:
         new_session_id = captured_new_session_id["id"]
         assert new_session_id != parent_entry.session_id
 
-        row = store._db.get_session(new_session_id)
+        row = session_row(store.persistence, new_session_id)
         assert row is not None, "branched child row must exist in state.db"
         # THIS is the bug: without the fix, these are all None, because
         # create_session() at branch time never received them — only the
@@ -125,7 +128,7 @@ class TestBranchRoutingColumns:
         assert row["chat_type"] == "dm"
         assert row["thread_id"] == "544520"
         # user_id and session_key are also required for the fallback lookup
-        # path (hermes_state.py:1994-2009) when session_key-based lookup fails
+        # path (the peer-tuple match) when session_key-based lookup fails
         assert row["user_id"] == "170829464", (
             "branched session lost user_id — fallback peer-tuple lookup "
             "in find_latest_gateway_session_for_peer can never match"
@@ -156,9 +159,9 @@ class TestBranchSystemPrompt:
         """A /branch child row carries the parent's system prompt."""
         source = _make_source()
         parent_entry = store.get_or_create_session(source)
-        store._db.update_system_prompt(parent_entry.session_id, "PARENT PROMPT")
-        store._db.append_message(parent_entry.session_id, role="user", content="hello")
-        store._db.append_message(parent_entry.session_id, role="assistant", content="world")
+        store.persistence.sessions.update_system_prompt(parent_entry.session_id, "PARENT PROMPT")
+        seed_messages(store.persistence, parent_entry.session_id, {"role": "user", "content": "hello"},
+                      {"role": "assistant", "content": "world"})
 
         runner = _make_branch_runner(store)
         await runner._handle_branch_command(_make_event("/branch"))
@@ -166,7 +169,7 @@ class TestBranchSystemPrompt:
         new_entry = store.get_or_create_session(source)
         assert new_entry.session_id != parent_entry.session_id
 
-        row = store._db.get_session(new_entry.session_id)
+        row = session_row(store.persistence, new_entry.session_id)
         assert row is not None
         assert row["system_prompt"] == "PARENT PROMPT", (
             "branched session lost the parent's system prompt — its first "

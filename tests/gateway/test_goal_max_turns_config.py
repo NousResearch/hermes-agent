@@ -90,19 +90,16 @@ async def test_goal_command_slow_db_init_still_persists(tmp_path, monkeypatch):
     tests/hermes_cli/test_goals_db_bootstrap_off_loop.py; no wall-clock
     gap assertions here (those are their own flake class).
     """
-    import hermes_state
-
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_INIT_WAIT_S", 0.2)
     INIT_S = 0.8  # past the shrunk init window
 
-    real_session_db = hermes_state.SessionDB
+    real_acquire = goals._acquire_session_db
 
-    class _SlowSessionDB(real_session_db):
-        def __init__(self, *a, **k):
-            time.sleep(INIT_S)
-            super().__init__(*a, **k)
+    def _slow_acquire(home):
+        time.sleep(INIT_S)  # health: allow HX013 -- the slow store open is the behaviour under test
+        return real_acquire(home)
 
-    monkeypatch.setattr(hermes_state, "SessionDB", _SlowSessionDB)
+    monkeypatch.setattr(goals, "_acquire_session_db", _slow_acquire)
 
     home = tmp_path / ".hermes"
     home.mkdir()

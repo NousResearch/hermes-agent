@@ -12,7 +12,6 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority, SessionAuthority
     from gateway.session_ingress_context import native_callback
-    from hermes_state_runtime import list_session_admissions
     from tests.gateway.test_completion_admission import pending
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tools import async_delegation as delegation
@@ -34,8 +33,8 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
     sid = runner.session_store.peek_session_id(key)
     events = [dict(pending(key, 'durable-sibling-' + str(i)), parent_session_id=sid) for i in range(2)]
     assert await runner._deliver_async_delegation_group(events) is True
-    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-    assert len(rows) == 2 and all(e['delegation_id'] in rows[-1]['payload']['text'] for e in events)
+    rows = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert len(rows) == 2 and all(e['delegation_id'] in rows[-1].payload['text'] for e in events)
     # Simulate lost ACK of the committed producer handoff, then real new epoch.
     for event in events:
         delegation._persist_dispatch(event)
@@ -44,13 +43,13 @@ async def test_coalesced_siblings_survive_lost_ack_and_owner_restart(tmp_path, m
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='after')
     duplicate = deepcopy(events[1])
     assert await runner._deliver_async_delegation_group([duplicate]) is True
-    rows_after = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    rows_after = authority.persistence.admissions.list(session_id=sid, pending_only=False)
     assert len(rows_after) == len(rows), rows_after
     fresh = dict(pending(key, 'fresh-sibling'), parent_session_id=sid)
     assert await runner._deliver_async_delegation_group([events[0], fresh]) is True
-    final = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-    assert len(final) == 3 and 'fresh-sibling' in final[-1]['payload']['text']
-    assert 'durable-sibling' not in final[-1]['payload']['text']
+    final = authority.persistence.admissions.list(session_id=sid, pending_only=False)
+    assert len(final) == 3 and 'fresh-sibling' in final[-1].payload['text']
+    assert 'durable-sibling' not in final[-1].payload['text']
     for event in [*events, fresh]:
         assert delegation.get_durable_delegation(event['delegation_id'])['delivery_state'] == 'delivered'
     await asyncio.sleep(0)
@@ -64,7 +63,7 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
     from gateway.session_authority import initialize_session_authority, SessionAuthority
     from gateway.session_ingress_context import native_callback
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
+    from tests.fixtures.storage_seed import seed_session
     from tests.gateway.test_completion_admission import pending
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tools import async_delegation as delegation
@@ -88,9 +87,9 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
     for event in events:
         record = delegation.get_durable_delegation(event['delegation_id'])
         assert (record['delivery_state'], record['delivery_attempts']) == ('pending', 0)
-    assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 1
+    assert len(authority.persistence.admissions.list(session_id=sid, pending_only=False)) == 1
     # An explicit live but foreign parent must not be switched into this route.
-    authority.db.create_session('other-owner', source='discord')
+    seed_session(authority.persistence, 'other-owner', 'discord')
     for event in events:
         event['parent_session_id'] = 'other-owner'
     for _ in range(10):
@@ -101,4 +100,4 @@ async def test_unowned_completion_refunds_every_sibling_without_consuming_budget
         assert (record['delivery_state'], record['delivery_attempts']) == ('pending', 0)
         event['parent_session_id'] = sid
     assert await runner._deliver_async_delegation_group(events) is True
-    assert len(list_session_admissions(authority.db, session_id=sid, pending_only=False)) == 2
+    assert len(authority.persistence.admissions.list(session_id=sid, pending_only=False)) == 2

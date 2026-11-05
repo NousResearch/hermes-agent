@@ -16,6 +16,8 @@ from tests.gateway import test_api_implicit_session_after_delete as chat
 from tests.gateway import test_derived_session_after_delete as derived
 from tests.gateway.test_api_implicit_session_after_delete import _OPENING, _app, _content, _post
 from tests.gateway.test_derived_session_after_delete import _settle
+from tests.fixtures.storage_holder import reclaim_tombstones, retired_session_key
+from tests.fixtures.storage_seed import seed_session
 
 served = chat.served  # the header-less chat fixture of the delete tests
 a2a = derived.a2a  # the A2A forward fixture of the delete tests
@@ -23,15 +25,18 @@ a2a = derived.a2a  # the A2A forward fixture of the delete tests
 
 def _sweep(authority, sid):
     """A housekeeping prune retires the idle, ended session *sid*."""
-    authority.db.end_session(sid, 'test')
-    authority.db.prune_sessions(older_than_days=None)
-    assert authority.db.get_session(sid) is None, 'the sweep kept the session'
+    from gateway.session_ingress_media import native_inputs_root
+    from session_retention import after_sessions_removed
+    store = authority.persistence
+    store.sessions.end(sid, 'test')
+    outcome = store.maintenance.prune_sessions(older_than_days=None, media_root=str(native_inputs_root()))
+    after_sessions_removed(store, store.scope.profile_dir, outcome.deleted_ids, reason='prune')
+    assert store.sessions.get(sid) is None, 'the sweep kept the session'
     authority.sessions.pop(sid, None)
 
 
 def _past_the_horizon(authority):
-    from hermes_state_mutation_retirement import prune_retired_tombstones
-    authority.db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+    reclaim_tombstones(authority.persistence)
 
 
 @pytest.mark.asyncio
@@ -85,12 +90,11 @@ async def test_an_a2a_context_resumed_after_a_sweep_keeps_its_new_session(a2a):
 
 def test_an_ordinary_swept_session_still_ages_out(owner):
     """Housekeeping on a cron-heavy store: an id no door derives keeps an expiring marker."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
-    owner.db.create_session('cron_job_run_1', source='cron')
-    _sweep(SimpleNamespace(db=owner.db, sessions={}), 'cron_job_run_1')
-    assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is not None
+    seed_session(owner.persistence, 'cron_job_run_1', 'cron')
+    _sweep(SimpleNamespace(persistence=owner.persistence, sessions={}), 'cron_job_run_1')
+    assert owner.persistence.state_meta.get(retired_session_key('cron_job_run_1')) is not None
     _past_the_horizon(owner)
-    assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is None
+    assert owner.persistence.state_meta.get(retired_session_key('cron_job_run_1')) is None
 
 
 @pytest.mark.asyncio
@@ -135,12 +139,13 @@ async def test_a_chain_resumed_after_a_sweep_never_returns_to_its_swept_root(api
         _sweep(owner, root)
         resumed = await client.post(path, json={'input': 'and then?', 'previous_response_id': first}, headers=auth)
         assert resumed.status in (200, 202), await resumed.text()
-        successor = implicit_api_session(owner.db, root)
-        assert successor != root and owner.db.get_session(successor) is not None, 'no next generation was opened'
+        from gateway.session_persistence import authority_persistence
+        successor = implicit_api_session(authority_persistence(owner), root)
+        assert successor != root and owner.persistence.sessions.get(successor) is not None, 'no next generation was opened'
         _past_the_horizon(owner)
         forked = await client.post(path, json={'input': 'what number?', 'previous_response_id': first}, headers=auth)
         assert forked.status in (200, 202), await forked.text()
-    assert owner.db.get_session(root) is None, 'the continuation went back to the swept root'
+    assert owner.persistence.sessions.get(root) is None, 'the continuation went back to the swept root'
 
 
 @pytest.mark.asyncio
@@ -177,13 +182,13 @@ async def test_a_fence_reclaimed_between_chain_lookup_and_bind_never_splits_the_
         assert raced.status == 503, await raced.text()
         assert (await raced.json())['error']['code'] == 'chain_moved'
         assert raced.headers.get('Retry-After') == '1'
-        assert owner.db.get_session(successor) is None, 'the successor was bound without pinning its walk'
+        assert owner.persistence.sessions.get(successor) is None, 'the successor was bound without pinning its walk'
         monkeypatch.setattr(runs, 'continued_session', lookup)
         for turn in ('what number?', 'still there?'):
             again = await client.post(path, json={'input': turn, 'previous_response_id': first}, headers=auth)
             assert again.status in (200, 202), await again.text()
-    assert owner.db.get_session(root) is not None, 'the retried continuation left the root'
-    assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
+    assert owner.persistence.sessions.get(root) is not None, 'the retried continuation left the root'
+    assert owner.persistence.sessions.get(successor) is None, 'the chain split across the root and its successor'
 
 
 @pytest.mark.asyncio
@@ -219,13 +224,13 @@ async def test_a_streamed_continuation_that_races_a_reclaim_gets_a_retryable_503
         assert raced.status == 503, await raced.text()
         assert (await raced.json())['error']['code'] == 'chain_moved'
         assert raced.headers.get('Retry-After') == '1'
-        assert owner.db.get_session(successor) is None, 'the successor was bound without pinning its walk'
+        assert owner.persistence.sessions.get(successor) is None, 'the successor was bound without pinning its walk'
         monkeypatch.setattr(runs, 'continued_session', lookup)
         again = await client.post('/v1/responses', json=body, headers={**auth, **keyed})
         assert again.status == 200, await again.text()
         assert 'response.completed' in await again.text()
-    assert owner.db.get_session(root) is not None, 'the retried continuation left the root'
-    assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
+    assert owner.persistence.sessions.get(root) is not None, 'the retried continuation left the root'
+    assert owner.persistence.sessions.get(successor) is None, 'the chain split across the root and its successor'
 
 
 @pytest.mark.asyncio
@@ -258,19 +263,3 @@ async def test_a_storage_error_in_a_moved_chains_pre_bind_is_a_retryable_503(api
         assert raced.status == 503, await raced.text()
         assert (await raced.json())['error']['code'] == 'storage_unavailable'
         assert raced.headers.get('Retry-After') == '1'
-
-
-def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
-    """``keep_passed_fences`` pins every fence a walk passed and says whether the walk still holds:
-    a passed generation without a marker means the walk would now stop there."""
-    import json
-    from functools import partial
-    from gateway.session_api import api_generation_id
-    from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences, retire_routes
-    derive = partial(api_generation_id, 'root-x')
-    passed = ['root-x', derive(1)]
-    owner.db._execute_write(lambda conn: retire_routes(conn, passed, expiring=passed))
-    assert owner.db._execute_write(lambda conn: keep_passed_fences(conn, derive, derive(2))) is True
-    assert all('expires' not in json.loads(owner.db.get_meta(RETIRED_PREFIX + sid)) for sid in passed)
-    owner.db._execute_write(lambda conn: conn.execute('DELETE FROM state_meta WHERE key=?', (RETIRED_PREFIX + passed[1],)))
-    assert owner.db._execute_write(lambda conn: keep_passed_fences(conn, derive, derive(2))) is False

@@ -15,58 +15,42 @@ import pytest
 from gateway import delivery_ledger as dl
 
 
-class _TrackingConnection:
-    """Delegates to a real sqlite3.Connection while recording close() calls.
-
-    sqlite3.Connection is a static C type: it has no per-instance __dict__ and
-    its methods can't be monkeypatched, so open/close tracking is done via a
-    delegating wrapper returned in place of the real connection.
-    """
-
-    def __init__(self, real, closed_ids):
-        object.__setattr__(self, "_real", real)
-        object.__setattr__(self, "_closed_ids", closed_ids)
-
-    def close(self):
-        self._closed_ids.append(id(self._real))
-        self._real.close()
-
-    def __enter__(self):
-        self._real.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return self._real.__exit__(exc_type, exc, tb)
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-    def __setattr__(self, name, value):
-        setattr(self._real, name, value)
-
-
 def _point_ledger(monkeypatch, tmp_path):
     monkeypatch.setattr(dl, "_db_path", lambda: tmp_path / "state.db")
     return dl
 
 
-def _track_connections(monkeypatch):
+def _track_connections(monkeypatch, tmp_path):
+    """Count the connections opened on the ledger's store and the ones closed again.
+
+    The store opens its connections through ``sqlite3.connect`` with a ``Connection`` subclass as the
+    factory, so tracking subclasses whatever factory the call asks for and records ``close()``."""
     opened, closed = [], []
     real_connect = sqlite3.connect
 
     def tracking_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        opened.append(id(conn))
-        return _TrackingConnection(conn, closed)
+        target = args[0] if args else kwargs.get("database")
+        if str(tmp_path) not in str(target):
+            return real_connect(*args, **kwargs)
+        base = kwargs.pop("factory", sqlite3.Connection)
 
-    monkeypatch.setattr(dl.sqlite3, "connect", tracking_connect)
+        class _Tracking(base):
+            def close(self):
+                closed.append(id(self))
+                super().close()
+
+        conn = real_connect(*args, factory=_Tracking, **kwargs)
+        opened.append(id(conn))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
     return opened, closed
 
 
 def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     """Every public ledger operation must close the connection it opened."""
     _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
+    opened, closed = _track_connections(monkeypatch, tmp_path)
 
     oid = dl.compute_obligation_id("sess", "msg", "content")
     dl.record_obligation(

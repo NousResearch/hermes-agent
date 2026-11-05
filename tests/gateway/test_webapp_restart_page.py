@@ -73,7 +73,8 @@ async def test_the_page_runs_only_its_own_hashed_script_and_polls_the_app_root_n
     assert f"script-src 'sha256-{digest}';" in csp and "script-src 'unsafe-inline'" not in csp
     assert f'<main data-root="{root}" data-kind="restarting">' in body
     assert "fetch(c.root" in script and "redirect:'manual'" in script and "location.href" not in script
-    assert "location.reload();},15000)" in script  # a redirect waits (behaviour: E2E case F)
+    # One reload path, always delayed (behaviour: E2E cases F-H and the Node probe)
+    assert script.count("location.reload()") == 1 and "location.reload();},MAX)" in script
     assert path not in script
 
 

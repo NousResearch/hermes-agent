@@ -32,17 +32,17 @@ _NO_STORE = "no-store, no-cache, must-revalidate"  # the Cache-Control value web
 # (``X-Forwarded-Prefix``) plus ``/``. It reloads once the root answers OK, redirects (the app is up but
 # signed out; following the redirect would start a sign-in and replace the callback's PKCE state), or
 # answers another page kind (the restart is over but the bundle is stale: show that page instead).
-# A redirect may also be the proxy's own (``/hermes/`` -> ``/hermes``) while Hermes is still down, and
-# the reload restarts this script, so a redirect waits the longest poll delay before reloading: at
-# worst one reload per 15 s, with no state carried across the reload.
+# None of those proves this page is servable again: the root may be another app (a proxy that drops
+# the prefix header), the proxy's own redirect, or a kind that flips back. A reload restarts this
+# script, so every reload waits the longest poll delay first: at worst one reload per 15 s, with no
+# state carried across the reload.
 # The root and kind come from ``<main>``'s data attributes, so the script and its hash are constant.
 _SCRIPT = (
-    "(function(){var c=document.querySelector('main').dataset,tries=0;"
-    "function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
+    "(function(){var c=document.querySelector('main').dataset,tries=0,MAX=15000;"
+    "function later(){setTimeout(poll,Math.min(MAX,1000+tries*1000));}"
     "function poll(){tries++;fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
     "headers:{accept:'text/html'}}).then(function(r){var k=r.headers.get('" + _KIND_HEADER.lower() + "');"
-    "if(r.ok||(k&&k!==c.kind)){location.reload();}"
-    "else if(r.type==='opaqueredirect'){setTimeout(function(){location.reload();},15000);}"
+    "if(r.ok||r.type==='opaqueredirect'||(k&&k!==c.kind)){setTimeout(function(){location.reload();},MAX);}"
     "else{later();}},later);}"
     "later();})();"
 )

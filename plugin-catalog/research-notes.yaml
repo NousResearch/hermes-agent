@@ -1,8 +1,8 @@
 name: research-notes
 repo: https://github.com/Adebisi1111/hermes-research-notes
-sha: "2c6d3999e6dd458394005e251d68447b01806306"
+sha: "980bde70c564450caf0433552be9f970470b7fa4"
 description: >
-  Research notes for Hermes: fetch and summarize web pages, save notes with tags,
+  Research notes for Hermes: fetch web pages as text, save notes with tags,
   search notes, list notes, and delete notes. All data stored locally in JSON.
 maintainer: Adebisi1111
 tier: community

@@ -28,6 +28,9 @@ Pinned here, in both directions:
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
+
 import threading
 import types
 
@@ -48,6 +51,9 @@ class _RecordingDB:
         self.rows: dict = {}
         self.reopen_error: Exception | None = None
         self.read_error: Exception | None = None
+
+    def _read_ctx(self):
+        return closing(sqlite3.connect(":memory:"))
 
     def close(self):
         self.closed += 1

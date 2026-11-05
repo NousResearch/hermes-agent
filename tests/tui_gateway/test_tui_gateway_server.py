@@ -3993,8 +3993,8 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def get_session(self, _target):
             return {"id": target, "cwd": str(profile_cwd)}
 
-        def get_session_by_title(self, _target):
-            return None
+        def _read_ctx(self):
+            return contextlib.nullcontext(Mock(execute=lambda *_: Mock(fetchone=lambda: None)))
 
         def reopen_session(self, _target):
             captured["reopened"] = _target

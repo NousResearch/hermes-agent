@@ -2,11 +2,19 @@ name: stripe-commerce
 repo: https://github.com/adroidian/stripe-commerce-hermes
 sha: 14fd9b75c113e5f7cf9849c0da9e05329ce39869
 subdir: ''
-description: 'Merchant-side Stripe for agents: products, prices and payment links
-  through an enforced restricted-key boundary. No money movement possible.'
+description: "Merchant-side Stripe for agents: products, prices and payment links\
+  \ through an enforced restricted-key boundary. Disclosure \u2014 sends the merchant's\
+  \ restricted Stripe key (Authorization header) plus the catalog parameters the model\
+  \ writes (product names, descriptions, amounts, link settings) to api.stripe.com\
+  \ over TLS; Stripe records requests in API logs with key attribution. Stripe-returned\
+  \ catalog and subscription state enters tool output and may be retained in session\
+  \ logs (customer details and payment methods are projected out). No local persistence,\
+  \ no telemetry, no other hosts. Mutations default to offline dry-run previews; execution\
+  \ requires explicit approval. No refund, charge, payout or subscription-mutation\
+  \ endpoint is reachable."
 maintainer: adroidian
 tier: community
-category: platform
+category: tools
 requires_hermes: '>=0.21.0'
 version: 0.1.0
 capabilities:
@@ -28,3 +36,7 @@ capabilities:
   provides_middleware: []
   requires_env:
   - STRIPE_API_KEY
+platforms:
+- linux
+- macos
+- windows

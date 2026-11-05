@@ -179,8 +179,15 @@ current.
 - Nominatim ToS: max 1 req/s (handled automatically by the script)
 - `nearby` requires lat/lon OR `--near "<address>"` — one of the two is needed
 - OSRM routing coverage is best for Europe and North America
-- Overpass API can be slow during peak hours; the script automatically
-  falls back between mirrors (overpass-api.de → overpass.kumi.systems)
+- Overpass API can be slow during peak hours. The script asks each mirror
+  once, in order (overpass-api.de → overpass.kumi.systems; override with
+  `MAPS_OVERPASS_URLS`, comma-separated), waits up to 60 s per mirror and
+  never retries a mirror that answered 406/429. When all fail it prints one
+  JSON error with a `tried` list — don't loop on it, fall back to
+  `web_search`. Answers are cached for 24 h in `~/.cache/maps_client/`
+  (`$XDG_CACHE_HOME` respected), so repeating a query is instant.
+- `nearby` with several `--category` values returns `status: partial` and
+  `failed_categories` when only some categories failed.
 - `distance` and `directions` use `--to` flag for the destination (not positional)
 - If a zip code alone gives ambiguous results globally, include country/state
 

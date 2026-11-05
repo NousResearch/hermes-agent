@@ -175,5 +175,36 @@ async def test_steer_agent_without_steer_method_falls_back():
     )
 
 
+@pytest.mark.asyncio
+async def test_steer_with_media_queues_whole_event_instead_of_dropping_the_photo():
+    """/steer sent as a photo caption must not steer only the caption while silently
+    dropping the photo: the whole event (caption + media) is queued as its own
+    follow-up turn, matching how the plain-message busy gate demotes non-text
+    input (#70253, #132371)."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    event = _make_event("/steer what do you think of this?")
+    event.media_urls = ["/cache/images/img_1.jpg"]
+    event.media_types = ["photo"]
+    result = await runner._handle_message(event)
+
+    # The photo never reached the running turn as a text-only steer...
+    running_agent.steer.assert_not_called()
+    # ...the whole caption+photo event was queued for the next turn...
+    assert sk in adapter._pending_messages
+    queued = adapter._pending_messages[sk]
+    assert queued.text == "what do you think of this?"
+    assert queued.media_urls == ["/cache/images/img_1.jpg"]
+    assert queued.media_types == ["photo"]
+    # ...and the reply says so.
+    assert result is not None
+    assert "queued" in result.lower()
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

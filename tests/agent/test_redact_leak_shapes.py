@@ -77,7 +77,8 @@ class TestDatabaseClientCredentials:
         _assert_masked(text, secret)
 
     @pytest.mark.parametrize("text", ["PWD=/home/app/project", "PGPASSFILE=/home/app/.pgpass",
-                                      "the password= field", "host=db port=5432 dbname=x",
+                                      "the password= field", "the pwd= flag and host= flag",
+                                      "host=db port=5432 dbname=x",
                                       "Data Source=db;Initial Catalog=x;Integrated Security=true"])
     def test_non_credentials_kept(self, text):
         _assert_unchanged(text)
@@ -101,6 +102,9 @@ class TestUserinfoAndBasicPairs:
         "postgres://user@host/db", "https://user:${TOKEN}@host/x", "https://api.x.com/cb?code=abc123&s=1",
         "IMAGE=ubuntu:24.04-noble", "TAG=myrepo:latest-release", "SRC=C:\\Users\\me",
         "CHECKSUM=sha256:" + "ab12" * 16, "TS=2026-01-01T10:00:00", "HOST=localhost:5432",
+        # Colon values under names that never hold a Basic pair, and userinfo docs samples.
+        "IMAGE=redis:7-alpine", "BRANCH=origin:feature-login2", "Server=tcp:db,1433;Initial Catalog=x",
+        'url = f"https://{user}:{pw}@host"', "The format is https://user:password@host",
     ])
     def test_non_credentials_kept(self, text):
         _assert_unchanged(text)
@@ -113,7 +117,10 @@ class TestAffixedJsonKeys:
     def test_masked(self, key):
         _assert_masked(f'{{"{key}": "{V}"}}', V)
 
-    @pytest.mark.parametrize("text", ['{"token_count": 12}', '{"password_policy": "strict"}',
+    @pytest.mark.parametrize("text", ['{"token_count": 12}', '{"password_policy": "strict-min12"}',
+                                      '{"passwordChanged": "2015-09-03T16:41:46.000Z"}', '{"has_password": "true"}',
+                                      '{"tokenUrl": "https://login.example.com/oauth2/token"}',
+                                      '{"secret_id": "3f2a9c1e-1b2c-4d5e-8f90-123456789abc"}',
                                       '{"secret_name": "prod-db-creds"}', '{"API_TOKEN": "<your token>"}',
                                       '{"secretary": "Jane Smith"}', '{"tokenizer": "cl100k_base"}'])
     def test_metadata_kept(self, text):

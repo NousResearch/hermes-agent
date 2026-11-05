@@ -105,7 +105,10 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
         vstart = m.end()
         vend = _kv_value_end(line, vstart, semicolon)
         value = line[vstart:vend]
-        if not value:
+        # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value followed
+        # by the next word. Padding on both sides (``password = x``) is still a conninfo field.
+        eq = line.rindex("=", m.start(), m.end())
+        if not value or (not semicolon and line[m.end() - 1] in " \t" and line[eq - 1] not in " \t"):
             continue
         bare = value.strip("\"'")
         # Templates, not credentials: ``Password={0}``, ``Password=${DB_PASS}``, ``{pw}``.

@@ -10,6 +10,10 @@ from contextlib import suppress
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
+# Interrupt reason the gateway stamps when the USER ended work with /stop. A unit that carries it
+# must not be delivered as a wake that resumes the cancelled work (#146807).
+USER_STOP_INTERRUPT_REASON = "stop_command"
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:
@@ -216,13 +220,19 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
     n, n_unit = len(goals) or len(results), len(results) or len(goals)
     group = evt.get("group")
     unit = f"group '{group}' ({n_unit} subagent(s))" if group is not None else f"{n_unit} subagent(s)"
-    lines = _preamble(
-        evt,
-        f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+    intro = (
+        "The user stopped this background fan-out unit before it finished; its partial results are below. "
+        "Do not resume, retry, or re-dispatch it unless the user explicitly asks. Any other units from the "
+        "same delegate_task call report separately as they finish."
+        if evt.get("interrupt_reason") == USER_STOP_INTERRUPT_REASON else
         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
         "below. Any other units from the same delegate_task call report separately as they finish. You may have "
         "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
-        "on siblings, end your turn after acting on this one.",
+        "on siblings, end your turn after acting on this one.")
+    lines = _preamble(
+        evt,
+        f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+        intro,
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
@@ -289,12 +299,17 @@ def _format_async_delegation(evt: dict) -> str:
         return _format_batch_delegation(evt, deleg_id, completed_at)
     status, summary, error = evt.get("status") or "completed", evt.get("summary"), evt.get("error")
     truncated = _is_truncated(evt)
+    intro = (
+        "The user stopped this background subagent before it finished; its partial output is below. "
+        "Do not resume, retry, or re-dispatch it unless the user explicitly asks."
+        if evt.get("interrupt_reason") == USER_STOP_INTERRUPT_REASON else
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.")
     lines = _preamble(
         evt,
         f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
-        "A background subagent you dispatched earlier has finished. You may "
-        "have moved on since dispatching it; the full task source is below so "
-        "you can act on the result or re-dispatch if things have changed.",
+        intro,
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
         f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")

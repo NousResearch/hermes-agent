@@ -110,6 +110,12 @@ def _mark_internal_notification(text: str) -> str:
     return text + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
 
 
+def _cancelled_by_user(evt: dict) -> bool:
+    """An async-delegation unit the user ended with ``/stop``: deliver a row, never a wake (#146807)."""
+    from tools.process_registry_notifications import USER_STOP_INTERRUPT_REASON
+    return evt.get("type") == "async_delegation" and evt.get("interrupt_reason") == USER_STOP_INTERRUPT_REASON
+
+
 def _held_reason(source, platform: str, multiplexed: bool) -> str:
     """Why a completion has no transport, naming what is actually missing: the saved receiving bot
     is down, or the route never saved one (a row older than the column), which no reconnect fixes."""
@@ -1329,6 +1335,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # Admission settles the durable claim, so the resolver starts from the owner proven here.
                 evt = {**evt, "parent_session_id": claim.owner_session_id,
                        "proven_session_id": claim.proven_session_id}
+            if _cancelled_by_user(evt):
+                # /stop must not implicitly authorize resuming: a wake here restarts the cancelled
+                # work (#146807). Persist the partial result for the next real turn instead.
+                from gateway.run import _gateway_session_db_inner
+                from gateway.wake import persist_cancelled_delegation
+                accepted = await persist_cancelled_delegation(
+                    _gateway_session_db_inner(self), text=synth_text,
+                    session_id=str(evt.get("parent_session_id") or "").strip(), evt=evt)
+                if accepted and identity is not None:
+                    with self._completion_delivery_lock:
+                        self._mark_completions_delivered_locked((identity,))
+                return accepted
             # The rows this admission settles: a turn that cannot confirm the owner offers them again.
             completion_ids = [claim.delegation_id] if claim.claim_id else []
             completion_ids += [sibling["delegation_id"] for sibling, claim_id in sibling_claims if claim_id]
@@ -1540,6 +1558,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
         async with self._completion_event_scope(group[0]):
+            # A unit the user cancelled must never ride a waking batch: persist it on its own and
+            # deliver the remaining units normally (#146807).
+            cancelled = [evt for evt in group if _cancelled_by_user(evt)]
+            if cancelled:
+                from gateway.run import _format_gateway_process_notification
+                group = [evt for evt in group if not _cancelled_by_user(evt)]
+                outcomes = [await self._deliver_completion_notification(
+                    _format_gateway_process_notification(evt) or "", evt) for evt in cancelled]
+                if not group:
+                    return False if False in outcomes else True
             return await self._deliver_async_delegation_group_scoped(group)
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:

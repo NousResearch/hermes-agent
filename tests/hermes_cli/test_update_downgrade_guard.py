@@ -8,13 +8,14 @@ import json
 import sqlite3
 import subprocess
 from contextlib import closing
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-import hermes_state_runtime as rt
 from hermes_cli import update_downgrade_guard as guard
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def _git(root, *args):
@@ -41,11 +42,10 @@ def repo(tmp_path):
 
 def _ledgered_store(home):
     home.mkdir(parents=True, exist_ok=True)
-    with closing(SessionDB(home / "state.db")) as db:
-        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
-        db.create_session("s", source="cli")
-        rt.admit_session_input(db, epoch=epoch, principal_id="p", session_id="s", request_id="r",
-                               payload={"text": "x"})
+    with open_persistence(profile_scope(home=home)) as db:
+        epoch = db.runtime.begin_epoch(instance_id="owner")
+        seed_session(db, "s", "cli")
+        db.admissions.admit(epoch=epoch, principal_id="p", session_id="s", request_id="r", payload={"text": "x"})
 
 
 def _pre_cutover_snapshot(home, snap_id):
@@ -88,7 +88,7 @@ def test_forward_updates_and_stores_without_ledger_rows_are_never_refused(repo, 
     old = _git(repo, "rev-parse", "old-release")
     plain = tmp_path / "plain"
     plain.mkdir()
-    SessionDB(plain / "state.db").close()  # runtime tables exist, but nothing was ever admitted
+    open_persistence(profile_scope(home=plain), eager=True).close()  # runtime tables exist, but nothing was ever admitted
     assert guard.downgrade_refusal(["git"], repo, old, home=plain) is None
 
     ledgered = tmp_path / "ledgered"
@@ -133,10 +133,36 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
     assert "Selected release available" not in out and "moves it back" not in out
 
 
-def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
-    from hermes_state_common import SCHEMA_SQL
+def test_a_target_whose_ledger_is_only_in_the_backend_schema_is_not_refused(repo, tmp_path, monkeypatch):
+    """A checkout whose state-store modules no longer carry the ledger DDL (a stand-in ``hermes_state.py``
+    without it) defines the runtime in ``persistence/sqlite/_schema_ddl.py``; the update moves to it."""
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    _git(repo, "checkout", "-q", "-b", "backend-schema")
+    _git(repo, "rm", "-q", "hermes_state_common.py")
+    (repo / "hermes_state.py").write_text("from persistence_assembly import open_persistence\n")
+    schema = repo / "persistence" / "sqlite" / "_schema_ddl.py"
+    schema.parent.mkdir(parents=True)
+    schema.write_text('SCHEMA_SQL = "CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)"\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "state store behind the backend")
+    target = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "notes.txt").write_text("later build\n")
+    _git(repo, "add", "notes.txt")
+    _git(repo, "commit", "-qm", "later build")  # the target no longer descends from HEAD
+    ledgered = tmp_path / "ledgered"
+    _ledgered_store(ledgered)
 
-    assert guard.defines_runtime([SCHEMA_SQL])
+    assert guard.target_predates_runtime(["git"], repo, target) is False
+    assert guard.downgrade_refusal(["git"], repo, target, home=ledgered) is None
+    # A release from before the ledger is still refused.
+    assert guard.downgrade_refusal(["git"], repo, _git(repo, "rev-parse", "old-release"), home=ledgered)
+
+
+def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
+    schema = (Path(guard.__file__).resolve().parent.parent / guard.BACKEND_SCHEMA).read_text(encoding="utf-8")
+
+    assert guard.defines_runtime([schema])
 
 
 @pytest.mark.parametrize("remote_result", [True, False, None, "no-reader"])

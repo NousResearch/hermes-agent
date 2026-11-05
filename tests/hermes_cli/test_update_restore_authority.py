@@ -92,16 +92,17 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
 def test_corrupt_epoch_refuses_profile_sweep_with_separate_recovery(tmp_path, monkeypatch, capsys):
     from hermes_cli import backup, update_cmd
     from hermes_cli.session_recovery import recover_session_database
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     homes = [tmp_path / 'default', tmp_path / 'sibling']
     originals = {}
     snapshots = {}
     for home in homes:
         home.mkdir()
-        with SessionDB(db_path=home / 'state.db') as db:
-            db.create_session('retained', 'cli')
-            db.append_message('retained', 'user', 'snapshot transcript')
+        with open_persistence(profile_scope(home=home)) as store:
+            seed_session(store, 'retained', 'cli')
+            seed_messages(store, 'retained', {'role': 'user', 'content': 'snapshot transcript'})
         snapshot = backup.create_quick_snapshot(hermes_home=home)
         snapshots[home] = home / 'state-snapshots' / snapshot / 'state.db'
         (home / 'state.db').write_bytes(b'unreadable canonical runtime epoch')
@@ -150,13 +151,13 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
 
     # Pause only the actual database publication, with maintenance already held.
     arrived, release = threading.Event(), threading.Event()
-    from hermes_cli import backup_restore
-    publish = backup_restore._restore_db_pages
+    from persistence.sqlite.admin import _backup
+    publish = _backup._restore_db_pages
     def barrier(*args):
         arrived.set()
         assert release.wait(30)
         return publish(*args)
-    monkeypatch.setattr(backup_restore, '_restore_db_pages', barrier)
+    monkeypatch.setattr(_backup, '_restore_db_pages', barrier)
     results = []
     thread = threading.Thread(target=lambda: results.append(_restore_state_db_from_snapshot(destination, source)))
     thread.start()

@@ -10,6 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 GIT = ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid']
 
@@ -33,7 +36,6 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     from hermes_cli import main_tui_launch
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -44,12 +46,10 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
     monkeypatch.setattr(main_tui_launch, '_print_tui_exit_summary', lambda *_: None)
 
     def ink(_argv, cwd=None, env=None):
-        db = SessionDB(db_path=get_hermes_home() / 'state.db')
-        db.create_session('tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
-        db.append_message('tui-wt', 'user', 'hello')
-        db.append_message('tui-wt', 'assistant', 'hi')
-        db.end_session('tui-wt', 'tui_shutdown')
-        db.close()
+        with open_persistence(profile_scope()) as store:
+            seed_session(store, 'tui-wt', 'tui', cwd=env['HERMES_TUI_CWD'])
+            seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'hello'}, {'role': 'assistant', 'content': 'hi'})
+            store.sessions.end('tui-wt', 'tui_shutdown')
         Path(env['HERMES_TUI_ACTIVE_SESSION_FILE']).write_text(json.dumps({'session_id': 'tui-wt'}))
         return 0
 
@@ -72,11 +72,11 @@ def _resume(session_id, **extra):
 def _turn_runs_in(cwd):
     """The owner's readiness gate a resumed turn passes through (``policy_scope``)."""
     from gateway.session_policy import policy_scope
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     try:
         with policy_scope(SimpleNamespace(cwd=str(cwd))):
             pass
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         return str(exc) != 'workspace_unavailable'
     except Exception:  # health: allow BLE001 -- past the readiness gate; the stub policy is incomplete
         return True
@@ -106,7 +106,6 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     """A tree removed while its branch survived comes back on that branch, at its commit."""
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
@@ -117,10 +116,9 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     subprocess.run([*GIT, '-C', str(tree), 'commit', '-qm', 'work'], check=True)
     tip = subprocess.run(['git', '-C', str(tree), 'rev-parse', 'HEAD'], capture_output=True, text=True,
                          check=True).stdout.strip()
-    db = SessionDB(db_path=get_hermes_home() / 'state.db')
-    db.create_session('tui-wt', 'tui', cwd=str(tree))
-    db.append_message('tui-wt', 'user', 'hello')
-    db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, 'tui-wt', 'tui', cwd=str(tree))
+        seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'hello'})
     subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', '--force', '--force', str(tree)], check=True)
     assert not tree.exists() and wt_info['branch'] in _branches(repo)
 
@@ -131,17 +129,13 @@ def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
 
 
 def test_resume_never_creates_a_missing_dir_the_launcher_did_not_make(tmp_path, monkeypatch):
-    from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
-
     repo = _repo(tmp_path)
     foreign = repo / '.worktrees' / 'hermes-deadbeef'  # looks like ours; no launcher record
-    db = SessionDB(db_path=get_hermes_home() / 'state.db')
-    db.create_session('other', 'tui', cwd=str(foreign))
-    db.append_message('other', 'user', 'hello')
-    db.create_session('plain', 'tui', cwd=str(tmp_path / 'gone'))
-    db.append_message('plain', 'user', 'hello')
-    db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, 'other', 'tui', cwd=str(foreign))
+        seed_messages(store, 'other', {'role': 'user', 'content': 'hello'})
+        seed_session(store, 'plain', 'tui', cwd=str(tmp_path / 'gone'))
+        seed_messages(store, 'plain', {'role': 'user', 'content': 'hello'})
     monkeypatch.chdir(tmp_path)
     _resume('other')
     _resume('plain')
@@ -154,24 +148,22 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
     the tree from the row's cwd instead of skipping the resume step."""
     import sqlite3
 
-    import hermes_state_local
     from hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
+    from persistence.sqlite.authority import _local
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
     tree = Path(_setup_worktree(str(repo), sync_base=False, retain_db=get_hermes_home() / 'state.db')['path'])
-    db = SessionDB(db_path=get_hermes_home() / 'state.db')
-    db.create_session('tui-wt', 'tui', cwd=str(tree))
-    db.append_message('tui-wt', 'user', 'hello')
-    db.close()
+    with open_persistence(profile_scope()) as store:
+        seed_session(store, 'tui-wt', 'tui', cwd=str(tree))
+        seed_messages(store, 'tui-wt', {'role': 'user', 'content': 'hello'})
     subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', '--force', '--force', str(tree)], check=True)
 
     def broken(*_a, **_k):
         raise sqlite3.OperationalError('no such table: state_meta')
 
-    monkeypatch.setattr(hermes_state_local, 'local_receipt', broken)
+    monkeypatch.setattr(_local, 'local_receipt', broken)
     monkeypatch.chdir(tmp_path)
     _resume('tui-wt')
     assert tree.is_dir()
@@ -205,7 +197,7 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
     from gateway import run
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     try:
@@ -214,7 +206,7 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
         # What GatewaySessionStore.create sends for -w: TERMINAL_CWD (the tree), row stamp os.getcwd().
         ref = create_local_session(authority, actor, {'request_id': 'w', 'source': 'cli', 'cwd': str(tree),
                                                       'row_cwd': str(repo), 'model': 'm', 'toolsets': []})
-        assert authority.db.get_session(ref.session_id)['cwd'] == str(repo)
+        assert session_row(authority.persistence, ref.session_id)['cwd'] == str(repo)
         cli._cleanup_worktree(wt_info)  # quit
         assert not tree.exists(), 'precondition: quit removes the clean tree'
 

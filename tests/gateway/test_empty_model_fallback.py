@@ -2,6 +2,20 @@
 
 from unittest.mock import patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_live_home_guard(monkeypatch):
+    """Importing the gateway probes the install manifest under the real home.
+
+    That probe is not the behavior under test. Mock the live-home guard so the
+    assertion stays on model resolution instead of the install path.
+    """
+    from tests.home_io_guard import HomeIOGuard
+
+    monkeypatch.setattr(HomeIOGuard, "check", lambda self, *args, **kwargs: None)
+
 
 
 

@@ -15,6 +15,14 @@ it("names the activation snapshot's running execution, not the turn the tab last
   expect(activatedTurnAdmission(finished, finished, undefined)).toBeNull()
 })
 
+it('keeps the execution a crash lost while the owner still lists it', () => {
+  const lost = { turnAdmissionId: 'adm-1' }
+
+  expect(activatedTurnAdmission(lost, lost, [{ admission_id: 'adm-1', input_id: 'in-1', status: 'unknown' }])).toBe(
+    'adm-1'
+  )
+})
+
 it('keeps the execution a frame named while the activation was in flight', () => {
   expect(activatedTurnAdmission({ turnAdmissionId: 'adm-5' }, { turnAdmissionId: 'adm-1' }, [running])).toBe('adm-5')
 })

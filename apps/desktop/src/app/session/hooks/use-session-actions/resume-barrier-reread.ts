@@ -123,15 +123,28 @@ export function recoveredTurnFields(
 
 /** The execution a warm activation leaves the session naming. A frame that named one while `session.activate` was
  *  in flight is newer than its snapshot; otherwise the snapshot's running execution replaces the one this tab last
- *  streamed, which may have finished before the session moved on elsewhere. */
+ *  streamed, which may have finished before the session moved on elsewhere. A turn lost in a crash runs no execution
+ *  but is still listed (`unknown`), and its journal still needs its admission. */
 export function activatedTurnAdmission(
   latest: Pick<ClientSessionState, 'turnAdmissionId'>,
   atActivateStart: Pick<ClientSessionState, 'turnAdmissionId'>,
   pending: unknown
 ): null | string {
-  return latest.turnAdmissionId !== atActivateStart.turnAdmissionId
-    ? (latest.turnAdmissionId ?? null)
-    : runningAdmission(pending)
+  const kept = latest.turnAdmissionId
+  const stillListed = kept && ownerPendingTurns(pending)?.admissionIds.has(kept) ? kept : null
+
+  return admissionAfterResume(latest, atActivateStart, runningAdmission(pending) ?? stillListed)
+}
+
+/** A frame that named an execution while a resume was in flight is newer than `answered`, what the resume names. */
+function admissionAfterResume(
+  latest: Pick<ClientSessionState, 'turnAdmissionId'>,
+  atStart: Pick<ClientSessionState, 'turnAdmissionId'>,
+  answered: null | string
+): null | string {
+  const named = latest.turnAdmissionId ?? null
+
+  return named !== (atStart.turnAdmissionId ?? null) ? named : answered
 }
 
 const durableRowId = ({ id, row_id }: SessionMessage): number | undefined => {

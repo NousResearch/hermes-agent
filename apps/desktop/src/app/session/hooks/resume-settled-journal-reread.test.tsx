@@ -69,7 +69,7 @@ const settledTurn: SessionMessage[] = [
 function mount(snapshot: SessionResumeResult) {
   const requestGateway = vi.fn().mockResolvedValue(snapshot)
 
-  return renderHook(() => {
+  const hook = renderHook(() => {
     const busyRef = useRef(false)
     const queryClient = useRef(new QueryClient()).current
 
@@ -105,6 +105,8 @@ function mount(snapshot: SessionResumeResult) {
 
     return { cache, actions, stream }
   })
+
+  return Object.assign(hook, { requestGateway })
 }
 
 beforeEach(() => {
@@ -445,28 +447,59 @@ const earlierExchange: SessionMessage[] = [
   { id: 2, role: 'assistant', content: 'There are two repositories.', timestamp: 6 }
 ]
 
+const regenerated: ChatMessage[] = [
+  { id: 'row-1', role: 'user', parts: [textPart('List the repositories.')], rowId: 1 },
+  { id: 'row-2', role: 'assistant', parts: [textPart('There are two repositories.')], rowId: 2 },
+  { ...firstSend, rowId: undefined }
+]
+
+const lostRegenerate = {
+  pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 2 }]
+}
+
 it('keeps the progress of a regenerate the owner lost in a crash, on every reopen', async () => {
   // The first send's bubble stays and the re-send runs as a new admission. The rewind cut the old turn's rows and
   // the restarted owner stored nothing of the re-sent one, so the journal alone holds the prompt and its progress.
-  await streamThenDie(
-    [
-      { id: 'row-1', role: 'user', parts: [textPart('List the repositories.')], rowId: 1 },
-      { id: 'row-2', role: 'assistant', parts: [textPart('There are two repositories.')], rowId: 2 },
-      { ...firstSend, rowId: undefined }
-    ],
-    'adm-2',
-    'Reading the issue '
-  )
+  await streamThenDie(regenerated, 'adm-2', 'Reading the issue ')
 
-  const lost = { pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 2 }] }
-
-  expect(await reopen(lost, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
+  expect(await reopen(lostRegenerate, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
 
   cleanup()
   clearAllSessionStates()
 
-  expect(await reopen(lost, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
+  expect(await reopen(lostRegenerate, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
   expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
+it('keeps a crash-lost regenerate recoverable after the reopened chat is activated again', async () => {
+  // Switching away and back warm-activates the session; the owner still lists the lost turn and runs nothing.
+  await streamThenDie(regenerated, 'adm-2', 'Reading the issue ')
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: earlierExchange })
+
+  const live = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: earlierExchange.length,
+    running: false,
+    ...lostRegenerate
+  } as SessionResumeResult)
+
+  for (const _open of ['cold resume', 'warm activation']) {
+    await act(async () => {
+      await live.result.current.actions.resumeSession(storedId, true)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600)
+    })
+  }
+
+  expect(live.requestGateway.mock.calls.map(([method]) => method)).toContain('session.activate')
+  cleanup()
+  clearAllSessionStates()
+
+  expect(await reopen(lostRegenerate, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
 })
 
 it('retires a finished queue drain while its successor waits instead of replaying it', async () => {

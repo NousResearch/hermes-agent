@@ -181,6 +181,20 @@ def test_host_timeout_and_exception_deny_without_waiting_forever():
     assert (exception.choice, exception.failure) == ("deny", "error")
 
 
+def test_host_reports_typed_decline_distinctly_from_error():
+    from hermes_cli.approval_transport import ApprovalTransportDeclined, invoke_approval_transport
+
+    def declines(_request):
+        raise ApprovalTransportDeclined("not for this worker")
+
+    async def declines_async(_request):
+        raise ApprovalTransportDeclined("not for this worker")
+
+    for present in (declines, declines_async):
+        result = invoke_approval_transport(present, _request(), timeout_seconds=1)
+        assert (result.choice, result.failure) == ("deny", "declined")
+
+
 def test_host_transport_wait_is_interruptible_and_pollable():
     from hermes_cli.approval_transport import invoke_approval_transport
 
@@ -368,7 +382,7 @@ def test_transport_failure_denies_without_builtin_fallback(monkeypatch):
     assert builtin_calls == []
 
 
-def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, caplog):
+def test_transport_resolution_error_fails_closed_without_logging_plugin_exception(monkeypatch, caplog):
     from tools import approval
 
     monkeypatch.setattr(
@@ -392,7 +406,7 @@ def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, c
     )
 
     assert result["choice"] == "deny"
-    assert result["failure"] == "unavailable"
+    assert result["failure"] == "error"
     assert "plugin-owned-secret-value" not in caplog.text
 
 

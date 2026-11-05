@@ -432,7 +432,8 @@ def _line_kinds(body: str) -> list[tuple[bool, str]]:
     """Classify every line as live prose or code, for normalization.
 
     Returns ``(live, line)`` per line, where live is False for fenced code
-    (opening and closing marker included) and for lines that continue an
+    (opening and closing marker included), for indented code blocks, and
+    for lines that continue an
     inline code span opened on an earlier line. Both callout and link
     normalization touch live lines only — a ``:::tip`` or a ``](page.md)``
     inside code is an example, never authored syntax.
@@ -450,7 +451,25 @@ def _line_kinds(body: str) -> list[tuple[bool, str]]:
     fence_char = ""
     fence_len = 0
     carry = 0
+    # An indented code block starts after a blank line (or at the top) and
+    # runs while lines stay blank or indented by four or more columns. A
+    # paragraph's indented continuation never starts one: CommonMark needs
+    # the interruption, so list-item continuations stay live prose.
+    prev_blank = True
+    in_indented = False
     for line in body.split("\n"):
+        blank = not line.strip()
+        indented = line.startswith(("    ", "\t"))
+        if not in_fence and not carry:
+            if in_indented and not (blank or indented):
+                in_indented = False
+            if not in_indented and indented and not blank and prev_blank:
+                in_indented = True
+            if in_indented:
+                kinds.append((False, line))
+                prev_blank = blank
+                continue
+        prev_blank = blank
         m = _FENCE_RE.match(line)
         if in_fence:
             kinds.append((False, line))

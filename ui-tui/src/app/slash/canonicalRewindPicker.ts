@@ -8,6 +8,7 @@ import type { SessionInfo } from '@hermes/shared/gateway-types'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
+import { splitImageNotes } from '../../lib/imageNotes.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
 import { armPendingRewind, cancelBacktrackPrime, cancelPendingRewind, type RewindSubmission } from '../backtrackStore.js'
 import type { RewindTarget } from '../interfaces.js'
@@ -45,6 +46,15 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
   }
 
   return targets
+}
+
+/** Put a picked prompt back in the composer as the user typed it: the image notes the model got are
+ *  dropped and each image they name is attached again as a composer image. */
+function prefillPrompt(ctx: SlashRunCtx, stored: string) {
+  const { images, text } = splitImageNotes(stored)
+
+  ctx.composer.setInput(text)
+  images.forEach(path => ctx.composer.attachImagePath(path))
 }
 
 export function openRewindPicker(ctx: SlashRunCtx) {
@@ -90,7 +100,7 @@ export function openRewindPicker(ctx: SlashRunCtx) {
           messages: toTranscriptMessages(snapshot.messages ?? []),
           targets,
           onEdit: target => {
-            ctx.composer.setInput(target.text)
+            prefillPrompt(ctx, target.text)
             armPendingRewind({ send: edit => send(target, edit), sid, target })
           },
           onFork: target => void forkFrom(ctx, sid, target),
@@ -184,7 +194,7 @@ export async function rewindAndSend(
 export async function forkFrom(ctx: SlashRunCtx, sid: string, target: RewindTarget) {
   const prefill = (session: null | string) => {
     if (session && getUiState().sid === session) {
-      ctx.composer.setInput(target.text)
+      prefillPrompt(ctx, target.text)
       ctx.transcript.sys(t('slashCmd.core.rewind.forked', String(target.turn)))
     }
   }

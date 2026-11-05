@@ -230,3 +230,9 @@ def test_a_long_url_hard_wraps_inside_the_pager(cli, monkeypatch):
     assert rendered and {get_cwidth(text) for text in rendered} == {get_cwidth(rendered[0])}
     assert get_cwidth(rendered[0]) <= 40
 
+
+def test_an_image_prompt_edits_as_typed_without_the_vision_note(cli):
+    note = ("[The user attached an image. Here's what it contains:\nA blue square on red.]\n"
+            "[If you need a closer look, use vision_analyze with image_url: /cache/a.png]")
+    cli.conversation_history.append({"role": "user", "content": f"{note}\n\nWhat two colors?"})
+    assert cli._backtrack_prompts()[-1] == "What two colors?"

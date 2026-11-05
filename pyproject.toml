@@ -708,6 +708,10 @@ include = [
   "hermes_platform.*",
   "pm",
   "pm.*",
+  "persistence",
+  "persistence.*",
+  "session_rules",
+  "session_rules.*",
   "tools",
   "tools.*",
 ]

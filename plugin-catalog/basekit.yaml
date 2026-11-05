@@ -14,6 +14,9 @@ screenshots:
   - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/token.png
   - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/gate.png
 readme: true
+known_issues:
+  - "Public Base RPC endpoints rate-limit under load (HTTP 429) — a tool call then raises and names the endpoint instead of returning empty data, and the hook fails open; set your own rpc_url in settings to avoid it."
+  - "base_activity and base_allowances read a bounded block window by design, so they can only ever answer about that window — the reply states the exact from/to block rather than implying all history."
 capabilities:
   provides_tools:
     - base_network

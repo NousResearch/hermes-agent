@@ -47,7 +47,24 @@ async def test_a_page_load_during_the_drain_gets_the_restart_page(path):
     assert status == 503 and ctype.startswith("text/html")
     assert "Hermes is restarting" in body and "gateway_not_ready" not in body
     assert headers[b"retry-after"] == b"2" and b"no-store" in headers[b"cache-control"]
+    assert headers[b"x-hermes-restart-page"] == b"restarting"
     assert reached == []  # still refused: the app never runs on a draining owner
+
+
+@pytest.mark.asyncio
+async def test_the_page_runs_only_its_own_hashed_script_and_polls_the_app_root_not_its_url():
+    """A page load with a one-time effect (an OAuth callback's code) must run once, on the reload:
+    the poll asks for the root under the same proxy prefix, never this URL."""
+    import base64
+    import hashlib
+    import re
+
+    _, _, body, headers, _ = await _drained("GET", "/auth/callback", PAGE_LOAD)
+    script = re.search(r"<script>(.*)</script>", body, re.DOTALL).group(1)
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    csp = headers[b"content-security-policy"].decode()
+    assert f"script-src 'sha256-{digest}';" in csp and "script-src 'unsafe-inline'" not in csp
+    assert 's="/auth/callback"' in script and "fetch(base+'/'" in script and "location.href" not in script
 
 
 @pytest.mark.asyncio
@@ -86,7 +103,7 @@ def test_a_page_load_of_a_bundle_the_update_could_not_rebuild_gets_the_rebuild_p
     client = _webapp(monkeypatch, tmp_path, stale=True)
     page = client.get("/", headers=PAGE_LOAD)
     assert page.status_code == 503 and page.headers["content-type"].startswith("text/html")
-    assert "hermes webapp" in page.text and NOT_REBUILT in page.text
+    assert "hermes webapp" in page.text and page.headers["x-hermes-restart-page"] == "not_rebuilt"
     api = client.get("/", headers={"accept": "application/json"})
     assert api.status_code == 503 and api.json() == {"error": NOT_REBUILT}
 

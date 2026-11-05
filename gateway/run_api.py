@@ -335,13 +335,10 @@ def _embedded_chat_enabled() -> bool:
 def _not_ready_response(scope, state):
     """The drain's refusal: JSON for API callers, a self-reloading page for a browser's page load
     (a Webapp tab reloaded mid-update showed the bare JSON as the whole page)."""
-    from gateway.webapp_restart_page import restart_page, wants_document
-    if wants_document(scope):
-        from starlette.responses import HTMLResponse
-        page, headers = restart_page("restarting")
-        return HTMLResponse(page, status_code=503, headers=headers)
+    from gateway.webapp_restart_page import document_refusal
     from starlette.responses import JSONResponse
-    return JSONResponse({'error': 'gateway_not_ready', 'state': state}, status_code=503)
+    return (document_refusal(scope, "restarting")
+            or JSONResponse({'error': 'gateway_not_ready', 'state': state}, status_code=503))
 
 
 def _restart_wait_read(runner, scope) -> bool:

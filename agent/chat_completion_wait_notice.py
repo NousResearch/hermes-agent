@@ -8,8 +8,11 @@ the wait phase changes or a watchdog deadline is near. Watchdog thresholds and
 retry policy live with the watchdogs; this is presentation only.
 """
 
+import logging
 import math
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 NEAR_DEADLINE_SECS = 15.0
 
@@ -74,21 +77,53 @@ class WaitNoticeState:
     watchdog change, and once when the applicable deadline comes within
     ``NEAR_DEADLINE_SECS``; every other heartbeat only touches liveness.
     ``reset`` when activity resumes so the next silence gets a fresh notice.
+
+    The status line is transient, so each silence is ALSO written to the app log
+    exactly twice — ``provider-wait start`` when the notice first appears and
+    ``provider-wait end`` with the outcome when the wait closes. Two lines per
+    silence, never one per heartbeat: enough to count and alert on long provider
+    waits after the fact, without turning agent.log into a drumbeat.
     """
 
     def __init__(self) -> None:
+        self.model: Optional[str] = None
+        self.provider: Optional[str] = None
+        self._waited_secs = 0.0
+        self._logged_start = False
         self.reset()
 
-    def reset(self) -> None:
+    def reset(self, outcome: str = "resumed") -> None:
+        self._log_end(outcome)
         self.phase: Optional[str] = None
         self.watchdog_label: Optional[str] = None
         self.near_shown = False
 
-    def should_emit(self, phase: str, watchdog: Optional[tuple[str, float]]) -> bool:
+    def _log_end(self, outcome: str) -> None:
+        if not self._logged_start:
+            return
+        self._logged_start = False
+        logger.info("provider-wait end: model=%s provider=%s phase=%s waited=%.0fs outcome=%s",
+                    self.model or "unknown", self.provider or "unknown", self.phase or "unknown",
+                    self._waited_secs, outcome)
+
+    def should_emit(self, phase: str, watchdog: Optional[tuple[str, float]], *,
+                    model: Optional[str] = None, provider: Optional[str] = None,
+                    silence_secs: Optional[float] = None) -> bool:
+        if model is not None:
+            self.model = model
+        if provider is not None:
+            self.provider = provider
+        if silence_secs is not None:
+            self._waited_secs = float(silence_secs)
         label = watchdog[0] if watchdog is not None else None
         near = _near_deadline(watchdog)
         emit = self.phase != phase or self.watchdog_label != label or (near and not self.near_shown)
         self.phase, self.watchdog_label = phase, label
         if near:
             self.near_shown = True
+        if emit and not self._logged_start:
+            self._logged_start = True
+            logger.info("provider-wait start: model=%s provider=%s phase=%s waited=%.0fs watchdog=%s",
+                        self.model or "unknown", self.provider or "unknown", phase,
+                        self._waited_secs, label or "none")
         return emit

@@ -103,6 +103,15 @@ def contact_email(dossier: dict) -> str | None:
     return prefs.get("contact_email_for_optouts") or (emails[0] if emails else None)
 
 
+def focus_phone(dossier: dict) -> str | None:
+    """The number a phone-led (spam-call) run is scrubbing, if one was designated at intake.
+
+    `select_disclosure` uses it as the `phone` field so a phone-asking opt-out form gets
+    the number being scrubbed even when it is not `phones[0]`.
+    """
+    return (dossier.get("preferences") or {}).get("focus_phone")
+
+
 def select_disclosure(dossier: dict, inputs: list[str], override_email: str | None = None) -> dict:
     """Return ONLY the dossier fields a broker's opt-out actually requires.
 
@@ -124,7 +133,7 @@ def select_disclosure(dossier: dict, inputs: list[str], override_email: str | No
         "state": addr.get("state"),
         "postal": addr.get("postal"),
         "date_of_birth": ident.get("date_of_birth"),
-        "phone": phones[0] if phones else None,
+        "phone": focus_phone(dossier) or (phones[0] if phones else None),
     }
     out: dict = {}
     for key in inputs:

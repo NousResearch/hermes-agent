@@ -945,8 +945,8 @@ def check_video_requirements() -> bool:
 
 
 def check_vision_requirements() -> bool:
-    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
-    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    """Image gate (``vision_analyze``): an aux vision client OR the native fast
+    path. The handler attaches pixels straight to a vision-capable main model, so a main model on a
     provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
     ``video_analyze`` keeps the aux-only gate — its handler has no native path.
     """
@@ -1071,7 +1071,7 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     """Local video path for a terminal-backend path, local file, or HTTP(S) URL. Only files created
     here are appended to ``temp_paths`` — never user-provided paths. Terminal-backend reads use the
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
-    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, 50MB cap)."""
+    (media-cache host reads, bounded in-sandbox exec-read, credential-read guard, ingest cap)."""
     from tools.image_source import (
         ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
     )

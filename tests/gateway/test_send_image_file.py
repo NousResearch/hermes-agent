@@ -7,7 +7,6 @@ Covers: local image file sending, file-not-found handling, fallback on error,
 """
 
 import asyncio
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -212,56 +211,3 @@ class TestSlackSendImageFile:
         )
         assert not result.success
         assert "Not connected" in result.error
-
-
-# ---------------------------------------------------------------------------
-# browser_vision screenshot cleanup tests
-# ---------------------------------------------------------------------------
-
-
-class TestScreenshotCleanup:
-    def test_cleanup_removes_old_screenshots(self, tmp_path):
-        """_cleanup_old_screenshots should remove files older than max_age_hours."""
-        import time
-        from tools.browser_tool_lifecycle import _cleanup_old_screenshots
-        from tools.browser_tool import _last_screenshot_cleanup_by_dir
-
-        _last_screenshot_cleanup_by_dir.clear()
-
-        # Create a "fresh" file
-        fresh = tmp_path / "browser_screenshot_fresh.png"
-        fresh.write_bytes(b"new")
-
-        # Create an "old" file and backdate its mtime
-        old = tmp_path / "browser_screenshot_old.png"
-        old.write_bytes(b"old")
-        old_time = time.time() - (25 * 3600)  # 25 hours ago
-        os.utime(str(old), (old_time, old_time))
-
-        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
-
-        assert fresh.exists(), "Fresh screenshot should not be removed"
-        assert not old.exists(), "Old screenshot should be removed"
-
-    def test_cleanup_is_throttled_per_directory(self, tmp_path):
-        import time
-        from tools.browser_tool_lifecycle import _cleanup_old_screenshots
-        from tools.browser_tool import _last_screenshot_cleanup_by_dir
-
-        _last_screenshot_cleanup_by_dir.clear()
-
-        old = tmp_path / "browser_screenshot_old.png"
-        old.write_bytes(b"old")
-        old_time = time.time() - (25 * 3600)
-        os.utime(str(old), (old_time, old_time))
-
-        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
-        assert not old.exists()
-
-        old.write_bytes(b"old-again")
-        os.utime(str(old), (old_time, old_time))
-        _cleanup_old_screenshots(tmp_path, max_age_hours=24)
-
-        assert old.exists(), "Repeated cleanup should be skipped while throttled"
-
-

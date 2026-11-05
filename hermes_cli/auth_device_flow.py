@@ -318,12 +318,30 @@ def _print_device_code_instructions(
         print(f"  Could not open browser automatically {failure_dash} use the URL above.")
 
 
+class DeviceFlowCancelled(Exception):
+    """The caller's ``cancelled`` hook fired while the token poll was waiting."""
+
+
+def _cancellable_sleep(seconds: float, cancelled: Optional[Callable[[], bool]]) -> None:
+    """Sleep *seconds*; with a hook, in <= 1 s ticks so a cancel ends the poll within a second."""
+    if cancelled is None:
+        time.sleep(seconds)
+        return
+    wake = time.monotonic() + seconds
+    while not cancelled():
+        remaining = wake - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+    raise DeviceFlowCancelled()
+
+
 def _poll_device_token_generic(
     post: Callable[[], httpx.Response], *, expires_in: int, poll_interval: int,
     validate_success: Callable[[dict[str, Any]], None],
     on_non_json_error: Callable[[httpx.Response], Exception],
     on_error: Callable[[httpx.Response, dict[str, Any]], Exception],
-    on_timeout: Callable[[], Exception]) -> dict[str, Any]:
+    on_timeout: Callable[[], Exception], cancelled: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
@@ -331,13 +349,16 @@ def _poll_device_token_generic(
     real OAuth error), backs off — honoring ``Retry-After``, capped at 60s and at the device-code
     deadline — instead of aborting a login the user may still be approving. Every other error, a
     non-JSON error body, and the deadline become provider-specific exceptions via the supplied
-    factories so each caller keeps its exact error contract.
+    factories so each caller keeps its exact error contract. *cancelled* is checked before every
+    request and during every wait; once it fires the poll raises :class:`DeviceFlowCancelled`.
     """
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
     edge_backoff = 0.0  # kept apart from current_interval so slow_down/pending pacing is untouched
     unavailable = 0  # HTTP status of the latest edge/service failure; 0 once the endpoint answers again
     while time.monotonic() < deadline:
+        if cancelled is not None and cancelled():
+            raise DeviceFlowCancelled()
         response = post()
         if response.status_code == 200:
             payload = response.json()
@@ -357,18 +378,18 @@ def _poll_device_token_generic(
                     edge_backoff = min(max(current_interval, retry_after), 60)
                 else:
                     edge_backoff = min(max(edge_backoff * 2, current_interval * 2, 5), 60)
-                time.sleep(max(0.0, min(edge_backoff, deadline - time.monotonic())))
+                _cancellable_sleep(max(0.0, min(edge_backoff, deadline - time.monotonic())), cancelled)
                 continue
             response.raise_for_status()
             raise on_non_json_error(response)
         edge_backoff, unavailable = 0.0, 0
         error_code = str(error_payload.get("error") or "")
         if error_code == "authorization_pending":
-            time.sleep(current_interval)
+            _cancellable_sleep(min(current_interval, max(0.0, deadline - time.monotonic())), cancelled)
             continue
         if error_code == "slow_down":
             current_interval = min(current_interval + 1, 30)
-            time.sleep(current_interval)
+            _cancellable_sleep(current_interval, cancelled)
             continue
         raise on_error(response, error_payload)
     # Still failing when the code ran out: a service outage (``__cause__``), not a sign-in left unapproved.
@@ -377,7 +398,7 @@ def _poll_device_token_generic(
 
 def _poll_for_token(
     client: httpx.Client, portal_base_url: str, client_id: str, device_code: str,
-    expires_in: int, poll_interval: int) -> dict[str, Any]:
+    expires_in: int, poll_interval: int, cancelled: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
     """Poll the Nous token endpoint until the user approves or the code expires."""
     def _validate(payload: dict[str, Any]) -> None:
         if "access_token" not in payload:
@@ -402,8 +423,9 @@ def _poll_for_token(
         on_non_json_error=lambda _r: RuntimeError(
             "Token endpoint returned a non-JSON error response"),
         # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
-        # (web_server_oauth._nous_promotion_poller surfaces it to the UI) both inherit the guidance.
-        on_timeout=lambda: DeviceCodeExpired(_nous_device_auth_timeout_message(portal_base_url)))
+        # (web_server_oauth._nous_sign_in_poller surfaces it to the UI) both inherit the guidance.
+        on_timeout=lambda: DeviceCodeExpired(_nous_device_auth_timeout_message(portal_base_url)),
+        cancelled=cancelled)
 
 
 def _prompt_yes_no(prompt: str, *, default: str) -> bool:

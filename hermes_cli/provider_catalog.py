@@ -17,10 +17,9 @@ from dataclasses import dataclass
 # Auth types that authenticate via an account / sign-in flow rather than a pasted API key; these
 # route to the desktop "Accounts" tab, everything else (api_key, and aws_sdk configured via
 # AWS_REGION/AWS_PROFILE) to "API keys". Mirrors the auth_type strings in PROVIDER_REGISTRY and
-# ProviderProfile: external_process = copilot-acp (spawns `copilot --acp --stdio`), copilot = GitHub
-# Copilot token / gh auth.
+# ProviderProfile: external_process = a spawned CLI that owns its own login (e.g. an ACP agent).
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
-    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process", "copilot"}
+    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process"}
 )
 
 
@@ -31,7 +30,7 @@ class ProviderDescriptor:
     slug: str                      # canonical id, e.g. "openai-codex"
     label: str                     # human display name
     description: str               # one-line description
-    auth_type: str                 # api_key | oauth_* | external_process | copilot | aws_sdk
+    auth_type: str                 # api_key | oauth_* | external_process | aws_sdk
     tab: str                       # "keys" | "accounts"
     api_key_env_vars: tuple[str, ...]  # credential env vars (may be empty)
     base_url_env_var: str          # base-URL override env var (may be "")

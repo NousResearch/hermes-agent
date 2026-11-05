@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import urllib.parse
@@ -120,6 +121,23 @@ def _profile_home(profile: str) -> Optional[str]:
     return None
 
 
+class _ThreadingHTTPServerV6(ThreadingHTTPServer):
+    """IPv6 listener. ``V6ONLY=0`` makes the ``::`` wildcard dual-stack (IPv4 peers arrive as
+    ``::ffff:a.b.c.d``), so one socket serves IPv6-only private networks and IPv4 alike."""
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        with contextlib.suppress(OSError, AttributeError):  # no IPV6_V6ONLY: the bind stays v6-only
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def _http_server_class(host: str) -> type:
+    """``ThreadingHTTPServer`` is AF_INET only, so an IPv6 bind (``::1``, ``::``) needs the v6 family."""
+    return _ThreadingHTTPServerV6 if ":" in host else ThreadingHTTPServer
+
+
 def _daemon_thread(target, name: str) -> threading.Thread:
     t = threading.Thread(target=target, name=name, daemon=True)
     t.start()
@@ -139,6 +157,20 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]
 
+    def parse_request(self) -> bool:
+        """Without a token, refuse any request whose ``Host`` is not a loopback name, before a route
+        runs: a page on a hostname re-resolved to 127.0.0.1 (DNS rebinding) is same-origin to this
+        listener and could otherwise read its served-agent list and Agent Card."""
+        if not super().parse_request():
+            return False
+        adapter = self.adapter
+        if adapter._security_context.localhost_only() and not security.is_loopback_host_header(
+                self.headers.get("Host"), adapter._public_url):
+            self._error(403, None, protocol.ERR_UNAUTHORIZED,
+                        "Host must be a loopback name or the A2A_PUBLIC_URL host (no A2A token configured)")
+            return False
+        return True
+
     def log_message(self, format, *args):
         logger.debug("A2A http: " + format, *args)  # silence the default stderr access log
 
@@ -154,7 +186,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         self._json(http_code, _err(req_id, code, message))
 
     def _client_ip(self) -> str:
-        return self.client_address[0] if self.client_address else ""
+        """The peer's address; an IPv4 peer of a dual-stack ``::`` bind keeps its plain IPv4 identity."""
+        ip = self.client_address[0] if self.client_address else ""
+        return ip.removeprefix("::ffff:") if ip.startswith("::ffff:") and "." in ip else ip
 
     def _request_public_url(self) -> str:
         """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).
@@ -198,6 +232,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        if adapter._security_context.localhost_only() and (refusal := security.browser_post_refusal(self.headers)):
+            return self._error(403, None, protocol.ERR_UNAUTHORIZED, refusal)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
@@ -296,7 +332,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
         try:
-            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = _http_server_class(self.host)((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)
@@ -404,7 +440,8 @@ class A2AAdapter(BasePlatformAdapter):
         return agents
 
     def _base_url(self, public_url: Optional[str]) -> str:
-        return (public_url or "").strip() or f"http://{self.host}:{self.port}/"
+        host = f"[{self.host}]" if ":" in self.host else self.host  # IPv6 literal
+        return (public_url or "").strip() or f"http://{host}:{self.port}/"
 
     def _served_agent_summary(self, public_url: Optional[str] = None) -> list[dict]:
         base = self._base_url(public_url)

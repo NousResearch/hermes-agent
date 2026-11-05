@@ -518,6 +518,9 @@ class TestManagedPortalRouting:
 # ---------------------------------------------------------------------------
 
 class _FakeHandle:
+    def iter_events(self, **_):
+        return iter(())
+
     def __init__(self, result):
         self._result = result
 

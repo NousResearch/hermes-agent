@@ -105,6 +105,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
@@ -127,6 +128,17 @@ class MattermostAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+
+    def _is_configured_bot_user(self, user_id: str) -> bool:
+        """Whether an inbound Mattermost sender is an explicitly configured peer bot.
+
+        Mattermost's posted WebSocket event contains only a sender ID, not a bot flag.  Keep the
+        classification opt-in: an unknown account stays a human rather than silently changing its
+        authorization or delivery behavior. ``bot_users`` in config.yaml is read by the base
+        ``build_source``; ``MATTERMOST_BOT_USERS`` is its env spelling.
+        """
+        return str(user_id) in _channel_id_set(_get_scoped_secret("MATTERMOST_BOT_USERS", ""))
+
 
     # --- HTTP helpers ---
 
@@ -652,7 +664,10 @@ class MattermostAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id)
+            thread_id=thread_id, message_id=post_id,
+            # A bot account's post carries props.from_bot (a string "true" on the wire).
+            is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
+            or self._is_configured_bot_user(sender_id))
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
@@ -844,8 +859,12 @@ def interactive_setup() -> None:
     save_env_value("MATTERMOST_TOKEN", token)
     print_success("Mattermost token saved")
     print()
-    info("🔒 Security: Restrict who can use your bot", "   To find your user ID: click your avatar → Profile",
-         "   or use the API: GET /api/v4/users/me")
+    info("🔒 Security: Restrict who can use your bot",
+         "   Find your user ID (the profile dialog does not show it):",
+         "   Admins: System Console → User Management → Users → open your user.",
+         "   Anyone: while logged in, open <server>/api/v4/users/me in a browser tab.",
+         "   With the bot token: GET <server>/api/v4/users/username/<your-username>.",
+         "   Copy the \"id\" field. /users/me with the bot token returns the bot's ID.")
     print()
     allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
     if allowed_users:

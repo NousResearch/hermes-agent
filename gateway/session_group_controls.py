@@ -1,6 +1,7 @@
 """Profile-owned room controls over the canonical hosted service."""
 import asyncio
 import logging
+import os
 from pathlib import Path
 import weakref
 
@@ -16,11 +17,13 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.rename': 'session:control',
+    'groups.context': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
     'groups.stop': 'session:control',
+    'groups.continue': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
@@ -32,11 +35,13 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
+    'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
     'groups.stop': {'room_id', 'cancel_id'},
+    'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
@@ -86,6 +91,7 @@ async def dispatch_group_control(connection, method, params):
 
 def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_context import room_context, set_room_context
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -97,7 +103,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
+                         'groups.approve'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -123,11 +130,16 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return _execution_control(service, method, params)
 
     def capabilities():
+        from gateway.session_hosted_members import member_roster
+        # The roster groups.create will accept from THIS caller, so a picker never offers a bot
+        # (parked, retiring, a sibling a profile-bound socket cannot seat) that create refuses.
+        homes, refused = member_roster(authority, siblings=host_scope)
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': {'enabled': False, 'reason': 'canonical_driver_required'},
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband'],
-                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
+                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
+                'seatable_profiles': sorted(name for name in homes if name not in refused)}
 
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
@@ -206,8 +218,10 @@ def _group(authority, actor, method, params, *, host_scope=False):
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
-        if service is not None and room.get('disbanded_at') is None:
-            result['driver_status'] = service.status(room['room_id'])
+        if room.get('disbanded_at') is None:
+            result['context'] = room_context(db_path, room_id=room['room_id'])
+            if service is not None:
+                result['driver_status'] = service.status(room['room_id'])
         return result
 
     handlers = {
@@ -217,6 +231,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.state': state,
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
+        'groups.context': lambda: set_room_context(db_path, **params),
         'groups.disband': disband,
     }
     return handlers[method]()
@@ -257,6 +272,8 @@ def _execution_control(service, method, params):
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
             params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+        'groups.continue': lambda: {'continued': True, 'event': service.continue_room(
+            params.get('room_id'), discussion_event_id=str(params.get('discussion_event_id') or ''))},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,
@@ -286,12 +303,12 @@ def _roster_siblings(connection, params):
     subject and capabilities, which is what the routed connection would carry; none is built, so
     no poll (routed or not) adds connections."""
     from gateway.session_authorities import local_bots
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     authority, actor = connection.authority, connection.actor
     if getattr(getattr(authority, 'runner', None), 'session_authorities', None) is None:
         return []
     readable = connection.host_scoped and params.get('include_sessions', True) is True
-    return [(bot, Principal(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
+    return [(bot, SessionActor(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
              if readable and bot.problem is None else None)
             for bot in local_bots(authority.runner) if bot.authority is not authority]
 
@@ -331,11 +348,12 @@ def _read_bot_sessions(db, subject, operator):
                     'last_active': target['last_activity_at'] or target['started_at'] or 0,
                     'message_count': target['message_count'] or 0}
 
-        fields = {'last_session': None, 'worker_session': None, 'canonical_session': None}
+        fields: dict = {'last_session': None, 'worker_session': None, 'canonical_session': None}
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
                                  ('Bot Chat', LEGACY_PREFIX)).fetchone()
-        if canonical and (canonical['user_id'] == subject or operator) and not canonical['archived']:
+        from gateway.owner_identity import same_owner
+        if canonical and (same_owner(canonical['user_id'], subject) or operator) and not canonical['archived']:
             fields['canonical_session'] = summary(canonical)
         # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
         # never wins, as in the pre-unified roster's listing.
@@ -348,6 +366,18 @@ def _read_bot_sessions(db, subject, operator):
             fields['last_session'] = dict(fields['canonical_session'])
         elif latest:
             fields['last_session'] = summary(latest)
+        # The profile's freshest worker (#90268, #140977): workers are deny-listed out of every
+        # conversation listing, so a roster row that only carried conversation fields read "idle"
+        # while a kanban/tool run was heartbeating (#72016). Newest DENIED source wins, never an
+        # archived or hidden row; no owner filter -- a worker's ``user_id`` is the dispatch identity
+        # (a bot, the kanban dispatcher), not this reader, and the legacy roster read it the same way.
+        worker = conn.execute(
+            f"SELECT id, source, title, COALESCE(last_activity_at, started_at) AS last_active FROM sessions "
+            f"WHERE COALESCE(source,'') IN ({hidden_sources}) AND archived=0 AND hidden=0 "
+            "ORDER BY last_active DESC LIMIT 1", INTERNAL_LISTING_SOURCES).fetchone()
+        if worker:
+            fields['worker_session'] = {'id': worker['id'], 'source': (worker['source'] or '').strip().lower(),
+                                        'title': worker['title'] or '', 'last_active': worker['last_active'] or 0}
     return fields
 
 
@@ -387,12 +417,10 @@ def _profiles(authority, actor, home, params, siblings=()):
     path = home / 'profile.yaml'
     meta = yaml.safe_load(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     meta = meta if isinstance(meta, dict) else {}
-    revisions = meta.get('_ui_meta_revisions')
-    row['ui_meta_revisions'] = {str(k): max(0, v) for k, v in revisions.items()
-                              if type(v) is int} if isinstance(revisions, dict) else {}
+    row['ui_meta_revisions'] = _ui_meta_revisions(meta)
     if isinstance(meta.get('ui_meta'), dict):
         row['ui_meta'] = meta['ui_meta']
-    row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
+    row['has_avatar'] = _has_avatar(home)
     if include_sessions:
         row.update(_bot_sessions(authority, actor))
     profiles = [row]
@@ -405,17 +433,17 @@ def _profiles(authority, actor, home, params, siblings=()):
             return
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
-                 'model': '', 'provider': '', 'description': '', 'display_name': configured,
-                 'skill_count': 0}
+                 'model': '', 'provider': '', 'description': '', 'display_name': '',
+                 'skill_count': 0, 'has_avatar': _has_avatar(target), 'ui_meta_revisions': {}}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
-        meta_path = target / 'profile.yaml'
-        try:
-            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
-        except (OSError, yaml.YAMLError):
-            meta = {}
+        meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
-            entry['display_name'] = str(meta.get('display_name') or configured)
+            # The profile's own metadata, not a placeholder: Desktop seeds the Edit profile dialog
+            # from these fields and skips the avatar push when ``has_avatar`` is set.
+            entry['description'] = str(meta.get('description') or '').strip()
+            entry['display_name'] = str(meta.get('display_name') or '')
+            entry['ui_meta_revisions'] = _ui_meta_revisions(meta)
             if isinstance(meta.get('ui_meta'), dict):
                 entry['ui_meta'] = meta['ui_meta']
         profiles.append(entry)
@@ -432,4 +460,116 @@ def _profiles(authority, actor, home, params, siblings=()):
     if service is not None:
         for configured, target in service.profile_homes().items():
             discovered(configured, target)
-    return {'profiles': profiles, 'bot_mode_protocol': True}
+    # Every other profile under this root, as the pre-authority ``profiles.list`` named them
+    # (RT-38): a host running one gateway per profile serves no siblings, and Desktop drops every
+    # union agent the active source leaves out, so a default-only answer hid the other bots.
+    # Metadata only, like any discovery above.
+    from hermes_cli.profiles import _get_default_hermes_home
+    root = _get_default_hermes_home()
+    if root.is_dir():
+        discovered('default', root)
+    for target in _named_profile_dirs():
+        discovered(target.name, target)
+    # ``install_id`` (same value as /api/status) lets a multi-connection client prove which
+    # machine answered; the roster trace logged ``answered=-`` without it. It already returns
+    # None for an unreadable root.
+    from hermes_cli.install_identity import get_install_id
+    return {'profiles': profiles, 'bot_mode_protocol': True, 'install_id': get_install_id() or ''}
+
+
+# The Bots pane polls ``profiles.list`` every 5 s. Re-listing ``profiles/`` and re-parsing every
+# sibling ``profile.yaml`` each time cost ~60 ms at 50 profiles, so both are cached, and neither
+# cache trusts a timestamp to notice a change. Linux stamps mtime AND ctime from the coarse clock
+# (one jiffy, 1-10 ms), FAT/SMB/HFS+ tick coarser still, and a directory's size and inode survive
+# a file appearing and vanishing inside it; so a create-then-delete inside one tick leaves every
+# stat field of the profile dir as it was. The listing is therefore keyed on what
+# ``_iter_named_profile_dirs`` actually decides by (each entry's identity markers and tombstone,
+# present or not), and a parsed ``profile.yaml`` on the file's bytes: the read is cheap, the
+# YAML parse is the cost the cache avoids.
+_NAMED_DIRS_CACHE: dict[str, tuple[tuple, list]] = {}
+_PROFILE_META_CACHE: dict[str, tuple[bytes, object]] = {}
+
+
+def _stat_key(stat):
+    return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+
+
+def _lstat_key(path):
+    try:
+        stat = os.lstat(path)
+    except OSError:
+        return None
+    return (stat.st_mode, *_stat_key(stat))
+
+
+def _named_profile_dirs():
+    from hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
+    from hermes_constants import _PROFILE_IDENTITY_MARKERS, profile_tombstone_path
+    profiles_root = _get_profiles_root()
+    try:
+        with os.scandir(profiles_root) as entries:
+            rows = []
+            for entry in entries:
+                # Presence (not just timestamps) of every marker ``named_profile_has_identity``
+                # checks, and of the tombstone ``named_profile_is_deleted`` checks: one lstat each.
+                markers = tuple(_lstat_key(os.path.join(entry.path, marker))
+                                for marker in _PROFILE_IDENTITY_MARKERS)
+                tombstone = os.path.exists(profile_tombstone_path(Path(entry.path)))
+                rows.append((entry.name, _stat_key(entry.stat()), markers, tombstone))
+            signature = (_stat_key(os.stat(profiles_root)), tuple(sorted(rows)))
+    except OSError:
+        signature = None
+    cached = _NAMED_DIRS_CACHE.get(str(profiles_root))
+    if signature is not None and cached and cached[0] == signature:
+        return cached[1]
+    try:
+        targets = _iter_named_profile_dirs()
+    except OSError as exc:
+        # An unreadable ``profiles/`` drops the siblings, never the authority's own roster.
+        logger.warning('profiles.list: cannot list %s: %s', profiles_root, exc)
+        return []
+    if signature is not None:
+        _NAMED_DIRS_CACHE[str(profiles_root)] = (signature, targets)
+    return targets
+
+
+_ASSET_EXTS = ('png', 'jpg', 'webp')
+
+
+def _has_avatar(home):
+    """Cheap existence flag so a roster paint skips a ``get_asset`` probe per profile."""
+    return any((home / 'assets' / f'avatar.{ext}').is_file() for ext in _ASSET_EXTS)
+
+
+def _ui_meta_revisions(meta):
+    """``_ui_meta_revisions`` from a parsed profile.yaml: str keys, non-bool ints, floor 0.
+
+    Always present (``{}`` when the profile never wrote one) so a client can feature-detect
+    gateway-owned CAS instead of reading a missing field as revision zero.
+    """
+    revisions = meta.get('_ui_meta_revisions') if isinstance(meta, dict) else None
+    return {str(k): max(0, v) for k, v in revisions.items()
+            if type(v) is int} if isinstance(revisions, dict) else {}
+
+
+def _discovered_profile_meta(name, meta_path):
+    """A sibling's parsed ``profile.yaml``, or ``{}``. One unreadable file (a legacy code page,
+    bad YAML, a permission error) degrades that row to basic metadata; it never fails the roster."""
+    import hermes_yaml as yaml
+    try:
+        raw = meta_path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return {}
+    except OSError as exc:
+        logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        return {}
+    cached = _PROFILE_META_CACHE.get(str(meta_path))
+    if cached and cached[0] == raw:
+        return cached[1]
+    try:
+        meta = yaml.safe_load(raw.decode('utf-8-sig'))
+    except (ValueError, yaml.YAMLError) as exc:
+        logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        meta = {}
+    _PROFILE_META_CACHE[str(meta_path)] = (raw, meta)
+    return meta

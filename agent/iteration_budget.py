@@ -23,8 +23,9 @@ def normalize_budget_warning_ratio(value) -> float | None:
 
 
 class IterationBudget:
-    """Thread-safe iteration counter; ``execute_code`` (programmatic tool calling)
-    iterations are refunded via :meth:`refund` so they don't eat into the budget."""
+    """Thread-safe per-turn iteration counter. Every :meth:`refund` pairs with an
+    ``api_call_count`` decrement (see ``_refund_api_call``): the loop stops on that count, so a
+    budget-only refund would only make ``used`` (budget checkpoints, exhaustion copy) lag it."""
 
     def __init__(self, max_total: int):
         self.max_total = max_total
@@ -40,7 +41,7 @@ class IterationBudget:
             return True
 
     def refund(self) -> None:
-        """Give back one iteration (e.g. for execute_code turns)."""
+        """Give back one iteration (a pass that never reached the provider, or a re-issued one)."""
         with self._lock:
             if self._used > 0:
                 self._used -= 1

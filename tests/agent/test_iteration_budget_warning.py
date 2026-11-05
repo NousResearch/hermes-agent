@@ -58,3 +58,53 @@ def test_checkpoint_rearms_per_turn_without_changing_budget_or_durable_rows(
             assert not agent.iteration_budget.consume()
     finally:
         agent._session_db.close()
+
+
+def test_execute_code_rounds_reach_the_checkpoint_before_the_hard_stop(monkeypatch):
+    """The loop stops on the API-call count, so the budget the checkpoint reads must count
+    every call too: an execute_code-only turn is warned before the limit ends it."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    import model_tools
+    from run_agent import AIAgent
+    from tests.agent.test_run_agent import _mock_response
+
+    schema = {"name": "execute_code", "description": "run code",
+              "parameters": {"type": "object", "properties": {}, "required": []}}
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[{"type": "function", "function": schema}]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
+                        model="test/model", max_iterations=4, quiet_mode=True,
+                        skip_context_files=True, skip_memory=True)
+    agent.client = MagicMock()
+    agent._disable_streaming = True
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.budget_warning_ratio = 0.5
+    monkeypatch.setattr(model_tools, "handle_function_call", lambda *a, **k: "ran")
+
+    requests = []
+
+    def call(kw):
+        requests.append(deepcopy(kw["messages"]))  # as sent: later in-place edits don't count
+        if len(requests) > agent.max_iterations:
+            return _mock_response(content="summary")
+        tool_call = SimpleNamespace(id=f"c{len(requests)}", type="function",
+                                    function=SimpleNamespace(name="execute_code", arguments="{}"))
+        return _mock_response(content=None, finish_reason="tool_calls", tool_calls=[tool_call])
+
+    agent._interruptible_api_call = call
+    result = agent.run_conversation("batch the work in code")
+
+    assert result["api_calls"] == agent.max_iterations  # the hard stop is unchanged
+    assert any(
+        "iteration budget checkpoint" in str(m.get("content"))
+        for request in requests[: agent.max_iterations] for m in request
+    )

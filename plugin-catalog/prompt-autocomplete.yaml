@@ -1,25 +1,24 @@
 name: prompt-autocomplete
 repo: https://github.com/bystac/hermes-prompt-autocomplete
-sha: ca3cd877d60b83e3ad519a30d2089c4b614bfb74
-title: Fast Prompt Autocomplete (Implied LTR/RTL)
-description: 'Inline sentence autocomplete for the Hermes Desktop prompt composer: a suggestion bar above the input,
-  accepted with the arrow that matches the language you are already typing (English ArrowRight, Hebrew/Arabic
-  ArrowLeft), Ctrl+Arrow for one word, Tab for the full line. Three tiers — a <1ms main-thread matcher over builtin
-  English/Hebrew phrases that always runs, a WebWorker prefix/N-gram trie seeded from the user''s own prompt history,
-  and a fast small-model continuation through agent.plugin_llm.PluginLlm (max_tokens=10). Zero editor DOM mutation on
-  keystrokes: suggestions render in COMPOSER_AREAS.top and are committed via host.composer.setDraft. Disclosure —
-  reads up to 400 recent user prompt phrases from the active profile''s state.db via hermes_state.SessionDB for local
-  matching only, and sends the last 180 characters of the current draft line to the user''s configured LLM provider
-  when no local match is found; no telemetry, no self-updater, never reads .env or credentials. Desktop-only, plugin
-  SDK surface only (COMPOSER_AREAS.top, STATUSBAR_AREAS.right, host.composer.setDraft, ctx.rest, ctx.storage), no
-  tools, hooks, middleware or env vars.'
+sha: 7b0ffb16ccbf4466ba5b7ab176c77ba33d2db7ad
+title: Inline Prompt Autocomplete
+description: 'Inline sentence completion for the Hermes Desktop prompt composer: the bar above the input finishes the sentence
+  you are already typing, and the key that accepts it is the arrow for your language — ArrowRight in English, ArrowLeft in
+  Hebrew/Arabic, Ctrl+Arrow for one word, Tab for the whole line, no toggle to flip. Builtin English and Hebrew phrases match
+  on the main thread in under a millisecond, a WebWorker trie refines the match from your own prompt history, and a novel
+  prefix falls back to a small model through agent.plugin_llm.PluginLlm (max_tokens=10). The editor DOM is never mutated:
+  the bar renders in COMPOSER_AREAS.top and acceptance commits through host.composer.setDraft. Disclosure: reads up to 400
+  recent prompt phrases from the active profile''s state.db via hermes_state.SessionDB for local matching only, and sends the
+  last 180 characters of the current draft line to your configured LLM provider when no local match is found; no telemetry,
+  no self-updater, never reads .env or credentials. Desktop-only, plugin SDK surface only (COMPOSER_AREAS.top,
+  STATUSBAR_AREAS.right, host.composer.setDraft, ctx.rest, ctx.storage), no tools, hooks, middleware or env vars.'
 maintainer: bystac
 tier: community
 category: desktop
 requires_hermes: ">=0.21.0"
 version: "2.0.1"
 docs_url: https://github.com/bystac/hermes-prompt-autocomplete#readme
-image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/ca3cd877d60b83e3ad519a30d2089c4b614bfb74/docs/banner.png
+image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/7b0ffb16ccbf4466ba5b7ab176c77ba33d2db7ad/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

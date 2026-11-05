@@ -844,15 +844,75 @@ _THINK_STRIP_PATTERNS = (
 )
 
 
+_MD_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_MD_INLINE_CODE_RE = re.compile(r"(`+)([^`\n]*?)\1")
+
+
+def _split_markdown_code_segments(content: str) -> List[Tuple[str, bool]]:
+    """Split content into ``(text, is_code)`` segments at Markdown code regions: fenced blocks
+    (backtick or tilde fences; the closing fence must be at least as long) and same-line inline
+    code. Literal tool-call/reasoning XML quoted inside them is documentation or examples, not
+    model output, so sanitization must leave it alone (#133845) — the unterminated-tool-call
+    pass otherwise reads a quoted ``<tool_call>`` as a real one and eats everything after it.
+    An unclosed fence runs to end-of-text, matching CommonMark's code-block reading."""
+    segments: List[Tuple[str, bool]] = []
+    prose: List[str] = []
+    fence_char, fence_len, fence_lines = "", 0, []
+    fence_close_re = None
+
+    def _flush_prose() -> None:
+        if prose:
+            segments.append(("".join(prose), False))
+            prose.clear()
+
+    for line in content.splitlines(keepends=True):
+        if fence_char:
+            fence_lines.append(line)
+            if fence_close_re.match(line.rstrip("\r\n")):
+                segments.append(("".join(fence_lines), True))
+                fence_char, fence_len, fence_lines, fence_close_re = "", 0, [], None
+            continue
+        opener = _MD_FENCE_OPEN_RE.match(line)
+        if opener:
+            _flush_prose()
+            fence_char, fence_len = opener.group(1)[0], len(opener.group(1))
+            fence_lines, fence_close_re = (
+                [line],
+                re.compile(rf"^ {{0,3}}{fence_char}{{{fence_len},}}[ \t]*$"),
+            )
+            continue
+        # Same-line inline code only: backtick pairs never span lines here, so the strip
+        # patterns keep their line-start anchors inside each prose segment.
+        pos = 0
+        for m in _MD_INLINE_CODE_RE.finditer(line):
+            prose.append(line[pos : m.start()])
+            _flush_prose()
+            segments.append((m.group(0), True))
+            pos = m.end()
+        prose.append(line[pos:])
+    if fence_char:
+        segments.append(("".join(fence_lines), True))
+    _flush_prose()
+    return segments
+
+
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text: closed tag
     pairs, unterminated open tags at a block boundary (mirrors ``gateway/stream_consumer.py``),
     stray orphan tags (all case-insensitive variants), and standalone tool-call XML blocks some
-    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive."""
+    open models emit; ``<function>`` is boundary- and ``name=``-gated so prose mentions survive.
+    Markdown code regions (fences and inline code) are passed through verbatim: a quoted
+    ``<tool_call>`` in an example is user-visible text, not a leak (#133845)."""
     content = _flatten_content_text(content) if content else ""
-    for pattern in _THINK_STRIP_PATTERNS if content else ():
-        content = pattern.sub('', content)
-    return content
+    if not content:
+        return ""
+    stripped: List[str] = []
+    for segment, is_code in _split_markdown_code_segments(content):
+        if not is_code:
+            for pattern in _THINK_STRIP_PATTERNS:
+                segment = pattern.sub("", segment)
+        stripped.append(segment)
+    return "".join(stripped)
 
 
 def sync_credential_pool_entry_id(agent) -> None:

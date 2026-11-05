@@ -11,7 +11,7 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
-from hermes_state_holders import read_only_db_uri
+from persistence_assembly import open_store_admin
 
 
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
@@ -278,44 +278,20 @@ def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
 
 
 def _session_count(state_db_path: Path):
-    import sqlite3
-    # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    conn = sqlite3.connect(read_only_db_uri(state_db_path), uri=True)
-    try:
-        return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    finally:
-        conn.close()
-
-
-# Above this the snapshot copy a held store needs costs more than the probe is worth; --fix still probes.
-_WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
+    # Read-only: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
+    return open_store_admin(state_db_path).session_row_count()
 
 
 def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
-    that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
+    that probe is the second-writer class (#103339), so the admin probes a read-only snapshot instead; a quiet
     store is probed in place. Returns the failure reason, or None when healthy or skipped."""
-    from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
-    if not _live_writer_holds_db(state_db_path):
-        return _db_opens_cleanly(state_db_path)
-    if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
-        check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
-                   "(run 'hermes doctor --fix' to probe it)")
+    from persistence.core.admin import WRITE_PROBE_SKIPPED
+    reason = open_store_admin(state_db_path).write_health_reason(should_fix=should_fix)
+    if reason == WRITE_PROBE_SKIPPED:
+        check_info(reason)
         return None
-    import sqlite3
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:
-        snapshot = Path(tmp) / "state.db"
-        src = sqlite3.connect(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
-        try:
-            dest = sqlite3.connect(str(snapshot))
-            try:
-                src.backup(dest)
-            finally:
-                dest.close()
-        finally:
-            src.close()
-        return _db_opens_cleanly(snapshot)
+    return reason
 
 
 # Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
@@ -349,8 +325,7 @@ def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: st
     ok_label, not_fixed_label, failed_issue, fix_hint = _STATE_DB_REPAIRS[kind]
     if not should_fix:
         return f.issues.append(fix_hint)
-    from hermes_state_repair import repair_state_db_schema
-    report = repair_state_db_schema(state_db_path)
+    report = open_store_admin(state_db_path, read_only=False).repair_schema()
     if not report.get("repaired"):
         check_warn(not_fixed_label, f"({report.get('error')}; backup: {report.get('backup_path')})")
         return f.issues.append(failed_issue)
@@ -366,8 +341,7 @@ def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: st
 
 def _report_structural_damage(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str, reason) -> bool:
     """True (and reported/repaired) when the canonical b-tree, not just the FTS index, is damaged."""
-    from hermes_state_repair import state_db_has_structural_damage
-    if not state_db_has_structural_damage(state_db_path):
+    if not open_store_admin(state_db_path).has_structural_damage():
         return False
     check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
                "not the FTS index)", f"({reason})")
@@ -375,12 +349,16 @@ def _report_structural_damage(f: Finding, should_fix: bool, state_db_path: Path,
     return True
 
 
+# A malformed schema or disk image: the corruption the schema repair path handles.
+_MALFORMED_DB_MARKERS = ("malformed database schema", "database disk image is malformed")
+
+
 def _classify_unreadable_state_db(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str, exc: Exception) -> None:
-    """Structural damage first; only then schema repair. Avoids SessionDB auto-repair side effects."""
-    from hermes_state import is_malformed_db_error
+    """Structural damage first; only then schema repair. Avoids store auto-repair side effects."""
+    from persistence import CorruptStoreError
     if _report_structural_damage(f, should_fix, state_db_path, _DHH, exc):
         return
-    if not is_malformed_db_error(exc):
+    if not (isinstance(exc, CorruptStoreError) and any(m in str(exc).lower() for m in _MALFORMED_DB_MARKERS)):
         return check_warn(f"{_DHH}/state.db exists but has issues: {exc}")
     # sqlite_master itself is malformed (e.g. duplicate messages_fts): every statement fails before it runs,
     # so this is NOT a plain FTS rebuild — repair sqlite_master in place (backup first).
@@ -396,7 +374,7 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
         _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
     except Exception as e:
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
-    from hermes_state_repair import HealthCheckUnavailable
+    from persistence.core.admin import HealthCheckUnavailable
     if isinstance(_write_reason, HealthCheckUnavailable):
         return check_warn(f"{_DHH}/state.db write-health probe could not run", f"({_write_reason})")
     if _write_reason is not None:
@@ -410,9 +388,8 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     """Health/stats snapshot: strictly read-only (mode=ro) so it is safe against a live DB held by
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
-        from hermes_state_dbfile import collect_state_db_stats, count_db_holders
-        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
-                                      host_note=host_gateway_note())
+        admin = open_store_admin(state_db_path)
+        rows = _render_state_db_stats(admin.stats(), holders=admin.holder_count(), host_note=host_gateway_note())
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
@@ -425,7 +402,7 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
 
 def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
     """WAL file size (unbounded growth indicates missed checkpoints)."""
-    wal_path = state_db_path.parent / "state.db-wal"
+    wal_path = state_db_path.with_name(f"{state_db_path.name}-wal")
     wal_size = lambda: wal_path.stat().st_size if wal_path.exists() else 0
     with warn_on_error(""):
         size = wal_size()
@@ -434,13 +411,14 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
             # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
             # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
-            from hermes_state_repair import _exclusive_repair_db_guard, _live_writer_holds_db
+            from persistence import StoreContention
+            admin = open_store_admin(state_db_path)
             title = f"WAL file is large ({size // (1024*1024)} MB)"
             _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
                      "run 'hermes doctor --fix' to checkpoint)")
             # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
             # writer as fact.
-            if _live_writer_holds_db(state_db_path):
+            if admin.live_writer_holds():
                 # A large WAL is normal while Desktop or the gateway is running; a bare "run --fix" here sent
                 # users straight into the second-writer trap (#110054).
                 check_warn(title, "(normal while Desktop or the gateway is running, or state.db cannot be "
@@ -450,12 +428,17 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             if not should_fix:
                 return f.issues.append(
                     "Large WAL file — stop the profile's gateway, then run 'hermes doctor --fix' to checkpoint")
-            with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
-                if guard is None:
-                    check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",
-                               f"({guard_error}; stop the profile's gateway and re-run 'hermes doctor --fix')")
-                    return f.issues.append(_SKIP)
-                guard.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            held = False
+            try:
+                with admin.exclusive_repair_guard() as guard:
+                    held = True
+                    guard.wal_checkpoint_passive()
+            except StoreContention as guard_error:
+                if held:
+                    raise
+                check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",
+                           f"({guard_error}; stop the profile's gateway and re-run 'hermes doctor --fix')")
+                return f.issues.append(_SKIP)
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")
             f.fixed += 1
         elif size > 10 * 1024 * 1024:  # 10 MB
@@ -467,9 +450,8 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
     refused while they live, and the current inode has no holders, so the plain holder count says
     "0 holding the DB open" beside a green state.db line — the opposite of the truth."""
     from hermes_constants import profile_cli_selector
-    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
-    from hermes_state_holders import describe_holder_pid
-    pids = list(dict.fromkeys(pid for pid, _ in iter_deleted_sqlite_sidecar_holders(state_db_path)))
+    from sqlite_support import describe_holder_pid
+    pids = list(dict.fromkeys(pid for pid, _ in open_store_admin(state_db_path).deleted_sidecar_holders()))
     if not pids:
         return False
     rendered = ", ".join(describe_holder_pid(pid) for pid in pids)
@@ -486,7 +468,12 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
-    state_db_path = HERMES_HOME / "state.db"
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import profile_scope, store_location
+    state_db_path = store_location(profile_scope(home=HERMES_HOME))
+    # Nothing to check on a backend without a store file or the physical admin capability.
+    if state_db_path is None or isinstance(open_store_admin(state_db_path), AdminUnsupported):
+        return
     # A read-only connect on the new generation is itself another opener, so nothing below may run.
     if _retired_wal_holders(f, state_db_path, _DHH):
         return

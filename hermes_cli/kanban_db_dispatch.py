@@ -2673,22 +2673,22 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
     Best-effort: the durable gate is ``state_meta`` in
-    ``retag_kanban_worker_sessions``; the in-process set avoids reopening
+    ``retag_worker_sessions``; the in-process set avoids reopening
     state.db on every spawn. A tick must never fail because a session DB was
     busy or missing.
     """
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from persistence_assembly import open_persistence, profile_scope
 
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
+        # Inside the gateway the dispatcher shares the process's store for the profile, not one more
+        # writer connection on the same state.db (#100896).
+        store = open_persistence(profile_scope())
         try:
-            db.retag_kanban_worker_sessions(workspaces_root_path)
+            store.sessions.retag_worker_sessions(workspaces_root_path)
         finally:
-            release_or_close(db)
+            store.close()
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)

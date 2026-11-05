@@ -16,18 +16,35 @@ import stat
 import sys
 import tempfile
 import zipfile
-from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from hermes_state_holders import read_only_db_uri
-from hermes_cli.backup_sqlite import _safe_copy_db
+# Stale-module bridge: this module binds ``utils.mkstemp_beside`` at import time, so a fresh
+# import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
+# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
+from persistence.core.admin import AdminUnsupported
+from persistence_assembly import open_store_admin
+from sqlite_support import read_only_db_uri
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     mkstemp_beside,
 )
 
 logger = logging.getLogger(__name__)
+
+# The database files the storage backend owns, by the names they keep in backups and snapshots: each profile's
+# state.db and the root shared-state.db. Their copies, checks and restores go through the store admin.
+_STORE_FILE_NAMES = frozenset({"state.db", "shared-state.db"})
+
+
+def _is_store_file(path: Path) -> bool:
+    """Whether *path* names a file the storage backend owns, as given or once resolved."""
+    return path.name in _STORE_FILE_NAMES or path.resolve().name in _STORE_FILE_NAMES
+
 
 def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
@@ -162,8 +179,12 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
 
     Returns ``False``, without touching *dst*, when *src* fails the SQLite
     integrity check, when the runtime owns the profile, or when a canonical
-    ``state.db`` epoch floor cannot be proven.
+    ``state.db`` epoch floor cannot be proven. A store file is restored by its
+    store admin, which carries the runtime-epoch floor.
     """
+    if _is_store_file(dst):
+        admin = open_store_admin(dst, read_only=False)
+        return not isinstance(admin, AdminUnsupported) and admin.restore_from(src)
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
     from hermes_cli.backup import verify_sqlite_integrity
 
@@ -176,66 +197,20 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         return False
     try:
         with exclusive_maintenance([dst.absolute().parent, dst.resolve().parent]):
-            with _restore_epoch_source(src, dst) as prepared:
-                return _restore_db_pages(prepared, dst)
+            return _restore_db_pages(src, dst)
     except (OwnershipConflict, OSError, sqlite3.Error) as exc:
         logger.error("%s", exc)
         return False
 
 
-def _restore_epoch(path: Path) -> int:
-    if not path.exists():
-        return 0
-    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
-            return 0
-        row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
-        return int(row[0]) if row else 0
-
-
 def _restore_destination_epoch(dst: Path) -> int:
-    try:
-        return _restore_epoch(dst)
-    except (OSError, sqlite3.Error, ValueError) as exc:
-        raise OSError(
-            f"Cannot read the canonical runtime epoch at {dst}; refusing in-place restore. "
-            "Use `hermes sessions recover --source <snapshot> --output <separate-path>` "
-            "to salvage transcripts into a separate output."
-        ) from exc
-
-
-@contextmanager
-def _restore_epoch_source(src: Path, dst: Path):
-    """Stage an epoch floor into the image BEFORE publishing it atomically.
-
-    Updating the destination after backup() would leave a crash window that
-    reuses an older worker epoch. Never modify the user's source snapshot.
-    Full restores retain all admissions/worker receipts; normal startup advances
-    this floor and reconciles started work to unknown, not replayable queued work.
-    An unreadable destination cannot prove its epoch floor: use transcript salvage
-    into a separate output rather than silently restoring with a recycled epoch.
-    """
-    if dst.name != 'state.db' and dst.resolve().name != 'state.db':
-        yield src
-        return
-    floor = _restore_destination_epoch(dst)
-    if floor <= _restore_epoch(src):
-        yield src
-        return
-    with tempfile.TemporaryDirectory(prefix='.restore-epoch-', dir=dst.parent) as work:
-        prepared = Path(work) / 'state.db'
-        if not _safe_copy_db(src, prepared):
-            raise OSError('Unable to stage a restore with a safe runtime epoch')
-        with closing(sqlite3.connect(prepared)) as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
-                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
-            conn.execute("""INSERT INTO runtime_epoch VALUES(1,?, 'offline-restore')
-                ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,
-                instance_id=excluded.instance_id""", (floor,))
-            conn.commit()
-        prepared.chmod(src.stat().st_mode)
-        yield prepared
+    """The runtime epoch a restore over the store file *dst* keeps, read by its store admin: 0 for a missing file or
+    epoch row; ``OSError`` pointing at transcript salvage when it cannot be read."""
+    admin = open_store_admin(dst)
+    if isinstance(admin, AdminUnsupported):
+        raise OSError(f"{admin.capability} is unsupported by the {admin.backend_kind} storage backend; "
+                      f"refusing in-place restore of {dst}")
+    return admin.restore_epoch_floor()
 
 
 def _restore_db_pages(src: Path, dst: Path) -> bool:
@@ -265,7 +240,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
     Callers go through ``_safe_restore_db``, which validates *src* and holds
-    the maintenance reservation and epoch floor around this publication.
+    the maintenance reservation around this publication.
     """
     dst_conn: Optional[sqlite3.Connection] = None
     try:
@@ -549,18 +524,8 @@ def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     """
     if not path.is_file():
         return None
-    try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-        messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        return int(sessions), int(messages)
-    except (sqlite3.Error, TypeError, ValueError):
-        return None
-    finally:
-        conn.close()
+    admin = open_store_admin(path)
+    return None if isinstance(admin, AdminUnsupported) else admin.session_row_counts()
 
 
 def _import_db_member(

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sqlite3
 import time
 from itertools import islice
 from pathlib import Path
@@ -90,32 +89,35 @@ _first_session_at: dict[str, float] = {}
 def _first_session_started_at(home: Path | None = None) -> float | None:
     """Epoch of the profile's first session; ``now`` when it has none yet (a brand-new install).
 
-    Raises ``sqlite3.Error`` when state.db exists but cannot be read.
+    Raises one of the store failures (``persistence.core.errors.STORE_FAILURES``) when state.db exists but cannot
+    be read.
     """
+    from persistence_assembly import open_persistence_reader
+
     home = home or get_hermes_home()
     if str(home) in _first_session_at:
         return _first_session_at[str(home)]
     database = home / "state.db"
     if not database.exists():
         return time.time()
-    with contextlib.closing(
-        sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=1)
-    ) as connection:
-        row = connection.execute("SELECT MIN(started_at) FROM sessions").fetchone()
-    if not row or row[0] is None:
+    with open_persistence_reader(database, patience_s=1) as store:
+        first = store.sessions.first_session_started_at()
+    if first is None:
         return time.time()
-    _first_session_at[str(home)] = float(row[0])
-    return _first_session_at[str(home)]
+    _first_session_at[str(home)] = first
+    return first
 
 
 def install_age_bucket(home: Path | None = None) -> str:
     """How long ago the profile's first-ever session started, bucketed; ``unknown`` if unreadable.
     ``home`` defaults to the bound profile; callers off the turn thread must pass theirs."""
+    from persistence.core.errors import STORE_FAILURES
+
     from .shared_metrics_fields import install_age_bucket as bucket
 
     try:
         first = _first_session_started_at(home)
-    except sqlite3.Error:
+    except STORE_FAILURES:
         return "unknown"
     return bucket(time.time() - first)
 

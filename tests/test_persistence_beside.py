@@ -4,6 +4,8 @@ from contextlib import ExitStack
 import pytest
 
 import persistence_assembly
+from hermes_constants import get_hermes_home
+from persistence_assembly import open_persistence, profile_scope
 from persistence_beside import close_beside, open_beside, open_reader_beside
 
 
@@ -44,3 +46,15 @@ def test_close_beside_keeps_a_failed_close_to_itself():
     close_beside(handle)
     close_beside(None)
     assert handle.closed == 1
+
+
+def test_the_label_reader_reads_nothing_when_its_handle_cannot_open(failing_opens):
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+
+    # The name bound at import is the real open: the store file exists before the patched reader fails.
+    open_persistence(profile_scope(home=get_hermes_home()), eager=True).close()
+    store = GatewaySessionStore(connection=object())
+    assert store._db() is None and store.persistence is None
+    assert store.list_sessions_rich(limit=5) is None
+    assert store.get_session("any") is None
+    store.close_reader()

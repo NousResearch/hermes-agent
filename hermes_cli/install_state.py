@@ -16,7 +16,6 @@ import enum
 import json
 import os
 import re
-import sqlite3
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
@@ -323,6 +322,8 @@ def _launcher_root() -> Iterable[Path]:
 
 
 def root_evidence(root: Path, places: Places) -> Finding | None:
+    from persistence.core.errors import STORE_FAILURES
+
     if _is_protected(root, places):
         return Finding(Evidence.UNREADABLE, root)
     home = _Root(root, places.protected)
@@ -330,7 +331,7 @@ def root_evidence(root: Path, places: Places) -> Finding | None:
         try:
             if check(home):
                 return Finding(evidence, root)
-        except (OSError, ValueError, UnicodeError, sqlite3.Error):
+        except (OSError, ValueError, UnicodeError, *STORE_FAILURES):
             return Finding(Evidence.UNREADABLE, root)
     return None
 
@@ -430,25 +431,23 @@ def _provider_login(home: _Root) -> bool:
 
 
 _DB_BUSY_SECONDS = 1.0
-_DB_BUSY_ERRORS = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED"})
 
 
 def _messages(home: _Root) -> bool:
+    from persistence.core.errors import StoreContention
+    from persistence_assembly import open_persistence_reader
+
     db = home.file("state.db")
     if not db.is_file():
         return False
-    # Read-only URI, never the state registry: that opens a writer and migrates a schema we do not own.
+    # The read-only door, never a writer: that would migrate a schema we do not own.
     try:
-        with contextlib.closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=_DB_BUSY_SECONDS)) as conn:
-            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None:
-                return False
-            return conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
-    except sqlite3.OperationalError as exc:
-        # Still locked after sqlite's own retries: a first boot is creating or healing this database
+        with open_persistence_reader(db, patience_s=_DB_BUSY_SECONDS) as store:
+            return store.messages.has_any_message()
+    except StoreContention:
+        # Still locked after the reader's wait: a first boot is creating or healing this database
         # right now. A lock is not a message, and reading it as "unreadable" would cost a new user the trial.
-        if getattr(exc, "sqlite_errorname", "") in _DB_BUSY_ERRORS:
-            return False
-        raise
+        return False
 
 
 CHECKS: tuple[tuple[Evidence, Callable[[_Root], bool]], ...] = (

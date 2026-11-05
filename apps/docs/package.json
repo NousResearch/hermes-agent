@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "predev": "node scripts/prebuild.mjs",
-    "dev": "next dev --webpack",
+    "dev": "next dev",
     "prebuild": "node scripts/prebuild.mjs",
-    "build": "next build --webpack && node scripts/postbuild.mjs",
-    "start": "next dev --webpack",
+    "build": "next build && node scripts/postbuild.mjs",
+    "start": "next dev",
     "typecheck": "fumadocs-mdx && tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks content/en"

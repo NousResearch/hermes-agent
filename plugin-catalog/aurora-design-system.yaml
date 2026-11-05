@@ -1,17 +1,17 @@
 name: aurora-design-system
 repo: https://github.com/Ntizar/hermes-aurora
-sha: 2fcfbc2b7b61a823090d8fb86963d1371a4d4a91
+sha: dcf5b271e76bb541e7822b029b6de08fa2244582
 title: Aurora Design System
-description: 'Two offline tools plus four skills that make a Hermes agent build real web UI with the Aurora CSS design system: aurora_buscar returns the family, the pack and the real markup of any of 2,223 documented objects from a bundled census; aurora_validar checks a page against that census (invented classes, packs used but not linked, gradients, !important, hand-written colours, duplicate headings, missing attribution) and returns failures and warnings in milliseconds. No network, no subprocess, no writes, no hooks.'
+description: 'Two offline tools plus four skills that make a Hermes agent build real web UI with the Aurora CSS design system: aurora_search returns the family, the pack and the real markup of any of 2,223 documented objects from a bundled census; aurora_validate checks a page against that census (invented classes, packs used but not linked, gradients, !important, hand-written colours, duplicate headings, missing attribution) and returns failures and warnings in milliseconds. No network, no subprocess, no writes, no hooks.'
 maintainer: Ntizar
 tier: community
 category: general
-version: "1.1.0"
+version: "1.2.0"
 docs_url: https://github.com/Ntizar/hermes-aurora
-image: https://raw.githubusercontent.com/Ntizar/hermes-aurora/2fcfbc2b7b61a823090d8fb86963d1371a4d4a91/docs/screenshots/landing.png
+image: https://raw.githubusercontent.com/Ntizar/hermes-aurora/dcf5b271e76bb541e7822b029b6de08fa2244582/docs/screenshots/landing.png
 platforms: []
 capabilities:
-  provides_tools: [aurora_buscar, aurora_validar]
+  provides_tools: [aurora_search, aurora_validate]
   provides_hooks: []
   provides_middleware: []
   requires_env: []

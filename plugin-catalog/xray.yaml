@@ -1,9 +1,9 @@
 name: xray
 repo: https://github.com/cipoklean/hermes-xray
-sha: 85b0e95e68472bd1a6dd582458a2f575ab7d9d2d
+sha: 21ca5f6fb5e46fb6d1a0ec2e179d055b96c69f52
 subdir: xray
 title: "Plugin X-Ray"
-description: "Sets traps for plugins instead of watching them. hermes xray detonate runs a plugin in a throwaway sandbox full of honeytokens, fuzzes its tools, fires its hooks and replays it at +30 and +90 days to catch time-bombs, then gives a RED/AMBER/GREEN verdict with file:line proof, a per-version behaviour diff and a drafted disclosure line. Opt-in live bait flags any installed plugin that reads a decoy credential file and can route its next tool call to Hermes' approval prompt. Disclosure — spawns child Python processes to detonate plugins (fake HOME, real keys stripped, network egress and process spawns blocked); runs git clone when you detonate a remote repo; reads installed plugins' source dirs to attribute events; bait plant (opt-in) writes decoy files only into empty paths under your home and bait remove deletes only unchanged files it wrote; enforce (off by default) uses pre_tool_call approve; no LLM calls, no telemetry, never reads real credentials or patches Hermes core."
+description: "Sets traps for plugins instead of watching them. hermes xray detonate runs a plugin in a throwaway child process with a fake home full of honeytokens, fuzzes its tools, fires its hooks and replays it at +30 and +90 days to catch time-bombs, then gives a RED/AMBER/GREEN verdict with file:line proof, a per-version behaviour diff and a drafted disclosure line. Opt-in live bait flags any installed plugin that reads a decoy credential file and can route its next tool call to Hermes' approval prompt. Disclosure — spawns child Python processes to detonate plugins; the child runs as you (fake HOME, real keys stripped) and is not an OS sandbox, so its egress and spawn blocking (Python audit hooks, incl. fork and fork_exec) is a tripwire native code can bypass; reads of your real credential stores are refused and make the verdict RED; runs git clone when you detonate a remote repo; reads installed plugins' source dirs to attribute events; bait plant (opt-in) writes decoy files only into empty default credential paths of the AWS CLI/SDKs, git credential store, ssh and Solana CLI, so those tools use the fake values until bait remove, which deletes only unchanged files it wrote; enforce (off by default) uses pre_tool_call approve; no LLM calls, no telemetry; X-Ray itself never reads real credentials or patches Hermes core."
 maintainer: cipoklean
 tier: community
 category: tools
@@ -13,7 +13,7 @@ docs_url: https://github.com/cipoklean/hermes-xray#readme
 readme: true
 platforms: []
 known_issues:
-  - "Detonation sandboxes by environment, not by a VM: the plugin under test really runs in a child process. Detonate unknown code on a machine you don't mind"
+  - "Detonation is not an OS sandbox: the plugin under test really runs in a child process as you and can reach real files by absolute path; only credential-store reads are refused. Detonate unknown code on a machine you don't mind"
   - "Python audit hooks see Python-level actions only; native code can act below them (any ctypes load is reported). Env-variable theft is caught when the value leaves the process, not when it is read"
   - "Desktop plugin.js code is not detonated (Python side only)"
 capabilities:

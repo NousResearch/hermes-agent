@@ -58,7 +58,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
-from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration, undo_abandoned_registration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -1022,18 +1022,17 @@ del _row
 
 
 def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
+    """No-op a registrar once its load timed out, and undo one that was running when that happened (#108139, #149326)."""
     @wraps(method)
     def wrapped(self, *args, **kwargs):
         if getattr(self, "_load_abandoned", False):
-            logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
+            logger.warning("Plugin '%s' called %s() after its load timed out; ignored",
+                           self.manifest.name, method.__name__)
             return None
-        return method(self, *args, **kwargs)
+        handle = method(self, *args, **kwargs)
+        if getattr(self, "_load_abandoned", False):
+            return undo_abandoned_registration(self, method.__name__)
+        return handle
 
     return wrapped
 

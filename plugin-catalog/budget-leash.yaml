@@ -1,0 +1,16 @@
+name: budget-leash
+repo: https://github.com/jusst01/budget-leash
+sha: f301d040184c95c3a4a2d8c1387517086dc50470
+description: "Hard budget enforcement for Hermes sessions. Tracks estimated model spend (token usage x per-model prices) and tool-call counts against a per-session cap and a persistent per-day cap, and blocks tool calls via pre_tool_call once a cap is exhausted (fail-closed), so unattended agents cannot run up unbounded cost; warns at 80% of a cap via context injection, keeps a day-ledger on disk that survives restarts, and writes a per-session JSONL spend report. Disclosure: local code only; reads token-usage metadata from API responses, writes a ledger JSON and per-session JSONL reports under ~/.hermes, opens no network connections and starts no processes; its one deliberate side effect is refusing tool calls after a user-configured cap is exhausted."
+maintainer: jusst
+tier: community
+category: automation
+docs_url: https://github.com/jusst01/budget-leash#readme
+version: "0.1.0"
+requires_hermes: ">=0.22.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_tool_call, post_tool_call, post_api_request, on_session_end]
+  provides_middleware: []
+  requires_env: []

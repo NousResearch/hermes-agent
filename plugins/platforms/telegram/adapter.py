@@ -1026,15 +1026,15 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """
         if chat_id is None or thread_id is None:
             return
-        db = getattr(getattr(self, "_session_store", None), "_db", None)
-        if db is None or not hasattr(db, "delete_telegram_topic_binding"):
+        persistence = getattr(getattr(self, "_session_store", None), "persistence", None)
+        if persistence is None:
             return
         try:
             profile_name = (metadata or {}).get("hermes_profile") or getattr(self, "_hermes_profile_name", None) or "default"
-            removed = db.delete_telegram_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
+            removed = persistence.routing.delete_topic_binding(chat_id=str(chat_id), thread_id=str(thread_id), profile_name=profile_name)
         except Exception:
             logger.debug(
-                "[%s] delete_telegram_topic_binding failed for chat=%s thread=%s — skipping prune",
+                "[%s] delete_topic_binding failed for chat=%s thread=%s — skipping prune",
                 self.name, chat_id, thread_id, exc_info=True)
             return
         if removed:

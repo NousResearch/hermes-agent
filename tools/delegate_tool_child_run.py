@@ -41,11 +41,10 @@ def _reserve_child_transcript(child: Any) -> None:
         # the moment its id is published. The first turn merges the rest of the
         # constructor config in (``AIAgent._ensure_db_session``); the prompt stays unset.
         parent_sid = child._parent_session_id
-        db.create_session(
-            session_id=child.session_id, source="subagent",
-            parent_session_id=parent_sid,
-            model_config={"_delegate_from": parent_sid} if parent_sid else None,
-        )
+        from persistence.conversation.sessions import NewSession
+        child.persistence.sessions.create(NewSession(
+            session_id=child.session_id, source="subagent", parent_session_id=parent_sid,
+            model_config={"_delegate_from": parent_sid} if parent_sid else None))
         child._session_db_reserved = True
     except BaseException:
         # Ownership has transferred, but the child is not attached or published yet.

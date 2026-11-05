@@ -50,18 +50,16 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
+import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import {
   completionErrorText,
   delegateTaskPayloads,
-  isContentPolicyRefusal,
   MAX_STREAM_FLUSH_GAP_MS,
-  replaceTurnWithContentRefused,
   STREAM_DELTA_FLUSH_MS
 } from './utils'
 
@@ -790,47 +788,20 @@ export function useMessageStream({
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
-        // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble (kept the partial text, dropped it if
-        // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead — only
-        // extending the bubble to the partial the agent persisted (#121594).
-        if (state.interrupted) {
-          return {
-            ...state,
-            messages: bindStoppedTurnReceipt(
-              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
-              persistedTurn
-            ),
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            pendingBranchGroup: null,
-            streamId: null,
-            turnStartedAt: null,
-            turnLive: false
-          }
-        }
+        // A cancelled turn or a provider safety-filter refusal collapses the
+        // turn into a fully-formed terminal state instead of the dedupe/merge
+        // below (see terminalCompletionState for the two cases and the WHY).
+        const terminalState = terminalCompletionState(state, {
+          text,
+          occurredAt,
+          persistedTurn,
+          failure,
+          status,
+          failureReason
+        })
 
-        // A provider safety-filter refusal replaces the whole turn with the same
-        // greyed content-refused row stored hydration produces — never a normal
-        // error card beside the untouched user bubble. The live frame is enough;
-        // a reload would only rebuild this same row, so skip the extra hydrate.
-        if (isContentPolicyRefusal(failure, failureReason)) {
-          return {
-            ...state,
-            messages: replaceTurnWithContentRefused(state.messages, occurredAt),
-            adoptedRunningTurn: false,
-            heartbeatSettledStreamId: null,
-            streamId: null,
-            pendingBranchGroup: null,
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            interimBoundaryPending: false,
-            turnStartedAt: null,
-            turnLive: false
-          }
+        if (terminalState) {
+          return terminalState
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null

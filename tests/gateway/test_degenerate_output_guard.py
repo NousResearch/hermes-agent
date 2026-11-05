@@ -16,8 +16,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.delivery import DeliveryRouter, DeliveryTarget, guard_degenerate_output
 from gateway.degenerate_output import (
+    COLLAPSE_MARKER,
     DEFAULT_MAX_DELIVERY_CHARS,
     collapse_degenerate,
     degeneracy_score,
@@ -43,6 +44,15 @@ _PATROL = "Executing the patrol. Invoke the tool. Waiting for result. " * 1200
 
 # A normal report: it repeats a board name a few times (legitimately) and is long enough
 # to exercise the windowed duplicate-gram feature, but carries real information.
+# A readable preamble followed by a looping tail: the shape the collapse exists for.  Unlike a
+# pure loop it HAS salvageable text on both sides, so its collapse carries the marker in the
+# middle and is what the delivery lanes re-run the guard on.
+_PREAMBLE_AND_LOOP = (
+    "Here is the patrol summary I managed to write before the model started looping. "
+    + _NOW_FIN
+    + " Final state: board A has 2 open cards, board B is idle. All tests passed."
+)
+
 _NORMAL_REPORT = """# Patrol report — board watch
 
 ## Board A
@@ -81,6 +91,11 @@ class _PlainAdapter:
     async def send(self, chat_id, content, metadata=None):
         self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
         return {"success": True}
+
+
+def _no_save(content, job_id):
+    """Audit-save stub: an already-collapsed payload must never reach the audit path."""
+    raise AssertionError("an already-collapsed payload must not be audit-saved as an original")
 
 
 def _router(tmp_path, monkeypatch, adapter, config=None):
@@ -187,6 +202,32 @@ class TestCollapse:
         """The collapsed message must fit one platform message."""
         collapsed = collapse_degenerate("x" * 200_000 + _NOW_FIN)
         assert len(collapsed) <= 4000
+
+    def test_collapse_is_idempotent(self):
+        """A second pass over an already-collapsed payload must not shrink it further.
+
+        The cron scheduler collapses the run's final response before composing its delivery,
+        and both delivery lanes then re-run the guard on that same text.  Re-collapsing the
+        result mangled it (a 2,826-char delivery came back as 125 chars): the marker is Chinese
+        prose and a preserved excerpt still ends with a repetitive tail, which a second pass
+        re-detected and cut away.
+        """
+        once = collapse_degenerate(_PREAMBLE_AND_LOOP)
+        assert once != _PREAMBLE_AND_LOOP, "fixture must actually collapse"
+        assert COLLAPSE_MARKER in once
+        assert collapse_degenerate(once) == once, "the gateway guard is not idempotent"
+
+    def test_an_already_collapsed_payload_is_not_re_saved_as_an_original(self):
+        """The reconnect/fallback lanes re-run the delivery guard on collapsed text.
+
+        Passing it through must not audit-save the excerpt as if it were the full original, and
+        must not re-collapse it: the guard chain is idempotent so a replay of the collapsed
+        payload is byte-identical to what already went out.
+        """
+        collapsed = collapse_degenerate(_PREAMBLE_AND_LOOP)
+        guarded, audit_path = guard_degenerate_output(collapsed, "job1", _no_save)
+        assert guarded == collapsed
+        assert audit_path is None, "an already-collapsed payload was re-saved for audit"
 
 
 class TestTruncateForDelivery:

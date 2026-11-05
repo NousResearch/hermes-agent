@@ -571,26 +571,6 @@ def _is_cron_silence_response(text: str) -> bool:
     return is_autonomous_silence_response(text)
 
 
-def _is_degenerate_model_output(text: str) -> bool:
-    """True when a cron final response is runaway repetition rather than content.
-
-    Late import: ``gateway.degenerate_output`` pulls the tokenizer-free n-gram detector, and the
-    cron scheduler is imported by the CLI on every startup — keeping the import inside the call
-    keeps cron's module graph free of delivery-only machinery.
-    """
-    from gateway.degenerate_output import is_degenerate
-
-    return is_degenerate(text)
-
-
-def _collapse_degenerate_model_output(text: str) -> str:
-    """Keep the reader-recognisable head of a degenerate response; drop the looping tail.
-
-    Late import for the same reason as :func:`_is_degenerate_model_output`.
-    """
-    from gateway.degenerate_output import collapse_degenerate
-
-    return collapse_degenerate(text)
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
@@ -3110,18 +3090,13 @@ def _save_compose_deliver(
     # marker). The full original is audit-saved above; only the delivered message collapses.
     # _summarize_cron_failure_for_delivery's failure copy is exempt — it is our own text, not
     # model output, and would trip the detector's duplicate-gram feature on a repeated header.
-    if d.success and _is_degenerate_model_output(final_response):
-        _collapsed = _collapse_degenerate_model_output(final_response)
-        logger.warning(
-            "Job '%s': degenerate model output detected (%d chars) — delivering %d chars",
-            job["id"], len(final_response), len(_collapsed))
-        if _collapsed.strip():
-            final_response = _collapsed
-        else:
-            # No readable text outside the degenerate span: deliver nothing and mark the run a
-            # soft failure (the empty-response branch below) rather than reporting `ok`.
-            d.success = False
-            d.error = "degenerate model output with no readable body (runaway repetition)"
+    if d.success:
+        _original_response = final_response
+        final_response = _guard_degenerate_final_response(final_response, job["id"])
+        if final_response != _original_response:
+            logger.warning(
+                "Job '%s': degenerate model output detected (%d chars) — delivering %d chars",
+                job["id"], len(_original_response), len(final_response))
     if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 
@@ -4426,6 +4401,7 @@ from cron.scheduler_delivery import (
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
+from cron.scheduler_degenerate import guard_degenerate_final_response as _guard_degenerate_final_response
 from cron.scheduler_script import (
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
 )

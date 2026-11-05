@@ -1600,6 +1600,26 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
     delivery_errors.append(note)
 
 
+def _guard_standalone_content(t: _TargetDelivery, content: str) -> str:
+    """Run the SAME outbound guard the live lane runs, before the standalone sender sees the text.
+
+    ``_standalone_send`` hands its payload straight to ``tools.send_message_tool._send_to_platform``
+    instead of going through ``DeliveryRouter._deliver_to_platform``, so without this the fallback
+    lane had neither the degeneracy collapse nor the ``cron.max_delivery_chars`` cap: a 72,000-char
+    degenerate payload reached the wire verbatim whenever the live lane failed (PR 148960 review
+    finding 1). The reconnect ledger replay is fed from here too, and it has no guard of its own.
+
+    Deliberately calls the module-level ``guard_outbound_content`` rather than constructing a
+    ``DeliveryRouter``: tests and embedded callers patch that class, and the guard must not depend
+    on the routing object.
+    """
+    from gateway.delivery import guard_outbound_content, resolve_max_delivery_chars, save_full_output_copy
+    content, _, _ = guard_outbound_content(
+        content, t.job["id"], limit=resolve_max_delivery_chars(t.config),
+        save_full_output=save_full_output_copy)
+    return content
+
+
 def _deliver_standalone(
     t: _TargetDelivery, content: str, media_files: list, target_errors: list, delivery_errors: list,
 ) -> None:
@@ -1611,6 +1631,7 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
+    content = _guard_standalone_content(t, content)
     result, err = _standalone_send(t, content, media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.

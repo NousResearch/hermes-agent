@@ -527,11 +527,30 @@ def collapse_degenerate(
     from an abrupt ending.
 
     Returns the original text unchanged when it is not degenerate, and an
-    empty string when nothing outside the degenerate span was salvageable --
-    the delivery lane treats an empty collapse as a suppression case.
+    empty string when nothing outside the degenerate span was salvageable -- the
+    delivery lane treats an empty collapse as a suppression case.
+
+    Deliberately NOT an excerpt of the original: when repetition covers the whole response
+    there is no readable text to keep, and an excerpt of a pure loop ("NOW FIN. NOW FIN.
+    ...") *is* the runaway repetition, only shorter.  Bounded-and-marked is still verbatim
+    model pathology on the wire, which is the one thing this guard exists to prevent.  The
+    caller decides what the reader gets instead (``gateway.delivery.guard_degenerate_output``
+    sends a marked suppression notice; the cron lane preserves an honest ``no_agent`` log --
+    see ``cron/scheduler_degenerate.py``).
+
+    Idempotent: a payload that already carries :data:`COLLAPSE_MARKER` has been through this
+    collapse once already, so it is returned unchanged.  The cron scheduler collapses a run's
+    final response *before* composing its delivery, and both delivery lanes then re-run the
+    guard on that already-collapsed text; re-collapsing it would mangle the result -- the
+    marker is Chinese prose and a preserved excerpt still ends with a repetitive tail, so a
+    second pass re-detected that tail and shrank a 2,826-char delivery to 125.
     """
     if not text:
         return ""
+    if COLLAPSE_MARKER in text:
+        # Already collapsed upstream: the text around the marker is the preserved report, so a
+        # second collapse only destroys it.  Being marked is our own receipt, never a loop.
+        return text
     span = degenerate_span(text)
     if span is None:
         return text
@@ -550,6 +569,9 @@ def collapse_degenerate(
         suffix = suffix[-keep_suffix_chars:].lstrip()
 
     if not prefix and not suffix:
+        # Repetition covers the entire response: nothing readable survives outside the
+        # degenerate span.  Return the empty collapse and let the caller choose the copy --
+        # an excerpt of a pure loop would put the loop back on the wire (see docstring).
         return ""
 
     parts = []

@@ -227,6 +227,27 @@ Don't contradict yourself ([Calm] + [Aggressive] in same section).
 - Always add structural tags — without them Suno defaults to
   flat verse/chorus/verse with no emotional arc
 
+### Control Surface (Suno v5.x)
+
+The create page's **Advanced** tab is what this skill calls Custom Mode.
+Starting points, not laws:
+
+| Control | Range | Start at | Effect |
+|---|---|---|---|
+| Weirdness | 0–100 | 30 | higher = more experimental harmony and arrangement |
+| Style Influence | 0–100 | 50 | higher = follows the style field more literally |
+| Exclude Styles | text | — | what to keep out ("autotune, mumble rap") |
+| Vocal Gender | M/F/auto | auto | describing the persona in the style field works better |
+
+Expect a generation to take one to two minutes on v5.x, returning two
+variations that finish at different times. Interface labels move between
+versions; if a tab or field is not where this skill says, read the page rather
+than trusting the label.
+
+For multi-song sets (DJ blocks, playlists, album sides), see
+`references/set-arcs.md`: arc shapes, BPM and key ladders, and how to keep
+separately generated tracks in one palette.
+
 ---
 
 ## 7. Phonetic Tricks for AI Singers

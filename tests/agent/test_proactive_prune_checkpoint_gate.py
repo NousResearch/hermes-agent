@@ -208,3 +208,29 @@ def test_engine_that_never_overrode_the_prune_hook_is_not_a_suppressed_authority
 
     assert _prune_would_have_run(_InheritsTheDefault(), 400_000) is False
     assert _prune_would_have_run(_OccupiesTheHook(), 400_000) is True
+
+
+def test_hosted_engine_inheriting_the_prune_no_op_is_not_a_suppressed_authority(tmp_path):
+    """Under ``plugins.isolation: host`` every method is a proxy, so identity can't tell the inherited
+    no-op from an override; the host reports the class that defines each method."""
+    from tests.agent.test_context_engine_compaction_authority import _hosted
+
+    compress_only = _engine_stub()
+
+    class _OccupiesTheHook(compress_only):
+        def prune_tool_results_only(self, messages, current_tokens=None):
+            return list(messages), 1
+
+    messages = [{"role": "user", "content": "scan"}]
+    agent = _agent(True)
+
+    assert _proactive_tool_result_prune(agent, _hosted(compress_only(), tmp_path), messages, 400_000) is messages
+    assert getattr(agent, "_checkpoint_gate_suppression_count", 0) == 0
+    assert _prune_would_have_run(_hosted(_OccupiesTheHook(), tmp_path), 400_000) is True
+
+
+def test_prune_hook_that_is_not_a_bound_method_is_still_the_engines_own():
+    class _StaticHook(_engine_stub()):
+        prune_tool_results_only = staticmethod(lambda messages, current_tokens=None: (list(messages), 1))
+
+    assert _prune_would_have_run(_StaticHook(), 400_000) is True

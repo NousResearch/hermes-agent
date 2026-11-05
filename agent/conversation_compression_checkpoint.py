@@ -183,9 +183,10 @@ def _prune_would_have_run(compressor: Any, current_tokens: int) -> bool:
     "would have run": the call was withheld either way.
     """
     from agent.context_engine import ContextEngine
+    from hermes_cli.plugin_host import runs_base_default
 
     prune = getattr(compressor, "prune_tool_results_only", None)
-    if not callable(prune) or getattr(prune, "__func__", None) is ContextEngine.prune_tool_results_only:
+    if not callable(prune) or runs_base_default(compressor, ContextEngine, "prune_tool_results_only"):
         return False
     predicate = getattr(compressor, "would_proactively_prune", None)
     if not callable(predicate):

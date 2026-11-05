@@ -304,8 +304,8 @@ def engine_compacts_outside_compress(engine: Any) -> tuple[bool, str]:
 
     if is_hosted_object(engine):
         return True, (
-            "the engine runs in the plugin host (plugins.isolation: host), where the hooks it "
-            "overrides cannot be seen, and does not declare compacts_outside_compress"
+            "the engine runs in the plugin host (plugins.isolation: host), where its compaction "
+            "authority is not inferred, and does not declare compacts_outside_compress"
         )
     for hook_name in _UNINTERCEPTABLE_COMPACTION_HOOKS:
         if getattr(getattr(engine, hook_name, None), "__func__", None) is not getattr(ContextEngine, hook_name):

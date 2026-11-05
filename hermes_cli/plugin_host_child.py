@@ -178,7 +178,9 @@ class HostRuntime:
                 continue
             value = getattr(obj, name, None)
             if callable(value):
-                methods[name] = {"async": is_async_callable(value), "sig": describe_signature(value)}
+                owner = next((c for c in type(obj).__mro__ if name in vars(c)), None)
+                methods[name] = {"async": is_async_callable(value), "sig": describe_signature(value),
+                                 "defined_by": owner and f"{owner.__module__}:{owner.__qualname__}"}
             else:
                 # Class-level defaults too: an engine that sets ``context_length`` only later in
                 # ``update_model()`` must not read as the base-class default forever in Hermes.

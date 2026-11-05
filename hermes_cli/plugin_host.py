@@ -571,6 +571,17 @@ def is_hosted_object(obj: Any) -> bool:
     return "__hermes_plugin_host_ref__" in vars(type(obj))
 
 
+def runs_base_default(obj: Any, base: type, name: str) -> bool:
+    """Whether ``obj.<name>`` is ``base``'s own implementation. A hosted proxy's methods are all
+    proxies, so identity can't tell there; the host reports the class that defines each one."""
+    func = getattr(getattr(obj, name, None), "__func__", None)
+    if func is None:
+        return False
+    if func is getattr(base, name, None):
+        return True
+    return getattr(func, "__hermes_defined_by__", None) == f"{base.__module__}:{base.__qualname__}"
+
+
 def _run_on_gateway_loop(coro: Any) -> Any:
     """A facade coroutine (``platform_actions``) uses adapters bound to the gateway's event loop, so
     it runs there when a gateway is up; otherwise on a private loop. Always called off-loop (a
@@ -596,6 +607,7 @@ def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str
 
     method: Any = async_method if meta.get("async") else sync_method
     method.__name__ = method.__qualname__ = name
+    method.__hermes_defined_by__ = meta.get("defined_by")
     signature = signature_from(meta.get("sig"))
     if signature is not None:  # callers introspect accepted kwargs; bound access drops ``self`` again
         self_param = inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)

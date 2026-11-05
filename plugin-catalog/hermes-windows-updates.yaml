@@ -1,0 +1,38 @@
+name: hermes-windows-updates
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: 3e46cc3c57288489b7343b706018cd0a8fdeda83
+subdir: windows-updates
+description: >-
+  Answer "what did Windows install lately, and did it work" on Windows: the update history
+  the Settings app shows - Windows updates, Defender signature and platform updates, driver
+  updates - newest first, with each entry's outcome in words (in progress, succeeded,
+  succeeded with errors, failed, aborted) and, when an entry did not end clean, the
+  failure's error code in 0x form (the agent hands codes over signed; -2145124300 is shown
+  as its unsigned spelling). Filter to the ones that did not end clean, or search titles.
+  The hotfix list (KB numbers, security updates, install dates, newest first) answers
+  "when was this machine last patched" at a glance; it carries OS-level updates only, which
+  the notes say. Use it for "why does it say pending forever", for "did the update that
+  broke something actually install", and for a patch report before assuming a machine is
+  current. Read-only: the history is queried through the Windows Update Agent's session
+  interface and CIM, and nothing else - no update search is run, nothing is downloaded,
+  installed or uninstalled, no elevation. On the writing machine a 723-entry history
+  returns the newest 500 in about a tenth of a second; the first call also starts the COM
+  session, about a quarter of a second. The plugin declares no Python dependencies; there
+  is no network call of its own and no file write. Windows only. Disclosure - the tools
+  report update titles, dates, outcomes, failure codes and support links, and hotfix ids,
+  to the model; treat the output like the Settings app's own update history page.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-updates
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_update_history
+  - win_hotfix_table
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

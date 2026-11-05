@@ -167,6 +167,43 @@ def test_returns_true_when_moa_reference_slot_uses_provider(tmp_path, monkeypatc
     assert is_provider_explicitly_configured("anthropic") is True
 
 
+def test_returns_true_when_fallback_providers_slot_uses_provider(tmp_path, monkeypatch):
+    """A provider named only in ``fallback_providers`` is explicitly configured (#131993).
+
+    Otherwise the anthropic seeder stays gated off, the profile keeps borrowing the
+    root's reference-only claude_code row, and the fallback chain skips Anthropic with
+    a misleading "credential pool is exhausted" warning even though the credential is
+    usable via ``hermes --provider anthropic``."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-6.1-sol"},
+        "fallback_providers": [
+            {"provider": "anthropic", "model": "claude-opus-5-5"},
+            {"provider": "xai-oauth", "model": "grok-4.7"},
+        ],
+    })
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": "openai-codex"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+    # The fallback slots opt into their own providers only; one that is not named
+    # anywhere stays implicit.
+    assert is_provider_explicitly_configured("unconfigured-provider") is False
+
+
+def test_returns_true_when_legacy_fallback_model_uses_provider(tmp_path, monkeypatch):
+    """The legacy single-dict ``fallback_model`` form opts in the same way the list does."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_config(tmp_path, {
+        "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        "fallback_model": {"provider": "anthropic", "model": "claude-opus-5-5"},
+    })
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "active_provider": "openai-codex"})
+
+    from hermes_cli.auth import is_provider_explicitly_configured
+    assert is_provider_explicitly_configured("anthropic") is True
+
+
 def test_stale_env_pool_entry_does_not_count_when_var_unset(tmp_path, monkeypatch):
     """An env-seeded pool entry left in auth.json after the env var was removed
     must not mark the provider configured (#55790): the picker showed removed

@@ -146,8 +146,11 @@ interface RelayAgentRow {
 }
 
 /** Remove the mandatory local registry source only when Electron identifies
- * one unambiguous REMOTE primary. Older or inconsistent route inventories
- * fail open to the prior peer set. Distinct remote peers always remain. */
+ * one unambiguous REMOTE primary AND that local hosts no roster agents — the
+ * routes it does have carry no Bot Mode title (#137618: a bot-hosting
+ * non-primary "This device" must keep relaying, or both gateways' rosters go
+ * empty). Older or inconsistent route inventories fail open to the prior peer
+ * set. Distinct remote peers always remain. */
 function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
   const routesByConnection = new Map<string, ProfileRoute[]>()
 
@@ -195,6 +198,15 @@ function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
   }
 
   const localId = localGroups[0][0]
+
+  // The exclusion exists for viewer-only laptops (#108088): a local with no
+  // bots that the relay would only spawn-and-idle. A local whose enumerated
+  // profiles include a titled Bot is a live peer — dropping it silences every
+  // "This device" bot (#137618). Shells that never set `bot` keep the current
+  // exclusion.
+  if (localGroups[0][1].some(route => route.bot === true)) {
+    return routes
+  }
 
   return routes.filter(route => route.connectionId !== localId)
 }

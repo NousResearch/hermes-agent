@@ -254,6 +254,42 @@ describe('buildRegistryProfileRoutes', () => {
     ])
   })
 
+  it('marks only title-carrying local routes as bots for the relay peer-set clause (#137618)', () => {
+    const routes = buildRegistryProfileRoutes({
+      agents: [
+        { connectionId: 'local', profile: 'default', profileMetadata: { title: 'Local Bot' } },
+        { connectionId: 'local', profile: 'research' },
+        { connectionId: 'homelab', profile: 'default', profileMetadata: { title: 'Remote Bot' } }
+      ],
+      primaryConnectionId: 'homelab',
+      sources: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'homelab', kind: 'remote', label: 'Homelab' }
+      ]
+    })
+
+    expect(routes).toEqual([
+      { connectionId: 'local', mode: 'local', bot: true, profile: 'default', targetProfile: 'default' },
+      { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' },
+      { connectionId: 'homelab', mode: 'remote', primary: true, profile: 'default', targetProfile: 'default' }
+    ])
+  })
+
+  it('does not mark a local route as a bot when the Bot Mode title is empty', () => {
+    const routes = buildRegistryProfileRoutes({
+      agents: [{ connectionId: 'local', profile: 'default', profileMetadata: { title: '' } }],
+      primaryConnectionId: 'homelab',
+      sources: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'homelab', kind: 'remote', label: 'Homelab' }
+      ]
+    })
+
+    expect(routes).toEqual([
+      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' }
+    ])
+  })
+
   it('scopes registry-shared remote websocket URLs to the requested profile', () => {
     expect(
       registryGatewayWsUrl({ profile: 'research', sharedRemote: true }, 'wss://gateway.example/api/ws?token=secret')

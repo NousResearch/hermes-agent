@@ -22,12 +22,19 @@ export interface OpaqueProfileRoute {
   mode: 'local' | 'remote'
   /** Present only when this route belongs to the window's authoritative primary connection. */
   primary?: true
+  /** Present only on a local route whose enumerated profile carries a Bot Mode
+   *  title (`bot_title` from /api/profiles) — the signal the relay uses to keep
+   *  a bot-hosting non-primary "This device" in its peer set (#137618). */
+  bot?: true
   profile: string
   targetProfile: string
 }
 
 interface RegistryProfileRouteAgent {
   connectionId: string
+  /** Roster metadata for this exact profile when enumerated; only the Bot Mode
+   *  title is consumed here. RosterAgent satisfies this shape structurally. */
+  profileMetadata?: { title?: string }
   profile: string
 }
 
@@ -283,6 +290,7 @@ export function buildRegistryProfileRoutes({
         connectionId: source.id,
         mode: 'local',
         ...(source.id === primaryConnectionId ? { primary: true } : {}),
+        ...(agent.profileMetadata?.title ? { bot: true } : {}),
         profile,
         targetProfile: profile
       })

@@ -21,9 +21,10 @@ import shutil
 
 from agent.i18n import t
 
-_LABEL_CHARS = 72
-_CONTEXT_WIDTH = 84  # wrap width of the context rows; the panel's max inner width is 88
-_CONTEXT_MIN_ROWS = 6
+_PANEL_MAX_INNER = 88
+_LIST_MAX_ROWS = 8
+# Panel rows besides the hint, list and context: borders (2), four blanks, the "Prompt N of M" label.
+_PANEL_FIXED_ROWS = 7
 
 
 class BacktrackResend(str):
@@ -37,14 +38,30 @@ class BacktrackResend(str):
         return obj
 
 
+def _clip(line: str, limit: int) -> str:
+    return line if len(line) <= limit else line[: max(0, limit - 1)] + "…"
+
+
 def _one_line(text: str, limit: int) -> str:
-    line = " ".join((text or "").split())
-    return line if len(line) <= limit else line[: limit - 1] + "…"
+    return _clip(" ".join((text or "").split()), limit)
 
 
-def _context_window(rows: int, total_list: int) -> int:
-    """Context rows for a ``rows``-tall terminal: about half of what the list and chrome leave."""
-    return max(_CONTEXT_MIN_ROWS, (rows - 14 - min(total_list, 8)) // 2)
+def _term_size() -> tuple[int, int]:
+    """(columns, rows) of the terminal the picker draws in: the running app's output, else the tty."""
+    from prompt_toolkit.application import get_app_or_none
+    app = get_app_or_none()
+    if app is not None and app.is_running:
+        size = app.output.get_size()
+        return size.columns, size.rows
+    size = shutil.get_terminal_size((100, 24))
+    return size.columns, size.lines
+
+
+def _picker_budget(free_rows: int, entries: int) -> tuple[int, int]:
+    """(list rows, context rows) sharing ``free_rows``: the list takes at most a third
+    (shrinking around the selection), the selected exchange the rest; neither goes under one row."""
+    listed = min(entries, _LIST_MAX_ROWS, max(1, free_rows // 3))
+    return listed, max(1, free_rows - listed)
 
 
 class CLIBacktrackMixin:
@@ -124,29 +141,51 @@ class CLIBacktrackMixin:
         return entries[selected] if 0 <= selected < len(entries) else None
 
     def _get_backtrack_display_fragments(self):
-        from hermes_cli.cli_tui_mixin import _term_rows
+        """The picker panel, every row budgeted: wrapped hint rows, one row per listed prompt and the
+        selected exchange together fit the terminal above the CLI's own input/status rows."""
+        from cli import _wrap_panel_text
+        from hermes_cli.cli_panel import _Panel
+        from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
         state = self._backtrack_state
         if not state:
             return []
-        entries = state["entries"]
-        total = len(entries)
+        entries, selected = state["entries"], state.get("selected", 0)
+        cols, term_rows = _term_size()
+        inner = max(24, min(_PANEL_MAX_INNER, cols - 6))
+        hints = _wrap_panel_text(t("cli.backtrack.keys_hint"), inner)
+        free = term_rows - _PANEL_RESERVED_BELOW - _PANEL_FIXED_ROWS - len(hints)
+        listed, window = _picker_budget(free, len(entries))
+        state["_context_window"] = window
+        scroll = max(0, min(state.get("_scroll_offset", 0), selected, len(entries) - listed))
+        scroll = max(scroll, selected - listed + 1)
+        state["_scroll_offset"] = scroll
+
+        panel = _Panel("class:clarify-border", inner + 2, t("cli.backtrack.title"), "class:clarify-title")
+        panel.blank()
+        for row in hints:
+            panel.row("class:clarify-hint", row)
+        panel.blank()
         picked = self._backtrack_selected()
-        hints = [t("cli.backtrack.keys_hint")]
         if picked is not None:
             ordinal, text = picked
-            term_cols, term_rows = shutil.get_terminal_size((100, 24)).columns, _term_rows()
-            rows = self._backtrack_context_rows(ordinal, text, max(20, min(_CONTEXT_WIDTH, term_cols - 12)))
-            window = _context_window(term_rows, total)
+            rows = self._backtrack_context_rows(ordinal, text, inner - 2)
             offset = max(0, min(state.get("context_offset", 0), len(rows) - window))
             state["context_offset"] = offset
-            label = t("cli.backtrack.preview_label", number=ordinal + 1, total=total)
+            label = t("cli.backtrack.preview_label", number=ordinal + 1, total=len(entries))
             if len(rows) > window:
                 label += "  " + t("cli.backtrack.scroll_hint", first=offset + 1,
                                   last=min(len(rows), offset + window), total=len(rows))
-            hints += ["", label, *rows[offset:offset + window]]
-        labels = [f"{ordinal + 1:>3}. {_one_line(text, _LABEL_CHARS)}" for ordinal, text in entries]
-        return self._render_scroll_list_panel(
-            state, t("cli.backtrack.title"), hints, labels, min_width=50, max_width=90, indent="    ")
+            panel.row("class:clarify-hint", _clip(label, inner))
+            for row in rows[offset:offset + window]:
+                panel.row("class:clarify-hint", row)
+            panel.blank()
+        for idx in range(scroll, min(scroll + listed, len(entries))):
+            ordinal, text = entries[idx]
+            lead = "❯ " if idx == selected else "  "
+            style = "class:clarify-selected" if idx == selected else "class:clarify-choice"
+            panel.row(style, _clip(f"{lead}{ordinal + 1:>3}. {_one_line(text, inner)}", inner))
+        panel.blank()
+        return panel.close()
 
     def _backtrack_move(self, delta: int) -> None:
         state = self._backtrack_state
@@ -157,10 +196,9 @@ class CLIBacktrackMixin:
 
     def _backtrack_scroll_context(self, pages: int) -> None:
         """PgUp/PgDn: page the selected exchange; the render clamps the offset to its length."""
-        from hermes_cli.cli_tui_mixin import _term_rows
         state = self._backtrack_state
         if state:
-            step = max(1, _context_window(_term_rows(), len(state["entries"])) - 1)
+            step = max(1, state.get("_context_window", 1) - 1)
             state["context_offset"] = max(0, state.get("context_offset", 0) + pages * step)
             self._invalidate(min_interval=0.0)
 

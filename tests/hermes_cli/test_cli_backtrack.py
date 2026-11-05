@@ -1,7 +1,9 @@
 """Backtrack (/rewind, Esc Esc) in the classic CLI: edit & resend cuts nothing until the edit is
 sent; fork branches before the picked prompt and leaves the parent session's rows active."""
 
+import os
 import re
+import shutil
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -106,6 +108,10 @@ def test_fork_branches_before_the_prompt_and_keeps_the_parent(cli):
     assert cli._prefill_input_buffer.call_args[0][0] == "BETA"
 
 
+def _terminal(monkeypatch, cols, rows):
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=None: os.terminal_size((cols, rows)))
+
+
 def _panel_text(cli):
     return "".join(text for _style, text in cli._get_backtrack_display_fragments())
 
@@ -120,7 +126,7 @@ def test_picker_shows_the_selected_prompt_with_the_reply_that_followed(cli):
 
 
 def test_page_keys_scroll_a_long_reply_and_moving_resets_it(cli, monkeypatch):
-    monkeypatch.setattr("hermes_cli.cli_tui_mixin._term_rows", lambda: 30)
+    _terminal(monkeypatch, 100, 30)
     cli.conversation_history[-1]["content"] = "\n".join(f"reply row {i}" for i in range(1, 41))
     assert cli._open_backtrack_picker()
     assert re.search(r"reply row 1(?!\d)", _panel_text(cli))
@@ -139,3 +145,24 @@ def test_a_compaction_summary_is_never_shown_as_the_reply(cli):
     assert cli._open_backtrack_picker()
     panel = _panel_text(cli)
     assert "g1" in panel and "INTERNAL HANDOFF" not in panel and "CONTEXT COMPACTION" not in panel
+
+
+def test_the_whole_picker_fits_80x24_with_long_labels_and_a_long_translated_hint(cli, monkeypatch):
+    from agent import i18n
+    from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
+    _terminal(monkeypatch, 80, 24)
+    monkeypatch.setattr("hermes_cli.cli_backtrack.t", lambda key, **kw: i18n.t(key, lang="de", **kw))
+    long = "a prompt long enough to wrap the picker row several times over at eighty columns " * 2
+    cli.conversation_history = [row for n in range(9) for row in (
+        {"role": "user", "content": f"P{n} {long}"},
+        {"role": "assistant", "content": "\n".join(f"reply {n} row {i}" for i in range(40))})]
+    assert cli._open_backtrack_picker()
+    for _ in range(4):
+        cli._backtrack_move(1)
+    _panel_text(cli)
+    cli._backtrack_scroll_context(1)
+    lines = _panel_text(cli).rstrip("\n").split("\n")
+    assert len(lines) + _PANEL_RESERVED_BELOW <= 24, lines
+    assert max(len(line) for line in lines) <= 80, max(lines, key=len)
+    assert any("❯" in line and "5. P4" in line for line in lines)  # the selection stays on screen
+    assert sum("reply 4 row" in line for line in lines) >= 1

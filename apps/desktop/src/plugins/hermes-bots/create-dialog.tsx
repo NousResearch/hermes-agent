@@ -82,7 +82,6 @@ import type {
 import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from './profile-config'
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
-import { HubSkillsSection } from './skills-hub'
 import { composeSoul } from './soul'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
 
@@ -1002,24 +1001,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                     <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
                       {b.editor.catalogHint(caps.source)}
                     </div>
-                    <HubSkillsSection
-                      onInstalled={name =>
-                        setCaps(prev =>
-                          !prev || prev.skills.some(s => s.name === name)
-                            ? prev
-                            : {
-                                ...prev,
-                                skills: [
-                                  ...prev.skills,
-                                  {
-                                    name,
-                                    enabled: true
-                                  }
-                                ]
-                              }
-                        )
-                      }
-                    />
                   </div>
                 )
               ) : advTab === 'toolsets' ? (

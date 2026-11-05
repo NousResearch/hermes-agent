@@ -215,7 +215,7 @@ describe('reportCwd multiplexer wrapping', () => {
     const seq = buildOsc7Sequence(DIR_A)
 
     expect(reportCwd(DIR_A, stream)).toBe(true)
-    expect(writes).toEqual([`\x1bP${seq}${ST}`])
+    expect(writes).toEqual([`\x1bP${seq.slice(0, -ST.length)}\x07${ST}`])
   })
 
   it('prefers tmux wrapping when both TMUX and STY are set', () => {

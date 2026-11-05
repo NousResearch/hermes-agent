@@ -1,15 +1,18 @@
 name: certarc
 title: CertArc
 repo: https://github.com/CertArc/certarc-mcp
-sha: d48307aa2124665550dd46f01ae3dbaa21749366
+sha: bdb74db3ddc7c5d14ecda710e6af077d71f415b2
 subdir: hermes
 version: "1.0.0"
-description: "Free scenario practice for the CISM, CISSP, CISA, AAISM and AAIA exams through CertArc's hosted MCP server (Streamable HTTP at https://certarc.com/mcp/grok, CertArc's free no-sign-in endpoint, no keys in config): 10 practice questions per certification with explanations for every option, exam outlines and study guides. Bundles the certarc-practice skill, which offers a link to CertArc's free assessment that the user opens and signs in to themselves. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to certarc.com, and the assessment links carry a source tag. The endpoint offers four tools, all annotated read-only, and none reads a learner's own study. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+description: "Practise free scenario questions for the CISM, CISSP, CISA, AAISM and AAIA exams in Hermes, with an explanation for every option. No account or keys. Also covers exam outlines and CertArc study guides, and can link to CertArc's free assessment when you finish a set. Bundles the certarc-practice skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to certarc.com through its free no-sign-in endpoint (https://certarc.com/mcp/grok, built first for Grok and usable by any MCP client), and the assessment links carry a source tag. The user opens those links and signs in themselves. The endpoint offers four tools, all annotated read-only, and none reads a learner's own study. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
 maintainer: CertArc
 tier: community
 category: tools
 docs_url: https://certarc.com/integrations
 requires_hermes: ">=0.22.7"
+image: https://raw.githubusercontent.com/CertArc/certarc-mcp/bdb74db3ddc7c5d14ecda710e6af077d71f415b2/hermes/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/CertArc/certarc-mcp/bdb74db3ddc7c5d14ecda710e6af077d71f415b2/hermes/assets/practice-review.png
 readme: true
 platforms: []
 known_issues:

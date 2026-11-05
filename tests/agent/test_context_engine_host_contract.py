@@ -26,10 +26,12 @@ engine plugins (e.g. hermes-lcm) rely on:
 
 from __future__ import annotations
 
+import time
 
 from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _bare_agent() -> AIAgent:
@@ -84,11 +86,11 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
 
 def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):
     """Reset-only session switches must rebind durable cooldown state to the new session."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("old-sid", source="cli")
-    db.create_session("new-sid", source="cli")
-    db.record_compression_failure_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
-    db.set_compression_fallback_streak("old-sid", 2)
+    db = storage_handle(tmp_path)
+    seed_session(db, "old-sid", "cli")
+    seed_session(db, "new-sid", "cli")
+    db.messages.record_compression_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
+    db.lineage.set_compression_fallback_streak("old-sid", 2)
 
     monkeypatch.setattr(
         "agent.context_compressor.get_model_context_length",
@@ -101,7 +103,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
         protect_last_n=2,
         quiet_mode=True,
     )
-    compressor.bind_session_state(db, "old-sid")
+    compressor.bind_session_state(db, "old-sid", persistence=db)
 
     agent = _bare_agent()
     agent._session_db = db
@@ -113,13 +115,13 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
     assert compressor._session_id == "new-sid"
     assert compressor.get_active_compression_failure_cooldown() is None
     assert compressor._fallback_compression_streak == 0
-    assert db.get_compression_failure_cooldown("old-sid") is not None
-    assert db.get_compression_fallback_streak("old-sid") == 2
+    assert db.messages.read_compression_cooldown("old-sid", time.time()) is not None
+    assert db.lineage.compression_fallback_streak("old-sid") == 2
 
     compressor._record_compression_failure_cooldown(30.0, "new-timeout")
 
-    assert db.get_compression_failure_cooldown("new-sid") is not None
-    assert db.get_compression_failure_cooldown("old-sid")["error"] == "old-timeout"
+    assert db.messages.read_compression_cooldown("new-sid", time.time()) is not None
+    assert db.messages.read_compression_cooldown("old-sid", time.time()).error == "old-timeout"
 
 
 

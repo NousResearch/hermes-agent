@@ -34,6 +34,8 @@ from agent.conversation_compression import (
     resolve_compression_fallback_route,
     run_compress_context_with_progress_timeout,
 )
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 CHAIN_ENTRY = {
     "provider": "custom",
@@ -297,17 +299,16 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     import agent.conversation_compression as cc
     from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from hermes_state import SessionDB
 
     session_id = "STALL_FALLBACK_SAME_TURN"
-    db = SessionDB(db_path=Path(tmp_path) / "state.db")
-    db.create_session(session_id, source="cli")
+    db = storage_handle(Path(tmp_path))
+    seed_session(db, session_id, "cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
-            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+            persistence=db, session_id=session_id, skip_context_files=True, skip_memory=True,
         )
     agent._compression_feasibility_checked = True
     agent.compression_in_place = True

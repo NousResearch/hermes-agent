@@ -1,14 +1,14 @@
 name: prompt-enhancer
 repo: https://github.com/Heybinshao/prompt-enhancer
-sha: f2afdf286f2b10f38ca0fd082bb4f2f8d999f25e
-description: "A composer button for Hermes Desktop that first repairs dictation typos in the draft, then rewrites it into a structured prompt (task / scope / constraints / output shape); one click back restores the original typing, and ⌥-click repairs without enhancing. Two stateless gateway calls, preserves @file and /command chips, per-session state. UI in EN / 简中 / 繁體."
+sha: 4b7e064ee3e291776d4c925bb3e1cc8551b78403
+description: "A composer button for Hermes Desktop that first repairs dictation typos in the draft, then rewrites it into a structured prompt (task / scope / constraints / output shape); one click back restores the original typing, and ⌥-click repairs without enhancing. ⌘-click picks the model both steps use (written to auxiliary.prompt_* in config.yaml). Reads the session's own history (local, read-only) to build a proper-noun list for the repair step, and adds the previous turn only on ⇧-click. Preserves @file and /command chips plus inline /skill references verbatim; per-session state. UI in EN / 简中 / 繁體."
 maintainer: Heybinshao
 tier: community
 category: desktop
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Heybinshao/prompt-enhancer#readme
-version: "1.7.1"
-image: https://raw.githubusercontent.com/Heybinshao/prompt-enhancer/f2afdf286f2b10f38ca0fd082bb4f2f8d999f25e/assets/banner.png
+version: "2.2.3"
+image: https://raw.githubusercontent.com/Heybinshao/prompt-enhancer/4b7e064ee3e291776d4c925bb3e1cc8551b78403/assets/banner.png
 capabilities:
   provides_tools: []
   provides_hooks: []

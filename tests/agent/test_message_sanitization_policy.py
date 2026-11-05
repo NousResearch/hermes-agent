@@ -454,3 +454,25 @@ def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
         before = [c.copy() for c in calls]
         normalize_provider_tool_call_ids(calls)
         assert calls == before
+
+
+def test_disambiguate_duplicate_tool_call_ids_across_history():
+    from agent.agent_runtime_helpers import _disambiguate_duplicate_tool_call_ids
+
+    messages = [
+        {"role": "user", "content": "step 1"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_dup", "call_id": "call_dup", "function": {"name": "a", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_dup", "content": "res 1"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_dup", "call_id": "call_dup", "function": {"name": "b", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_dup", "content": "res 2"},
+    ]
+    out, repairs = _disambiguate_duplicate_tool_call_ids(messages)
+    assert repairs == 1
+    assert out[1]["tool_calls"][0]["id"] == "call_dup"
+    assert out[2]["tool_call_id"] == "call_dup"
+    assert out[3]["tool_calls"][0]["id"] == "call_dup_d1"
+    assert out[3]["tool_calls"][0]["call_id"] == "call_dup_d1"
+    assert out[4]["tool_call_id"] == "call_dup_d1"
+    # Idempotent on second pass
+    _, repairs_again = _disambiguate_duplicate_tool_call_ids(out)
+    assert repairs_again == 0

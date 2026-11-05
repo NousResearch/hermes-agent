@@ -739,9 +739,48 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     return merged, repairs
 
 
+def _disambiguate_duplicate_tool_call_ids(messages: list[dict]) -> tuple[list[dict], int]:
+    """Pass 4: disambiguate duplicate tool_call IDs across the whole conversation.
+    ``uniquify_tool_call_ids`` only renames NEW calls against the history; an older
+    assistant/tool sequence re-injected by compaction replay or session import can still
+    duplicate an id, and strict translation layers (e.g. OpenAI-to-Anthropic Messages API,
+    which requires unique tool_use ids) answer HTTP 400 'tool_use ids were found without
+    tool_result blocks'. Uses the same ``_d<n>`` suffix convention; idempotent."""
+    repairs = 0
+    seen_tc_ids: set = set()
+    id_rename_map: dict[str, str] = {}
+    rename_counter = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        m_role = m.get("role")
+        if m_role == "assistant" and m.get("tool_calls"):
+            for tc in m.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                orig_id = tc.get("id")
+                if not orig_id:
+                    continue
+                if orig_id in seen_tc_ids:
+                    rename_counter += 1
+                    new_id = f"{orig_id}_d{rename_counter}"
+                    id_rename_map[orig_id] = new_id
+                    tc["id"] = new_id
+                    if "call_id" in tc:
+                        tc["call_id"] = new_id
+                    repairs += 1
+                else:
+                    seen_tc_ids.add(orig_id)
+        elif m_role == "tool":
+            tcid = m.get("tool_call_id")
+            if tcid and tcid in id_rename_map:
+                m["tool_call_id"] = id_rename_map[tcid]
+    return messages, repairs
+
+
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
+    _merge_consecutive_users, _disambiguate_duplicate_tool_call_ids,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:

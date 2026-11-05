@@ -8,8 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import profile_scope
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.platforms("linux")
@@ -86,8 +88,8 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
     from gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", source="telegram")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "telegram")
     ran = []
 
     async def handle(event):
@@ -97,8 +99,8 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
     runner = SimpleNamespace(_draining=True, _running=True, config=SimpleNamespace(multiplex_profiles=False),
                              session_runtime_descriptor={"state": "draining", "drain_reason": "restart_wait"},
                              _adapter_for_source=lambda source: None, _handle_message=handle)
-    authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    authority = SessionAuthority(runner, profile_id="p", instance_id="owner",
+                                 epoch=db.runtime.begin_epoch(instance_id="owner"), persistence=storage_handle(tmp_path))
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="human"), "route")
     actor = SessionActor("human", "p", frozenset({"session:submit"}), "t")
     try:
@@ -107,12 +109,12 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
         task = authority.sessions["s"].task
         if task is not None:
             await asyncio.wait_for(task, 10)
-        rows = list_session_admissions(db, session_id="s")
-        assert [(r["admission_id"], r["status"]) for r in rows] == [(receipt.admission_id, "queued")]
+        rows = db.admissions.list(session_id="s")
+        assert [(r.admission_id, r.status) for r in rows] == [(receipt.admission_id, "queued")]
         assert ran == []  # the draining owner never runs it; the next owner's FIFO does
         # stop() withdraws the window: input is refused, as before.
         del runner.session_runtime_descriptor["drain_reason"]
-        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+        with pytest.raises(AuthorityRefusal, match="runtime_draining"):
             await authority.submit(actor, Submission("r2", SessionRef("p", "s"), {"text": "late"}, "queue"),
                                    queue_while_restarting=True)
     finally:
@@ -168,12 +170,12 @@ async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_ve
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_controls import AuthorityConnection
 
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", source="test")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "test")
     runner = SimpleNamespace(_draining=True, _running=True,
                              session_runtime_descriptor={"state": "draining", "drain_reason": "restart_wait"})
-    authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    authority = SessionAuthority(runner, profile_id="p", instance_id="owner",
+                                 epoch=db.runtime.begin_epoch(instance_id="owner"), persistence=storage_handle(tmp_path))
     authority.sessions["s"] = LiveSession(None, "route")
     viewer = AuthorityConnection(authority, object(), {"user_id": "human"}, operator=True)
 
@@ -211,19 +213,19 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
     from gateway.session_contract import SessionActor, SessionRef, Submission
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", source="telegram")
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "telegram")
     runner = SimpleNamespace(_draining=True, _running=True, config=SimpleNamespace(multiplex_profiles=False),
                              session_runtime_descriptor={"state": "draining", "drain_reason": "restart_wait"},
                              _adapter_for_source=lambda source: None, _handle_message=None)
-    authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    authority = SessionAuthority(runner, profile_id="p", instance_id="owner",
+                                 epoch=db.runtime.begin_epoch(instance_id="owner"), persistence=storage_handle(tmp_path))
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="peer"), "route")
     peer = SessionActor("peer", "p", frozenset({"session:submit"}), "t")
     try:
-        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+        with pytest.raises(AuthorityRefusal, match="runtime_draining"):
             await authority.submit(peer, Submission("a2a:1", SessionRef("p", "s"), {"text": "hi"}, "queue"))
-        assert list_session_admissions(db, session_id="s") == []
+        assert db.admissions.list(session_id="s") == []
     finally:
         db.close()
 
@@ -257,7 +259,7 @@ async def test_restart_wait_cuts_sockets_opened_before_it(tmp_path, monkeypatch,
 
     tickets = TicketStore("owner", [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject="human", purpose="interactive")
-    authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"), profile_id=str(tmp_path), runner=None)
+    authority = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=tmp_path)), profile_id=str(tmp_path), runner=None)
     runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
                              session_authority=authority, session_ticket_store=tickets)
 
@@ -326,10 +328,10 @@ async def test_restart_wait_lets_a_webapp_tab_dial_back_in_to_answer_the_parked_
     web = serve_webapp(tmp_path, monkeypatch).server
     runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
                              session_authority=None)
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s", source="test")
-    authority = SessionAuthority(runner, profile_id=str(tmp_path / ".hermes"), instance_id="owner", db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    db = storage_handle(tmp_path)
+    seed_session(db, "s", "test")
+    authority = SessionAuthority(runner, profile_id=str(tmp_path / ".hermes"), instance_id="owner",
+                                 epoch=db.runtime.begin_epoch(instance_id="owner"), persistence=storage_handle(tmp_path))
     authority.sessions["s"] = LiveSession(None, "route")
     monkeypatch.setattr(web.app.state, "session_authority", authority, raising=False)
     monkeypatch.setattr(tui_server, "_WS_ORPHAN_REAP_GRACE_S", 0)

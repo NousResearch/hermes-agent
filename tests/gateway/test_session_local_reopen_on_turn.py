@@ -5,6 +5,9 @@ import pytest
 
 from gateway.session_contract import Submission
 from gateway.session_controls import AuthorityConnection
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 async def _ended_local_session(tmp_path, monkeypatch):
@@ -16,14 +19,14 @@ async def _ended_local_session(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     ref = create_local_session(authority, connection.actor, {'request_id': 'r', 'source': 'tui',
                                                              'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
-    authority.db.append_message(ref.session_id, 'user', 'earlier turn')
-    authority.db.end_session(ref.session_id, 'tui_shutdown')
+    seed_messages(authority.persistence, ref.session_id, {'role': 'user', 'content': 'earlier turn'})
+    authority.persistence.sessions.end(ref.session_id, 'tui_shutdown')
     return authority, connection, ref
 
 
@@ -34,12 +37,12 @@ async def test_resuming_a_finalized_local_session_leaves_it_ended(tmp_path, monk
         reply = await connection.dispatch({'id': 1, 'method': 'session.resume',
                                            'params': {'session_id': ref.session_id}})
         assert reply['result']['messages'][0]['content'] == 'earlier turn', reply
-        row = authority.db.get_session(ref.session_id)
+        row = session_row(authority.persistence, ref.session_id)
         assert (row['end_reason'], row['ended_at'] is not None) == ('tui_shutdown', True), \
             'a mount with no new activity must not re-light a finalized row'
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -55,7 +58,7 @@ async def test_resume_accepts_the_unique_22_character_local_hint(tmp_path, monke
         assert reply['result']['session_id'] == ref.session_id
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -63,7 +66,7 @@ async def test_resume_rejects_ambiguous_or_missing_local_hints(tmp_path, monkeyp
     authority, connection, ref = await _ended_local_session(tmp_path, monkeypatch)
     try:
         hint = ref.session_id[:22]
-        authority.db.create_session(ref.session_id[:-1] + ('0' if ref.session_id[-1] != '0' else '1'), 'local')
+        seed_session(authority.persistence, ref.session_id[:-1] + ('0' if ref.session_id[-1] != '0' else '1'), 'local')
 
         for candidate in (hint, 'local-', 'local-' + 'f' * 16):
             reply = await connection.dispatch({'id': candidate, 'method': 'session.resume',
@@ -71,7 +74,7 @@ async def test_resume_rejects_ambiguous_or_missing_local_hints(tmp_path, monkeyp
             assert reply['error']['data']['reason'] == 'not_found'
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -80,7 +83,7 @@ async def test_first_admitted_turn_reopens_a_finalized_local_session_before_exec
     seen = []
 
     async def execute(authority, ref, row):
-        current = authority.db.get_session(ref.session_id)
+        current = session_row(authority.persistence, ref.session_id)
         seen.append((current['ended_at'], current['end_reason']))
         return 'ok'
 
@@ -93,4 +96,4 @@ async def test_first_admitted_turn_reopens_a_finalized_local_session_before_exec
         assert seen == [(None, None)]
     finally:
         await connection.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

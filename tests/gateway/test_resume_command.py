@@ -13,6 +13,9 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _make_event(text="/resume", platform=Platform.TELEGRAM,
@@ -32,19 +35,39 @@ def _session_key_for_event(event):
     return build_session_key(event.source)
 
 
+# Storage interface handles the tests opened; closed after each test.
+_STORAGE_HANDLES = []
+
+
+@pytest.fixture(autouse=True)
+def _close_storage_handles():
+    yield
+    while _STORAGE_HANDLES:
+        _STORAGE_HANDLES.pop().close()
+
+
+def _storage_handle(home):
+    """A storage interface handle on ``home``'s state.db, closed after the test."""
+    from persistence_assembly import open_persistence, profile_scope
+
+    _STORAGE_HANDLES.append(open_persistence(profile_scope(home=home)))
+    return _STORAGE_HANDLES[-1]
+
+
 def _make_runner(session_db=None, current_session_id="current_session_001",
                  event=None):
-    """Create a bare GatewayRunner with a mock session_store and optional session_db."""
+    """Create a bare GatewayRunner with a mock session_store and an optional storage handle."""
     from gateway.run import GatewayRunner
-    runner = object.__new__(GatewayRunner)
+
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle ``session_db``, set below
+
+    runner = object.__new__(_Runner)
     runner.adapters = {}
     runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}
-    # Gateway holds the async facade; the slash handlers await it.
-    if session_db is not None:
-        from hermes_state import AsyncSessionDB
-        session_db = AsyncSessionDB(session_db)
-    runner._session_db = session_db
+    # Gateway holds the storage interface handle on the state.db.
+    runner._session_db = runner.persistence = session_db
     runner._running_agents = {}
     runner._is_user_authorized = lambda _source: True
 
@@ -76,20 +99,19 @@ class TestHandleResumeCommand:
     @pytest.mark.asyncio
     async def test_list_named_sessions_when_no_arg(self, tmp_path):
         """With no argument, lists recently titled sessions."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume")
         lane_key = _session_key_for_event(event)
-        db.create_session(
-            "sess_001", "telegram", session_key=lane_key,
+        seed_session(
+            db, "sess_001", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.create_session(
-            "sess_002", "telegram", session_key=lane_key,
+        seed_session(
+            db, "sess_002", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("sess_001", "Research")
-        db.set_session_title("sess_002", "Coding")
+        db.sessions.set_title("sess_001", "Research")
+        db.sessions.set_title("sess_002", "Coding")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
@@ -107,11 +129,10 @@ class TestHandleResumeCommand:
     async def test_resume_clears_session_model_overrides(self, tmp_path):
         """Resume must not carry a previous session's /model override into the
         restored conversation, while leaving other chats' overrides intact (#10702)."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session_abc", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("old_session_abc", "My Project")
-        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "old_session_abc", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("old_session_abc", "My Project")
+        seed_session(db, "current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -143,11 +164,10 @@ class TestHandleResumeCommand:
         instead of a value cached before the switch (mirrors /new and the
         compression-exhausted auto-reset, #58403), while leaving other
         chats' cache entries intact."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session_abc", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("old_session_abc", "My Project")
-        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "old_session_abc", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("old_session_abc", "My Project")
+        seed_session(db, "current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -167,15 +187,13 @@ class TestHandleResumeCommand:
     @pytest.mark.asyncio
     async def test_resume_follows_compression_continuation(self, tmp_path):
         """Gateway /resume should reopen the live descendant after compression."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("compressed_root", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("compressed_root", "Compressed Work")
-        db.end_session("compressed_root", "compression")
-        db.create_session("compressed_child", "telegram", user_id="12345", chat_id="67890", parent_session_id="compressed_root")
-        db.append_message("compressed_child", "user", "hello from continuation")
-        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "compressed_root", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("compressed_root", "Compressed Work")
+        db.sessions.end("compressed_root", "compression")
+        seed_session(db, "compressed_child", "telegram", user_id="12345", chat_id="67890", parent_session_id="compressed_root")
+        seed_messages(db, "compressed_child", {"role": "user", "content": "hello from continuation"})
+        seed_session(db, "current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Compressed Work")
         runner = _make_runner(
@@ -205,11 +223,10 @@ class TestHandleResumeCommand:
         writing into the wrong session. See #6672.
         """
         import threading
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "old_session", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("old_session", "Old Work")
+        seed_session(db, "current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -227,26 +244,24 @@ class TestHandleResumeCommand:
 
     @pytest.mark.asyncio
     async def test_bare_resume_lists_exact_lane_before_limit(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume")
         lane_key = _session_key_for_event(event)
         for i in range(3):
             sid = f"lane_{i}"
-            db.create_session(
-                sid, "telegram", session_key=lane_key,
+            seed_session(
+                db, sid, "telegram", session_key=lane_key,
                 user_id="12345", chat_id="67890",
             )
-            db.set_session_title(sid, f"Lane Work {i}")
+            db.sessions.set_title(sid, f"Lane Work {i}")
         for i in range(12):
             sid = f"foreign_{i}"
-            db.create_session(
-                sid, "telegram",
+            seed_session(
+                db, sid, "telegram",
                 session_key=f"agent:main:telegram:dm:foreign-{i}",
                 user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
             )
-            db.set_session_title(sid, f"Foreign Work {i}")
+            db.sessions.set_title(sid, f"Foreign Work {i}")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
@@ -261,20 +276,18 @@ class TestHandleResumeCommand:
     async def test_bare_resume_ranks_lineages_by_last_activity(self, tmp_path):
         """A lineage whose root started days ago but was touched last must lead the list: the
         picker ranks by lineage activity, not root ``started_at`` (#114271)."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume")
         lane_key = _session_key_for_event(event)
         t0 = time.time() - 5 * 86400
         for sid, started, active in (("old_root", t0, t0 + 4 * 86400), ("new_root", t0 + 86400, t0 + 86400 + 60)):
-            db.create_session(sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
-            db.append_message(sid, "user", "hi")
-            db._conn.execute("UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?", (started, active, sid))
-            db._conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (active, sid))
-        db._conn.commit()
-        db.set_session_title("old_root", "Old But Active")
-        db.set_session_title("new_root", "Newer But Idle")
+            seed_session(db, sid, "telegram", session_key=lane_key, user_id="12345", chat_id="67890")
+            seed_messages(db, sid, {"role": "user", "content": "hi"})
+            raw_holder(db)._execute_write(lambda conn: (
+                conn.execute("UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?", (started, active, sid)),
+                conn.execute("UPDATE messages SET timestamp=? WHERE session_id=?", (active, sid))))
+        db.sessions.set_title("old_root", "Old But Active")
+        db.sessions.set_title("new_root", "Newer But Idle")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
@@ -284,16 +297,14 @@ class TestHandleResumeCommand:
 
     @pytest.mark.asyncio
     async def test_bare_resume_admin_all_preserves_same_platform_widening(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume --all")
-        db.create_session(
-            "other_lane", "telegram",
+        seed_session(
+            db, "other_lane", "telegram",
             session_key="agent:main:telegram:dm:other",
             user_id="other-user", chat_id="other",
         )
-        db.set_session_title("other_lane", "Other Lane Work")
+        db.sessions.set_title("other_lane", "Other Lane Work")
 
         runner = _make_runner(session_db=db, event=event)
         runner._resume_caller_is_admin = lambda _source: True
@@ -304,31 +315,29 @@ class TestHandleResumeCommand:
 
     @pytest.mark.asyncio
     async def test_numeric_resume_fallback_uses_exact_lane_candidates(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume 2")
         lane_key = _session_key_for_event(event)
-        db.create_session(
-            "lane_older", "telegram", session_key=lane_key,
+        seed_session(
+            db, "lane_older", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("lane_older", "Lane Older")
-        db.create_session(
-            "lane_newer", "telegram", session_key=lane_key,
+        db.sessions.set_title("lane_older", "Lane Older")
+        seed_session(
+            db, "lane_newer", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("lane_newer", "Lane Newer")
+        db.sessions.set_title("lane_newer", "Lane Newer")
         for i in range(12):
             sid = f"foreign_{i}"
-            db.create_session(
-                sid, "telegram",
+            seed_session(
+                db, sid, "telegram",
                 session_key=f"agent:main:telegram:dm:foreign-{i}",
                 user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
             )
-            db.set_session_title(sid, f"Foreign Work {i}")
-        db.create_session(
-            "current_session_001", "telegram", session_key=lane_key,
+            db.sessions.set_title(sid, f"Foreign Work {i}")
+        seed_session(
+            db, "current_session_001", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
 
@@ -344,9 +353,7 @@ class TestHandleResumeCommand:
     async def test_bare_resume_normalizes_telegram_lobby_source_to_bound_topic(
         self, tmp_path
     ):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/resume")
         topic_source = SessionSource(
             platform=Platform.TELEGRAM,
@@ -356,14 +363,14 @@ class TestHandleResumeCommand:
             thread_id="topic-42",
         )
         topic_key = build_session_key(topic_source)
-        db.create_session(
-            "topic_session", "telegram", session_key=topic_key,
+        seed_session(
+            db, "topic_session", "telegram", session_key=topic_key,
             user_id="12345", chat_id="67890", chat_type="dm",
             thread_id="topic-42",
         )
-        db.set_session_title("topic_session", "Recovered Topic Work")
-        db.enable_telegram_topic_mode(chat_id="67890", user_id="12345")
-        db.bind_telegram_topic(
+        db.sessions.set_title("topic_session", "Recovered Topic Work")
+        db.routing.enable_topic_mode(chat_id="67890", user_id="12345")
+        db.routing.bind_topic(
             chat_id="67890",
             thread_id="topic-42",
             user_id="12345",
@@ -371,11 +378,11 @@ class TestHandleResumeCommand:
             session_id="topic_session",
         )
         lobby_key = _session_key_for_event(event)
-        db.create_session(
-            "lobby_session", "telegram", session_key=lobby_key,
+        seed_session(
+            db, "lobby_session", "telegram", session_key=lobby_key,
             user_id="12345", chat_id="67890", chat_type="dm",
         )
-        db.set_session_title("lobby_session", "Lobby Work")
+        db.sessions.set_title("lobby_session", "Lobby Work")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
@@ -396,34 +403,32 @@ class TestHandleSessionsCommand:
 
         from gateway.config import GatewayConfig
         from gateway.session import AsyncSessionStore, SessionStore
-        from hermes_state import AsyncSessionDB
 
         event = _make_event(text="/sessions full")
         store = SessionStore(
             sessions_dir=tmp_path / "sessions",
             config=GatewayConfig(),
         )
-        db = store._db
+        db = store.persistence
         assert db is not None
 
         root = store.get_or_create_session(event.source)
         root_id = root.session_id
-        db.set_session_title(root_id, "Legacy reset parent")
+        db.sessions.set_title(root_id, "Legacy reset parent")
         child = store.reset_session(root.session_key)
         assert child is not None
         child_id = child.session_id
-        db.set_session_title(child_id, "Legacy reset child")
+        db.sessions.set_title(child_id, "Legacy reset child")
         # Reproduce the on-disk shape from before _reset_from existed.
-        db._conn.execute(
+        raw_holder(db)._execute_write(lambda conn: conn.execute(
             "UPDATE sessions SET model_config = NULL WHERE id = ?",
             (child_id,),
-        )
-        db._conn.commit()
+        ))
 
         runner = _make_runner(session_db=None, event=event)
         runner.session_store = store
         runner._async_session_store = AsyncSessionStore(store)
-        runner._session_db = AsyncSessionDB(db)
+        runner._session_db = runner.persistence = db
 
         before_resume = await runner._handle_sessions_command(event)
         assert "Legacy reset parent" in before_resume
@@ -436,10 +441,10 @@ class TestHandleSessionsCommand:
         # The parent is now the CURRENT session: since #68547 it stays in the
         # listing with a "(current)" marker instead of being hidden.
         assert "**Legacy reset parent** (current)" in after_resume
-        child_row = db.get_session(child_id)
+        child_row = session_row(db, child_id)
         assert child_row is not None
         assert json.loads(child_row["model_config"])["_reset_from"] == root_id
-        db.close()
+        store.close_all_db_handles()
 
     @pytest.mark.asyncio
     async def test_sessions_full_lists_conversations_created_by_gateway_resets(
@@ -449,18 +454,17 @@ class TestHandleSessionsCommand:
 
         from gateway.config import GatewayConfig
         from gateway.session import AsyncSessionStore, SessionStore
-        from hermes_state import AsyncSessionDB
 
         event = _make_event(text="/sessions full")
         store = SessionStore(
             sessions_dir=tmp_path / "sessions",
             config=GatewayConfig(),
         )
-        db = store._db
+        db = store.persistence
         assert db is not None
 
         entry = store.get_or_create_session(event.source)
-        db.set_session_title(entry.session_id, "Greeting via Telegram")
+        db.sessions.set_title(entry.session_id, "Greeting via Telegram")
         for title in (
             "Store memories with priority",
             "Extract AI news to Telegram",
@@ -469,35 +473,35 @@ class TestHandleSessionsCommand:
             previous_id = entry.session_id
             entry = store.reset_session(entry.session_key)
             assert entry is not None
-            db.set_session_title(entry.session_id, title)
-            reset_row = db.get_session(entry.session_id)
+            db.sessions.set_title(entry.session_id, title)
+            reset_row = session_row(db, entry.session_id)
             assert reset_row is not None
             assert json.loads(reset_row["model_config"])["_reset_from"] == previous_id
 
         # The gateway creates the identity row before the agent exists. Its
         # first-turn create_session upsert must enrich the marker-only config,
         # while later bare/retry upserts must not replace the established data.
-        db.create_session(
-            entry.session_id,
+        seed_session(
+            db, entry.session_id,
             "telegram",
             model_config={"max_iterations": 60},
         )
-        enriched = json.loads(db.get_session(entry.session_id)["model_config"])
+        enriched = json.loads(session_row(db, entry.session_id)["model_config"])
         assert enriched == {
             "max_iterations": 60,
             "_reset_from": previous_id,
         }
-        db.create_session(
-            entry.session_id,
+        seed_session(
+            db, entry.session_id,
             "telegram",
             model_config={"max_iterations": 999},
         )
-        assert json.loads(db.get_session(entry.session_id)["model_config"]) == enriched
+        assert json.loads(session_row(db, entry.session_id)["model_config"]) == enriched
 
         runner = _make_runner(session_db=None, event=event)
         runner.session_store = store
         runner._async_session_store = AsyncSessionStore(store)
-        runner._session_db = AsyncSessionDB(db)
+        runner._session_db = runner.persistence = db
 
         result = await runner._handle_sessions_command(event)
 
@@ -507,45 +511,43 @@ class TestHandleSessionsCommand:
         # The live tip is the current session — listed with the marker since
         # #68547 rather than hidden.
         assert "**Current Telegram work** (current)" in result
-        db.close()
+        store.close_all_db_handles()
 
     @pytest.mark.asyncio
     async def test_sessions_busy_platform_lists_exact_lane_and_excludes_current_tip(
         self, tmp_path
     ):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions")
         lane_key = _session_key_for_event(event)
         for i in range(11):
             sid = f"lane_root_{i}"
-            db.create_session(
-                sid, "telegram", session_key=lane_key,
+            seed_session(
+                db, sid, "telegram", session_key=lane_key,
                 user_id="12345", chat_id="67890",
             )
-            db.set_session_title(sid, f"Lane Work {i}")
+            db.sessions.set_title(sid, f"Lane Work {i}")
 
-        db.create_session(
-            "current_root", "telegram", session_key=lane_key,
+        seed_session(
+            db, "current_root", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("current_root", "Current compressed root")
-        db.end_session("current_root", "compression")
-        db.create_session(
-            "current_tip", "telegram", session_key=lane_key,
+        db.sessions.set_title("current_root", "Current compressed root")
+        db.sessions.end("current_root", "compression")
+        seed_session(
+            db, "current_tip", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890", parent_session_id="current_root",
         )
-        db.set_session_title("current_tip", "Current compressed tip")
+        db.sessions.set_title("current_tip", "Current compressed tip")
 
         for i in range(60):
             sid = f"foreign_{i}"
-            db.create_session(
-                sid, "telegram",
+            seed_session(
+                db, sid, "telegram",
                 session_key=f"agent:main:telegram:dm:foreign-{i}",
                 user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
             )
-            db.set_session_title(sid, f"Foreign Work {i}")
+            db.sessions.set_title(sid, f"Foreign Work {i}")
 
         runner = _make_runner(
             session_db=db, current_session_id="current_tip", event=event
@@ -567,22 +569,20 @@ class TestHandleSessionsCommand:
 
     @pytest.mark.asyncio
     async def test_sessions_admin_all_preserves_cross_origin_widening(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions all")
         lane_key = _session_key_for_event(event)
-        db.create_session(
-            "tg_named", "telegram", session_key=lane_key,
+        seed_session(
+            db, "tg_named", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("tg_named", "Telegram Work")
-        db.create_session(
-            "discord_named", "discord",
+        db.sessions.set_title("tg_named", "Telegram Work")
+        seed_session(
+            db, "discord_named", "discord",
             session_key="agent:main:discord:dm:other",
             user_id="other-user", chat_id="other",
         )
-        db.set_session_title("discord_named", "Discord Work")
+        db.sessions.set_title("discord_named", "Discord Work")
 
         runner = _make_runner(session_db=db, event=event)
         runner._resume_caller_is_admin = lambda _source: True
@@ -594,9 +594,7 @@ class TestHandleSessionsCommand:
 
     @pytest.mark.asyncio
     async def test_sessions_normalizes_telegram_lobby_source_to_bound_topic(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions")
         topic_source = SessionSource(
             platform=Platform.TELEGRAM,
@@ -606,14 +604,14 @@ class TestHandleSessionsCommand:
             thread_id="topic-42",
         )
         topic_key = build_session_key(topic_source)
-        db.create_session(
-            "topic_session", "telegram", session_key=topic_key,
+        seed_session(
+            db, "topic_session", "telegram", session_key=topic_key,
             user_id="12345", chat_id="67890", chat_type="dm",
             thread_id="topic-42",
         )
-        db.set_session_title("topic_session", "Recovered Topic Work")
-        db.enable_telegram_topic_mode(chat_id="67890", user_id="12345")
-        db.bind_telegram_topic(
+        db.sessions.set_title("topic_session", "Recovered Topic Work")
+        db.routing.enable_topic_mode(chat_id="67890", user_id="12345")
+        db.routing.bind_topic(
             chat_id="67890",
             thread_id="topic-42",
             user_id="12345",
@@ -621,11 +619,11 @@ class TestHandleSessionsCommand:
             session_id="topic_session",
         )
         lobby_key = _session_key_for_event(event)
-        db.create_session(
-            "lobby_session", "telegram", session_key=lobby_key,
+        seed_session(
+            db, "lobby_session", "telegram", session_key=lobby_key,
             user_id="12345", chat_id="67890", chat_type="dm",
         )
-        db.set_session_title("lobby_session", "Lobby Work")
+        db.sessions.set_title("lobby_session", "Lobby Work")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_sessions_command(event)
@@ -643,17 +641,16 @@ class TestHandleSessionsCommand:
         (the enumeration half of the /resume IDOR). Cross-origin listing is
         gated behind an explicitly-configured admin, which the default test
         config is not."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions all full")
         lane_key = _session_key_for_event(event)
-        db.create_session(
-            "tg_named", "telegram", session_key=lane_key,
+        seed_session(
+            db, "tg_named", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("tg_named", "Telegram Work")
-        db.create_session("discord_unnamed", "discord")  # other origin
-        db.append_message("discord_unnamed", "user", "discord first prompt")
+        db.sessions.set_title("tg_named", "Telegram Work")
+        seed_session(db, "discord_unnamed", "discord")  # other origin
+        seed_messages(db, "discord_unnamed", {"role": "user", "content": "discord first prompt"})
 
         runner = _make_runner(session_db=db, event=event)
 
@@ -670,23 +667,22 @@ class TestHandleSessionsCommand:
     async def test_sessions_search_finds_older_titled_session(self, tmp_path):
         """`/sessions search <query>` matches titles beyond the recent-10 list
         and orders by activity, keeping the caller's own scope."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions search an94")
         lane_key = _session_key_for_event(event)
         # Bury the target under newer sessions so a plain listing misses it.
-        db.create_session(
-            "target_an94", "telegram", session_key=lane_key,
+        seed_session(
+            db, "target_an94", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("target_an94", "AN-94 Prestige Barrel Build #2")
+        db.sessions.set_title("target_an94", "AN-94 Prestige Barrel Build #2")
         for i in range(12):
             sid = f"filler_{i}"
-            db.create_session(
-                sid, "telegram", session_key=lane_key,
+            seed_session(
+                db, sid, "telegram", session_key=lane_key,
                 user_id="12345", chat_id="67890",
             )
-            db.set_session_title(sid, f"Filler {i}")
+            db.sessions.set_title(sid, f"Filler {i}")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_sessions_command(event)
@@ -701,21 +697,20 @@ class TestHandleSessionsCommand:
     async def test_sessions_search_does_not_leak_other_users_sessions(self, tmp_path):
         """Search results honor the same owner-scoping guard as listing —
         a matching title owned by a different user/chat must not surface."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         event = _make_event(text="/sessions search an94")
         lane_key = _session_key_for_event(event)
-        db.create_session(
-            "mine", "telegram", session_key=lane_key,
+        seed_session(
+            db, "mine", "telegram", session_key=lane_key,
             user_id="12345", chat_id="67890",
         )
-        db.set_session_title("mine", "AN-94 mine")
-        db.create_session(
-            "theirs", "telegram",
+        db.sessions.set_title("mine", "AN-94 mine")
+        seed_session(
+            db, "theirs", "telegram",
             session_key="agent:main:telegram:dm:55555",
             user_id="99999", chat_id="55555",
         )
-        db.set_session_title("theirs", "AN-94 someone else's secret")
+        db.sessions.set_title("theirs", "AN-94 someone else's secret")
 
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_sessions_command(event)
@@ -737,12 +732,11 @@ class TestHandleSessionsCommand:
         The live-origin guard already compares user_id_alt correctly; here the
         target is persisted-only, so the fallback fails closed whenever the
         caller keys on user_id_alt and the row can't prove that participant."""
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = _storage_handle(tmp_path)
         # Persisted rows carry only user_id (no user_id_alt column).
-        db.create_session("victim_alt_group", "signal", user_id="+15550001111",
-                          chat_id="signal-group", chat_type="group")
-        db.create_session("victim_alt_dm", "signal", user_id="+15550001111")  # no chat_id
+        seed_session(db, "victim_alt_group", "signal", user_id="+15550001111",
+                         chat_id="signal-group", chat_type="group")
+        seed_session(db, "victim_alt_dm", "signal", user_id="+15550001111")  # no chat_id
         runner = _make_runner(session_db=db)
         runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
 
@@ -762,9 +756,9 @@ class TestHandleSessionsCommand:
 
         # Regression: a caller WITHOUT user_id_alt (Telegram-style, keyed on
         # user_id) still resumes its own persisted per-user group row.
-        tg_db = SessionDB(db_path=tmp_path / "state_tg.db")
-        tg_db.create_session("own_group", "telegram", user_id="12345",
-                             chat_id="chat-a", chat_type="group")
+        tg_db = _storage_handle(tmp_path / "tg")
+        seed_session(tg_db, "own_group", "telegram", user_id="12345",
+                            chat_id="chat-a", chat_type="group")
         tg_runner = _make_runner(session_db=tg_db)
         tg_runner._gateway_session_origin_for_id = lambda sid: None
         tg_caller = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a",
@@ -782,10 +776,9 @@ class TestHandleSessionsCommand:
 
     @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
-        from hermes_state import SessionDB
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("tg_session", "telegram", user_id="12345", chat_id="67890")
-        db.set_session_title("tg_session", "Telegram Work")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "tg_session", "telegram", user_id="12345", chat_id="67890")
+        db.sessions.set_title("tg_session", "Telegram Work")
 
         event = _make_event(text="/sessions")
         runner = _make_runner(session_db=db, event=event)

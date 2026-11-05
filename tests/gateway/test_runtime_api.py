@@ -83,7 +83,7 @@ async def test_owner_serves_existing_routes_and_ws_without_signal_ownership(monk
     finally:
         await stop_gateway_api(handle)
         if runner._session_db is not None:
-            await runner._session_db.close()
+            runner._session_db.close()
     await stop_gateway_api(handle)
     assert web.app.state.session_authority is None
     assert before == {sig: signal.getsignal(sig) for sig in before}

@@ -7,6 +7,9 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under, store_location
+
+from tests.fixtures.storage_holder import policy_key
 
 _CONFIG = 'platform_toolsets: {cli: []}\nmodel: {provider: custom, default: m, base_url: http://x.invalid/v1}\n'
 
@@ -20,7 +23,7 @@ async def _owner(home, monkeypatch):
     monkeypatch.setattr(run, '_hermes_home', home)
     monkeypatch.setenv('HERMES_HOME', str(home))
     store = SessionStore(home / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(home), instance_id='fixture')
@@ -37,11 +40,10 @@ def _home(tmp_path, config=_CONFIG):
 def _create(owner, actor, home, request_id, **extra):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     # A shell client attached through the gateway's own ticket (the gateway's proof it is on this host).
     ref = create_local_session(owner, actor, {'request_id': request_id, 'source': 'cli', 'cwd': str(home),
                                               'toolsets': [], **extra}, client_local=True)
-    return ref, restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+    return ref, restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
 
 
 def _turn_prompt(owner, policy):
@@ -79,7 +81,7 @@ async def test_each_session_runs_its_own_clients_ephemeral_prompt(tmp_path, monk
         assert _turn_prompt(owner, desktop) == 'FIRST'
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -98,7 +100,7 @@ async def test_each_session_reads_its_own_clients_prefill_file(tmp_path, monkeyp
         assert session_prefill(owner, policy, ref.session_id) is None
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -118,12 +120,12 @@ async def test_each_session_resolves_its_own_clients_provider_request(tmp_path, 
         assert resolve_requested_provider() == 'nous'  # the gateway's own (messaging/cron)
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_client_env_is_filtered_validated_and_never_echoed(tmp_path, monkeypatch):
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     try:
@@ -133,20 +135,19 @@ async def test_client_env_is_filtered_validated_and_never_echoed(tmp_path, monke
         assert policy.client_env() == {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P', 'NVM_DIR': '/client/.nvm'}
         assert 'client_env' not in json.loads(policy.request_json)  # launch_request stays value-free
         for bad in ('PATH=/x', {'PATH': 1}, {1: 'x'}):
-            with pytest.raises(RuntimeStoreError) as exc:
+            with pytest.raises(AuthorityRefusal) as exc:
                 _create(owner, connection.actor, home, f'bad-{bad!r}', client_env=bad)
             assert exc.value.reason == 'invalid_params'
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def _strip_new_policy_fields(db_path, session_id):
     """Rewrite a receipt into the exact shape a gateway before this change committed."""
-    from hermes_state_local import POLICY_PREFIX
     conn = sqlite3.connect(db_path)
     try:
-        key = POLICY_PREFIX + session_id
+        key = policy_key(session_id)
         receipt = json.loads(conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()[0])
         assert receipt['policy'].pop('client_env_json') is None
         conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(receipt), key))
@@ -158,58 +159,56 @@ def _strip_new_policy_fields(db_path, session_id):
 @pytest.mark.asyncio
 async def test_exact_retry_of_a_session_created_before_client_env(tmp_path, monkeypatch):
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path)
     owner, connection = await _owner(home, monkeypatch)
     params = {'request_id': 'old', 'source': 'cli', 'cwd': str(home), 'toolsets': []}
     try:
         ref = create_local_session(owner, connection.actor, dict(params))
-        _strip_new_policy_fields(owner.db.db_path, ref.session_id)
-        saved = local_receipt(owner.db, ref.session_id)['policy']
+        _strip_new_policy_fields(store_location(owner.persistence.scope), ref.session_id)
+        saved = owner.persistence.bindings.receipt(ref.session_id).policy
         assert create_local_session(owner, connection.actor, dict(params)) == ref
-        assert local_receipt(owner.db, ref.session_id)['policy'] == saved
+        assert owner.persistence.bindings.receipt(ref.session_id).policy == saved
         # A retry is the same request: a client environment it never carried is a different one.
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             create_local_session(owner, connection.actor, {**params, 'client_env': {}})
         new = {**params, 'request_id': 'new', 'client_env': {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'A'}}
         ref = create_local_session(owner, connection.actor, dict(new))
         assert create_local_session(owner, connection.actor, dict(new)) == ref
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             create_local_session(owner, connection.actor, {**new, 'client_env': {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'B'}})
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_exact_retry_is_judged_by_the_committed_map_not_the_current_allowlist(tmp_path, monkeypatch):
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     env = {'GEM_HOME': '/gems', 'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
     params = {'request_id': 'g', 'source': 'cli', 'cwd': str(home), 'toolsets': [], 'client_env': env}
     try:
         ref = create_local_session(owner, connection.actor, dict(params), client_local=True)
-        saved = local_receipt(owner.db, ref.session_id)['policy']
+        saved = owner.persistence.bindings.receipt(ref.session_id).policy
         assert json.loads(saved['client_env_json']) == {'GEM_HOME': '/gems', 'PATH': '/client/bin'}
         # The profile stops listing GEM_HOME and starts listing BUNDLE_PATH: both directions of the
         # change leave the exact retry resolving to its committed session, unchanged.
         (home / 'config.yaml').write_text(_CONFIG + 'terminal: {client_env_passthrough: [BUNDLE_PATH]}\n')
         assert create_local_session(owner, connection.actor, dict(params)) == ref
-        assert local_receipt(owner.db, ref.session_id)['policy'] == saved
+        assert owner.persistence.bindings.receipt(ref.session_id).policy == saved
         # A committed value changed or missing is a different request.
         for changed in ({**env, 'GEM_HOME': '/other'}, {'PATH': '/client/bin'}):
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 create_local_session(owner, connection.actor, {**params, 'client_env': changed})
         # A fresh create takes the current rules.
         _, fresh = _create(owner, connection.actor, home, 'g2', client_env=env)
         assert fresh.client_env() == {'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -218,7 +217,7 @@ async def test_exact_retry_compares_the_complete_map_under_its_committed_rules(t
     must equal the committed map: a name those rules keep added, a stored one dropped or a value changed
     is a different request; a name they would have dropped is ignored, whatever the rules are now."""
     from gateway.session_local import create_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     base = {'source': 'cli', 'cwd': str(home), 'toolsets': []}
@@ -233,28 +232,27 @@ async def test_exact_retry_compares_the_complete_map_under_its_committed_rules(t
         (home / 'config.yaml').write_text(_CONFIG + 'terminal: {client_env_passthrough: [BUNDLE_PATH]}\n')
         assert create('x', {**env, 'BUNDLE_PATH': '/b', 'NODE_AUTH_TOKEN': 't', 'HERMES_YOLO_MODE': '1'}) == ref
         for added in ({'VIRTUAL_ENV': '/venv'}, {'NVM_DIR': '/nvm'}, {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}):
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 create('x', {**env, **added})
         assert create('e', {'BUNDLE_PATH': '/b'}) == empty  # not allowlisted when 'e' committed
         for sent in ({'PATH': '/client/bin'}, {'GEM_HOME': '/g'}, 'PATH=/x'):
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 create('e', sent)
         # Committed without the gateway's proof of locality: host values were dropped then, so they are now.
         assert create('r', {'PATH': '/b', 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}) == remote
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             create('r', {'PATH': '/a', 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'Q'})
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_overlapping_retries_across_an_allowlist_change_agree_with_sequential_ones(tmp_path, monkeypatch):
     """Two creates of one request_id staged on either side of an allowlist edit: the transactional commit
     judges the loser by the winner's committed rules, exactly as a sequential retry would be."""
-    from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session, local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_local import commit_local_session, stage_local_session
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
     env = {'GEM_HOME': '/gems', 'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
@@ -267,24 +265,24 @@ async def test_overlapping_retries_across_an_allowlist_change_agree_with_sequent
         (home / 'config.yaml').write_text(_CONFIG + 'terminal: {client_env_passthrough: [BUNDLE_PATH]}\n')
         same, added = stage(env), stage({**env, 'VIRTUAL_ENV': '/venv'})
         assert all(isinstance(receipt, dict) for receipt in (first, same, added))  # all staged before the row
-        commit_local_session(owner.db, epoch=owner.epoch, receipt=first)
-        saved = local_receipt(owner.db, first['session_id'])
-        assert commit_local_session(owner.db, epoch=owner.epoch, receipt=same)['policy'] == saved['policy']
-        with pytest.raises(RuntimeStoreError):
-            commit_local_session(owner.db, epoch=owner.epoch, receipt=added)
-        assert local_receipt(owner.db, first['session_id']) == saved
+        commit_local_session(owner.persistence, epoch=owner.epoch, receipt=first)
+        saved = owner.persistence.bindings.receipt(first['session_id'])
+        commit_local_session(owner.persistence, epoch=owner.epoch, receipt=same)
+        assert owner.persistence.bindings.receipt(first['session_id']).policy == saved.policy
+        with pytest.raises(AuthorityRefusal):
+            commit_local_session(owner.persistence, epoch=owner.epoch, receipt=added)
+        assert owner.persistence.bindings.receipt(first['session_id']) == saved
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_a_copied_staged_receipt_is_never_judged_by_its_own_filtered_map(tmp_path, monkeypatch):
     """An overlapping create's own ``client_env`` is owner memory on its staged receipt. A plain copy has lost
     it, and its filtered map (an allowlist edit dropped GEM_HOME) equals the winner's: the commit refuses it."""
-    from gateway.session_local import stage_local_session
-    from hermes_state_local import commit_local_session
-    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_local import commit_local_session, stage_local_session
+    from persistence.core.errors import AuthorityRefusal
     home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
     owner, connection = await _owner(home, monkeypatch)
 
@@ -295,14 +293,14 @@ async def test_a_copied_staged_receipt_is_never_judged_by_its_own_filtered_map(t
         first = stage({'PATH': '/client/bin'})
         (home / 'config.yaml').write_text(_CONFIG)
         added = stage({'PATH': '/client/bin', 'GEM_HOME': '/gems'})
-        commit_local_session(owner.db, epoch=owner.epoch, receipt=first)
-        with pytest.raises(RuntimeStoreError):
-            commit_local_session(owner.db, epoch=owner.epoch, receipt=added)
-        with pytest.raises(RuntimeStoreError):
-            commit_local_session(owner.db, epoch=owner.epoch, receipt=dict(added))
+        commit_local_session(owner.persistence, epoch=owner.epoch, receipt=first)
+        with pytest.raises(AuthorityRefusal):
+            commit_local_session(owner.persistence, epoch=owner.epoch, receipt=added)
+        with pytest.raises(AuthorityRefusal):
+            commit_local_session(owner.persistence, epoch=owner.epoch, receipt=dict(added))
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -336,7 +334,7 @@ async def test_configured_toolchain_names_a_local_client_omitted_never_leak_from
         assert _make_run_env({})['GEM_HOME'] == '/alpha'  # messaging/cron/Desktop: the gateway's own
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -352,8 +350,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     from gateway.session_policy import policy_scope, restore_policy
     from gateway.session_worker_construct import session_prefill
     from hermes_cli.runtime_provider import resolve_requested_provider
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from tools.environments.local import _make_run_env
     home = _home(tmp_path, 'platform_toolsets: {cli: []}\nmodel: {default: m}\n')  # no configured provider
     repo = tmp_path / 'repo'
@@ -366,7 +363,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     owner, remote = await _owner(home, monkeypatch)  # an attach without the gateway's own ticket
     local = AuthorityConnection(owner, object(), {'user_id': 'owner', 'native_bootstrap': True})
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: restore_policy(
-        local_receipt(owner.db, source.chat_id)['policy']))
+        owner.persistence.bindings.receipt(source.chat_id).policy))
     sent = {'PATH': '/client/bin:/usr/bin', 'NVM_DIR': '/client/nvm', 'HERMES_ENABLE_PROJECT_PLUGINS': '1',
             'HERMES_PREFILL_MESSAGES_FILE': str(home / 'client.json'),
             'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P', 'HERMES_INFERENCE_PROVIDER': 'openrouter'}
@@ -375,7 +372,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
         snapshot = await connection.create(None, {'request_id': request_id, 'source': 'cli', 'cwd': str(repo),
                                                   'toolsets': [], 'client_env': dict(sent)})
         ref = restore_local_session(owner, snapshot['session_id'])
-        policy = restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+        policy = restore_policy(owner.persistence.bindings.receipt(ref.session_id).policy)
         with policy_scope(policy, authority=owner):
             run = _make_run_env({})
             seen = (run['PATH'].split(':')[0], run.get('NVM_DIR'), _turn_prompt(owner, policy),
@@ -393,13 +390,13 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
         assert prefill == [{'role': 'user', 'content': 'gateway'}]
         assert 'not attached to this gateway locally' in info['config_warning']
         assert 'project plugins' not in info['config_warning']
-        with pytest.raises(RuntimeStoreError):  # a client cannot claim locality for itself
+        with pytest.raises(AuthorityRefusal):  # a client cannot claim locality for itself
             await remote.create(None, {'request_id': 'claim', 'source': 'cli', 'cwd': str(repo), 'toolsets': [],
                                        'client_env': dict(sent), 'client_local': True})
     finally:
         await local.close()
         await remote.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -411,7 +408,7 @@ async def test_runtime_describe_lists_client_env(tmp_path, monkeypatch):
         assert 'client_env' in described['session_create']['parameters']
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 def test_auto_started_gateway_does_not_inherit_client_behaviour_env(tmp_path, monkeypatch):

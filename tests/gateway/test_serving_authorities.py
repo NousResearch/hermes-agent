@@ -4,22 +4,25 @@
 (``None``) slot and a parked profile's retained (retiring) authority are not served, so startup
 recovery and a webhook's cross-ledger readback never read them.
 """
-import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.session_authorities import SessionAuthorities, serving_authorities
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from persistence import TransientStoreError
 
 
 class _Ledger:
+    """A served authority's storage interface handle: its admission ledger, or a store that fails every read."""
+
     def __init__(self, rows=(), broken=False):
         self.rows, self.broken = list(rows), broken
+        self.admissions = self
 
-    def _read_all(self, *_args):
+    def webhook_ingress_payloads(self, *, chat_id):
         if self.broken:
-            raise sqlite3.OperationalError('disk I/O error')
+            raise TransientStoreError('disk I/O error')
         return self.rows
 
 
@@ -27,8 +30,8 @@ def _registry(tmp_path):
     homes = [tmp_path / name for name in ('root', 'beta', 'gamma')]
     for home in homes:
         home.mkdir()
-    launch = SimpleNamespace(profile_id=str(homes[0]), db=_Ledger())
-    parked = SimpleNamespace(profile_id=str(homes[1]), db=_Ledger(broken=True), retiring=True)
+    launch = SimpleNamespace(profile_id=str(homes[0]), persistence=_Ledger())
+    parked = SimpleNamespace(profile_id=str(homes[1]), persistence=_Ledger(broken=True), retiring=True)
     registry = SessionAuthorities(homes[0], multiplexed=True)
     registry.add(homes[0], launch)
     registry.add(homes[1], parked, name='beta')
@@ -48,5 +51,5 @@ def test_a_webhook_readback_never_reads_a_parked_store(tmp_path, monkeypatch):
     # A reply leg scoped to a profile this process does not serve searches every served ledger.
     monkeypatch.setattr('gateway.session_authorities.active_authority', lambda _runner: None)
     adapter = SimpleNamespace(gateway_runner=runner, _message_handler=None, _delivery_info={})
-    with pytest.raises(RuntimeStoreError, match='not_found'):
+    with pytest.raises(AuthorityRefusal, match='not_found'):
         retained_destination(adapter, 'chat-1')

@@ -10,13 +10,20 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.platforms import api_server_store
 from gateway.platforms.api_server import APIServerAdapter
-from hermes_state import SessionDB
+from hermes_constants import get_hermes_home
+from persistence.conversation.messages import NewMessage, ReplaceMode
+from persistence.conversation.sessions import RuntimeLock
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
-def session_db(tmp_path):
-    db = SessionDB(tmp_path / "state.db")
+def session_db(tmp_path, api_store):
+    db = open_persistence(profile_scope(home=tmp_path))
+    api_store(db)
     try:
         yield db
     finally:
@@ -28,14 +35,14 @@ def session_db(tmp_path):
 @pytest.fixture
 def adapter(session_db):
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = session_db
+    adapter._home_stores[str(get_hermes_home())] = session_db
     return adapter
 
 
 @pytest.fixture
 def auth_adapter(session_db):
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
-    adapter._session_db = session_db
+    adapter._home_stores[str(get_hermes_home())] = session_db
     return adapter
 
 
@@ -83,15 +90,15 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 async def test_get_session_projects_delegate_provenance_without_model_config(
     adapter, session_db
 ):
-    session_db.create_session("parent", "desktop")
-    child_id = session_db.create_session(
-        "delegate-child",
+    seed_session(session_db, "parent", "desktop")
+    child_id = seed_session(
+        session_db, "delegate-child",
         "desktop",
         parent_session_id="parent",
         model_config={"_delegate_from": "parent", "api_key": "must-not-leak"},
     )
-    branch_id = session_db.create_session(
-        "visible-branch",
+    branch_id = seed_session(
+        session_db, "visible-branch",
         "desktop",
         parent_session_id="parent",
         model_config={"_branched_from": "parent"},
@@ -114,10 +121,11 @@ async def test_get_session_projects_delegate_provenance_without_model_config(
 
 @pytest.mark.asyncio
 async def test_session_messages_default_to_latest_bounded_page(adapter, session_db):
-    session_id = session_db.create_session("bounded-messages", "api_server")
-    session_db.replace_messages(
+    session_id = seed_session(session_db, "bounded-messages", "api_server")
+    session_db.messages.replace_transcript(
         session_id,
-        [{"role": "user", "content": f"msg {i}"} for i in range(501)],
+        [NewMessage.from_live({"role": "user", "content": f"msg {i}"}) for i in range(501)],
+        ReplaceMode.DESTRUCTIVE,
     )
 
     app = _create_session_app(adapter)
@@ -150,7 +158,7 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 async def test_forked_session_stays_listable_and_parent_survives_failed_fork(adapter, session_db):
     """A fork is created before the parent is ended (#11030) and carries the explicit branch
     marker, so it still shows in the default listing (the timestamp fallback no longer holds)."""
-    session_db.create_session("parent", "api_server")
+    seed_session(session_db, "parent", "api_server")
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
         resp = await cli.post("/api/sessions/parent/fork", json={"id": "child"})
@@ -159,36 +167,38 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
         ids = {row["id"] for row in listed["data"]}
         assert {"parent", "child"} <= ids, ids
 
-        session_db.create_session("solo", "api_server")
-        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+        seed_session(session_db, "solo", "api_server")
+        sessions = api_server_store.adapter_persistence(adapter).sessions
+        with patch.object(sessions, "create", side_effect=RuntimeError("boom")):
             resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
         assert resp.status >= 500
-    assert session_db.get_session("solo")["end_reason"] is None
+    assert session_row(session_db, "solo")["end_reason"] is None
 
 
 @pytest.mark.asyncio
 async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, session_db, monkeypatch):
     """Canonical Bot Chat recovery must not run SQLite work in the HTTP loop."""
-    session_id = session_db.create_session("archived-bot-chat", "gateway_botmode")
-    assert session_db.set_session_title(session_id, "Bot Chat")
-    session_db.end_session(session_id, "ws_orphan_reap")
-    assert session_db.set_session_archived(session_id, True)
+    session_id = seed_session(session_db, "archived-bot-chat", "gateway_botmode")
+    assert session_db.sessions.set_title(session_id, "Bot Chat")
+    session_db.sessions.end(session_id, "ws_orphan_reap")
+    assert session_db.sessions.set_archived(session_id, True).changed
 
     loop_thread = threading.get_ident()
     call_threads = {}
-    get_by_title = session_db.get_session_by_title
-    unarchive = session_db.unarchive_recoverable_session
+    sessions = api_server_store.adapter_persistence(adapter).sessions
+    get_by_title = sessions.get_by_title
+    unarchive = sessions.unarchive_recoverable
 
     def record_get_by_title(title):
-        call_threads["get_session_by_title"] = threading.get_ident()
+        call_threads["get_by_title"] = threading.get_ident()
         return get_by_title(title)
 
     def record_unarchive(stale_id):
-        call_threads["unarchive_recoverable_session"] = threading.get_ident()
+        call_threads["unarchive_recoverable"] = threading.get_ident()
         return unarchive(stale_id)
 
-    monkeypatch.setattr(session_db, "get_session_by_title", record_get_by_title)
-    monkeypatch.setattr(session_db, "unarchive_recoverable_session", record_unarchive)
+    monkeypatch.setattr(sessions, "get_by_title", record_get_by_title)
+    monkeypatch.setattr(sessions, "unarchive_recoverable", record_unarchive)
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -197,25 +207,26 @@ async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, ses
 
     assert response.status == 200
     assert [session["id"] for session in payload["data"]] == [session_id]
-    assert set(call_threads) == {"get_session_by_title", "unarchive_recoverable_session"}
+    assert set(call_threads) == {"get_by_title", "unarchive_recoverable"}
     assert all(thread_id != loop_thread for thread_id in call_threads.values())
-    assert not session_db.get_session(session_id)["archived"]
+    assert not session_row(session_db, session_id)["archived"]
 
 
 @pytest.mark.asyncio
 async def test_session_model_lock_persists_off_the_event_loop(adapter, session_db, monkeypatch):
     """POST /api/sessions/{id}/model writes the lock row through a worker thread: the same
     contended-write class as the Bot Chat resurrection, on a sibling handler."""
-    session_id = session_db.create_session("lock-off-loop", "api_server", model="gpt-5.5")
+    session_id = seed_session(session_db, "lock-off-loop", "api_server", model="gpt-5.5")
     loop_thread = threading.get_ident()
     seen = []
-    real = session_db.update_session_runtime_lock
+    sessions = api_server_store.adapter_persistence(adapter).sessions
+    real = sessions.set_runtime_lock
 
     def record(*args, **kwargs):
         seen.append(threading.get_ident())
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(session_db, "update_session_runtime_lock", record)
+    monkeypatch.setattr(sessions, "set_runtime_lock", record)
     app = _create_session_app(adapter)
     _register_session_model_route(app, adapter)
     with patch.object(adapter, "_resolve_route", return_value=None):
@@ -225,26 +236,27 @@ async def test_session_model_lock_persists_off_the_event_loop(adapter, session_d
                 json={"provider": "nous", "model": "x-ai/grok-4.5", "require_model_lock": True})
             assert resp.status == 200, await resp.text()
     assert seen and all(tid != loop_thread for tid in seen)
-    assert session_db.get_session(session_id)["model"] == "x-ai/grok-4.5"
+    assert session_row(session_db, session_id)["model"] == "x-ai/grok-4.5"
 
 
 @pytest.mark.asyncio
 async def test_session_messages_returns_compression_ancestors(adapter, session_db):
     """GET /api/sessions/{id}/messages on a compression continuation returns the
     root→tip transcript, not just the tip's rows (#51058)."""
-    source_id = session_db.create_session("compress-source", "api_server")
-    session_db.replace_messages(
+    source_id = seed_session(session_db, "compress-source", "api_server")
+    session_db.messages.replace_transcript(
         source_id,
         [
-            {"role": "user", "content": "before compression"},
-            {"role": "assistant", "content": "before answer"},
+            NewMessage.from_live({"role": "user", "content": "before compression"}),
+            NewMessage.from_live({"role": "assistant", "content": "before answer"}),
         ],
+        ReplaceMode.DESTRUCTIVE,
     )
-    session_db.end_session(source_id, "compression")
-    child_id = session_db.create_session(
-        "compress-tip", "api_server", parent_session_id=source_id
+    session_db.sessions.end(source_id, "compression")
+    child_id = seed_session(
+        session_db, "compress-tip", "api_server", parent_session_id=source_id
     )
-    session_db.append_message(child_id, role="user", content="after compression")
+    seed_messages(session_db, child_id, {"role": "user", "content": "after compression"})
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -265,8 +277,9 @@ async def test_session_messages_returns_compression_ancestors(adapter, session_d
 async def test_fork_session_writes_branched_from_marker(adapter, session_db):
     """The API fork must stamp _branched_from like the CLI/TUI branch paths, so the
     fork is never misclassified as a compression continuation."""
-    source_id = session_db.create_session("fork-source", "api_server")
-    session_db.replace_messages(source_id, [{"role": "user", "content": "hello"}])
+    source_id = seed_session(session_db, "fork-source", "api_server")
+    session_db.messages.replace_transcript(
+        source_id, [NewMessage.from_live({"role": "user", "content": "hello"})], ReplaceMode.DESTRUCTIVE)
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -275,9 +288,9 @@ async def test_fork_session_writes_branched_from_marker(adapter, session_db):
         payload = await resp.json()
 
     assert payload["session"]["id"] == "fork-child"
-    fork = session_db.get_session("fork-child")
+    fork = session_row(session_db, "fork-child")
     assert fork["parent_session_id"] == source_id
-    assert session_db._is_explicit_branch_session("fork-child")
+    assert session_db.sessions.get("fork-child").branched_from
     cfg = fork["model_config"]
     if isinstance(cfg, str):
         cfg = json.loads(cfg)
@@ -378,7 +391,7 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
     adapter, session_db
 ):
     """Disconnects must interrupt the live run without dropping its control refs early."""
-    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    session_id = seed_session(session_db, "disconnect-stream-session", "api_server")
     run_started = threading.Event()
     interrupt_called = threading.Event()
     allow_finish = threading.Event()
@@ -467,7 +480,7 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
 
 @pytest.mark.asyncio
 async def test_session_chat_stream_classifies_failed_tool_completions(adapter, session_db):
-    session_id = session_db.create_session("tool-status-stream", "api_server")
+    session_id = seed_session(session_db, "tool-status-stream", "api_server")
 
     async def fake_run(**kwargs):
         progress = kwargs["tool_progress_callback"]
@@ -502,7 +515,7 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     """
     import json as _json
 
-    session_id = session_db.create_session("transcript-session", "api_server")
+    session_id = seed_session(session_db, "transcript-session", "api_server")
 
     async def fake_run(**kwargs):
         # Stream the intermediate planning text the way a real turn would.
@@ -569,7 +582,7 @@ async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(ada
     and the run status matches (#111770)."""
     import json as _json
 
-    session_id = session_db.create_session("interrupted-session", "api_server")
+    session_id = seed_session(session_db, "interrupted-session", "api_server")
 
     async def fake_run(**_kwargs):
         return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False,
@@ -613,8 +626,8 @@ async def test_session_chat_resolves_stored_model_route_alias(session_db, monkey
             extra={"model_routes": {"alias": {"model": "route/model", "provider": "openrouter"}}},
         )
     )
-    adapter._session_db = session_db
-    session_id = session_db.create_session("route-pinned-session", "api_server", model="alias")
+    adapter._home_stores[str(get_hermes_home())] = session_db
+    session_id = seed_session(session_db, "route-pinned-session", "api_server", model="alias")
 
     mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
     app = _create_session_app(adapter)
@@ -640,9 +653,9 @@ async def test_session_chat_treats_pre_existing_poisoned_row_as_no_model(session
     exactly like a row that never had a model at all (#session-model-
     alias-leak)."""
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = session_db
-    session_id = session_db.create_session(
-        "poisoned-session", "api_server", model=adapter._model_name
+    adapter._home_stores[str(get_hermes_home())] = session_db
+    session_id = seed_session(
+        session_db, "poisoned-session", "api_server", model=adapter._model_name
     )
 
     mock_run = AsyncMock(return_value=({"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
@@ -664,9 +677,9 @@ async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(
     """Streaming twin of the above: the SSE chat path must apply the same
     guard against a pre-existing poisoned session row."""
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._session_db = session_db
-    session_id = session_db.create_session(
-        "poisoned-stream-session", "api_server", model=adapter._model_name
+    adapter._home_stores[str(get_hermes_home())] = session_db
+    session_id = seed_session(
+        session_db, "poisoned-stream-session", "api_server", model=adapter._model_name
     )
 
     async def fake_run(**kwargs):
@@ -730,17 +743,17 @@ def _patch_api_server_runtime(monkeypatch):
 async def test_create_session_respects_browser_source_and_model_lock(adapter, session_db):
     # The requested title is held by an ended empty visible ghost, which must yield (#81888);
     # a live holder must still reject the create without leaving a half-made row.
-    session_db.create_session("ghost", "desktop")
-    session_db.set_session_title("ghost", "Browser lock")
-    session_db.end_session("ghost", "user_exit")
-    session_db.create_session("live", "desktop")
-    session_db.set_session_title("live", "Taken")
+    seed_session(session_db, "ghost", "desktop")
+    session_db.sessions.set_title("ghost", "Browser lock")
+    session_db.sessions.end("ghost", "user_exit")
+    seed_session(session_db, "live", "desktop")
+    session_db.sessions.set_title("live", "Taken")
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
         taken = await cli.post("/api/sessions", json={"id": "dup", "title": "Taken"})
         assert taken.status == 400
         assert (await taken.json())["error"]["code"] == "invalid_title"
-        assert session_db.get_session("dup") is None
+        assert session_row(session_db, "dup") is None
         resp = await cli.post(
             "/api/sessions",
             json={
@@ -758,7 +771,7 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
 
     assert payload["session"]["source"] == "hermes_browser"
     assert payload["session"]["model"] == "x-ai/grok-4.5"
-    row = session_db.get_session("browser-lock-session")
+    row = session_row(session_db, "browser-lock-session")
     assert row["source"] == "hermes_browser"
     assert row["model"] == "x-ai/grok-4.5"
     import json as _json
@@ -769,7 +782,7 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
     assert model_config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
     assert model_config["browser_model_lock"]["confirmed"] is True
     assert row["title"] == "Browser lock"
-    assert session_db.get_session("ghost")["title"] is None
+    assert session_row(session_db, "ghost")["title"] is None
 
 
 @pytest.mark.asyncio
@@ -778,8 +791,8 @@ async def test_session_model_lock_endpoint_then_chat_reuses_persisted_lock_and_p
     session_db,
     monkeypatch,
 ):
-    session_id = session_db.create_session(
-        "endpoint-lock-chat",
+    session_id = seed_session(
+        session_db, "endpoint-lock-chat",
         "api_server",
         model="gpt-5.5",
         system_prompt="Conversation started:\nModel: gpt-5.5\nProvider: openai-codex\n",
@@ -853,7 +866,7 @@ async def test_session_model_lock_endpoint_then_chat_stream_reuses_persisted_loc
     adapter,
     session_db,
 ):
-    session_id = session_db.create_session("endpoint-lock-stream", "api_server")
+    session_id = seed_session(session_db, "endpoint-lock-stream", "api_server")
     captured = {}
 
     async def fake_run(**kwargs):
@@ -1061,13 +1074,15 @@ def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypa
 
 @pytest.mark.asyncio
 async def test_unconfirmed_request_does_not_replace_confirmed_session_lock(adapter, session_db):
-    session_id = session_db.create_session("one-off-override", "api_server")
-    session_db.update_session_runtime_lock(
+    session_id = seed_session(session_db, "one-off-override", "api_server")
+    session_db.sessions.set_runtime_lock(
         session_id,
-        provider="nous",
-        model="x-ai/grok-4.5",
-        route_source="raw_request",
-        confirmed=True,
+        RuntimeLock(
+            provider="nous",
+            model="x-ai/grok-4.5",
+            route_source="raw_request",
+            confirmed=True,
+        ),
     )
     mock_run = AsyncMock(
         return_value=(
@@ -1098,7 +1113,7 @@ async def test_unconfirmed_request_does_not_replace_confirmed_session_lock(adapt
 
     import json as _json
 
-    row = session_db.get_session(session_id)
+    row = session_row(session_db, session_id)
     config = row["model_config"]
     if isinstance(config, str):
         config = _json.loads(config)
@@ -1109,7 +1124,7 @@ async def test_unconfirmed_request_does_not_replace_confirmed_session_lock(adapt
 
 @pytest.mark.asyncio
 async def test_require_model_lock_hard_fails_when_global_default_would_be_used(adapter, session_db, monkeypatch):
-    session_id = session_db.create_session("lock-fail-session", "api_server")
+    session_id = seed_session(session_db, "lock-fail-session", "api_server")
     monkeypatch.setattr(adapter, "_model_name", "gpt-5.5")
     app = _create_session_app(adapter)
     with patch.object(adapter, "_resolve_route", return_value=None), patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
@@ -1142,7 +1157,7 @@ _CHAT_REPLY = ({"final_response": "ok"}, {"input_tokens": 0, "output_tokens": 0,
 ], ids=["author", "no author", "null author"])
 async def test_session_chat_passes_normalized_author_to_run_agent(adapter, session_db, body, expected):
     """A body ``author`` reaches ``_run_agent`` normalized with unknown keys dropped; absent or null is None."""
-    session_id = session_db.create_session("author-session", "api_server")
+    session_id = seed_session(session_db, "author-session", "api_server")
     app = _create_session_app(adapter)
     with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
         async with TestClient(TestServer(app)) as cli:
@@ -1155,7 +1170,7 @@ async def test_session_chat_passes_normalized_author_to_run_agent(adapter, sessi
 @pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
 @pytest.mark.parametrize("author", ["dixie"])
 async def test_session_chat_rejects_non_object_author(adapter, session_db, suffix, author):
-    session_id = session_db.create_session("bad-author-session", "api_server")
+    session_id = seed_session(session_db, "bad-author-session", "api_server")
     app = _create_session_app(adapter)
     with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
         async with TestClient(TestServer(app)) as cli:
@@ -1201,7 +1216,7 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
     `sessions.pinned` server-side, so an unpersisted pin does not protect the
     chat it was supposed to keep.
     """
-    session_id = session_db.create_session("pin-session", "api_server")
+    session_id = seed_session(session_db, "pin-session", "api_server")
     app = _create_session_app(adapter)
 
     async with TestClient(TestServer(app)) as cli:
@@ -1210,23 +1225,23 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
         assert (await resp.json())["session"]["pinned"] is True
 
         # The flag is durable, not just echoed back from the request body.
-        assert bool(session_db.get_session(session_id)["pinned"]) is True
+        assert bool(session_row(session_db, session_id)["pinned"]) is True
 
         resp = await cli.get(f"/api/sessions/{session_id}")
         assert (await resp.json())["session"]["pinned"] is True
 
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"pinned": False})
         assert (await resp.json())["session"]["pinned"] is False
-        assert bool(session_db.get_session(session_id)["pinned"]) is False
+        assert bool(session_row(session_db, session_id)["pinned"]) is False
 
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"archived": True})
         assert (await resp.json())["session"]["archived"] is True
-        assert bool(session_db.get_session(session_id)["archived"]) is True
+        assert bool(session_row(session_db, session_id)["archived"]) is True
 
 
 @pytest.mark.asyncio
 async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
-    session_id = session_db.create_session("pin-type-session", "api_server")
+    session_id = seed_session(session_db, "pin-type-session", "api_server")
     app = _create_session_app(adapter)
 
     async with TestClient(TestServer(app)) as cli:
@@ -1237,7 +1252,7 @@ async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
 
 @pytest.mark.asyncio
 async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
-    session_id = session_db.create_session("unknown-field-session", "api_server")
+    session_id = seed_session(session_db, "unknown-field-session", "api_server")
     app = _create_session_app(adapter)
 
     async with TestClient(TestServer(app)) as cli:
@@ -1258,7 +1273,7 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
     nothing. POST /v1/runs has always recorded `output`; this pins the same for
     this route, which is what makes GET /v1/runs/{run_id} a recovery path.
     """
-    session_id = session_db.create_session("recover-stream-session", "api_server")
+    session_id = seed_session(session_db, "recover-stream-session", "api_server")
     run_started = threading.Event()
     allow_finish = threading.Event()
     write_calls = {"count": 0}
@@ -1337,7 +1352,7 @@ async def test_worker_events_reach_the_session_stream_before_its_terminal_frames
     """A commentary the agent's worker thread hands to the loop before returning is delivered
     before ``assistant.completed``/``done``, however late the loop applies that hand-off (it is
     not ordered against the worker's own completion; CI saw it land after ``None`` and vanish)."""
-    session_id = session_db.create_session("late-hop-session", "api_server")
+    session_id = seed_session(session_db, "late-hop-session", "api_server")
     monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     loop = asyncio.get_running_loop()
     real_threadsafe = loop.call_soon_threadsafe
@@ -1378,7 +1393,7 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     the final answer; ``display.interim_assistant_messages: false`` installs no callback (#67580)."""
     import json as _json
 
-    session_id = session_db.create_session("commentary-session", "api_server")
+    session_id = seed_session(session_db, "commentary-session", "api_server")
 
     def fake_create_agent(**kwargs):
         interim = kwargs["interim_assistant_callback"]

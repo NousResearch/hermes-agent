@@ -4,26 +4,29 @@ import json
 from types import SimpleNamespace
 
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from persistence_assembly import open_persistence, profile_scope, store_location
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 class RoomService:
-    def __init__(self, path, owner):
-        self.db_path = path
+    def __init__(self, path, owner, store):
+        self.db_path, self.store = path, store
         self.owner = owner
         self.calls = []
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
-    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
+    def authorize_room(self, actor_subject, room_id):
         if actor_subject != self.owner or room_id != 'owned':
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
 
-    def create_room(self, *, room_id, name, members, admit=None):
+    def create_room(self, *, room_id, name, members, owner=None):
         from gateway.hosted_rooms import create_room, local_authority_gateway_id
         self.calls.append(('create', room_id))
-        return create_room(self.db_path, room_id=room_id, name=name, members=members,
-                           authority_gateway_id=local_authority_gateway_id(), admit=admit)
+        if owner is not None:
+            self.authorize_room(owner, room_id)
+        return create_room(self.store, placement='profile', room_id=room_id, name=name, members=members,
+                           authority_gateway_id=local_authority_gateway_id())
 
     def status(self, room_id):
         return {'running': True, 'working': False, 'blocked': True, 'counts': {}, 'peer_routes': [],
@@ -35,8 +38,8 @@ class RoomService:
     def send(self, *, room_id, event_id, payload):
         from gateway.hosted_rooms import append_event, room_state
         self.calls.append(('send', room_id, event_id, payload))
-        room = room_state(self.db_path, room_id=room_id)
-        return append_event(self.db_path, room_id=room_id, event_id=event_id, kind='message.user',
+        room = room_state(self.store, placement='profile', room_id=room_id)
+        return append_event(self.store, placement='profile', room_id=room_id, event_id=event_id, kind='message.user',
                             actor={'kind': 'user', 'id': 'desktop'}, payload=payload,
                             authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'])
 
@@ -65,10 +68,10 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
     # The control boundary validates the roster before any service sees it: helper is a destination.
     helper = (tmp_path / 'profiles' / 'helper').resolve()
     (tmp_path / 'config.yaml').write_text(json.dumps({'hosted_rooms': {'profiles': {'helper': str(helper)}}}))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={}, persistence=storage_handle(tmp_path))
         connection = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, connection.actor.subject)
+        service = authority.hosted_room_service = RoomService(store_location(db.scope), connection.actor.subject, authority.persistence)
 
         async def probe():
             async def call(method, **params):
@@ -116,10 +119,10 @@ def test_execution_controls_preserve_native_wire_and_exact_task_identity(tmp_pat
 
 def test_execution_controls_reject_foreign_actor_profile_room_and_unready_service(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    with SessionDB(tmp_path / 'state.db') as db:
-        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={})
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        authority = SimpleNamespace(profile_id=str(tmp_path), instance_id='owner', db=db, events={}, persistence=storage_handle(tmp_path))
         owner = AuthorityConnection(authority, object(), {'user_id': 'alice'})
-        service = authority.hosted_room_service = RoomService(db.db_path, owner.actor.subject)
+        service = authority.hosted_room_service = RoomService(store_location(db.scope), owner.actor.subject, authority.persistence)
 
         async def probe():
             requests = {

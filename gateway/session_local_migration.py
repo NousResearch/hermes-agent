@@ -8,12 +8,15 @@ Compression and reset may later advance the physical target, never FIFO identity
 from dataclasses import asdict, replace
 from datetime import datetime
 import json
+import logging
 from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 def bind_native_transport(authority, actor, identity):
@@ -97,6 +100,15 @@ def legacy_launch_params(row):
         route.setdefault('provider', 'custom')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
+    stored = params.get('cwd')
+    if stored is not None and not (isinstance(stored, str) and Path(stored).is_absolute() and Path(stored).is_dir()):
+        # The folder the row was written in is gone from this host (the profile moved hosts, or its
+        # worktree, workspace or tmp dir was removed). Like the dead endpoint below (T21/F1), drop the
+        # stale record and let the profile's cwd stand, rather than refuse the adoption on every open.
+        # A client's own session.create still refuses a missing cwd (build_policy).
+        logger.warning('Legacy session %s: saved cwd %r is not a directory on this host; '
+                       "adopting it in the profile's cwd", row['id'], stored)
+        del params['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})
     reasoning = saved.get('reasoning_config')
     if isinstance(reasoning, dict):

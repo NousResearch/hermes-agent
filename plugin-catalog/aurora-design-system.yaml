@@ -2,7 +2,7 @@ name: aurora-design-system
 repo: https://github.com/Ntizar/hermes-aurora
 sha: dcf5b271e76bb541e7822b029b6de08fa2244582
 title: Aurora Design System
-description: 'Two offline tools plus four skills that make a Hermes agent build real web UI with the Aurora CSS design system: aurora_search returns the family, the pack and the real markup of any of 2,223 documented objects from a bundled census; aurora_validate checks a page against that census (invented classes, packs used but not linked, gradients, !important, hand-written colours, duplicate headings, missing attribution) and returns failures and warnings in milliseconds. No network, no subprocess, no writes, no hooks.'
+description: "Two offline tools plus four skills that make a Hermes agent build real web UI with the Aurora CSS design system: aurora_search returns the family, the pack and the real markup of any of 2,223 documented objects from a bundled census; aurora_validate checks a page against that census (invented classes, packs used but not linked, gradients, !important, hand-written colours, duplicate headings, missing attribution) and returns failures and warnings in milliseconds. No network, no subprocess, no writes, no hooks. Disclosure — the bundled skills have the agent run `curl`/`git` against api.github.com and cdn.jsdelivr.net (Ntizar/Aurora) to resolve the current release, build pages that load their CSS from cdn.jsdelivr.net, and require the attribution footer `Hecho con ❤️ por David Antizar` and Spanish copy on every page (`aurora_validate` fails pages without the footer); `aurora_validate` reads any HTML path the agent passes."
 maintainer: Ntizar
 tier: community
 category: general
@@ -15,3 +15,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.1"

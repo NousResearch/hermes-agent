@@ -20,6 +20,7 @@ import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPluginUpdateAll } from './es_plugin_update_all'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -720,7 +721,7 @@ export const esOverrides = {
       advancedOutput: 'Límites de salida',
       advancedDelegation: 'Subagentes',
       advancedDesktop: 'Escritorio e inicio',
-      gatewayConnection: 'Esta ventana',
+      gatewayConnection: 'Gateway principal',
       gatewayDevices: 'Conexiones guardadas',
       gatewayManagedUpdates: 'Actualizaciones remotas',
       gatewayManagedUpdatesUnavailable:
@@ -1617,7 +1618,7 @@ export const esOverrides = {
       intro:
         'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Cambia de gateway desde Sesiones. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway; el trabajo en otros gateways sigue ejecutándose.',
+        'Todos los gateways permanecen conectados. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway, y Sesiones puede mostrarlos todos a la vez.',
       launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
       launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
       searchPlaceholder: 'Buscar gateways…',
@@ -2447,6 +2448,10 @@ export const esOverrides = {
     changesApplyNewSessions: 'Los cambios se aplican a las sesiones nuevas.',
     skillUpdated: 'Skill actualizado',
     edit: 'Editar',
+    lock: 'Bloquear',
+    locked: 'Bloqueado',
+    lockHint: 'El agente no puede cambiar este skill mientras esté bloqueado. Tú puedes seguir editándolo.',
+    unlockedHint: 'Bloquéalo para que el agente no pueda cambiar este skill. Tú puedes seguir editándolo.',
     archive: 'Archivar',
     skillArchivedTitle: 'Skill archivado',
     skillArchivedMessage: 'Puedes restaurarlo con hermes curator restore.',
@@ -2505,6 +2510,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginUpdateAll,
       ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
@@ -2969,6 +2975,32 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Sin token de bot',
+      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      link: (platform: string) => `Vincular ${platform}`,
+      linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
+      linkedAccounts: 'Cuentas vinculadas',
+      unlink: 'Desvincular',
+      unlinkFailed: 'No se pudo desvincular la cuenta',
+      stepOpen: (platform: string) => `1. Escanea el código con el móvil o abre el bot en ${platform}.`,
+      stepSend: '2. Envía al bot este mensaje desde la cuenta que quieres vincular:',
+      open: (platform: string) => `Abrir ${platform}`,
+      copy: 'Copiar mensaje',
+      copied: 'Copiado',
+      copyFailed: (command: string) => `No se pudo copiar. Escribe ${command}.`,
+      waiting: 'Esperando a que el bot vea tu mensaje. El código sirve una sola vez.',
+      linked: (platform: string) => `Cuenta de ${platform} vinculada. Escribe al bot para hablar con tu agente.`,
+      expired: 'El código caducó antes de usarse. Pide uno nuevo e inténtalo otra vez.',
+      refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
+      qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
+      managed: 'Gestionado por Team Gateway',
+      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
+      openPortal: 'Vincular cuentas en Nous Portal',
+      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+    },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
       subtitle:
@@ -3221,14 +3253,10 @@ export const esOverrides = {
       gateway: (gateway: string) => `Perfiles en ${gateway}`,
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-      switchTo: (name: string, gateway: string) => `Cambiar a ${name} en ${gateway}`,
+      switchTo: (name: string, gateway: string) => `Abrir ${name} en ${gateway}`,
       deleteOn: (gateway: string) => ` en ${gateway}`,
       localDevice: 'Este dispositivo (backend local: instala Hermes si falta; si no, abre una sesión nueva)',
-      switchDeviceTitle: '¿Cambiar a este dispositivo?',
-      switchDeviceDesc:
-        'Esto abre una sesión nueva en este equipo. La conversación actual permanece en el otro gateway.',
-      switchDeviceConfirm: 'Cambiar',
-      installDeviceTitle: '¿Cambiar a este dispositivo?',
+      installDeviceTitle: '¿Instalar Hermes en este dispositivo?',
       installDeviceDesc:
         'Esto instalará Hermes localmente y luego abrirá una sesión nueva en este equipo. No se instala nada hasta que confirmes.',
       installDeviceConfirm: 'Instalar localmente',
@@ -4487,7 +4515,9 @@ export const esOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
       updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
+      fastFailed: 'No se pudo actualizar el modo rápido',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4598,6 +4628,15 @@ export const esOverrides = {
           system_prompt: 'Prompt del sistema',
           tool_definitions: 'Definiciones de herramientas'
         },
+        compact: {
+          action: 'Compactar conversación',
+          busyHint: 'Termina o detén primero la respuesta en curso',
+          confirm: 'Compactar',
+          hint: 'Resume el contexto anterior para hacer espacio. Continúa en esta misma conversación.',
+          question: '¿Compactar esta conversación en un resumen?',
+          questionNamed: title => `¿Compactar «${title}» en un resumen?`,
+          working: 'Compactando…'
+        },
         empty: 'Aún no hay datos de contexto',
         loading: 'Cargando desglose…',
         percentFull: percent => `${percent}% lleno`,
@@ -4660,6 +4699,14 @@ export const esOverrides = {
     terminalNew: 'Nueva terminal',
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
+    terminalNewOn: 'Nueva terminal en…',
+    terminalGatewayRemoved: 'Gateway eliminado',
+    terminalGatewayRemovedBody:
+      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+    terminalGatewayNoShellBody:
+      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
+    terminalDisconnectedBody:
+      'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
     addToChat: 'Añadir al chat'
   },
   preview: {
@@ -5127,6 +5174,10 @@ export const esOverrides = {
       authorized: server => `${server} autorizado`,
       failed: server => `La configuración falló para ${server}`,
       toolCount: count => (count === 1 ? '1 herramienta' : `${count} herramientas`),
+      launchCommand: target => `Ejecuta: ${target}`,
+      launchRemote: target => `Se conecta a: ${target}`,
+      launchEnv: keys => `Entorno: ${keys}`,
+      launchCwd: dir => `Directorio de trabajo: ${dir}`,
       envRequired: 'Rellena primero las credenciales obligatorias',
       sendFailed: 'No se pudo enviar la respuesta de configuración MCP',
       reloadFailed: 'Servidor guardado, pero falló la recarga de herramientas MCP — se cargarán en la próxima sesión',

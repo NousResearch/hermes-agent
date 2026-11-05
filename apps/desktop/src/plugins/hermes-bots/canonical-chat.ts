@@ -682,20 +682,34 @@ export async function prepareBotSource(bot: RosterRow) {
 }
 
 export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
+  await readServerProfileRow(bot)
+
+  return botRosterMeta(bot, $botMeta.get()) || {}
+}
+
+/** The row with the description its own backend holds now. SSH rows never carry one (roster
+ *  polling must not dial them) and any row can be stale, so Edit and Duplicate read it here. */
+export async function ensureBotProfile(bot: RosterRow): Promise<RosterRow> {
+  const row = await readServerProfileRow(bot)
+
+  return typeof row?.description === 'string' ? { ...bot, description: row.description } : bot
+}
+
+async function readServerProfileRow(bot: RosterRow) {
   if (!bot?.sourceScoped) {
-    return botRosterMeta(bot, $botMeta.get()) || {}
+    return null
   }
 
   const route = botConnectionRoute(bot)
   const backendProfile = backendTargetProfile(route, bot.name)
 
-  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'name' | 'ui_meta'>> }>(
+  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'description' | 'name' | 'ui_meta'>> }>(
     bot,
     'profiles.list',
     {}
   )
 
-  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile)
+  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile) || null
   const server = row?.ui_meta?.['hermes-bots']
 
   if (server && typeof server === 'object') {
@@ -710,5 +724,5 @@ export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
     persistBotMetaSnapshot($botMeta.get(), true)
   }
 
-  return botRosterMeta(bot, $botMeta.get()) || {}
+  return row
 }

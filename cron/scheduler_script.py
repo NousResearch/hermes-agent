@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import shlex
 import shutil
 import signal
 import stat
@@ -138,7 +139,9 @@ exec(code, main.__dict__)
 """
 
 
-def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
+def _posix_cron_script_argv(
+    script: Path, args: Optional[list[str]] = None,
+) -> tuple[list[str], dict[str, str]]:
     """POSIX managed-store installs run cron ``.py`` scripts on the selected dependency venv's
     interpreter: the store Python has the repo and managed site-packages only on its in-process
     ``sys.path``, so its children import neither (#123044). No ``PYTHONPATH``: everything the
@@ -150,16 +153,19 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     from hermes_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
+    script_args = list(args or [])
     repo = Path(__file__).resolve().parents[1]
     if resolve_store_python(repo) is None:
-        return [sys.executable, str(script)], {}
+        return [sys.executable, str(script), *script_args], {}
     # project_python, not committed_venv as on Windows: a pre-PM venv selected before the first
     # commit runs on its OWN interpreter here, so there is no ABI mix (#122183).
     python = project_python(repo)
     if not python.is_file():
         # The caller's interpreter is the bare store Python here — the #123044 failure mode.
         raise RuntimeError(f"dependency environment interpreter is missing: {python}")
-    return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
+    # The bootstrap sets ``sys.argv = [script] + sys.argv[3:]``, so anything after
+    # the script path is handed to the script as its own argv.
+    return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script), *script_args],
             {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
 
 
@@ -294,7 +300,8 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
 
 
 def _windows_cron_bootstrap_argv(
-    python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
+    python_exe: str, env_overlay: dict[str, str], script_path: str,
+    args: Optional[list[str]] = None) -> list[str]:
     """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
     the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
     editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
@@ -308,7 +315,7 @@ def _windows_cron_bootstrap_argv(
             "Windows cron script: venv site-packages %s not found; running "
             "without .pth processing (editable installs may be unimportable)",
             site_packages)
-        return [python_exe, script_path]
+        return [python_exe, script_path, *(args or [])]
     bootstrap = (
         "import os, runpy, site, sys;"
         f"site.addsitedir({str(site_packages)!r});"
@@ -317,7 +324,52 @@ def _windows_cron_bootstrap_argv(
         "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
         "runpy.run_path(script, run_name='__main__')"
     )
-    return [python_exe, "-c", bootstrap, script_path]
+    return [python_exe, "-c", bootstrap, script_path, *(args or [])]
+
+
+def _split_script_command(script_path: str) -> tuple[str, list[str], Optional[str]]:
+    """Split a job's ``script`` value into ``(path_part, args, error)``.
+
+    ``script`` accepts arguments (``"job.py expire"``, ``"sync.sh status --alert"``),
+    but both consumers used to treat the whole value as one filename, so an
+    argument-bearing entry failed every fire with
+    ``Script not found: <scripts>/job.py expire`` — a message that reads like a
+    missing file and hides the real cause (#20300 / #43).
+
+    Resolution order is deliberate, because two legitimate shapes collide:
+
+    1. **Whitespace only in the path.** A script whose *actual filename* contains
+       a space (``"my job.py"``) must keep resolving. So before splitting, test
+       whether the whole value names an existing file; if so it is a bare
+       filename with no arguments.
+    2. **Otherwise split** with ``shlex`` (POSIX rules) so quoting works
+       (``'job.py "hello world"'`` becomes one argument).
+
+    A ``shlex`` syntax error (unbalanced quote) is reported rather than silently
+    treated as a filename. Returns ``(path_part, args, error)``; *error* is
+    non-None and the other two empty when the value cannot be parsed.
+    """
+    raw = str(script_path)
+    stripped = raw.strip()
+    if not stripped:
+        return "", [], None
+    # 1. The whole value may be a real filename containing spaces.
+    if any(ch.isspace() for ch in stripped):
+        try:
+            whole, err = _resolve_script_path(stripped)
+        except Exception:
+            whole, err = None, None
+        if whole is not None and err is None:
+            return stripped, [], None
+    # 2. Split into path + argv.
+    try:
+        parts = shlex.split(stripped, posix=True)
+    except ValueError as exc:  # unbalanced quote / trailing backslash
+        return "", [], (f"Could not parse script value {raw!r}: {exc}. "
+                        "Check for an unbalanced quote.")
+    if not parts:
+        return "", [], None
+    return parts[0], parts[1:], None
 
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
@@ -398,13 +450,14 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
 
 
 def _script_argv(
-    path: Path, interpreter: Optional[str] = None,
+    path: Path, interpreter: Optional[str] = None, args: Optional[list[str]] = None,
 ) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
+    script_args = list(args or [])
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -414,19 +467,20 @@ def _script_argv(
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        return [_bash, str(path)], {}, None
+        return [_bash, str(path), *script_args], {}, None
     if isinstance(interpreter, str) and interpreter.strip():
         # A user venv gets none of the managed-store overlays: the repo bootstrap / PYTHONPATH
         # exist to run Hermes' own dependency venv and would shadow the user's packages.
         python_exe, err = _resolve_cron_interpreter(interpreter)
-        return ([python_exe, str(path)] if python_exe else None), {}, err
+        return ([python_exe, str(path), *script_args] if python_exe else None), {}, err
     if sys.platform != "win32":
-        argv, env_overlay = _posix_cron_script_argv(path)
+        argv, env_overlay = _posix_cron_script_argv(path, script_args)
         return argv, env_overlay, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
-        return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
-    return [python_exe, str(path)], env_overlay, None
+        return (_windows_cron_bootstrap_argv(python_exe, env_overlay, str(path), script_args),
+                env_overlay, None)
+    return [python_exe, str(path), *script_args], env_overlay, None
 
 
 def _run_job_script(
@@ -444,12 +498,18 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
-    path, err = _resolve_script_path(script_path)
+    # ``script`` may carry arguments ("job.py expire", "sync.sh status --alert").
+    # Split BEFORE resolving: the path part is what must exist and stay inside the
+    # scripts dir, and any tail is handed to the script as argv (#20300).
+    path_part, script_args, split_err = _split_script_command(script_path)
+    if split_err:
+        return False, split_err
+    path, err = _resolve_script_path(path_part)
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
     try:
-        argv, env_overlay, err = _script_argv(path, interpreter)
+        argv, env_overlay, err = _script_argv(path, interpreter, script_args)
         if argv is None:
             return False, err
         from tools.environments.local import build_subprocess_env

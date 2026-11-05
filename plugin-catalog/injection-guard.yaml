@@ -1,0 +1,30 @@
+name: injection-guard
+repo: https://github.com/moneya/hermes-injection-guard
+sha: 049f5fe91c9119ba4254fe122677a8d763a89bd6
+description: >-
+  Prompt-injection firewall for tool output. A tool_execution middleware scans results from
+  web, browser, file-reading and mail tools for instructions addressed to the model, redacts
+  the matched spans, strips zero-width and bidi characters, HTML comments carrying
+  instructions, CSS-hidden text and oversized base64 blobs, then wraps what remains in a
+  labelled untrusted-data envelope. Fully local and deterministic: seven weighted signal
+  families with a default threshold of six, so one strong signal or two medium signals trip
+  it; no network calls, no API calls, and no model in the decision path. Ships a read-only
+  injection_guard_stats tool and a /guard command, and appends one audit line per block
+  carrying signal names and scores only — never the offending text. Disclosure — it rewrites
+  tool results before the model reads them, which is the purpose of the plugin and does
+  change the content the model receives; detection is pattern-based, so a novel phrasing that
+  avoids every rule will pass, and the guard covers the tool path only, not text a user pastes
+  into chat.
+maintainer: moneya
+tier: community
+category: tools
+docs_url: https://github.com/moneya/hermes-injection-guard#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - injection_guard_stats
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []

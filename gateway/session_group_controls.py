@@ -94,8 +94,11 @@ async def dispatch_group_control(connection, method, params):
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
-                raise _refusal(getattr(exc, 'reason', None) or 'invalid_params',
-                               admitted=getattr(exc, 'admitted', None)) from exc
+                refusal = _refusal(getattr(exc, 'reason', None) or 'invalid_params',
+                                   admitted=getattr(exc, 'admitted', None))
+                if getattr(exc, 'reason', None):
+                    refusal.wire_message = str(exc)
+                raise refusal from exc
             except (ValueError, TypeError) as exc:
                 raise _refusal('invalid_params', admitted=getattr(exc, 'admitted', None)) from exc
     return await asyncio.to_thread(invoke)

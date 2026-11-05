@@ -117,7 +117,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
     if operation == 'disband':
         # Disband waits for the member gateway's Stop: this attempt never reached it, so its Stop
         # cannot be confirmed and the room and its route stay for a retry.
-        assert 'still stopping' in str(result), result
+        assert ('room_stop_pending' if surface == 'canonical' else 'still stopping') in str(result), result
         assert ('linked', 'reviewer') in service.peer_routes
         assert len(hosted_room_links.load_room_links(service.db_path)) == 1
     else:
@@ -212,7 +212,7 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
         result = await ending
         monkeypatch.setattr(PeerRunsHTTPClient, 'probe', probe)
         if outcome == 'failed':
-            assert 'still stopping' in result['message']
+            assert ('room_stop_pending' if surface == 'canonical' else 'still stopping') in str(result)
             assert _owed(service.db_path) == [("linked", "reviewer", 0)]
             assert await asyncio.to_thread(service.retry_owed_revokes) == 0
             assert hosted_rooms.room_state(service.db_path, room_id='linked').get('disbanded_at') is None

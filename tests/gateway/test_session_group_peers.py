@@ -51,7 +51,8 @@ def gateway(tmp_path, monkeypatch):
 
 async def call(connection, method, **params):
     reply = await connection.dispatch({'id': 1, 'method': method, 'params': params})
-    return reply.get('result', reply.get('error', {}).get('message'))
+    error = reply.get('error', {})
+    return reply.get('result', error.get('data', {}).get('reason', error.get('message')))
 
 
 async def serve(gateway, monkeypatch, port=None, *, stop=False):
@@ -729,8 +730,7 @@ async def test_discard_of_an_admitted_peer_turn_stops_its_run_before_disband(gat
     assert await call(gateway.owner, 'groups.discard', **control) == 'session_busy'
     assert adapter._run_statuses[run_id]['status'] == 'stopping'
     assert driver.get_task(db, identity)['status'] == 'deferred'
-    with pytest.raises(RuntimeError, match='still stopping'):
-        await call(gateway.owner, 'groups.disband', room_id='linked')
+    assert await call(gateway.owner, 'groups.disband', room_id='linked') == 'room_stop_pending'
     adapter._set_run_status(run_id, 'cancelled')  # the member's run ends
     discarded = await call(gateway.owner, 'groups.discard', **control)
     assert isinstance(discarded, dict) and discarded['discarded'], discarded

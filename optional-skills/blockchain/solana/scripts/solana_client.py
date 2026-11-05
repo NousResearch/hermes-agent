@@ -418,13 +418,13 @@ def cmd_wallet(args):
     # Sort: tokens with known USD value first (highest→lowest), then unknowns
     enriched.sort(key=lambda x: (x.get("value_usd") is not None, x.get("value_usd") or 0), reverse=True)
 
-    # Compute portfolio total over ALL non-dust tokens (before applying --limit)
-    total_usd = sum(t.get("value_usd", 0) for t in enriched)
-
     # Apply limit unless --all
     total_tokens = len(enriched)
     if not show_all and len(enriched) > limit:
         enriched = enriched[:limit]
+
+    # Compute portfolio total
+    total_usd = sum(t.get("value_usd", 0) for t in enriched)
     sol_value_usd = round(sol_price * sol_balance, 2) if sol_price else None
     if sol_value_usd:
         total_usd += sol_value_usd

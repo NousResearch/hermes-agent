@@ -7,6 +7,7 @@ long-lived one), so the kill never returned. Once killed, the session's output s
 kill reported it. Real PTY, real processes: a fake PTY cannot hold the lock.
 """
 
+import shlex
 import shutil
 import sys
 import threading
@@ -17,6 +18,7 @@ import pytest
 import tools.process_registry as module
 from tools.process_registry import ProcessRegistry
 
+_POSIX = pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY")
 _POSIX_PTY = pytest.mark.skipif(
     sys.platform == "win32" or shutil.which("setsid") is None, reason="POSIX PTY + setsid")
 
@@ -158,3 +160,37 @@ def test_chunk_read_before_the_kill_is_not_added_after_it(tmp_path, unscoped):
     assert "RACE-MARKER" not in result.get("output", "")
     assert "RACE-MARKER" not in session.output_buffer
     assert not any("RACE-MARKER" in text for text in emitted)
+
+
+@_POSIX
+def test_kill_reclaims_the_reader_without_waiting_out_the_escapee(tmp_path, unscoped):
+    """The reader polls its read, so once the kill lands it notices the dead child and closes
+    the PTY itself — instead of staying blocked (holding the master fd) until a long-lived
+    escapee happens to exit on its own (#132358)."""
+    pytest.importorskip("ptyprocess")
+    registry = ProcessRegistry()
+    escapee_lifetime_s = 20
+    pidfile = tmp_path / "escapee.pid"
+    escapee_py = tmp_path / "escapee.py"
+    # os.setsid() instead of the ``setsid`` binary: same session escape, and the test also
+    # runs on hosts without util-linux.
+    escapee_py.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "os.setsid()\n"
+        f"Path({str(pidfile)!r}).write_text(str(os.getpid()))\n"
+        f"time.sleep({escapee_lifetime_s})\n")
+    session = registry.spawn_local(
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(escapee_py))} & sleep 120",
+        cwd=str(tmp_path), use_pty=True)
+    try:
+        assert _wait_for(lambda: pidfile.exists() and pidfile.read_text().strip(), 5)
+        result = _kill_within_deadline(registry, session)
+    finally:
+        _terminate_owned(session)
+    assert result["status"] == "killed"
+    # Bounded reclaim, far short of the escapee's own lifetime.
+    reader = session._reader_thread
+    assert _wait_for(lambda: not reader.is_alive(), 10), (
+        "reader stayed blocked on the PTY the escapee holds open")
+    assert session._pty.closed

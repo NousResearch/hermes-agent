@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from shared_authority_peer import ModelPeer
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_holder import raw_holder
 
 
 async def probe(peer):
@@ -18,9 +19,8 @@ async def probe(peer):
     from gateway.platforms.base import SendResult
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from hermes_state_runtime import list_session_admissions
 
     class Guild:
         hook = None
@@ -31,7 +31,7 @@ async def probe(peer):
         async def fetch_member(self, uid):
             assert uid == 200
             # No SQLite transaction may span the network await.
-            assert not authority.db._conn.in_transaction
+            assert not raw_holder(authority.persistence)._conn.in_transaction
             self.calls += 1
             await asyncio.sleep(0)
             roles = list(self.roles)
@@ -100,13 +100,13 @@ async def probe(peer):
     ev = event('positive')
     await send(ev)
     entry = runner.session_store.get_or_create_session(ev.source)
-    rows = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
+    rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=entry.session_id, pending_only=False)]
     assert rows and rows[0]['outcome'] == 'completed', (rows, adapter.deliveries)
     assert len(peer.requests) == 1 and guild.calls >= 2, (peer.requests, guild.calls)
     guild.roles = []
     await send(event('revoked'))
     await send(event('wrong-guild', scope='999'))
-    assert len(list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)) == 1
+    assert len(authority.persistence.admissions.list(session_id=entry.session_id, pending_only=False)) == 1
     assert len(peer.requests) == 1
     if sys.argv[1] == 'multiplex':
         guild.roles = [SimpleNamespace(id=700)]
@@ -116,12 +116,12 @@ async def probe(peer):
             (transport / '.env').write_text('DISCORD_ALLOWED_ROLES=999\n')
         guild.hook = revoke_policy
         from gateway.session_ingress_context import native_callback
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         ev = event('policy-revoked-during-fetch')
         with native_callback(runner, ev, transport, 'transport'):
             try:
                 await authority.admit_native(ev)
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 assert exc.reason == 'permission_denied'
             else:
                 raise AssertionError('revoked transport role policy was durably accepted')

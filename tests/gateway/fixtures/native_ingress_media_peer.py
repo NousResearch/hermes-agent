@@ -19,9 +19,9 @@ async def probe(mode, peer):
     from gateway.platforms.event import MessageEvent, MessageType
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from gateway.session_envelope import restore_native, snapshot_native
-    from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
+    from persistence.core.errors import AuthorityRefusal
 
     class Adapter(BasePlatformAdapter):
         def __init__(self):
@@ -57,7 +57,7 @@ async def probe(mode, peer):
                            chat_type='dm', user_id='fixture-user')
 
     def rows(sid):
-        return list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        return [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
     if mode == 'capture':
         # Ordinary document preprocessing must consume original bytes after restart.
@@ -81,7 +81,7 @@ async def probe(mode, peer):
         try:
             try:
                 snapshot_native(runner, event)
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 assert exc.reason == 'invalid_params', exc.reason
             else:
                 raise AssertionError('media publication followed a cache-directory symlink')
@@ -111,7 +111,7 @@ async def probe(mode, peer):
         # A separate started row becomes unknown; neither it nor its file is reclaimed.
         unknown_event = replace(restored, source=replace(restored.source, chat_id='unknown-media'), message_id='unknown-1')
         unknown = await authority.admit_native(unknown_event)
-        assert claim_session_input(authority.db, epoch=authority.epoch, session_id=unknown.ref.session_id)
+        assert authority.persistence.admissions.claim(epoch=authority.epoch, session_id=unknown.ref.session_id)
         evidence = dict(sid=receipt.ref.session_id, saved=saved, unknown_sid=unknown.ref.session_id,
                         retained=str(retained), unknown=rows(unknown.ref.session_id))
         # Published by rename: the parent SIGKILLs this process the moment the file exists.
@@ -171,7 +171,6 @@ async def probe(mode, peer):
         return
 
     # A committed text row from before media support must keep its retry identity.
-    from hermes_state_runtime import admit_session_input, cancel_session_input
     old_event = MessageEvent(text='legacy native input', source=source, message_id='legacy-text')
     ref = authority.register(source)
     encoded_source = source.to_dict()
@@ -185,9 +184,10 @@ async def probe(mode, peer):
                 'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control')}}}
     principal = 'messaging:' + json.dumps([source.profile, source.platform.value, source.chat_id,
                                           source.thread_id, source.user_id], separators=(',', ':'))
-    old_row = admit_session_input(authority.db, epoch=authority.epoch, principal_id=principal,
-                                 session_id=ref.session_id, request_id=old_event.message_id, payload=legacy)
-    cancel_session_input(authority.db, epoch=authority.epoch, admission_id=old_row['admission_id'])
+    old_row = admission_row(authority.persistence.admissions.admit(
+        epoch=authority.epoch, principal_id=principal, session_id=ref.session_id,
+        request_id=old_event.message_id, payload=legacy)[0])
+    authority.persistence.admissions.cancel(epoch=authority.epoch, admission_id=old_row['admission_id'])
     retried = await authority.admit_native(old_event)
     assert retried.admission_id == old_row['admission_id'] and retried.status == 'terminal'
     assert rows(ref.session_id)[0]['payload'] == legacy
@@ -235,7 +235,7 @@ async def probe(mode, peer):
     for case in cases:
         try:
             await authority.admit_native(case)
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             assert exc.reason == 'invalid_params', exc.reason
             denied.append(exc.reason)
         else:
@@ -244,7 +244,7 @@ async def probe(mode, peer):
     runner.config.multiplex_profiles = True
     try:
         snapshot_native(runner, event)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         assert exc.reason == 'invalid_params'
     else:
         raise AssertionError('multiplex accepted without transport-home provenance')
@@ -252,7 +252,7 @@ async def probe(mode, peer):
     missing = replace(event, source=replace(source, user_id='foreign'), media_urls=['/missing/private'])
     try:
         await authority.admit_native(missing)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         assert exc.reason == 'permission_denied', exc.reason
     else:
         raise AssertionError('unauthorized media was accepted')

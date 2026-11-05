@@ -8,30 +8,37 @@ import asyncio
 import time
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from gateway.session_authority import admission_row
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
+from persistence.gateway.hosted_rooms import HostedTaskIdentity
+
+
+def _admissions(store, *, session_id, pending_only=True):
+    return [admission_row(record) for record in store.admissions.list(session_id=session_id, pending_only=pending_only)]
 
 
 def _queued_member_turn(hosted_owner, monkeypatch, task_id, prompt):
     from gateway import hosted_room_driver as tasks
-    from gateway.hosted_rooms import create_room, local_authority_gateway_id
+    from gateway.hosted_rooms import local_authority_gateway_id
     from gateway.session_hosted_service import CanonicalHostedRoomService
     from tui_gateway.hosted_room_driver import HostedRoomBinding, _member_id
     authority, loop, _, _ = hosted_owner
+    store = authority_persistence(authority)
     service = getattr(authority, 'hosted_room_service', None)
     if service is None:
         service = authority.hosted_room_service = CanonicalHostedRoomService(authority, loop)
         monkeypatch.setattr(service, 'profile_homes', lambda: {'default': Path(authority.profile_id)})
-        service.authorize_room('alice', 'room', create=True)
-        create_room(authority.db.db_path, room_id='room', name='Room', authority_gateway_id=local_authority_gateway_id(),
-                    members=[{'member_id': 'one', 'profile': 'default', 'handle': 'one'}])
+        service.insert_room(room_id='room', name='Room', owner='alice',
+                            members=[{'member_id': 'one', 'profile': 'default', 'handle': 'one'}])
     gateway = local_authority_gateway_id()
-    identity = tasks.TaskIdentity('room', task_id, 'thread', task_id)
-    tasks.admit_task(authority.db.db_path, identity, clock=time.time, payload={
+    identity = HostedTaskIdentity('room', task_id, 'thread', task_id)
+    tasks.admit_task(store, identity, placement='profile', clock=time.time, payload={
         'target_profile': 'default', 'target_member_id': 'one', 'source_event_seq': 1, 'prompt': prompt})
-    lease = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=gateway,
+    lease = tasks.acquire_lease(store, placement='profile', room_id='room', gateway_id=gateway,
         authority_epoch=1, process_generation='test', ttl_seconds=120, clock=time.time)
-    tasks.start_task(authority.db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
-    task = tasks.get_task(authority.db.db_path, identity)
+    tasks.start_task(store, identity, lease, placement='profile', expected_cancel_generation=0, clock=time.time)
+    task = tasks.get_task(store, identity, placement='profile')
     rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']  # the second call resumes the same session
@@ -45,13 +52,13 @@ def test_a_deferred_turn_s_queued_input_is_refused_and_the_next_turn_runs(hosted
     authority, loop, _, _ = hosted_owner
     _, rpc, stale, lease = _queued_member_turn(hosted_owner, monkeypatch, 'stale', 'first ask')
     # The member is busy past the room's deadline: the room fences that turn as deferred.
-    later = time.time() + 121
-    recovered = tasks.acquire_lease(authority.db.db_path, room_id='room', gateway_id=lease.gateway_id,
+    later, store = time.time() + 121, authority_persistence(authority)
+    recovered = tasks.acquire_lease(store, placement='profile', room_id='room', gateway_id=lease.gateway_id,
         authority_epoch=1, process_generation='after', ttl_seconds=120, clock=lambda: later)
-    tasks.recover_room(authority.db.db_path, recovered, clock=lambda: later)
-    tasks.defer_indeterminate_task(authority.db.db_path, stale, recovered, expected_execution_generation=1,
+    tasks.recover_room(store, recovered, placement='profile', clock=lambda: later)
+    tasks.defer_indeterminate_task(store, stale, recovered, placement='profile', expected_execution_generation=1,
         expected_cancel_generation=0, reason='member_unavailable', clock=lambda: later)
-    tasks.release_lease(authority.db.db_path, recovered, clock=lambda: later)
+    tasks.release_lease(store, recovered, placement='profile', clock=lambda: later)
     _queued_member_turn(hosted_owner, monkeypatch, 'live', 'second ask')
 
     claimed = []
@@ -72,7 +79,7 @@ def test_a_deferred_turn_s_queued_input_is_refused_and_the_next_turn_runs(hosted
     asyncio.run_coroutine_threadsafe(drain(), loop).result(10)
 
     rows = {r['payload']['text']: (r['status'], r['outcome'])
-            for r in list_session_admissions(authority.db, session_id=rpc.ref.session_id, pending_only=False)}
+            for r in _admissions(authority_persistence(authority), session_id=rpc.ref.session_id, pending_only=False)}
     assert rows['first ask'] == ('terminal', 'cancelled')
     assert claimed and claimed[-1] == 'second ask'
 
@@ -82,8 +89,8 @@ def test_a_running_turn_s_changed_input_is_still_a_hard_denial(hosted_owner, mon
     import pytest
     service, rpc, identity, _ = _queued_member_turn(hosted_owner, monkeypatch, 'task', 'frozen')
     authority = hosted_owner[0]
-    row, = [r for r in list_session_admissions(authority.db, session_id=rpc.ref.session_id) if r['status'] == 'queued']
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    row, = [r for r in _admissions(authority_persistence(authority), session_id=rpc.ref.session_id) if r['status'] == 'queued']
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         service.check_admission(rpc.ref, {**row, 'payload': {'text': 'changed'}})
     assert service.check_admission(rpc.ref, row)['identity'] == identity
 
@@ -94,7 +101,6 @@ def test_a_peer_home_moves_on_only_from_an_unchanged_retired_attempt(hosted_owne
     import pytest
     from types import SimpleNamespace
     from gateway.control_socket import GatewayControlServer
-    from gateway.hosted_room_driver import TaskIdentity
     from gateway.session_contract import SessionRef
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, check_remote_hosted_admission, install_hosted_transport)
@@ -123,17 +129,17 @@ def test_a_peer_home_moves_on_only_from_an_unchanged_retired_attempt(hosted_owne
         rpc = HostedRoomOwnerRPC(home=target, source_home=source, room_id='room', member_id='member', profile='default')
         coords = dict(profile='default', source='bot_room')
         sid = rpc.create(**coords, title='Group: room')['session_id']
-        rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+        rpc.submit(**coords, session_id=sid, prompt='input', task=HostedTaskIdentity('room', 'task', 'thread', 'turn'),
                    execution_generation=1, member_id='member', on_terminal=lambda r: None)
-        row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        row, = _admissions(authority_persistence(authority), session_id=sid, pending_only=False)
         ref = SessionRef(authority.profile_id, sid)
         answer['retired'] = True
-        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        with pytest.raises(AuthorityRefusal, match='admission_conflict'):
             check_remote_hosted_admission(authority, ref, row)
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             check_remote_hosted_admission(authority, ref, {**row, 'payload': {'text': 'changed'}})
         answer['owner'] = 'someone-else'
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        with pytest.raises(AuthorityRefusal, match='permission_denied'):
             check_remote_hosted_admission(authority, ref, row)
     finally:
         for s in servers:

@@ -20,6 +20,8 @@ from gateway.agent_cache_pressure import (
     resolve_memory_high_mb,
     transcript_persistence_caught_up,
 )
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 class TestBoundsResolution:
     """Absent config must stay absent so gateway/run.py keeps its defaults."""
@@ -136,10 +138,9 @@ class TestPersistenceGuard:
     transcript is durable. Exercised against the real AIAgent flush."""
 
     def _agent(self, tmp_path, session_id):
-        from hermes_state import SessionDB
         from run_agent import AIAgent
 
-        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db = storage_handle(tmp_path)
         agent = AIAgent(
             model="anthropic/claude-sonnet-4",
             api_key="test",
@@ -151,8 +152,9 @@ class TestPersistenceGuard:
             skip_memory=True,
             session_id=session_id,
             session_db=db,
+            persistence=db,
         )
-        db.create_session(session_id, source="telegram")
+        seed_session(db, session_id, "telegram")
         agent._session_db_created = True
         return agent
 

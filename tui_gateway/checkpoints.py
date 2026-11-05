@@ -57,7 +57,10 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: list) -> dict | None:
     """``/undo``'s ``/rollback`` pointer for a sidecar session (``tools/checkpoint_undo_hint.py``): the same
-    manager, cwd and container refusal its ``rollback.*`` methods use. None: no line."""
+    manager, cwd and container refusal its ``rollback.*`` methods use. None: no line.
+
+    The store is the SESSION's profile's (``_resolve_checkpoint_base`` reads the bound HERMES_HOME), so the
+    whole read runs under that profile's runtime scope: an RPC thread otherwise holds the launch profile's."""
     mgr = getattr(session.get("agent"), "_checkpoint_mgr", None)
     if mgr is None or not mgr.enabled:
         return None
@@ -66,7 +69,8 @@ def undo_rollback_hint_for(session: dict, target_message: dict, kept_history: li
     cwd = server._session_cwd(session)
     if server._container_checkpoint_refusal(session, mgr, cwd):
         return None
-    return undo_hint_payload(mgr, cwd, (target_message or {}).get("timestamp"), kept_history, task_id=None)
+    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+        return undo_hint_payload(mgr, cwd, (target_message or {}).get("timestamp"), kept_history, task_id=None)
 
 
 def undo_hint_fields(session: dict, rewound, params: dict) -> dict:

@@ -348,9 +348,10 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 _PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
     r"(?:^|[;&|({`\n]"
-    r"|\b(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
-    r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?|\bssh(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?)*\s+[^\s;&|-]\S*\s+[\"']?)"
+    r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
+    r"|(?:^|[;&|({`\n])\s*+ssh(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?)*\s+[^\s;&|-]\S*\s+[\"']?)"
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
@@ -418,8 +419,11 @@ DANGEROUS_PATTERNS = [
     (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep.
     (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
-    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling.
-    (r'\bwmic\b[^\n]*\bshadowcopy\b[^\n]*\bdelete\b', "delete volume shadow copies (wmic)"),
+    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling. Anchored to
+    # command position with possessive spans: an unanchored `wmic … shadowcopy … delete` with two
+    # `[^\n]*` gaps rescanned every `wmic shadowcopy` repeat in quoted prose (cubic, seconds at 400).
+    (r'(?:^|[;&|({`\n]|\bcmd(?:\.exe)?\s+/[ck]\s)\s*+["\']?(?:[^\s;&|"\']*+[\\/])?wmic(?:\.exe)?(?:\s++[^\s;&|]++)*?\s++shadowcopy\b[^\n;&|]*?\sdelete\b',
+     "delete volume shadow copies (wmic)"),
     (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
     (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
@@ -648,11 +652,10 @@ _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
 # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
 # quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.
 _PS_PIPE_ALIAS_DESCRIPTION = "PowerShell destructive delete (alias after pipe)"
-_PS_QUOTED_SCRIPT_LAUNCHER_RE = re.compile(
-    r"(?<![\w.-])(?:ssh|iex|invoke-expression|invoke-command|icm|pwsh|powershell|wsl|runas|start-process"
-    r"|start-job|saps)(?:\.exe)?(?![\w-])|\bcmd(?:\.exe)?\s+/[ck]\b",
-    _RE_FLAGS,
-)
+_PS_QUOTED_SCRIPT_LAUNCHERS = frozenset({
+    "ssh", "iex", "invoke-expression", "invoke-command", "icm", "pwsh", "powershell", "wsl", "runas",
+    "start-process", "start-job", "saps", "cmd", *_SHELL_CARRIER_NAMES,
+})
 
 # Content-level rules (ported from tirith in #133832, where they were separate findings with their own
 # keys). They describe WHAT the command carries rather than which verb runs it, so a command that also
@@ -1778,10 +1781,25 @@ def _word_may_run_curl_or_wget(word: str) -> bool:
     return not unquoted.startswith("-") and not _ENV_ASSIGNMENT_RE.fullmatch(word) and ("$" in word or "`" in word)
 
 
-def _quoted_text_is_executed(variant: str, masked_lower: str) -> bool:
-    """Whether an unquoted launcher (ssh, cmd /c, iex, a pipe into pwsh) or a shell carrier runs the
-    command's quoted text as code, so the pipe-alias rule must not treat it as prose."""
-    return bool(_PS_QUOTED_SCRIPT_LAUNCHER_RE.search(masked_lower)) or _contains_shell_carrier(variant)
+def _quoted_text_is_executed(variant: str, pattern_re: "re.Pattern[str] | _PipeRemoteToShellMatcher") -> bool:
+    """Whether a launcher (ssh, cmd /c, iex, a shell carrier, pwsh) at command position runs the quoted
+    delete as code: the delete must sit in that launcher's own command, or be piped into a PowerShell
+    reading stdin (`echo "..." | pwsh -`). A launcher word elsewhere (`echo ssh "..."`, `pwsh -v &&
+    echo "..."`) leaves the quoted text prose."""
+    for start, _, word in _iter_shell_command_word_spans(variant):
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower().removesuffix(".exe")
+        if name not in _PS_QUOTED_SCRIPT_LAUNCHERS:
+            continue
+        segment = _lower_preserving_flags(_shell_command_segment(variant, start))
+        if name == "cmd" and not re.match(r"cmd(?:\.exe)?\s+/[ck]\b", segment, _RE_FLAGS):
+            continue
+        if pattern_re.search(segment):
+            return True
+        before = variant[:start].rstrip()
+        if name in ("pwsh", "powershell") and before.endswith("|") and not before.endswith("||") \
+                and pattern_re.search(_lower_preserving_flags(before)):
+            return True
+    return False
 
 
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
@@ -1808,7 +1826,7 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     )
                 if pattern_re.search(masked_lower) or (
                     description == _PS_PIPE_ALIAS_DESCRIPTION and pattern_re.search(command_lower)
-                    and _quoted_text_is_executed(command_variant, masked_lower)
+                    and _quoted_text_is_executed(command_variant, pattern_re)
                 ):
                     yield description
             elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:

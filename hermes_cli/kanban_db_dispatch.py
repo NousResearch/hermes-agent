@@ -142,6 +142,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    routing_refused: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, assignee, refusal)`` refused by the routing gate and parked
+    ``blocked``: Q1 the profile cannot start a turn (a missing preloaded
+    identifier, e.g. ``sdlc-review``), or Q2 it is not the right agent for the
+    card's ``task_class``. Distinct from a spawn failure — nothing ran."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -170,6 +175,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.routing_refused:
+            counts["routing_refused"] = counts.get("routing_refused", 0) + len(res.routing_refused)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2112,6 +2119,17 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # --- routing gate: Q1 (can it start) and Q2 (is it the right agent for this class) ---
+    # Deliberately the last check before the claim: resolving a profile's skill tree costs ~200 ms,
+    # so a candidate that the cap or the respawn guard would refuse anyway must not pay for it.
+    # Refusing before the claim means a refused card is never left running.
+    refusal = routing_gate(row, assignee, lane=lane)
+    if refusal is not None:
+        result.routing_refused.append((task_id, assignee, refusal.as_text()))
+        if not dry_run:
+            _park_routing_refusal(conn, task_id, refusal)
+        return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -2294,12 +2312,78 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    ``task_class`` and ``skills`` ride along so the routing gate can answer both
+    questions without a second query per candidate: the class is Q2's input and the
+    pinned skills are what :func:`kanban_db.worker_skill_identifiers` starts from.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, task_class, skills FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
+
+def _row_value(row: sqlite3.Row, name: str):
+    """Column from a dispatch row, or ``None`` when the query did not select it."""
+    try:
+        keys = row.keys()
+    except AttributeError:  # a tuple/plain mapping in a test double
+        keys = ()
+    if keys and name not in keys:
+        return None
+    try:
+        return row[name]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def routing_gate(row, assignee: str, *, lane: str):
+    """Q1 + Q2 for one dispatch candidate: the refusal, or ``None``.
+
+    Identifiers come from :func:`hermes_cli.kanban_db.worker_skill_identifiers` — the same list
+    the dispatcher hands a review worker — so the gate and the worker cannot disagree about what
+    "can start" means. A rule that cannot be read (or any unexpected failure in the policy layer)
+    fails open: a card is never parked because the *checker* broke.
+    """
+    import json
+
+    from hermes_cli.kanban_db import worker_skill_identifiers
+    from hermes_cli.kanban_skill_preflight import routing_refusal
+
+    pinned: list[str] = []
+    raw = _row_value(row, "skills")
+    if raw:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            pinned = [str(skill) for skill in (parsed or [])] if isinstance(parsed, (list, tuple)) else []
+        except (TypeError, ValueError):
+            pinned = []
+    identifiers = worker_skill_identifiers(pinned, review_lane=(lane == "review"))
+    return routing_refusal(
+        assignee, _row_value(row, "task_class"), lane=lane, identifiers=identifiers,
+    )
+
+
+def _park_routing_refusal(conn: sqlite3.Connection, task_id: str, refusal) -> None:
+    """Record the refusal and park the card, naming profile/class/decision/rule.
+
+    Q1 is a capability wall (install the skill or reassign); Q2 is a routing decision a human
+    owns (reassign to a profile this class is routed to). Both land ``blocked`` so the card is
+    visible on the board instead of respawning forever.
+    """
+    reason = f"{refusal.as_text()} [card {task_id}]"
+    kind = "capability" if refusal.question == "Q1" else "needs_input"
+    try:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "routing_refused", refusal.as_event())
+    except Exception:  # the block below is the part that must not be skipped
+        _kb._log.debug("kanban dispatch: routing_refused event failed for %s", task_id, exc_info=True)
+    try:
+        _kb.block_task(conn, task_id, reason=reason, kind=kind)
+    except Exception:
+        _kb._log.exception("kanban dispatch: could not park routing-refused card %s", task_id)
 
 
 def _any_spawnable_review(
@@ -2330,6 +2414,9 @@ def _any_spawnable_review(
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
+            # NOTE: the routing gate is deliberately NOT evaluated here. It costs a skill-tree
+            # resolve per call, and this probe only decides whether to hold a spawn slot back;
+            # a card the gate refuses is parked on the next tick and stops holding one.
             return True
     return False
 

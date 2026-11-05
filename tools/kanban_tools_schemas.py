@@ -239,6 +239,13 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "Optional reviewer profile. When provided, the task is "
                 "reassigned to that profile before review dispatch."
         )),
+        "task_class": _prop("string", (
+                "Class of review being handed over (e.g. 'code-review', "
+                "'security-review', 'design-review', 'docs-review'). "
+                "Recorded on the card so dispatch can check the reviewer "
+                "serves this class, not merely that it may review at all. "
+                "Omit only when the class is genuinely unknown."
+        )),
         "metadata": {
             "type": "object",
             "description": (
@@ -425,6 +432,16 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "(e.g. 'researcher-a', 'reviewer', 'writer'). "
                 "Required — tasks without an assignee are never "
                 "dispatched."
+        )),
+        "task_class": _prop("string", (
+                "Class of work this card represents, from the fleet "
+                "routing rule's task_classes (e.g. 'execution', "
+                "'code-review', 'security-review', 'design-review', "
+                "'research', 'fleet-governance'). Dispatch checks it "
+                "against the assignee's routing permission. Omit only "
+                "when the class is genuinely unknown — it is never "
+                "inferred from the title, and an unclassified card is "
+                "reported as such."
         )),
         "body": _prop("string", (
                 "Opening post: full spec, acceptance criteria, "

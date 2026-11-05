@@ -236,7 +236,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "routing_refused",
 )
 
 
@@ -638,6 +638,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Explicit class of work for fleet routing (Q2). Not inferred from the title:
+    # NULL means "unclassified", which is reported rather than guessed.
+    task_class: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -669,7 +672,7 @@ _TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expire
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "task_class",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -874,7 +877,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit class of work for fleet routing (Q2, fleet-routing-rule.json
+    -- ``task_classes``). Q2 reads it at dispatch; an absent class is reported as
+    -- unclassified, never inferred from the title. NULL = unclassified.
+    task_class           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1114,6 +1121,21 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
+def _normalize_routing_class(task_class: Optional[str]) -> Optional[str]:
+    """Validate a card's ``task_class`` against the fleet routing rule vocabulary.
+
+    Shape and vocabulary live in one place (:mod:`hermes_cli.kanban_fleet_routing`) so the tool,
+    the CLI and a direct ``create_task`` call cannot disagree about what a class is. An unreadable
+    rule file does not block card creation — a policy record is not a schema constraint — but a
+    class outside the vocabulary is refused while the rule is readable.
+    """
+    if task_class is None:
+        return None
+    from hermes_cli.kanban_fleet_routing import check_task_class
+
+    return check_task_class(task_class)
+
+
 def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
@@ -1168,6 +1190,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    task_class: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1183,6 +1206,9 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``task_class``: explicit class of work for fleet routing (Q2), validated
+    against the rule's vocabulary when the rule is readable. Never inferred:
+    omitting it leaves the card unclassified, which dispatch reports.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1190,6 +1216,7 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    task_class = _normalize_routing_class(task_class)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1267,8 +1294,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        task_class
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1306,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        task_class,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1329,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "task_class": task_class,
                     },
                 )
                 if task_status == "blocked":
@@ -3295,6 +3325,7 @@ def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    task_class: Optional[str] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3319,6 +3350,11 @@ def request_review(
     used to be the only accepted transition there, which returned the card to the
     same under-provisioned reviewer; the implementer provenance is preserved and
     the card stays in ``review`` under a reviewer that can actually start.
+
+    ``task_class`` records the class of review being handed over (one of the
+    fleet routing rule's ``task_classes``) so dispatch can answer Q2 — is this
+    reviewer the right agent for *this* class — and not just whether the reviewer
+    is allowed on the review lane at all.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3326,6 +3362,7 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    task_class = _normalize_routing_class(task_class)
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
@@ -3404,9 +3441,15 @@ def request_review(
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            # The class travels with the handoff that creates the review lane card: without it Q2
+            # can only check that the reviewer is permitted review at all, not that it serves this
+            # class of review. Never inferred from the card title.
+            class_sql = ", task_class = ?" if task_class is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
-                *(() if reviewer is None else (reviewer,)), task_id,
+                *(() if reviewer is None else (reviewer,)),
+                *(() if task_class is None else (task_class,)),
+                task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
             statuses = "('running', 'ready', 'review')" if reroute else "('running', 'ready')"
@@ -3417,7 +3460,7 @@ def request_review(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL
-                """ + assignee_sql + f"""
+                """ + assignee_sql + class_sql + f"""
                  WHERE id = ?
                    AND status IN {statuses}
                 """ + run_guard,
@@ -3440,6 +3483,7 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "task_class": task_class,
             }
             staged = _cleaned_artifact_paths(metadata)
             if staged:

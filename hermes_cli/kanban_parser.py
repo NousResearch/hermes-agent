@@ -205,6 +205,10 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+        _arg("--class", dest="task_class", metavar="CLASS",
+             help="Class of work for fleet routing (Q2), from the rule's task_classes — "
+                  "e.g. execution, code-review, security-review, design-review, research. "
+                  "Omitted leaves the card unclassified; the class is never inferred from the title."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -336,6 +340,9 @@ _SPECS = [
         _TASK_ID,
         _arg("--summary", help="What was implemented and how it was verified — shown to the reviewer."),
         _arg("--reviewer", help="Optional reviewer profile; reassigns the task before review dispatch."),
+        _arg("--class", dest="task_class", metavar="CLASS",
+             help="Class of review being handed over (e.g. code-review, security-review, "
+                  "design-review, docs-review), recorded on the card for the routing gate."),
         _arg("--metadata", help="JSON object with structured reviewer handoff facts."),
         _arg("--force", action="store_true",
              help="Override the live-claim guard: move a running, claimed "

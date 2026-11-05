@@ -27,23 +27,31 @@ const LOCALE_LABELS = {
   },
 };
 
-/** Locale comes from the doc's path segment, e.g. `content/zh-Hans/...`. */
+/** The default label for an untitled callout, in the locale being viewed. */
+export function calloutLabel(type, locale) {
+  return LOCALE_LABELS[locale]?.[type] ?? BASE_LABELS[type] ?? type;
+}
+
+/**
+ * Give untitled callouts a default label. The label is a component, not text:
+ * a zh-Hans route without its own translation renders the English source, so
+ * the locale is known only when the page renders, never from the file path.
+ */
 export function remarkAdmonitionLabels() {
-  return (tree, file) => {
-    const localeLabels = LOCALE_LABELS[
-      String(file.path ?? '')
-        .split(/[\\/]/)
-        .find((segment) => Object.hasOwn(LOCALE_LABELS, segment))
-    ] ?? {};
-    const labels = { ...BASE_LABELS, ...localeLabels };
+  return (tree) => {
     walk(tree, (node) => {
-      if (node.type !== 'containerDirective' || !Object.hasOwn(labels, node.name)) return;
+      if (node.type !== 'containerDirective' || !Object.hasOwn(BASE_LABELS, node.name)) return;
       const hasTitle = (node.children ?? []).some((child) => child.data?.directiveLabel);
       if (hasTitle) return;
       node.children.unshift({
         type: 'paragraph',
         data: { directiveLabel: true },
-        children: [{ type: 'text', value: labels[node.name] }],
+        children: [{
+          type: 'mdxJsxTextElement',
+          name: 'DefaultCalloutLabel',
+          attributes: [{ type: 'mdxJsxAttribute', name: 'type', value: node.name }],
+          children: [],
+        }],
       });
     });
   };

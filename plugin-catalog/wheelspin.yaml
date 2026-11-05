@@ -1,0 +1,21 @@
+name: wheelspin
+repo: https://github.com/mchevatheachiever/hermes-wheelspin
+sha: 1fab67dbea9900ee78af05b0e6bd80ac1bdc5e64
+description: "Spin a real wheel: any list becomes a weighted, animated Desktop wheel that lands on an answer in chat, with hidden jackpots and a slot-machine reveal."
+maintainer: mchevatheachiever
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+title: "WheelSpin"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - wheelspin_load
+    - wheelspin_spin
+    - wheelspin_list
+    - wheelspin_delete
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

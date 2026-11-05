@@ -29,6 +29,11 @@ There is nothing to set up.
 a masked password field. *Save & sign in* stores it and continues; *Don't save*
 tells the agent to stop asking for this turn.
 
+**Dashboard** — the **Vault** page lists what is saved, adds a login / payment
+method / address, and manages the external password managers (enable, unlock,
+lock). It is the same store the CLI and Desktop write to, so an item added in one
+place is available everywhere; the page shows metadata only and never a password.
+
 From then on the agent lists your saved logins, types the identifier itself and
 fills the password through Hermes. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also

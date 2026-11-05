@@ -4,17 +4,14 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
+import { createVaultApi } from "./api-vault";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
+const vaultApi = createVaultApi(fetchJSON);
 
 import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
 import type { AgentPluginUpdateResponse } from "./api-plugins";
-import type {
-  WhatsAppOnboardingApplyResponse,
-  WhatsAppOnboardingStartRequest,
-  WhatsAppOnboardingStartResponse,
-  WhatsAppOnboardingStatusResponse,
-} from "./api-whatsapp";
+import { createWhatsAppApi } from "./api-whatsapp";
 export type {
   WhatsAppOnboardingApplyResponse,
   WhatsAppOnboardingStartResponse,
@@ -160,6 +157,8 @@ const PROFILE_SCOPED_PREFIXES = [
   // is destructive — without this prefix the dashboard's remove button never named a profile and
   // a multi-profile host refused it outright.
   "/api/credentials",
+  // Vault (encrypted local credential vault + password-manager sources) is profile-owned.
+  "/api/vault",
   // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
   // into the named profile's config.yaml (same key as PUT /api/memory/provider).
   "/api/dashboard/plugin-providers",
@@ -1041,36 +1040,7 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
-  startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
-    fetchJSON<WhatsAppOnboardingStartResponse>(
-      "/api/messaging/whatsapp/onboarding/start",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
-  getWhatsAppOnboardingStatus: (pairingId: string) =>
-    fetchJSON<WhatsAppOnboardingStatusResponse>(
-      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
-    ),
-  applyWhatsAppOnboarding: (
-    pairingId: string,
-    body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
-  ) =>
-    fetchJSON<WhatsAppOnboardingApplyResponse>(
-      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    ),
-  cancelWhatsAppOnboarding: (pairingId: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
-      { method: "DELETE" },
-    ),
+  ...createWhatsAppApi(fetchJSON),
 
   // Gateway / update actions
   restartGateway: () =>
@@ -1310,6 +1280,9 @@ export const api = {
       `/api/credentials/pool/${encodeURIComponent(provider)}/${index}`,
       { method: "DELETE" },
     ),
+
+  // ── Admin: Vault (encrypted local credential vault + password managers) ──
+  ...vaultApi,
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
@@ -2495,6 +2468,7 @@ export interface ModelInfoResponse {
 export type { ModelOptionProvider, ModelOptionsResult };
 
 export type { AuxiliaryModelsResponse, AuxiliaryTaskAssignment } from "./api-aux";
+export type { VaultItem, VaultSource } from "./api-vault";
 export type { AgentPluginScanFinding, AgentPluginUpdateResponse } from "./api-plugins";
 
 export interface MoaModelSlot {

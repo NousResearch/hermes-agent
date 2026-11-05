@@ -35,3 +35,41 @@ export interface WhatsAppOnboardingApplyResponse {
   restart_pid?: number | null;
   restart_error?: string;
 }
+
+type Fetch = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+/** WhatsApp pairing flow, moved out of api.ts so that facade stays under its line cap. */
+export function createWhatsAppApi(fetchJSON: Fetch) {
+  return {
+    startWhatsAppOnboarding: (body: WhatsAppOnboardingStartRequest) =>
+      fetchJSON<WhatsAppOnboardingStartResponse>(
+        "/api/messaging/whatsapp/onboarding/start",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+    getWhatsAppOnboardingStatus: (pairingId: string) =>
+      fetchJSON<WhatsAppOnboardingStatusResponse>(
+        `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+      ),
+    applyWhatsAppOnboarding: (
+      pairingId: string,
+      body: { mode?: "bot" | "self-chat"; allowed_users?: string; profile?: string },
+    ) =>
+      fetchJSON<WhatsAppOnboardingApplyResponse>(
+        `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+    cancelWhatsAppOnboarding: (pairingId: string) =>
+      fetchJSON<{ ok: boolean }>(
+        `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`,
+        { method: "DELETE" },
+      ),
+  };
+}

@@ -1,0 +1,41 @@
+name: peripheral
+repo: https://github.com/okyssta/hermes-peripheral
+sha: 8ccab32adf7a8d4c2af5cca46d650d814959db71
+description: >-
+  A memory of what the user has seen on screen. Screenshots in the folders the OS
+  already writes them to are read locally with Tesseract, deduplicated (SHA-256
+  plus a 64-bit dHash for near-copies) and indexed in SQLite/FTS5 with the time of
+  capture, a 360px thumbnail and the text on the image, and the agent gets four
+  tools: screen_recall (ranked search over the words that were on screen, with
+  since/until windows), screen_timeline (what was on screen over a period,
+  interleaved with the agent's own tool calls on one clock), screen_show (one
+  screen's full text plus its path for a vision tool) and screen_index. Ships a
+  /peripheral command (status, scan, search, open, forget, pause, resume) and a
+  bundled skill that teaches when screen memory beats asking the user to re-send a
+  screenshot. Incremental and bounded: only changed files are re-read, each scan
+  OCRs a capped batch, and every failure (no Tesseract, unreadable image, locked
+  database) is logged and skipped rather than raised. Disclosure — reads image
+  files under the configured watch_dirs (auto-detected screenshot folders plus
+  Hermes' own inbound media folder) and nothing else; writes one SQLite database
+  and WebP thumbnails under the profile's plugin-data/peripheral/; runs the local
+  tesseract binary as a subprocess with a 25-second timeout and one thread; makes
+  no network calls and has no telemetry; redacts API keys, JWTs, bearer headers,
+  private keys and card numbers from stored text before writing (on by default);
+  never captures the screen and never modifies or deletes the user's files.
+maintainer: okyssta
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+docs_url: https://github.com/okyssta/hermes-peripheral#readme
+platforms: []
+capabilities:
+  provides_tools:
+    - screen_recall
+    - screen_timeline
+    - screen_show
+    - screen_index
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

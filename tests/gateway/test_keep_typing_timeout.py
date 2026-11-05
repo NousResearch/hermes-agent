@@ -251,6 +251,58 @@ class TestPreDeliveryTypingSuspend:
             f"got {len(ticks)}"
         )
 
+    @pytest.mark.asyncio
+    async def test_max_typing_seconds_cap_exits_stalled_loop(self, monkeypatch):
+        """When a turn stalls without setting stop_event, HERMES_MAX_TYPING_SECONDS
+        stops the refresh loop so the platform's typing bubble expires naturally."""
+        monkeypatch.setenv("HERMES_MAX_TYPING_SECONDS", "0.35")
+        adapter = _StubAdapter()
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="stalled-chat",
+                interval=0.15,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.wait_for(task, timeout=1.5)
+        assert len(ticks) >= 1
+
+    @pytest.mark.asyncio
+    async def test_max_typing_seconds_zero_disables_cap(self, monkeypatch):
+        """HERMES_MAX_TYPING_SECONDS=0 disables the cap and keeps refreshing until stop_event."""
+        monkeypatch.setenv("HERMES_MAX_TYPING_SECONDS", "0")
+        adapter = _StubAdapter()
+        ticks = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            ticks.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="uncapped-chat",
+                interval=0.15,
+                stop_event=stop_event,
+            )
+        )
+        await asyncio.sleep(0.5)
+        assert not task.done()
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert len(ticks) >= 2
+
 
 @pytest.mark.asyncio
 async def test_process_message_pauses_typing_before_a_stalled_final_send():

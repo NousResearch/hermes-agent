@@ -3289,9 +3289,27 @@ class BasePlatformAdapter(ABC):
         setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
         timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # Safety ceiling for the typing indicator refresh loop. Under normal operation the
+        # loop is cancelled as soon as the turn finishes. If a turn stalls indefinitely without
+        # settling, stop refreshing after HERMES_MAX_TYPING_SECONDS (default 300s = 5 min; 0
+        # disables the cap) so the platform's typing bubble expires naturally ~5s later.
+        try:
+            _max_typing_seconds = float(os.getenv("HERMES_MAX_TYPING_SECONDS", "300"))
+        except (TypeError, ValueError):
+            _max_typing_seconds = 300.0
+        _typing_started_at = asyncio.get_running_loop().time()
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if _max_typing_seconds > 0 and (
+                    asyncio.get_running_loop().time() - _typing_started_at
+                ) > _max_typing_seconds:
+                    logger.info(
+                        "[%s] typing safety cap hit (%.0fs) for chat=%s — stopping refresh "
+                        "(turn likely stalled; bubble will expire)",
+                        self.name, _max_typing_seconds, chat_id,
+                    )
                     return
                 if chat_id not in self._typing_paused:
                     try:

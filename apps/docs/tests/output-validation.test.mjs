@@ -59,11 +59,7 @@ function expectedRoutes() {
   const en = EN_DOCS.map((doc) => "/" + doc.replace(/\.mdx?$/, "").replace(/(?:^|\/)index$/, ""));
   const zh = [...en.map(zhHref), ...ZH_ONLY_DOCS.map((doc) => zhHref("/" + doc.replace(/\.mdx?$/, "")))];
   const hubs = ["/search", zhHref("/search")];
-  const catalog = PLUGINS.flatMap((plugin) => [
-    `/plugins/${plugin.name}`, `/plugins/by/${plugin.maintainerSlug}`,
-    zhHref(`/plugins/${plugin.name}`), zhHref(`/plugins/by/${plugin.maintainerSlug}`),
-  ]);
-  return [...en, ...zh, ...hubs, ...catalog];
+  return [...en, ...zh, ...hubs];
 }
 
 const PAGE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Page</title>
@@ -379,27 +375,24 @@ test("rejects a flat x.html page, which would be a second URL for x/index.html",
 test("rejects a revived catalog hub page, which the marketplace now owns", (t) => {
   const { appDir } = buildExport(t);
   const file = path.join(appDir, "out", "zh-Hans", "plugins", "index.html");
+  mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, PAGE_HTML);
   const result = runValidator(appDir);
   assert.notEqual(result.status, 0);
   assert.ok(result.stderr.includes("/zh-Hans/plugins"), result.stderr);
 });
 
-test("rejects a plugin entry without its per-plugin page", (t) => {
-  const { appDir } = buildExport(t);
-  dropRoute(appDir, "/plugins/alpha");
-  const result = runValidator(appDir);
-  assert.notEqual(result.status, 0);
-  assert.ok(result.stderr.includes("/plugins/alpha"), result.stderr);
-});
-
-test("rejects a catalog maintainer without its author page", (t) => {
-  const { appDir } = buildExport(t);
-  dropRoute(appDir, "/plugins/by/ana");
-  const result = runValidator(appDir);
-  assert.notEqual(result.status, 0);
-  assert.ok(result.stderr.includes("/plugins/by/ana"), result.stderr);
-});
+for (const route of ["/plugins/alpha", "/zh-Hans/plugins/alpha", "/plugins/by/ana", "/zh-Hans/plugins/by/ana"]) {
+  test(`rejects an exported catalog page ${route}, which the marketplace now owns`, (t) => {
+    const { appDir, outDir } = buildExport(t);
+    const file = path.join(outDir, ...route.split("/").filter(Boolean), "index.html");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, PAGE_HTML);
+    const result = runValidator(appDir);
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes(route), result.stderr);
+  });
+}
 
 test("rejects a page referencing a missing local asset", (t) => {
   const { appDir } = buildExport(t);

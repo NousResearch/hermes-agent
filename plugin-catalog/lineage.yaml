@@ -1,6 +1,6 @@
 name: lineage
 repo: https://github.com/P0GL0L/hermes-lineage
-sha: 9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6
+sha: 05cbbc4d1a35ea3f905c653d92eedbbfe842a18f
 description: >-
   Provenance for everything the agent produces: every file Hermes writes gets a receipt (what it was made from — files read,
   pages fetched, searches run — by which tool call, model and agent, with SHA-256 hashes) and a Desktop page draws the graph
@@ -17,10 +17,10 @@ tier: community
 category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/P0GL0L/hermes-lineage#readme
-version: "0.1.1"
-image: https://raw.githubusercontent.com/P0GL0L/hermes-lineage/9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6/docs/banner.png
+version: "0.1.2"
+image: https://raw.githubusercontent.com/P0GL0L/hermes-lineage/05cbbc4d1a35ea3f905c653d92eedbbfe842a18f/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/P0GL0L/hermes-lineage/9a5c2ba1c4def5298a81a5b9b8b6cd022ac600d6/docs/graph.png
+  - https://raw.githubusercontent.com/P0GL0L/hermes-lineage/05cbbc4d1a35ea3f905c653d92eedbbfe842a18f/docs/graph.png
 readme: true
 platforms: []
 title: Lineage

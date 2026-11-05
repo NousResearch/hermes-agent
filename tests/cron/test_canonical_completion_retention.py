@@ -1,5 +1,9 @@
 """A recurring canonical cron job's completion tombstones stay bounded: an id is retired once its
 admission journal is gone (nothing can replay it), never while recovery could still replay it."""
+from datetime import datetime
+
+import pytest
+
 from cron import jobs, scheduler_authority
 
 
@@ -24,3 +28,32 @@ def test_completion_ids_retire_with_their_journal(tmp_path, monkeypatch):
         # The still-journaled completion replayed by recovery is a no-op, not a second run.
         assert jobs.mark_job_run(job_id, True, execution_id='pending') is True
         assert jobs.get_job(job_id)['repeat']['completed'] == completed
+
+
+@pytest.mark.parametrize('initial', [{}, {'canonical_completions': None},
+                                    {'canonical_completions': []},
+                                    {'canonical_completions': ['pending']}],
+                         ids=['missing', 'null', 'empty', 'pending'])
+@pytest.mark.parametrize('success', [True, False], ids=['success', 'failure'])
+def test_completion_bookkeeping_accepts_empty_history(tmp_path, monkeypatch, initial, success):
+    """Regression for #146519: a stored null must not strand a finished run before bookkeeping."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='report', schedule='every 1m', deliver='local')
+        job.update(initial)
+        jobs.save_jobs([job])
+        pending = scheduler_authority.journal_path(job['id'], 'pending')
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text('{}', encoding='utf-8')
+
+        assert jobs.mark_job_run(job['id'], success, execution_id='current') is True
+        saved = jobs.get_job(job['id'])
+        assert saved['last_status'] == ('ok' if success else 'error')
+        assert saved['last_run_at'] is not None
+        assert datetime.fromisoformat(saved['next_run_at']) > datetime.fromisoformat(saved['last_run_at'])
+        assert saved['repeat']['completed'] == 1
+        assert saved['failure_streak'] == (0 if success else 1)
+        assert saved['canonical_completions'] == [*(initial.get('canonical_completions') or []), 'current']
+
+        assert jobs.mark_job_run(job['id'], success, execution_id='current') is True
+        assert jobs.get_job(job['id']) == saved

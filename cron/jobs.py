@@ -2518,7 +2518,7 @@ def mark_job_run(
     (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
-        if execution_id is not None and execution_id in job.get("canonical_completions", []):
+        if execution_id is not None and execution_id in (job.get("canonical_completions") or []):
             return True
         if expected_fire_owner is not None:
             claim = job.get("fire_claim")

@@ -2,16 +2,7 @@ name: antigravity-duet
 repo: https://github.com/benfirad/hermes-plugin-antigravity-duet
 sha: b68fe4bacf0145f7ab30b9a6b08597b442922278
 title: Antigravity Duet / Duffy Queue & Ruflo Swarm Controller
-description: >-
-  Autonomous background task queue (DAAK Duffy / Duet Do-For-You worker) with Human-in-the-Loop
-  approval gates (duet_queue tool, /duffy and /duet commands), Ruflo multi-agent swarm
-  orchestration (ruflo_swarm tool), and multi-model Antigravity CLI quota fallback worker
-  (gemini-3.8-flash-high -> claude-sonnet-5-5-high -> gemini-3.1-pro-high ->
-  claude-opus-5-5-high -> gpt-oss-120b-medium). Disclosure — when the optional background
-  worker or Ruflo swarm tool is invoked by the user, inference runs through
-  the locally installed agy or ruflo CLI under its existing sign-in and counts against the
-  user's subscription; the plugin never reads, copies, links, or modifies any OAuth token
-  files, keychains, or .env secrets.
+description: "Autonomous background task queue (DAAK Duffy / Duet Do-For-You worker) with Human-in-the-Loop approval gates (duet_queue tool, /duffy and /duet commands), Ruflo multi-agent swarm orchestration (ruflo_swarm tool), and multi-model Antigravity CLI quota fallback worker (gemini-3.8-flash-high -> claude-sonnet-5-5-high -> gemini-3.1-pro-high -> claude-opus-5-5-high -> gpt-oss-120b-medium). Disclosure — when the optional background worker or the ruflo_swarm tool is used, the plugin runs the locally installed agy or ruflo CLI under its existing sign-in (counting against the user's subscription) with the Hermes process environment; the worker you start with `python3 -m daak_duffy worker` serves a token-protected dashboard on 127.0.0.1:8899; the plugin never reads, copies, links, or modifies any OAuth token files, keychains, or .env secrets."
 maintainer: benfirad
 tier: community
 category: automation

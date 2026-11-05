@@ -237,6 +237,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         # Set when this context's load overran ``plugins.load_timeout_seconds``: the abandoned worker may
         # still be running register(), and nothing it registers from then on may reach a registry.
         self._load_abandoned = False
+        self._staged: list[PluginRegistration] = []  # this load's staged registrations, published if it succeeds
 
     def _abandon_load(self) -> None:
         """Mark this load as timed out; every later ``register_*``/``subscribe``/``on_unload`` is ignored."""
@@ -707,16 +708,15 @@ class PluginContext(PluginCapabilityCtxMixin):
         return handle
 
     def register_context_reference(self, provider) -> None:
-        """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix``
-        defines ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are
-        rejected."""
+        """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix`` defines
+        ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are rejected."""
         from agent.context_references import (
             ContextReferenceProvider as _CRP, register_context_reference_provider as _register,
         )
         if self._wrong_type(provider, _CRP, "context reference provider"):
             return
         try:
-            self._manager._track_context_reference(self.manifest, provider, _register)
+            self._staged.append(self._manager._track_context_reference(self.manifest, provider, _register))
         except ValueError as exc:
             logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return

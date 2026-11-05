@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
+import types
 from pathlib import Path
 
 import hermes_yaml as yaml
@@ -75,6 +77,44 @@ def test_successful_reload_replaces_the_plugins_provider(home):
         manager.discover_and_load(force=True)
         assert manager._plugins["tickets"].error is None
         assert _expand("7") == "v2-reloaded 7"
+    finally:
+        manager.unload()
+
+
+def test_reload_publishes_when_earlier_registrations_are_disposed_during_it(home, monkeypatch):
+    # Registrations made before this plugin's load can be disposed while it loads (a supervised task
+    # finishing, a handle released from a callback); the manager's registration list gets shorter then.
+    handles: list = []
+    shared = types.ModuleType("ctxref_shared")
+    shared.__dict__["handles"] = handles
+    monkeypatch.setitem(sys.modules, "ctxref_shared", shared)
+    holder = home / "plugins" / "aaa-holder"
+    holder.mkdir(parents=True)
+    (holder / "plugin.yaml").write_text(yaml.safe_dump({"name": "aaa-holder", "version": "1.0"}), encoding="utf-8")
+    (holder / "__init__.py").write_text(
+        "import ctxref_shared\n\ndef register(ctx):\n"
+        "    ctxref_shared.handles[:] = [ctx.on_unload(lambda: None), ctx.on_unload(lambda: None)]\n",
+        encoding="utf-8")
+    _write_plugin(home, "tickets", "v1")
+    _write_config(home, "aaa-holder", "tickets")
+    manager = PluginManager()
+    try:
+        manager.discover_and_load()
+        assert _expand("7") == "v1 7"
+
+        _write_plugin(home, "tickets", "v2")
+        source = home / "plugins" / "tickets" / "__init__.py"
+        source.write_text(source.read_text(encoding="utf-8").replace(
+            "def register(ctx):\n",
+            "def register(ctx):\n"
+            "    import ctxref_shared\n"
+            "    for handle in ctxref_shared.handles:\n"
+            "        handle.dispose()\n",
+        ), encoding="utf-8")
+        manager.discover_and_load(force=True)
+        assert handles and not any(handle.active for handle in handles)  # disposed mid-load
+        assert manager._plugins["tickets"].error is None
+        assert _expand("7") == "v2 7"
     finally:
         manager.unload()
 

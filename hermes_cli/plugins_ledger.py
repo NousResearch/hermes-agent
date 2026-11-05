@@ -100,7 +100,9 @@ class PluginLedgerMixin:
         )
         return self._track_registration(manifest, kind, name, lease.dispose)
 
-    def _track_context_reference(self, manifest: PluginManifest, provider: Any, register: Callable[..., Any]) -> None:
+    def _track_context_reference(
+        self, manifest: PluginManifest, provider: Any, register: Callable[..., Any],
+    ) -> PluginRegistration:
         """Claim ``provider.prefix`` in the process-wide context-reference table and record the claim. The table
         keeps the provider when the plugin unloads, so the same plugin on the same manager loading again (a
         reload) holds the prefix with no live claim: its new provider is staged and published on load success.
@@ -109,13 +111,19 @@ class PluginLedgerMixin:
         reclaim = not any(r.active and r.kind == "context_reference" and r.key == prefix
                           for r in self._ownership_ledger.get(plugin_key, ()))
         publish = register(provider, owner=(plugin_key, weakref.ref(self)), reclaim=reclaim)
-        self._track_registration(manifest, "context_reference", prefix, lambda: None).publish = publish
+        registration = self._track_registration(manifest, "context_reference", prefix, lambda: None)
+        registration.publish = publish
+        return registration
 
-    def _publish_staged_registrations(self, plugin_key: str, start: int) -> None:
-        """Apply the staged changes of a plugin load that succeeded."""
-        for registration in self._registration_order[start:]:
-            if registration.plugin_key == plugin_key and registration.active and registration.publish is not None:
+    @staticmethod
+    def _publish_staged_registrations(ctx: Any) -> None:
+        """Apply the staged changes of a plugin load that succeeded: only the ones this load's ``ctx`` made.
+        Neither an offset into ``_registration_order`` (an earlier registration disposed mid-load shortens it)
+        nor the plugin's whole ledger (a timed-out load's worker can stage into it late) is safe."""
+        for registration in ctx._staged:
+            if registration.active and registration.publish is not None:
                 registration.publish()
+        ctx._staged.clear()  # a provider that keeps its ctx must not keep the provider it replaced
 
     def _active_persistent(self) -> list[PluginRegistration]:
         """Live persistent registrations across every plugin in the ownership ledger."""

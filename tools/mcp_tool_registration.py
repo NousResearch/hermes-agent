@@ -470,9 +470,18 @@ def _connection_identity(config: dict) -> tuple:
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
+    # Global mTLS (agent.mtls) authenticates the connection just as a per-server
+    # certificate does, so it is part of the identity even when the server entry is silent.
+    try:
+        from agent.ssl_verify import client_cert_spec
+
+        global_cert = _frozen(client_cert_spec() or {})
+    except Exception:
+        global_cert = _frozen({})
+
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
             _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")),
-            config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")))
+            config.get("ssl_verify", True), bool(config.get("strict_redirect_headers")), global_cert)
 
 
 def _auth_type(config: dict) -> str:

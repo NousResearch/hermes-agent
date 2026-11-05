@@ -290,6 +290,10 @@ Notes:
 - Paths support `~` expansion. Missing files fail fast at connect time with a server-scoped error message.
 - `ssl_verify: false` disables server certificate verification entirely. Don't use this with real services.
 - Works on both Streamable HTTP and SSE transports.
+- **Global inheritance:** a server entry with no `client_cert` of its own uses the machine-wide
+  [`agent.mtls`](../user-guide/security.md#mutual-tls) certificate, and a server with no `ssl_verify`
+  of its own trusts `agent.mtls.ca_cert`. A server that sets either key keeps its own — the global
+  block never overrides a per-server TLS statement.
 
 ## Reloading config
 

@@ -1,13 +1,7 @@
 name: neuralwatt
 repo: https://github.com/0xGingi/neuralwatt-hermes
 sha: 123651dd0456ad235953652eb1e9d527f2a4350c
-description: >-
-  Check NeuralWatt service health, available models, account balance, request costs,
-  energy use, and session activity from Hermes. Includes seven read-only tools.
-  Health and public model discovery need no credentials; account analytics use your
-  NeuralWatt API key. Disclosure: makes GET requests to the configured NeuralWatt
-  API, reads usage and energy metrics rather than prompt or completion text, writes
-  nothing, and loads the optional API key through Hermes's secret scope.
+description: "Check NeuralWatt service health, available models, account balance, request costs, energy use, and session activity from Hermes. Includes seven read-only tools. Health and public model discovery need no credentials; account analytics use your NeuralWatt API key. Disclosure — makes GET requests to the NeuralWatt API (api.neuralwatt.com, or the host you set in NEURALWATT_BASE_URL, which then receives your API key), reads account usage, cost and energy metrics rather than prompt or completion text, writes nothing, and loads the optional API key through Hermes's secret scope."
 maintainer: 0xGingi
 tier: community
 category: tools
@@ -28,5 +22,4 @@ capabilities:
     - neuralwatt_sessions
   provides_hooks: []
   provides_middleware: []
-  requires_env:
-    - NEURALWATT_API_KEY
+  requires_env: []

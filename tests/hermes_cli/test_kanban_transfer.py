@@ -360,3 +360,41 @@ def test_import_rejects_a_future_format_version(kanban_root, tmp_path):
     kanban_root("target")
     with pytest.raises(ValueError, match="newer than this Hermes"):
         kt.import_board(str(bumped))
+
+
+def test_imported_attachment_rows_cannot_point_outside_the_board(kanban_root, tmp_path):
+    """Archive rows are untrusted: a task_id like '../../../../victim' must not re-home an
+    attachment row onto an existing host file — else removing that innocuous-looking attachment
+    (dashboard / `hermes kanban attach-rm`) deletes the host file."""
+    import os
+    import sqlite3
+
+    _seed_board()
+    archive = Path(kt.export_board("alpha", str(tmp_path / "alpha"))["archive"])
+    staged = tmp_path / "restage"
+    safe_extract_targz(archive, staged)
+
+    target_root = kanban_root("target")
+    victim = target_root / "victim" / "precious.txt"
+    victim.parent.mkdir()
+    victim.write_text("keep me", encoding="utf-8")
+    escape = os.path.relpath(victim.parent, kb.attachments_root("alpha"))
+    db = next(staged.rglob("kanban.db"))
+    raw = sqlite3.connect(db)
+    raw.execute("UPDATE task_attachments SET task_id = ?, stored_path = ?", (escape, f"x/{victim.name}"))
+    raw.commit()
+    raw.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # the snapshot is WAL; import reads kanban.db only
+    raw.close()
+    tampered = tmp_path / "tampered.tar.gz"
+    with tarfile.open(tampered, "w:gz") as tf:
+        tf.add(staged / "alpha", arcname="alpha")
+
+    result = kt.import_board(str(tampered))
+    with kbc.connect_closing(board=result["board"]) as conn:
+        rows = conn.execute("SELECT id, stored_path FROM task_attachments").fetchall()
+        root = kb.attachments_root(result["board"]).resolve()
+        assert all(Path(r["stored_path"]).resolve().is_relative_to(root) for r in rows), rows
+        for r in rows:
+            kb.delete_attachment(conn, r["id"], board=result["board"])
+
+    assert victim.read_text(encoding="utf-8") == "keep me"

@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import threading
 import time
-from contextlib import closing, suppress
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Optional
 
@@ -66,7 +66,7 @@ class ResponseStore:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
         # Shared WAL-fallback so response_store.db degrades gracefully on NFS/SMB/FUSE homes.
-        from hermes_state_wal import apply_wal_with_fallback
+        from sqlite_support import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS responses ("
@@ -83,7 +83,7 @@ class ResponseStore:
         self._conn.execute('CREATE TABLE IF NOT EXISTS response_output_order '
             '(request_key TEXT NOT NULL, item_id TEXT NOT NULL, output_index INTEGER NOT NULL, '
             'PRIMARY KEY(request_key,item_id), UNIQUE(request_key,output_index))')
-        from hermes_cli.sqlite_util import add_column_if_missing
+        from sqlite_support import add_column_if_missing
         add_column_if_missing(self._conn, 'response_keys', 'model_json', 'model_json TEXT')
         add_column_if_missing(self._conn, 'response_keys', 'settled_at', 'settled_at REAL')
         add_column_if_missing(self._conn, 'response_keys', 'response_id', 'response_id TEXT')
@@ -176,25 +176,15 @@ class ResponseStore:
         pending = dict(self._conn.execute(
             'SELECT a.admission_id, k.request_key FROM response_keys k JOIN response_admissions a '
             'ON a.request_key=k.request_key WHERE k.settled_at IS NULL').fetchall())
-        state_db = Path(self._db_path).parent / 'state.db'
-        if not pending or not state_db.is_file():
+        from persistence import STORE_FAILURES
+        from persistence_assembly import open_persistence_reader, profile_scope, store_location
+        state_db = store_location(profile_scope(home=Path(self._db_path).parent))
+        if not pending or state_db is None or not state_db.is_file():
             return
-        from hermes_state_holders import read_only_db_uri
-        from hermes_state_terminal import ADMISSION_PREFIX
-        terminal = []
-        ids = list(pending)
         try:
-            with closing(sqlite3.connect(read_only_db_uri(state_db), uri=True)) as canon:
-                for start in range(0, len(ids), 500):
-                    chunk = ids[start:start + 500]
-                    marks = ','.join('?' * len(chunk))
-                    terminal += [row[0] for row in canon.execute(
-                        f"SELECT admission_id FROM session_admissions WHERE status='terminal' "
-                        f"AND admission_id IN ({marks})", chunk)]
-                    terminal += [row[0][len(ADMISSION_PREFIX):] for row in canon.execute(
-                        f'SELECT key FROM state_meta WHERE key IN ({marks})',
-                        [ADMISSION_PREFIX + admission_id for admission_id in chunk])]
-        except sqlite3.Error:
+            with open_persistence_reader(state_db) as canon:
+                terminal = canon.admissions.terminal_ids(list(pending))
+        except STORE_FAILURES:
             # Unreadable canonical store: nothing is proven terminal, so nothing is settled.
             logger.debug('Responses identity settlement skipped: %s unreadable', state_db, exc_info=True)
             return
@@ -296,11 +286,11 @@ class ResponseStore:
 
     @_locked
     def bind_request_admission(self, key: str, admission_id: str) -> None:
-        from hermes_state_runtime import RuntimeStoreError
+        from persistence.core.errors import AuthorityRefusal
         with self._conn:
             self._conn.execute('INSERT OR IGNORE INTO response_admissions VALUES (?,?)', (key, admission_id))
             if self.request_admission(key) != admission_id:
-                raise RuntimeStoreError('admission_conflict')
+                raise AuthorityRefusal('admission_conflict')
 
     @_locked
     def forget_unadmitted_request(self, key: str) -> None:

@@ -22,7 +22,9 @@ import pytest_asyncio
 
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
-from hermes_state_runtime import list_session_admissions
+from persistence_assembly import close_stores_under, store_location
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
 from tests.waiting import async_wait_until
 
 AUTHOR = {'id': 'bot:alpha', 'name': 'alpha', 'is_bot': True}
@@ -43,8 +45,6 @@ class _Gateway:
                 'api_key': 'loopback-only'}}))
         monkeypatch.setattr(Path, 'home', lambda: tmp_path)
         monkeypatch.setenv('HERMES_HOME', str(root))
-        import hermes_state
-        monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
         self.turns, self.gate = [], None
         self.runner, self.connections = None, []
 
@@ -80,7 +80,7 @@ class _Gateway:
             await connection.close()
         self.connections = []
         for authority in getattr(self.runner, 'session_authorities', None) or []:
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in self.homes:
             process_ownership.release(home)
 
@@ -105,12 +105,12 @@ class _Gateway:
         return viewer
 
     def rows(self, authority, session_id):
-        return list_session_admissions(authority.db, session_id=session_id, pending_only=False)
+        return authority.persistence.admissions.list(session_id=session_id, pending_only=False)
 
     async def settled(self, authority, session_id, count):
         def done():
             rows = self.rows(authority, session_id)
-            return len(rows) >= count and all(row['status'] == 'terminal' for row in rows)
+            return len(rows) >= count and all(row.status == 'terminal' for row in rows)
         await async_wait_until(done, timeout=30, what=f'{count} settled admissions')
 
     def process_event(self, authority, session_id, kind, process='proc_job', **fields):
@@ -165,7 +165,7 @@ async def test_a_liveness_tick_is_admitted_into_the_session_that_started_the_pro
     # The claim's message.start card: the wake stays machinery, and an idle CLI opens the turn with a
     # one-line receipt.
     [row] = gateway.rows(gateway.primary, sid)
-    card = _card({'payload': admission_display(row['payload'])})
+    card = _card({'payload': admission_display(row.payload)})
     assert card is not None and (card['display_kind'], card['display_text']) == (
         'internal_notification', 'Background Process Output after 1m: make test')
 
@@ -197,7 +197,7 @@ async def test_waiting_ticks_fold_into_one_turn_and_none_outlives_its_process(ga
     gateway.gate.set()
     await gateway.settled(primary, sid, 8)
 
-    assert {row['request_id']: row['outcome'] for row in gateway.rows(primary, sid)} == {
+    assert {row.request_id: row.outcome for row in gateway.rows(primary, sid)} == {
         '["heartbeat","proc_1","proc_1-tick-1"]': 'completed',
         '["heartbeat","proc_12","proc_12-tick-1"]': 'cancelled',
         '["heartbeat","proc_12","proc_12-tick-2"]': 'cancelled',
@@ -216,15 +216,12 @@ async def messaging(tmp_path, monkeypatch):
     from gateway.platforms.event import MessageEvent
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback, register_transport_home
-    from hermes_state import SessionDB
     from plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
-    db = SessionDB(tmp_path / 'state.db')
-    runner.session_store._db = runner._session_db = db
-    authority = await initialize_session_authority(runner, profile_id='default', instance_id='ticks', db=db)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='ticks')
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
     runner._wire_adapter_handlers(adapter)
@@ -240,7 +237,7 @@ async def messaging(tmp_path, monkeypatch):
             'type': kind, 'session_id': 'proc_job', 'started_at': 1.0, 'session_key': route, 'parent_session_id': owner,
             'platform': 'discord', 'command': 'make test', **chat, **fields})
     finally:
-        db.close()
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio
@@ -257,12 +254,12 @@ async def test_a_messaging_chat_gets_its_ticks_folded_and_none_after_the_complet
     assert await messaging.runner._inject_watch_notification('[proc_job finished]', exited) is True
     assert await drain(messaging.event('heartbeat', **_tick_fields('proc_job', 3))) == 0
 
-    rows = list_session_admissions(messaging.authority.db, session_id=messaging.owner, pending_only=False)
-    automation = {row['request_id']: row for row in rows if row['principal_id'] == 'automation:' + messaging.route}
-    assert {key: row['outcome'] for key, row in automation.items()} == {
+    rows = messaging.authority.persistence.admissions.list(session_id=messaging.owner, pending_only=False)
+    automation = {row.request_id: row for row in rows if row.principal_id == 'automation:' + messaging.route}
+    assert {key: row.outcome for key, row in automation.items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': 'cancelled',
         '["heartbeat","proc_job","proc_job-tick-2"]': 'cancelled', '["completion","proc_job",1.0]': None}
-    folded = automation['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']
+    folded = automation['["heartbeat","proc_job","proc_job-tick-2"]'].payload['text']
     assert _tick_output(folded) == 'proc_job/1\nproc_job/2\n'
 
 
@@ -274,8 +271,8 @@ async def _drain_one(runner, event):
 
 
 def _automation_rows(messaging):
-    rows = list_session_admissions(messaging.authority.db, session_id=messaging.owner, pending_only=False)
-    return {row['request_id']: row for row in rows if row['principal_id'] == 'automation:' + messaging.route}
+    rows = messaging.authority.persistence.admissions.list(session_id=messaging.owner, pending_only=False)
+    return {row.request_id: row for row in rows if row.principal_id == 'automation:' + messaging.route}
 
 
 @pytest.mark.asyncio
@@ -286,16 +283,16 @@ async def test_a_refused_replacement_leaves_the_earlier_tick_queued_and_the_fold
     assert await _drain_one(messaging.runner, tick(1)) == 0
     messaging.authority.retiring = True  # the replacement is refused
     assert await _drain_one(messaging.runner, tick(2)) == 1, 'a refused tick is requeued'
-    assert {key: row['status'] for key, row in _automation_rows(messaging).items()} == {
+    assert {key: row.status for key, row in _automation_rows(messaging).items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': 'queued'}, 'the accepted tick was cancelled'
 
     messaging.authority.retiring = False
     messaging.runner.__dict__.pop('_admitted_heartbeat_ticks', None)  # what a restart forgets
     assert await _drain_one(messaging.runner, tick(2)) == 0
     rows = _automation_rows(messaging)
-    assert {key: row['outcome'] for key, row in rows.items()} == {
+    assert {key: row.outcome for key, row in rows.items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': 'cancelled', '["heartbeat","proc_job","proc_job-tick-2"]': None}
-    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']) == 'proc_job/1\nproc_job/2\n'
+    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]'].payload['text']) == 'proc_job/1\nproc_job/2\n'
     # A retry of the admitted replacement (its acknowledgement lost) is dropped, never folded again.
     assert await _drain_one(messaging.runner, tick(2)) == 0
     assert len(_automation_rows(messaging)) == 2
@@ -312,7 +309,7 @@ async def test_a_tick_drained_during_a_restart_drain_leaves_the_committed_tick_q
         assert await _drain_one(messaging.runner, tick(2)) == 1, 'a refused tick is requeued'
     finally:
         messaging.runner._draining = False
-    assert {key: (row['status'], row['outcome']) for key, row in _automation_rows(messaging).items()} == {
+    assert {key: (row.status, row.outcome) for key, row in _automation_rows(messaging).items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': ('queued', None)}
 
 
@@ -326,18 +323,17 @@ async def test_a_tick_whose_replaced_tick_starts_first_is_admitted_with_only_its
     async def claimed_first(adapter, event, identity, replaces=None):
         if replaces is not None:  # the drain claims the waiting tick between the check and the write
             # (The fixture's human message still heads the FIFO, so the claim is stamped directly.)
-            with authority.db._lock:
-                authority.db._conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=1 "
-                                           "WHERE admission_id=?", (authority.epoch, replaces))
-                authority.db._conn.commit()
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute(
+                "UPDATE session_admissions SET status='started',owner_epoch=?,generation=1 "
+                "WHERE admission_id=?", (authority.epoch, replaces)))
         return await admit(adapter, event, identity, replaces)
     monkeypatch.setattr(authority, 'admit_automation', claimed_first)
 
     assert await _drain_one(messaging.runner, tick(2)) == 0
     rows = _automation_rows(messaging)
-    assert {key: row['status'] for key, row in rows.items()} == {
+    assert {key: row.status for key, row in rows.items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': 'started', '["heartbeat","proc_job","proc_job-tick-2"]': 'queued'}
-    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']) == 'proc_job/2\n'
+    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]'].payload['text']) == 'proc_job/2\n'
 
 
 @pytest.mark.asyncio
@@ -362,7 +358,7 @@ async def test_a_tick_admitted_while_its_completion_lands_never_queues_behind_it
     await asyncio.wait({completion}, timeout=1)
     gate.set()
     assert (await tick, await completion) == (0, True)
-    assert {key: row['outcome'] for key, row in _automation_rows(messaging).items()} == {
+    assert {key: row.outcome for key, row in _automation_rows(messaging).items()} == {
         '["heartbeat","proc_job","proc_job-tick-1"]': 'cancelled', '["completion","proc_job",1.0]': None}
 
 
@@ -373,7 +369,7 @@ async def test_job_output_that_looks_like_a_cut_marker_keeps_the_earlier_output(
     for seq, output in ((1, 'proc_job/1\n'), (2, literal)):
         assert await _drain_one(messaging.runner, messaging.event(
             'heartbeat', **_tick_fields('proc_job', seq, output))) == 0
-    folded = _automation_rows(messaging)['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']
+    folded = _automation_rows(messaging)['["heartbeat","proc_job","proc_job-tick-2"]'].payload['text']
     assert _tick_output(folded) == 'proc_job/1\n' + literal
 
 
@@ -386,11 +382,9 @@ async def test_a_late_tick_of_a_settled_batch_member_is_dropped(messaging):
              for process in ('proc_a', 'proc_b')]
     primary = dict(batch[0], _automation_identities=[producer_identity(messaging.runner, e) for e in batch])
     assert await messaging.runner._inject_watch_notification('[2 finished]', primary) is True
-    with messaging.authority.db._lock:
-        messaging.authority.db._conn.execute(
-            "UPDATE session_admissions SET status='terminal',outcome='completed' WHERE request_id=?",
-            ('["completion","proc_a",1.0]',))
-        messaging.authority.db._conn.commit()
+    raw_holder(messaging.authority.persistence)._execute_write(lambda conn: conn.execute(
+        "UPDATE session_admissions SET status='terminal',outcome='completed' WHERE request_id=?",
+        ('["completion","proc_a",1.0]',)))
 
     assert await _drain_one(messaging.runner, messaging.event(
         'heartbeat', session_id='proc_b', **_tick_fields('proc_b', 1))) == 0
@@ -414,7 +408,7 @@ async def test_a_served_profiles_bot_chat_takes_every_dm_with_no_client_attached
 
     # A turn in a served profile's local chat records the launch profile as its transport; a restart
     # reads the chat back over that row.
-    db = gateway.secondary.db.db_path
+    db = store_location(gateway.secondary.persistence.scope)
     await gateway.stop()
     with closing(sqlite3.connect(db)) as conn:
         assert conn.execute('SELECT transport_profile FROM sessions WHERE id=?', (chat,)).fetchone() == ('default',)
@@ -438,8 +432,8 @@ async def test_a_served_profiles_desktop_session_admits_its_own_process_notices(
         # A row written by a Desktop before the session authority existed; resuming it adopts it.
         desktop = gateway.connect(secondary, provider='local', profile_id=secondary.profile_id,
                                   instance_id=secondary.instance_id)
-        sid = secondary.db.create_session(LEGACY_DESKTOP_ID, source='desktop', model='desk-model',
-                                          cwd=str(gateway.tmp_path))
+        sid = seed_session(secondary.persistence, LEGACY_DESKTOP_ID, 'desktop', model='desk-model',
+                           cwd=str(gateway.tmp_path))
     resumed = await desktop.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}})
     assert 'result' in resumed, resumed
     submitted = await desktop.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {

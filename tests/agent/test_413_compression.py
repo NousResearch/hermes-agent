@@ -11,6 +11,7 @@ import pytest
 
 
 
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -185,20 +186,19 @@ class TestHTTP413Compression:
 
 
 
-    def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
-        """If compression leaves image payloads behind, strip them and retry.
+    def test_413_strips_vision_payloads_before_compression(self, agent):
+        """A byte-size rejection drops retained tool images before summarisation.
 
-        Browser vision tool results can contain base64 image parts. A 413 can
-        persist even after summarisation when the remaining recent tool result
-        still carries binary data; Hermes should evict the image payload and
-        keep the text/placeholder context instead of failing immediately.
+        Text compression cannot shrink the base64 in recent vision tool results.
+        Retry without those image parts, preserving text and future native vision,
+        without spending a compression attempt.
         """
         err_413 = _make_413_error()
         ok_resp = _mock_response(content="Recovered after image eviction", finish_reason="stop")
         request_payloads = []
 
         def _side_effect(**kwargs):
-            request_payloads.append(kwargs)
+            request_payloads.append(deepcopy(kwargs))
             if len(request_payloads) == 1:
                 raise err_413
             return ok_resp
@@ -234,22 +234,23 @@ class TestHTTP413Compression:
         ]
 
         with (
+            patch.object(agent, "_model_supports_vision", return_value=True),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Simulate the bad production case: compression ran, but the
-            # recent vision tool message survived so message count did not drop.
+            # Model the old no-progress case; the early strip must bypass this.
             mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
             result = agent.run_conversation("continue", conversation_history=prefill)
 
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after image eviction"
         assert len(request_payloads) == 2
         first_tool = next(m for m in request_payloads[0]["messages"] if m.get("role") == "tool")
         retried_tool = next(m for m in request_payloads[1]["messages"] if m.get("role") == "tool")
+        assert "data:image" in str(first_tool["content"])
         assert "Screenshot of the dashboard" in str(first_tool["content"])
         assert "data:image" not in str(retried_tool["content"])
         assert "Screenshot of the dashboard" in str(retried_tool["content"])

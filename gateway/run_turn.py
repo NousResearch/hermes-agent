@@ -77,31 +77,14 @@ def _tool_call_logger() -> logging.Logger:
 
 
 
-_CONTEXT_OVERFLOW_ERROR_PHRASES = (
-    "context length", "context size", "context window",
-    "maximum context", "token limit", "too many tokens",
-    "reduce the length", "exceeds the limit",
-    "request entity too large", "prompt is too long",
-    "payload too large", "input is too long",
-)
-
 def _unexpected_silence_reply() -> str:
     """Reply when the model returned only a silence marker for a message that needed an answer."""
     return t("gateway.errors.unexpected_silence")
 
 
-def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
-    """One verdict for "this failed turn is a context overflow", shared by transcript persistence
-    (#1630 skip) and the user-facing reply so the two can never disagree.
-
-    Multi-word phrases (not bare "exceed"/"token") avoid matching "rate limit exceeded" or
-    "invalid authentication token"; a bare 400 only counts on a long session."""
-    if not agent_result.get("failed"):
-        return False
-    if agent_result.get("compression_exhausted"):
-        return True
-    err = str(agent_result.get("error") or "").lower()
-    return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
+# Re-export: callers and tests import from gateway.run_turn; definition lives in the sibling so
+# this facade's line count can go down (#143940 offset).
+from gateway.run_turn_overflow import is_context_overflow_failure_result
 
 
 # Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
@@ -304,6 +287,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             )
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
+            with suppress(Exception):
+                from gateway.api_error_echo import arm_hold_on_session_store
+                arm_hold_on_session_store(getattr(self, "session_store", None), session_entry, agent_result, session_key)
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
             )
@@ -1589,6 +1575,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                         )
                         pending_event = None
                         pending = None
+
+        if pending:
+            with suppress(Exception):
+                from gateway.api_error_echo import take_pending_if_api_error_echo
+                pending_event, pending = take_pending_if_api_error_echo(
+                    result if isinstance(result, dict) else None, pending_event, pending, session_key,
+                )
 
         if self._draining and getattr(pending_event, "_admitted_before_drain", False) is not True:
             if pending_event or pending:

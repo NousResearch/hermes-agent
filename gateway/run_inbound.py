@@ -146,7 +146,42 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
             await notifier.notify(self, source, hint)
 
+    def _hm_drop_api_error_echo(self, event: MessageEvent, source: SessionSource) -> bool:
+        """Drop inbound that re-admits a terminal API-error notice while the session hold is armed (#143940).
+
+        Slash commands always pass (and leave the hold for the command handler to clear or keep).
+        A dissimilar human message clears the hold and is admitted.
+        """
+        with suppress(Exception):
+            from gateway.api_error_echo import should_drop_text_under_api_error_hold
+            text = str(getattr(event, "text", None) or "")
+            is_command = False
+            cmd = event.get_command() if hasattr(event, "get_command") else None
+            if cmd:
+                from hermes_cli.commands import resolve_command
+                is_command = resolve_command(cmd) is not None
+            session_key = self._session_key_for_source(source)
+            store = getattr(self, "session_store", None)
+            entry = store._entries.get(session_key) if store is not None else None
+            drop, cleared = should_drop_text_under_api_error_hold(
+                entry, text, is_command=is_command,
+            )
+            if cleared and store is not None and hasattr(store, "_save"):
+                store._save()
+                logger.info(
+                    "Cleared api-error turn hold for session %s after dissimilar inbound",
+                    session_key or "?",
+                )
+            if drop:
+                logger.info(
+                    "Dropping api-error echo inbound for session %s under turn hold",
+                    session_key or "?",
+                )
+                return True
+        return False
+
     async def _hm_admit_event(
+
         self, event: MessageEvent
     ) -> Optional[tuple[MessageEvent, SessionSource, bool]]:
         """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
@@ -211,6 +246,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
 
         if is_internal:
+            # Peer/bot-relay admissions are internal and were the #143940 miss for bot_loop_guard
+            # (is_bot unset). Drop error-echo text while a hold is armed; other internals pass.
+            if self._hm_drop_api_error_echo(event, source):
+                return None
             return event, source, True
         if getattr(event, "_fifo_only", False):  # a slash command's queued turn: its command passed ingress
             return event, source, False
@@ -246,6 +285,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+            return None
+        if self._hm_drop_api_error_echo(event, source):
             return None
         return event, source, False
 

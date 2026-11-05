@@ -109,24 +109,52 @@ class GatewayConfigLoadersMixin:
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
-        """Evaluate existing exemptions before consulting the optional room permission."""
+        """Evaluate existing exemptions before consulting the optional opt-ins: the room's own
+        setting decides when it has one, else the serving profile's ``gateway.allow_silence``."""
         from gateway.response_filters import silence_allowed
-        return silence_allowed(display_kind, reply_expected) or silence_allowed(
-            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
-            agent_result=agent_result)
+        if silence_allowed(display_kind, reply_expected):
+            return True
+        allow = self._room_allow_silence(source)
+        if allow is None:
+            allow = self._profile_allow_silence(source)
+        return silence_allowed(display_kind, reply_expected, allow_silence=allow, agent_result=agent_result)
+
+    def _routed_to_other_profile(self, source: SessionSource) -> bool:
+        """``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
+        turn routed to another profile reads that profile's config.yaml."""
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        return bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+
+    def _profile_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """The serving profile's ``gateway.allow_silence`` for a shared chat; ``None`` for a DM, where
+        a direct question must keep its visible fallback (#110952)."""
+        from gateway.config import _coerce_bool
+        from gateway.run import _load_gateway_config
+        if source.chat_type == "dm":
+            return None
+        config = getattr(self, "config", None)
+        if config is not None and not self._routed_to_other_profile(source):
+            return config.allow_silence
+        try:
+            raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
+        except Exception:
+            logger.warning("Profile allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
+        # The loader's precedence: a top-level key wins by presence over ``gateway.<key>``.
+        gateway_section = raw.get("gateway") if isinstance(raw.get("gateway"), dict) else {}
+        return _coerce_bool(raw["allow_silence"] if "allow_silence" in raw
+                            else gateway_section.get("allow_silence"), False)
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
         from gateway.config import GatewayConfig
         from gateway.config_loader import merge_platform_sections, platform_section
         from gateway.run import _get_channel_override, _load_gateway_config
-        from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
-        identity = identity_of(source)
-        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
-        # ``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
-        # turn routed to another profile reads that profile's config.yaml.
-        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        routed = self._routed_to_other_profile(source)
         try:
             if config is None or routed:
                 raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")

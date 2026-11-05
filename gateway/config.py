@@ -588,7 +588,7 @@ def _discovered_registry_entry(platform: Platform):
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
-    "group_sessions_per_user": True, "thread_sessions_per_user": False,
+    "allow_silence": False, "group_sessions_per_user": True, "thread_sessions_per_user": False,
 }
 
 
@@ -608,6 +608,9 @@ class GatewayConfig:
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
+    # Profile-wide fallback for ``channel_overrides.<room>.allow_silence`` in shared chats (never
+    # DMs): a successful bare silence marker on an addressed human turn may stay silent.
+    allow_silence: bool = False
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
@@ -655,8 +658,8 @@ class GatewayConfig:
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
-        "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
-        "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+        "write_sessions_json", "always_log_local", "filter_silence_narration", "allow_silence",
+        "stt_enabled", "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",

@@ -1,3 +1,4 @@
+import { claimFloatingComposerForTarget } from '@/app/chat/composer/floating-target'
 import {
   type ComposerInsertMode,
   type ComposerTarget,
@@ -138,6 +139,12 @@ export const composerHost = {
     const { target } = resolveComposerAddress(sessionId)
 
     if (target !== null) {
+      // The caret follows the floating-composer owner (the pointer's last
+      // pick); claim this surface first so the request isn't redirected away.
+      if (target !== 'active') {
+        claimFloatingComposerForTarget(target)
+      }
+
       requestComposerFocus(target)
     }
   }

@@ -12,6 +12,7 @@ import pytest
 
 import hermes_state
 from hermes_state import SessionDB
+from persistence.sqlite._holder import StoreHolder
 from hermes_state_errors import SessionTurnLeaseLostError
 
 
@@ -634,7 +635,7 @@ def test_lost_turn_lease_flush_fails_fast_without_patience_retry(
         return original(deadline, patience_s)
 
     monkeypatch.setattr(db, "_sleep_before_write_retry", track_sleep)
-    monkeypatch.setattr(SessionDB, "_COMPRESSION_BUSY_WAIT_S", 5.0)
+    monkeypatch.setattr(StoreHolder, "_COMPRESSION_BUSY_WAIT_S", 5.0)
 
     started = time.monotonic()
     with pytest.raises(SessionTurnLeaseLostError, match="turn lease lost"):

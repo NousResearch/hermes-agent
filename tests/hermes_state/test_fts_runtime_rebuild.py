@@ -25,6 +25,8 @@ import hermes_state
 import hermes_state_holders
 import hermes_state_schema
 from hermes_state import SessionDB
+from persistence.sqlite import _schema
+from persistence.sqlite._holder import StoreHolder
 from hermes_state_common import FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL, _FTS_TRIGGERS
 from hermes_state_dbfile import _concrete_state_db_holder_pids, _is_inactive_orphan_desktop_holder
 
@@ -596,7 +598,7 @@ class TestRuntimeFtsRebuild:
         db_path = tmp_path / "state.db"
         db.create_session("s1", source="test")
         db.append_message("s1", "user", "seed")
-        peer = SessionDB(db_path=db_path)
+        peer = SessionDB(holder=StoreHolder(db_path))  # a connection of its own, as another process holds
         try:
             _corrupt_fts(db_path)
 
@@ -631,9 +633,9 @@ class TestRuntimeFtsRebuild:
         db.close()
 
         monkeypatch.setattr(
-            SessionDB,
+            _schema,
             "_recover_stale_fts",
-            lambda self, cursor, legacy: False,
+            lambda holder, cursor, legacy: False,
         )
         reopened = SessionDB(db_path=db_path)
         try:
@@ -664,7 +666,7 @@ class TestRuntimeFtsRebuild:
         db.close()
 
         monkeypatch.setattr(
-            SessionDB,
+            StoreHolder,
             "_foreign_state_db_holders",
             lambda self: [(4242, str(db_path) + "-wal")],
             raising=False,
@@ -711,14 +713,14 @@ class TestRuntimeFtsRebuild:
         holder_scans = iter(([(4242, str(db_path) + "-wal")], []))
         reaped = []
         monkeypatch.setattr(
-            SessionDB,
+            StoreHolder,
             "_foreign_state_db_holders",
             lambda self: next(holder_scans),
         )
         monkeypatch.setattr(
-            SessionDB,
+            _schema,
             "_reap_inactive_orphan_desktop_holders",
-            lambda self, holders, *, min_age_seconds: reaped.extend(holders) or [4242],
+            lambda holder, holders, *, min_age_seconds: reaped.extend(holders) or [4242],
         )
         monkeypatch.setattr(hermes_state_schema.time, "time", lambda: 120.0)
 
@@ -752,10 +754,13 @@ class TestRuntimeFtsRebuild:
         db.close()
 
         monkeypatch.setattr(
-            SessionDB, "_foreign_state_db_holders", lambda self: [(4242, str(db_path) + "-wal")],
+            StoreHolder, "_foreign_state_db_holders", lambda self: [(4242, str(db_path) + "-wal")],
         )
         monkeypatch.setattr(
             SessionDB, "_reap_inactive_orphan_desktop_holders", lambda self, holders, *, min_age_seconds: [],
+        )
+        monkeypatch.setattr(
+            _schema, "_reap_inactive_orphan_desktop_holders", lambda holder, holders, *, min_age_seconds: [],
         )
         monkeypatch.setattr(
             hermes_state_schema, "_read_proc_argv", lambda pid: ["python", "-m", "hermes_cli.main", "serve"], raising=False,
@@ -820,7 +825,7 @@ class TestRuntimeFtsRebuild:
         db.close()
 
         holders = [(4242, str(db_path) + "-wal")]
-        monkeypatch.setattr(SessionDB, "_foreign_state_db_holders", lambda self: list(holders))
+        monkeypatch.setattr(StoreHolder, "_foreign_state_db_holders", lambda self: list(holders))
         reopened = SessionDB(db_path=db_path)
         try:
             assert reopened._fts_stale is True

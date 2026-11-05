@@ -754,6 +754,28 @@ test("rejects a dropped lazy Next asset that no initial HTML references", (t) =>
   assert.ok(result.stderr.includes("lazy.js"), result.stderr);
 });
 
+test("rejects a zh-Hans sitemap that is missing or stale", (t) => {
+  const { appDir } = buildExport(t);
+  const zh = path.join(appDir, "out", "zh-Hans", "sitemap.xml");
+  rmSync(zh, { force: true });
+  let result = runValidator(appDir);
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes("zh-Hans/sitemap.xml"), result.stderr);
+  writeFileSync(zh, "<urlset/>\n");
+  result = runValidator(appDir);
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes("zh-Hans/sitemap.xml"), result.stderr);
+});
+
+test("rejects an exported internal not-found page", (t) => {
+  const { appDir, outDir } = buildExport(t);
+  mkdirSync(path.join(outDir, "_not-found"), { recursive: true });
+  writeFileSync(path.join(outDir, "_not-found", "index.html"), PAGE_HTML);
+  const result = runValidator(appDir);
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes("_not-found"), result.stderr);
+});
+
 test("rejects a sitemap that does not match the exported routes", (t) => {
   const { appDir } = buildExport(t);
   const sitemap = path.join(appDir, "out", "sitemap.xml");

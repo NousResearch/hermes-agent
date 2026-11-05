@@ -175,8 +175,18 @@ function checkSitemapRecipe(appDir, fail, ctx) {
     fail('out/sitemap.xml is missing from the export — scripts/postbuild.mjs generates it');
     return;
   }
-  if (readFileSync(file, 'utf8') !== sitemapXml(ctx.routes)) {
+  const expected = sitemapXml(ctx.routes);
+  if (readFileSync(file, 'utf8') !== expected) {
     fail('out/sitemap.xml does not match the producer recipe for the exported routes (regenerate with scripts/postbuild.mjs)');
+  }
+  // Docusaurus served a sitemap under each locale root; those URLs keep resolving.
+  for (const locale of LOCALES.filter((locale) => locale !== 'en')) {
+    const copy = path.join(appDir, 'out', locale, 'sitemap.xml');
+    if (!existsSync(copy)) fail(`out/${locale}/sitemap.xml is missing from the export`);
+    else if (readFileSync(copy, 'utf8') !== expected) fail(`out/${locale}/sitemap.xml differs from out/sitemap.xml`);
+  }
+  if (existsSync(path.join(appDir, 'out', '_not-found'))) {
+    fail("out/_not-found is exported as a page; postbuild removes Next's internal not-found route");
   }
 }
 

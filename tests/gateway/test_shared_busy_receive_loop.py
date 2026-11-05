@@ -59,9 +59,8 @@ async def _busy_owner(monkeypatch, turns):
 
 
 def _statuses(authority):
-    from hermes_state_runtime import list_session_admissions
-    return {row['payload']['text']: row['status'] for session_id in authority.sessions
-            for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)}
+    return {row.payload['text']: row.status for session_id in authority.sessions
+            for row in authority.persistence.admissions.list(session_id=session_id, pending_only=False)}
 
 
 async def _wait_for(predicate, timeout=5):

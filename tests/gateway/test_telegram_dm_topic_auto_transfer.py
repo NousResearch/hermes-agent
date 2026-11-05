@@ -25,8 +25,9 @@ _ensure_telegram_mock()
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from hermes_state import SessionDB
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_telegram_topic_mode import (
     _make_runner,
     _make_source,
@@ -50,10 +51,10 @@ def _fake_bot(*, create_fails: bool = False) -> MagicMock:
 def _rig(tmp_path, monkeypatch, *, extra: dict, create_fails: bool = False):
     import gateway.run as gateway_run
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _seed_two_topic_bindings(db)  # topic mode on; topic "222" is the most recently bound
     # The stub session store names every topic-lane session "sess-topic"; the binding FK needs its row.
-    db.create_session(session_id="sess-topic", source="telegram", user_id="208214988")
+    seed_session(db, "sess-topic", "telegram", user_id="208214988")
     runner = _make_runner(session_db=db)
     runner.config.platforms[Platform.TELEGRAM].extra.update(extra)
     runs: list[dict] = []
@@ -131,8 +132,8 @@ async def test_opt_in_root_dm_opens_new_topic_and_reply_lands_there(tmp_path, mo
     # The root-DM message lives outside the new topic: it can't be the reply anchor there.
     assert reply.kwargs.get("reply_to_message_id") is None
     # The new topic is a bound session lane, so the next message inside it continues this session.
-    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id=str(NEW_TOPIC_ID))
-    assert binding is not None and binding["user_id"] == "208214988"
+    binding = db.routing.get_topic_binding(chat_id="208214988", thread_id=str(NEW_TOPIC_ID))
+    assert binding is not None and binding.user_id == "208214988"
     db.close()
 
 
@@ -184,12 +185,11 @@ async def test_receiving_secondary_bot_controls_opt_in(tmp_path, monkeypatch, la
     second.gateway_runner = runner
     second.set_owner_profile("probe-secondary")
     runner._profile_adapters = {"probe-secondary": {Platform.TELEGRAM: second}}
-    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988", profile_name="probe-secondary")
-    db.create_session(session_id="secondary-old", source="telegram", user_id="208214988",
-                      profile_name="probe-secondary")
-    db.bind_telegram_topic(chat_id="208214988", thread_id="333", user_id="208214988",
-                           profile_name="probe-secondary", session_key="secondary-old-route",
-                           session_id="secondary-old")
+    db.routing.enable_topic_mode(chat_id="208214988", user_id="208214988", profile_name="probe-secondary")
+    seed_session(db, "secondary-old", "telegram", user_id="208214988", profile_name="probe-secondary")
+    db.routing.bind_topic(chat_id="208214988", thread_id="333", user_id="208214988",
+                          profile_name="probe-secondary", session_key="secondary-old-route",
+                          session_id="secondary-old")
     done = asyncio.Event()
 
     async def capture(_event):

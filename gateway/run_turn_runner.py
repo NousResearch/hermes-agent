@@ -354,7 +354,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
         from gateway.warning_notifications import is_diagnostic_notice, render_notification
-        if self._ctx.mute_notification_reply or not self._status_live() or getattr(self._ctx.source, "is_bot", False):
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if self._ctx.mute_notification_reply or not self._status_live() or not automatic_notices_allowed(self._ctx.source):
             return
         # A usage-window limit line repeats the turn's own reply, which carries the sentence and the
         # switch button (a chat message cannot be cleared, so it would only pile up). The 90% heads-up

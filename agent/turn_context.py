@@ -1115,14 +1115,15 @@ def build_turn_context(
     # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
-    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
-    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind)
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
+    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
+    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.

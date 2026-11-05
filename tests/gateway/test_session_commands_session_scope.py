@@ -22,7 +22,7 @@ def _repo_with_skill(path):
 
 @pytest.mark.platforms("linux")
 def test_slash_diff_session_follows_the_sessions_checkpoint_policy(tmp_path):
-    with owner(tmp_path) as (home, _peer, desc):
+    with owner(tmp_path, {'checkpoints': {'enabled': False}}) as (home, _peer, desc):
         work = tmp_path / 'work'
         work.mkdir()
         (work / 'a.txt').write_text('original\n')

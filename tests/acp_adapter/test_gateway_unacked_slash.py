@@ -11,7 +11,6 @@ from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_state_runtime import list_session_admissions
 from tests.acp_adapter.test_gateway_submit_retry import Wire
 from tests.waiting import async_wait_until
 
@@ -36,7 +35,7 @@ async def test_repeated_prompt_after_slash_command_is_new_work(tmp_path, monkeyp
     from gateway import run
     from gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'acp': []}})
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _handle_message=answer, _adapter_for_source=lambda source: None,
                              _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **kwargs: ('frozen', {}))
@@ -64,7 +63,7 @@ async def test_repeated_prompt_after_slash_command_is_new_work(tmp_path, monkeyp
         response = await asyncio.wait_for(agent.prompt([acp.text_block('yes')], s), 5)
         assert response.stop_reason == 'end_turn'
         assert executed == ['yes', 'yes']
-        assert len(list_session_admissions(authority.db, session_id=s, pending_only=False)) == 2
+        assert len(authority.persistence.admissions.list(session_id=s, pending_only=False)) == 2
     finally:
         agent._event_task.cancel()
         await wire.viewer.close()

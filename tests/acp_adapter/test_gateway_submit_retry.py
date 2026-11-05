@@ -11,8 +11,8 @@ from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_seed import seed_session
 
 
 class Wire:
@@ -49,9 +49,9 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
-    store._db.create_session('s', source='telegram')
+    seed_session(store.persistence, 's', 'telegram')
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='retry'), 's')
     wire = Wire(asyncio.get_running_loop())
@@ -77,12 +77,12 @@ async def test_retry_after_lost_submit_ack_is_one_admission(tmp_path, monkeypatc
                                    what='the lost turn settled before the retry')
         response = await asyncio.wait_for(agent.prompt([acp.text_block('same words')], 's'), 5)
         assert response.stop_reason == 'end_turn'
-        rows = list_session_admissions(authority.db, session_id='s', pending_only=False)
+        rows = authority.persistence.admissions.list(session_id='s', pending_only=False)
         assert len(rows) == 1 and executed == ['same words']
         assert agent._conn.updates.count('ACK_same words') == 1
         # A different prompt is new work with a fresh identity.
         await asyncio.wait_for(agent.prompt([acp.text_block('other words')], 's'), 5)
-        assert len(list_session_admissions(authority.db, session_id='s', pending_only=False)) == 2
+        assert len(authority.persistence.admissions.list(session_id='s', pending_only=False)) == 2
     finally:
         agent._event_task.cancel()
         await wire.viewer.close()
@@ -103,9 +103,9 @@ async def test_repeated_prompt_after_other_work_is_new_work(tmp_path, monkeypatc
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
-    store._db.create_session('s', source='telegram')
+    seed_session(store.persistence, 's', 'telegram')
     authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner')
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='repeat'), 's')
     wire = Wire(asyncio.get_running_loop())
@@ -122,7 +122,7 @@ async def test_repeated_prompt_after_other_work_is_new_work(tmp_path, monkeypatc
             response = await asyncio.wait_for(agent.prompt([acp.text_block(words)], 's'), 5)
             assert response.stop_reason == 'end_turn'
         assert executed == ['yes', 'other words', 'yes']
-        assert len(list_session_admissions(authority.db, session_id='s', pending_only=False)) == 3
+        assert len(authority.persistence.admissions.list(session_id='s', pending_only=False)) == 3
     finally:
         agent._event_task.cancel()
         await wire.viewer.close()

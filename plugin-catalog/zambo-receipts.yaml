@@ -1,0 +1,18 @@
+name: zambo-receipts
+title: Zambo Receipts
+repo: https://github.com/zambodotdev/hermes-zambo-receipts
+sha: f0e13473f4b58888fd83b0ce1fbea7bf95679c7a
+version: "1.0.1"
+description: "Verifiable receipts for Hermes Agent sessions. Lifecycle hooks journal every tool call in a session to Zambo (zambo.dev) as it happens, and when the session ends the plugin wraps it into an AER-1 verifiable receipt that anyone can open and check at a public zambo.dev/run link. Adds three tools (zambo_verify_receipt, zambo_wrap_session, zambo_session_status), a /receipt slash command, and a bundled skill. Disclosure: while enabled, the plugin makes network calls to zambo.dev (the configured MCP endpoint) carrying, per tool call, the tool name, duration, result size, and a SHA-256 hash of the result. Result contents are never sent unless the user sets journal_results to full, which also sends result text truncated to 4,000 characters. If the network is down, entries buffer in a durable outbox under $HERMES_HOME/plugin-data/zambo-receipts/ and flush at wrap or session end; the wrap also commits the SHA-256 digest of the full local call log, so calls that never journaled are still accounted for. A stable per-install caller id (hermes- plus 10 hex characters) is kept in the plugin data directory so each install uses its own Zambo free tier (20 calls plus 1 wrap-up free per day). No credentials, no API key, no dependencies beyond the Python standard library (requests is used when already installed). Runs in the plugin host through the public register APIs only; no core overrides, no self-updating code."
+maintainer: zambodotdev
+tier: community
+category: tools
+docs_url: https://github.com/zambodotdev/hermes-zambo-receipts/blob/f0e13473f4b58888fd83b0ce1fbea7bf95679c7a/README.md
+requires_hermes: ">=0.21.0"
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [zambo_verify_receipt, zambo_wrap_session, zambo_session_status]
+  provides_hooks: [on_session_start, post_tool_call, on_session_end]
+  provides_middleware: []
+  requires_env: []

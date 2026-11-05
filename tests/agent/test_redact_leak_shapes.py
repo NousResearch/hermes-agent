@@ -81,7 +81,9 @@ class TestDatabaseClientCredentials:
         out = redact_terminal_output("Server=db;UID=app;PWD={Zq7x;LmP2};Database=core",
                                      "cat appsettings.json", force=True)
         assert "Zq7x" not in out
-        assert redact_terminal_output("Server=db;PWD={0};Database=x", "cat app.py", force=True).endswith("PWD={0};Database=x")
+        for template in ("{0}", "{cfg['pw']}", "{pw!r}", "{ get_pw() }"):
+            line = f"Server=db;PWD={template};Database=x"
+            assert redact_terminal_output(line, "cat app.py", force=True) == line
 
     @pytest.mark.parametrize("text", ["PWD=/home/app/project", "PGPASSFILE=/home/app/.pgpass",
                                       "the password= field", "the pwd= flag and host= flag",
@@ -99,6 +101,7 @@ class TestUserinfoAndBasicPairs:
         ("git remote set-url origin https://me:hunter2pass@github.com/o/r.git",
          "git remote set-url origin https://me:***@github.com/o/r.git"),
         ("MY_PROXY_BASIC=user:s3cretpw", "MY_PROXY_BASIC=user:***"),
+        ('env = ["MY_PROXY_BASIC=user:s3cretpw", "X=1"]', 'env = ["MY_PROXY_BASIC=user:***", "X=1"]'),
     ])
     def test_masked(self, text, expected):
         assert redact_sensitive_text(text, force=True) == expected

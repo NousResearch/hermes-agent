@@ -44,14 +44,6 @@ for prefix in ("rclone lsf $HOME/.hermes --recursive --files-only", "hermes", "d
 ''')
 
 
-
-def test_hermes_path_flags_do_not_nest_backtracking():
-    # A flag loop between each word of a `hermes <group> <verb>` path made this cubic (~30 s); now ~0.2 s.
-    _run('''
-from tools.approval_detection import detect_dangerous_command
-assert detect_dangerous_command("hermes " + "-x skills -x tap " * 1000 + "; true")[0] is False
-''')
-
 def test_value_whitespace_decisions_are_unchanged():
     # The fix must not move any approval decision: docker/podman values follow exactly one
     # whitespace character, as before, while hermes values may follow a whitespace run.

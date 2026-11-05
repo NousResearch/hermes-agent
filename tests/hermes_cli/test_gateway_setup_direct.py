@@ -117,6 +117,7 @@ def test_no_owner_hint_names_an_explicit_profile(setup_env, monkeypatch, capsys)
     assert _run("telegram", "--quick") == 0
     assert "hermes -p default config set TELEGRAM_ALLOWED_USERS" in capsys.readouterr().out
 
+
 @pytest.mark.parametrize("pinned", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"])
 def test_pinned_key_refuses_before_pairing(setup_env, monkeypatch, capsys, pinned):
     from hermes_cli import config

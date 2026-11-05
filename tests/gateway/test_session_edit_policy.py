@@ -10,10 +10,11 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import session_row
 
 
 def _runner(store):
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                              _set_session_reasoning_override=lambda route, value: None,
                              _handle_message=None, _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
@@ -22,7 +23,7 @@ def _runner(store):
 
 
 def _mutation(db, sid, request_id, payload, operation='edit_policy'):
-    snap = db.get_session(sid)
+    snap = session_row(db, sid)
     return {'id': request_id, 'method': 'session.mutate', 'params': {
         'session_id': sid, 'request_id': request_id, 'operation': operation, 'payload': payload,
         'expected_revision': snap['runtime_revision'], 'expected_generation': snap['runtime_generation']}}
@@ -44,7 +45,7 @@ async def test_edit_policy_is_a_durable_session_setting_every_viewer_reads(tmp_p
     from gateway.session_policy import policy_for_source
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     first = await initialize_session_authority(_runner(store), profile_id='owned', instance_id='first')
     editor = AuthorityConnection(first, object(), {'user_id': 'human'})
     other = AuthorityConnection(first, object(), {'user_id': 'human'})
@@ -102,7 +103,7 @@ async def test_a_branch_of_a_dont_ask_session_starts_at_ask(tmp_path, monkeypatc
     from gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     owner = await initialize_session_authority(_runner(store), profile_id='owned', instance_id='fork')
     editor = AuthorityConnection(owner, object(), {'user_id': 'human'})
     try:
@@ -126,14 +127,12 @@ async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask
     """The prepared fork's durable config-secret reference hashes the policy the child is stored with
     (``ask``), never the parent's Don't Ask."""
     from dataclasses import asdict
-    import hermes_state_local
     from gateway import session_local_mcp, session_policy_credentials as creds
     from gateway.session_policy import build_policy
     parent = replace(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {}),
                      edit_approval_policy='session', editor_mcp_json='{"scope": "p"}',
                      config_secret_ref=creds.PREFIX + '{}')
-    saved = {'policy': asdict(parent), 'profile_id': 'owned', 'principal_id': 'human'}
-    monkeypatch.setattr(hermes_state_local, 'local_receipt', lambda db, sid: saved)
+    saved = SimpleNamespace(policy=asdict(parent), profile_id='owned', principal_id='human')
     monkeypatch.setattr(session_local_mcp, 'rebind_editor_mcp', lambda a, child, policy, servers: (policy, False))
     monkeypatch.setattr(creds, 'recover_config_secrets', lambda *a, **k: {})
     hashed = []
@@ -141,7 +140,8 @@ async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask
 
     async def gate():
         return {'snapshot': {}}
-    authority = SimpleNamespace(db=None, _local_editor_mcp={'p': []})
+    authority = SimpleNamespace(db=None, _local_editor_mcp={'p': []},
+                                persistence=SimpleNamespace(bindings=SimpleNamespace(receipt=lambda sid: saved)))
     prepared, _ = await session_local_mcp.prepare_branch_editor(
         authority, SimpleNamespace(session_id='parent'), [], gate)
     assert prepared['config_secret_ref'] == 'ref'

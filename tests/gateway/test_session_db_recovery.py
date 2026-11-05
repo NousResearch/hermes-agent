@@ -1,4 +1,4 @@
-"""Regression coverage for recoverable gateway SessionDB opens (#93088)."""
+"""Regression coverage for recoverable gateway storage handle opens (#93088)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import persistence_assembly
 from gateway.session_db_recovery import RecoverableHandleCache
 
 
@@ -107,8 +108,6 @@ def test_runtime_health_is_sanitized_and_recovers() -> None:
 
 
 def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, tmp_path) -> None:
-    import hermes_state
-    import hermes_state_registry
     from gateway.run import GatewayRunner, _SESSION_DB_UNPINNED
     from gateway.session import SessionStore
     from gateway.session_persistence import _DB_UNPINNED
@@ -117,7 +116,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
     clock = _Clock()
     opened: list[object] = []
 
-    def fail_once_session_db(db_path=None):
+    def fail_once_open(scope, *, eager=False):
         if not opened:
             opened.append(None)
             raise OSError("temporary open failure")
@@ -125,8 +124,8 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state_registry, "acquire", fail_once_session_db)
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", fail_once_open)
+    monkeypatch.setenv("HERMES_HOME", str(db_path.parent))
 
     store = object.__new__(SessionStore)
     store._db_pinned = _DB_UNPINNED
@@ -138,15 +137,15 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         clock=clock,
         initial_retry_delay=1,
     )
-    assert store._db is None
-    assert store._db is None
+    assert store.persistence is None
+    assert store.persistence is None
     assert len(opened) == 1
     clock.now = 1.0
-    assert store._db is opened[-1]
+    assert store.persistence is opened[-1]
 
     runner_opened: list[object] = []
 
-    def runner_fail_once(db_path=None):
+    def runner_fail_once(*args, **kwargs):
         if not runner_opened:
             runner_opened.append(None)
             raise OSError("temporary open failure")
@@ -154,8 +153,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
         runner_opened.append(handle)
         return handle
 
-    monkeypatch.setattr(hermes_state_registry, "acquire", runner_fail_once)
-    monkeypatch.setattr(hermes_state, "AsyncSessionDB", lambda db: ("async", db))
+    monkeypatch.setattr(persistence_assembly, "open_persistence", runner_fail_once)
     runner = object.__new__(GatewayRunner)
     runner._session_db_pinned = _SESSION_DB_UNPINNED
     runner._session_db_init_error = "temporary open failure"
@@ -171,7 +169,7 @@ def test_session_store_and_runner_reopen_after_failed_construction(monkeypatch, 
     assert runner._session_db is None
     assert len(runner_opened) == 1
     clock.now = 2.0
-    assert runner._session_db == ("async", runner_opened[-1])
+    assert runner._session_db is runner_opened[-1]
     assert runner._session_db_init_error is None
 
 
@@ -260,7 +258,6 @@ def test_close_all_preserves_inflight_failure() -> None:
 
 
 def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_path) -> None:
-    import hermes_state
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionEntry, SessionSource, SessionStore
     from gateway.session_lifecycle import _now
@@ -296,14 +293,13 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
         updated_at=now,
         origin=SessionSource(platform=Platform.TELEGRAM, chat_id="changed"),
     )
-    database = hermes_state.SessionDB(db_path=db_path)
-    for entry in (durable, deleted, changed):
-        database.save_gateway_routing_entry(
-            entry.session_key,
-            json.dumps(entry.to_dict()),
-            scope=scope,
-        )
-    database.close()
+    with persistence_assembly.open_persistence(persistence_assembly.profile_scope(home=db_path.parent)) as database:
+        for entry in (durable, deleted, changed):
+            database.routing.upsert_routing_entry(
+                entry.session_key,
+                json.dumps(entry.to_dict()),
+                routing_scope=scope,
+            )
     sessions_dir.mkdir()
     (sessions_dir / "sessions.json").write_text(
         json.dumps(
@@ -315,22 +311,24 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
         encoding="utf-8",
     )
 
-    real_session_db = hermes_state.SessionDB
+    real_open = persistence_assembly.open_persistence
     calls = 0
 
-    def fail_once_session_db(*args, **kwargs):
+    def fail_once_open(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise OSError("temporary open failure")
-        return real_session_db(db_path=db_path)
+        return real_open(*args, **kwargs)
 
-    monkeypatch.setattr(hermes_state, "SessionDB", fail_once_session_db)
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", fail_once_open)
+    monkeypatch.setenv("HERMES_HOME", str(db_path.parent))
     store = SessionStore(
         sessions_dir,
         GatewayConfig(sessions_dir=sessions_dir, write_sessions_json=False),
     )
+    # The failed open stays in its backoff through the load, however long the load takes.
+    store._db_handle_cache._unavailable[db_path].next_retry_at = float("inf")
     store._ensure_loaded()
     store._db_handle_cache._unavailable[db_path].next_retry_at = 0
 
@@ -349,7 +347,7 @@ def test_recovered_db_rows_survive_fallback_structural_save(monkeypatch, tmp_pat
         store._entries[current.session_key] = current
         store._save()
 
-    rows = store._db.load_gateway_routing_entries(scope=scope)
+    rows = store.persistence.routing.load_routing_entries(routing_scope=scope)
     assert set(rows) == {durable.session_key, changed.session_key, current.session_key}
     assert store._entries[durable.session_key].session_id == durable.session_id
     assert (

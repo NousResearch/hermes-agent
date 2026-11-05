@@ -13,6 +13,8 @@ from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.run_runtime import initialize_gateway_runtime
 from gateway.runtime_ownership import process_ownership
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
 
 
 def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
@@ -20,8 +22,6 @@ def _reserve_homes(tmp_path, monkeypatch, names=('beta',)):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     for name in names:
         home = root / 'profiles' / name
@@ -72,7 +72,7 @@ async def test_secondary_pick_reaches_next_turn_after_primary_local_session(tmp_
         with owner_scope(secondary):
             ref = create_local_session(secondary, owner.actor, dict(
                 request_id='desktop', source='tui', cwd=str(tmp_path), model='default-a', toolsets=[]))
-        row = secondary.db.get_session(ref.session_id)
+        row = session_row(secondary.persistence, ref.session_id)
         response = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'pick', 'operation': 'model',
             'payload': {'model': 'picked-b'}, 'expected_revision': row['runtime_revision'],
@@ -90,6 +90,6 @@ async def test_secondary_pick_reaches_next_turn_after_primary_local_session(tmp_
         for connection in connections:
             await connection.close()
         for authority in list(getattr(runner, 'session_authorities', []) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)

@@ -127,7 +127,7 @@ async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, 
     released, closed = [], []
     monkeypatch.setattr(run_runtime, 'unserve_profile_runtime', unserve)
     monkeypatch.setattr(run_runtime, 'release_profile_home', lambda runner, home: released.append(home))
-    monkeypatch.setattr('hermes_state_registry.close_all_under', lambda home: closed.append(home))
+    monkeypatch.setattr('persistence_assembly.close_stores_under', lambda home: closed.append(home))
     runner = SimpleNamespace(session_authorities=object(), _profile_failed_platforms={}, _profile_adapters={},
         _served_profile_homes={'stuck': stuck, 'gone': gone}, _served_profile_signatures={}, _agent_cache={},
         _evict_cached_agent=lambda key: None, served_profile_names=lambda: sorted(runner._served_profile_homes),

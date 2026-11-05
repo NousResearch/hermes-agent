@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 
 @pytest.mark.asyncio
@@ -22,8 +22,8 @@ async def test_attachment_retry_survives_lost_staging_but_rejects_changed_payloa
     receipt = await authority.submit(actor, request)
     staged.unlink()
     assert await authority.submit(actor, request) == receipt
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         await authority.submit(actor, Submission('retry', request.ref, {**request.payload, 'text': 'changed'}, 'queue'))
     staged.write_bytes(_ONE_PX_PNG + b'changed')
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         await authority.submit(actor, request)

@@ -10,20 +10,34 @@ import pytest
 from cron import scheduler_delivery as delivery
 from gateway import hosted_rooms
 from hermes_constants import get_hermes_home
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import hosted_owner_key
 
 ROOM_ID = "room-cron"
 MEMBERS = [{"member_id": f"m-{p}", "profile": p, "handle": p} for p in ("alpha", "beta")]
 
 
 def _create(db):
-    hosted_rooms.create_room(
-        db, room_id=ROOM_ID, name="Feed", members=MEMBERS,
-        authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+    with _handle(db) as store:
+        hosted_rooms.create_room(
+            store, placement=_placement(db), room_id=ROOM_ID, name="Feed", members=MEMBERS,
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id())
     return db
 
 
 def _posts(db) -> list[dict]:
-    return [e for e in hosted_rooms.read_events(db, room_id=ROOM_ID)["events"] if e["kind"] == "message.user"]
+    with _handle(db) as store:
+        events = hosted_rooms.read_events(store, placement=_placement(db), room_id=ROOM_ID)["events"]
+    return [e for e in events if e["kind"] == "message.user"]
+
+
+def _handle(db):
+    """A storage handle on the home holding the room store ``db``."""
+    return open_persistence(profile_scope(home=db.parent))
+
+
+def _placement(db) -> str:
+    return "shared" if db.name == "shared-state.db" else "profile"
 
 
 @pytest.fixture
@@ -69,11 +83,10 @@ def test_post_skips_the_unserved_session_store_copy_left_by_the_shared_store_imp
 
 
 def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_store):
-    from gateway.session_hosted_service import _OWNER
     owned = _create(get_hermes_home() / "state.db")
     with closing(sqlite3.connect(owned)) as conn, conn:
         conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
-        conn.execute("INSERT INTO state_meta(key, value) VALUES (?, 'owner')", (_OWNER + ROOM_ID,))
+        conn.execute("INSERT INTO state_meta(key, value) VALUES (?, 'owner')", (hosted_owner_key(ROOM_ID),))
 
     assert delivery._deliver_result(_job(), "Digest ready") is None
 
@@ -101,9 +114,11 @@ def test_named_profile_target_reaches_a_room_the_root_gateway_imported(room_stor
 
 def test_room_a_profile_gateway_took_over_names_the_profile_remedy(room_store):
     from gateway.hosted_room_replicas import demote_room
-    state = hosted_rooms.room_state(room_store, room_id=ROOM_ID)
-    demote_room(room_store, room_id=ROOM_ID, observed_gateway_id=state["authority_gateway_id"] + ":gateway-store",
-                observed_epoch=int(state["authority_epoch"]) + 1)
+    with _handle(room_store) as store:
+        state = hosted_rooms.room_state(store, placement="shared", room_id=ROOM_ID)
+        demote_room(store, placement="shared", room_id=ROOM_ID,
+                    observed_gateway_id=state["authority_gateway_id"] + ":gateway-store",
+                    observed_epoch=int(state["authority_epoch"]) + 1)
 
     error = delivery._deliver_result(_job(), "x")
 

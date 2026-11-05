@@ -7,7 +7,7 @@ the tail. The next prompt then appended a second user row and ``repair_message_s
 merged the failed request into the new one. Closed at the core seam
 (``agent/conversation_loop.py::_close_durable_failed_turn``).
 
-Driven through the real ``HermesACPAgent.prompt()`` with a real ``AIAgent`` and ``SessionDB``
+Driven through the real ``HermesACPAgent.prompt()`` with a real ``AIAgent`` and session store
 against a loopback OpenAI-compatible endpoint; assertions read SQLite rows and the request
 body the provider actually received.
 """
@@ -21,6 +21,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation, transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 _MODEL = "fixture-model"
 
@@ -123,10 +128,9 @@ def acp(tmp_path, monkeypatch):
 
     from acp_adapter.server import HermesACPAgent, TextContentBlock
     from acp_adapter.session import SessionManager
-    from hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
-    db = SessionDB(db_path)
+    db = open_persistence(profile_scope(home=tmp_path))
     server = HermesACPAgent(session_manager=SessionManager(db=db))
     conn = _RecordingConn()
     server.on_connect(conn)
@@ -272,7 +276,7 @@ def test_acp_refused_turn_stays_in_the_display_tagged_content_refused(acp):
     assert _REFUSED not in {content for _role, content in conversation_rows()}
 
     # DISPLAY read (include_compacted): the refused ask is kept, tagged, with the stored notice.
-    display = [m for m in db.get_messages_as_conversation(sid, include_compacted=True)
+    display = [m for m in conversation(db, sid, ConversationRequest(view=TranscriptView.DISPLAY))
                if m["role"] != "session_meta"]
     refused_row = display[-1]
     assert refused_row["content"] == _REFUSED
@@ -323,28 +327,27 @@ def test_acp_reload_replays_the_refused_ask_and_notice_to_the_editor(acp):
 
 
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):
-    """Keyed on ``SessionDB.latest_conversation_role``: a redelivery of an already-closed turn
+    """Keyed on the store's ``messages.latest_conversation_role``: a redelivery of an already-closed turn
     writes no second row, an assistant tail is left alone, and the context-overflow class
     (whose repair is rotation, not a row — #1630) is never closed."""
     from types import SimpleNamespace
 
     from agent.conversation_loop import _close_durable_failed_turn
     from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
-    from hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid = "s1"
-    db.create_session(session_id=sid, source="acp", model="m")
-    db.append_message(sid, "user", "delete the build directory")
+    seed_session(db, sid, "acp", model="m")
+    seed_messages(db, sid, {"role": "user", "content": "delete the build directory"})
 
     written: list[list[dict]] = []
 
     def flush(messages):
-        db.append_message(sid, messages[-1]["role"], messages[-1]["content"])
+        seed_messages(db, sid, {"role": messages[-1]["role"], "content": messages[-1]["content"]})
         written.append(list(messages))
 
-    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush)
+    agent = SimpleNamespace(_session_db=db, persistence=db, session_id=sid, _flush_messages_to_session_db=flush)
     messages = [
         {"role": "user", "content": "delete the build directory"},
         {"role": "assistant", "content": None, "tool_calls": [{"id": "t1", "type": "function",
@@ -354,7 +357,7 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
 
     overflow = {"completed": False, "failed": True, "failure_reason": "context_overflow", "messages": list(messages)}
     _close_durable_failed_turn(agent, overflow)
-    assert written == [] and db.latest_conversation_role(sid) == "user"
+    assert written == [] and db.messages.latest_conversation_role(sid) == "user"
 
     failed = {"completed": False, "failed": True, "failure_reason": "server_error", "messages": messages,
               "current_turn_user_idx": 0}
@@ -362,7 +365,7 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
     _close_durable_failed_turn(agent, failed)  # redelivery: tail is already assistant
     assert len(written) == 1
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", PARTIAL_FAILED_TURN_NOTICE)  # a tool ran: hedge
-    assert db.latest_conversation_role(sid) == "assistant"
+    assert db.messages.latest_conversation_role(sid) == "assistant"
     db.close()
 
 
@@ -401,19 +404,18 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     from types import SimpleNamespace
 
     from agent.conversation_loop import _close_durable_failed_turn
-    from hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid = "s1"
-    db.create_session(session_id=sid, source="acp", model="m")
-    db.append_message(sid, "user", "say hello")
+    seed_session(db, sid, "acp", model="m")
+    seed_messages(db, sid, {"role": "user", "content": "say hello"})
 
     def flush(messages):
-        db.append_message(sid, messages[-1]["role"], messages[-1]["content"],
-                          display_metadata=messages[-1].get("display_metadata"))
+        seed_messages(db, sid, {"role": messages[-1]["role"], "content": messages[-1]["content"],
+                                "display_metadata": messages[-1].get("display_metadata")})
 
-    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+    agent = SimpleNamespace(_session_db=db, persistence=db, session_id=sid, _flush_messages_to_session_db=flush,
                             provider="opencode-go", model="deepseek-v4.1-flash")
     messages = [{"role": "user", "content": "say hello"}]
     _close_durable_failed_turn(agent, {"completed": False, "failed": True, "failure_reason": "timeout",
@@ -423,7 +425,7 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     assert metadata["error"] == "Connection error."
     assert metadata["error_surface"]["code"] == "timeout"
     assert metadata["error_surface"]["provider"] == "opencode-go"
-    stored = db.get_messages(sid)[-1]["display_metadata"]
+    stored = transcript_rows(db, sid)[-1]["display_metadata"]
     assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
     db.close()
 
@@ -436,12 +438,11 @@ def test_failed_turn_after_a_tool_row_is_closed_with_its_error_card(tmp_path, mo
 
     from agent.conversation_loop import _close_durable_failed_turn
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    from hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid = "s1"
-    db.create_session(session_id=sid, source="tui", model="m")
+    seed_session(db, sid, "tui", model="m")
     call = {"id": "call_setup_beat_name", "type": "function",
             "function": {"name": "setup_beat", "arguments": '{"beat":"name"}'}}
     messages = [
@@ -449,26 +450,50 @@ def test_failed_turn_after_a_tool_row_is_closed_with_its_error_card(tmp_path, mo
         {"role": "assistant", "content": "Hi!", "tool_calls": [call]},
         {"role": "tool", "tool_call_id": call["id"], "content": '{"answer":{"name":"Austin"}}'},
     ]
-    db.append_message(sid, "user", "opening")
-    db.append_message(sid, "assistant", "Hi!", tool_calls=[call])
-    db.append_message(sid, "tool", messages[-1]["content"], tool_call_id=call["id"])
+    seed_messages(db, sid, {"role": "user", "content": "opening"},
+                  {"role": "assistant", "content": "Hi!", "tool_calls": [call]},
+                  {"role": "tool", "content": messages[-1]["content"], "tool_call_id": call["id"]})
 
     def flush(rows):
         last = rows[-1]
-        db.append_message(sid, last["role"], last["content"], display_kind=last.get("display_kind"),
-                          display_metadata=last.get("display_metadata"))
+        seed_messages(db, sid, {"role": last["role"], "content": last["content"],
+                                "display_kind": last.get("display_kind"),
+                                "display_metadata": last.get("display_metadata")})
 
-    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+    agent = SimpleNamespace(_session_db=db, persistence=db, session_id=sid, _flush_messages_to_session_db=flush,
                             provider="nous", model="m")
     failed = {"completed": False, "failed": True, "failure_reason": "rate_limit",
               "error": "429 Too Many Requests", "messages": messages, "current_turn_user_idx": 0}
     _close_durable_failed_turn(agent, failed)
     _close_durable_failed_turn(agent, failed)  # redelivery: the tail is now the boundary
 
-    stored = db.get_messages(sid)
+    stored = transcript_rows(db, sid)
     assert [row["role"] for row in stored] == ["user", "assistant", "tool", "assistant"]
     boundary = stored[-1]
     assert (boundary["content"], boundary["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
     metadata = boundary["display_metadata"]
     assert (metadata if isinstance(metadata, dict) else json.loads(metadata))["error_surface"]["code"] == "rate_limit"
     db.close()
+
+
+@pytest.mark.parametrize("tail, closes", [("user", True), ("assistant", False)])
+def test_closure_reads_the_durable_tail_through_the_writer_handle(tail, closes):
+    """An agent carrying a writer handle reads the durable tail through it; the store beside it is not called."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from agent.conversation_loop import _close_durable_failed_turn
+
+    handle = SimpleNamespace(read_only=False, messages=MagicMock())
+    handle.messages.latest_conversation_role.return_value = tail
+    flushed = []
+    agent = SimpleNamespace(
+        _session_db=MagicMock(), persistence=handle, session_id="s1", _persist_disabled=False, provider="",
+        model="", _flush_messages_to_session_db=flushed.append,
+    )
+    messages = [{"role": "user", "content": "hi"}]
+    _close_durable_failed_turn(agent, {"completed": False, "messages": messages})
+    handle.messages.latest_conversation_role.assert_called_once_with("s1")
+    assert len(flushed) == int(closes)
+    assert messages[-1]["role"] == ("assistant" if closes else "user")
+    assert agent._session_db.method_calls == []

@@ -9,21 +9,22 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _run_owned_job(job, tmp_path):
     """Exercise the production owner bridge with an isolated canonical store."""
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
-    from hermes_state_registry import acquire, release
+    from tests.fixtures.storage_seed import seed_session
 
     ref = SessionRef("test-profile", "cron-owner-session")
     admission_id = "cron-owner-admission"
     request_id = "cron-owner-request"
-    db = acquire(tmp_path / "state.db")
-    db.create_session(ref.session_id, source="cron")
+    persistence = storage_handle(tmp_path)
+    seed_session(persistence, ref.session_id, "cron")
     authority = SimpleNamespace(
-        db=db,
+        persistence=persistence,
         sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
         pending_results={},
     )
@@ -49,10 +50,7 @@ def _run_owned_job(job, tmp_path):
         assert authority._cron_cancellations == {}
         return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
 
-    try:
-        return asyncio.run(run())
-    finally:
-        release(db)
+    return asyncio.run(run())
 
 
 def _patch_agent_bootstrap(monkeypatch):

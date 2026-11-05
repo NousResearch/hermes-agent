@@ -409,7 +409,9 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
     every request, so a pin written by the same code hands back exactly what the session sent;
     one written by other code (``hermes update``) takes the current definitions instead."""
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_read import session_row
+    from tests.fixtures.storage_seed import seed_session
     from tools import registry as registry_mod
 
     def _described(name, description, **params):
@@ -430,26 +432,29 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
                         lambda name, **kw: types.SimpleNamespace(name=name, schema=static[name]), raising=False)
     this_surface = [_tool("read_file"), _described("delegate_task", "delegate"),  # drops `group` here
                     _described("tool_search", "Search 5 additional tools.")]
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        sent._session_db = db
+    from persistence_assembly import open_persistence, profile_scope
+
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        sent._session_db, sent.persistence = db, db
         for sid in ("s1", "s2"):
-            db.create_session(sid, source="tui")
+            seed_session(db, sid, "tui")
             sent.session_id = sid
             _mcp_agent.persist_agent_tool_names(sent)
         # Stored once, like the system prompt: a ~50KB array per session row would bloat state.db.
-        stored = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+        with raw_holder(db)._read_ctx() as conn:
+            stored = conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
 
         resumed = _agent([])
-        resumed.tools, resumed._session_db, resumed.session_id = list(this_surface), db, "s1"
-        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
-        repinned = db.get_session("s1")["tool_names"]
+        resumed.tools, resumed._session_db, resumed.persistence, resumed.session_id = list(this_surface), db, db, "s1"
+        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(session_row(db, "s1")["tool_names"]))
+        repinned = session_row(db, "s1")["tool_names"]
 
         # The pin came from other code: every tool built here takes this build's definition.
         monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-hermes-update")
         updated = _agent([])
-        updated.tools, updated._session_db, updated.session_id = list(this_surface), db, "s2"
-        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
-        upgraded_pin = json.loads(db.get_session("s2")["tool_names"])
+        updated.tools, updated._session_db, updated.persistence, updated.session_id = list(this_surface), db, db, "s2"
+        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(session_row(db, "s2")["tool_names"]))
+        upgraded_pin = json.loads(session_row(db, "s2")["tool_names"])
 
     assert json.dumps(resumed.tools) == json.dumps(sent.tools)
     assert resumed.valid_tool_names == {"read_file", "delegate_task", "skill_manage", "tool_search"}
@@ -505,13 +510,20 @@ def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _BotModeDB:
-    def __init__(self, home, title):
-        self.db_path = str(home / "state.db")
+class _BotModeSessions:
+    def __init__(self, title):
         self._title = title
 
-    def get_session_title(self, _session_id):
+    def get_title(self, _session_id):
         return self._title
+
+
+class _BotModePersistence:
+    """The agent's storage interface handle: its profile scope and the session title verb."""
+
+    def __init__(self, home, title):
+        self.scope = types.SimpleNamespace(profile_dir=home)
+        self.sessions = _BotModeSessions(title)
 
 
 @pytest.fixture
@@ -528,7 +540,7 @@ def managed_bot_home(tmp_path):
 
 def _bot_mode_agent(home, *, title="Bot Chat"):
     agent = _agent(["read_file"])
-    agent._session_db = _BotModeDB(home, title)
+    agent.persistence = _BotModePersistence(home, title)
     agent.session_id = "session-1"
     agent._session_title_hint = None
     agent._bot_mode_protocol = True

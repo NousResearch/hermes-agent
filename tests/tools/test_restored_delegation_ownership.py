@@ -18,7 +18,9 @@ Layers under test:
 
 import json
 import queue
+import sqlite3
 import time
+from contextlib import closing
 
 from tools.process_registry import ProcessRegistry
 
@@ -59,7 +61,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     """Every durable completion re-enqueued at startup carries restored=True."""
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "async_delegations.db")
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     record = {
         "delegation_id": "d-old",
         "goal": "old goal",
@@ -87,7 +89,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert got["session_key"] == "OLD_SESSION_A"
 
     # The stamp is in-memory only — the durable payload is unchanged.
-    with ad._connect() as conn:
+    with closing(sqlite3.connect(ad._db_path())) as conn:
         row = conn.execute(
             "SELECT event_json FROM async_delegations WHERE delegation_id='d-old'"
         ).fetchone()

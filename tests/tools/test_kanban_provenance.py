@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])
@@ -22,8 +23,8 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
                           delivery_metadata={"scope_id": "guild", "parent_chat_id": "forum"})
         expected = kn.list_notify_subs(conn, owner)[0]
     if explicit:
-        state = SessionDB(db_path=tmp_path / "state.db")
-        state.create_session(explicit, source="cli")
+        state = open_persistence(profile_scope(home=tmp_path), eager=True)
+        seed_session(state, explicit, "cli")
         state.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", owner)
     monkeypatch.setenv("HERMES_SESSION_ID", "ephemeral")
@@ -80,9 +81,9 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     kb.init_db()
-    state = SessionDB(db_path=tmp_path / "state.db")
+    state = open_persistence(profile_scope(home=tmp_path), eager=True)
     if persisted:
-        state.create_session(session_id, source="cli")
+        seed_session(state, session_id, "cli")
     state.close()
 
     # Bound the way agent construction publishes it (ContextVar); a bare os.environ value is
@@ -107,9 +108,9 @@ def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, mo
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
     kb.init_db()
-    state = SessionDB(db_path=tmp_path / "state.db")
+    state = open_persistence(profile_scope(home=tmp_path), eager=True)
     for sid in ("other-session", "ordering-session"):
-        state.create_session(sid, source="cli")
+        seed_session(state, sid, "cli")
     state.close()
 
     with scoped_current_session_id("ordering-session"):

@@ -10,15 +10,15 @@ import pytest
 
 from cron import jobs
 from tests.fakes.cron_owner import admit_fire, cron_owner
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles
 from tools.cronjob_tools import _try_dispatch_background_run
 from tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture()
 def owner(tmp_path, monkeypatch):
-    authority = cron_owner(tmp_path / "home", monkeypatch)
-    yield authority
-    authority.db.close()
+    return cron_owner(tmp_path / "home", monkeypatch)
 
 
 def _completion(job, run_one_job):
@@ -48,9 +48,8 @@ def _completion(job, run_one_job):
 async def test_notice_carries_the_run_sessions_model_and_api_calls(owner):
     job = jobs.create_job(prompt="report", schedule="every 1h", deliver="local")
     run_sid, fire = await admit_fire(owner, job["id"])
-    owner.db._conn.execute("UPDATE sessions SET model = ?, api_call_count = ? WHERE id = ?",
-                           ("vendor/run-model", 3, run_sid))
-    owner.db._conn.commit()
+    raw_holder(owner.persistence)._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET model = ?, api_call_count = ? WHERE id = ?", ("vendor/run-model", 3, run_sid)))
 
     def run_one_job(claimed, **kw):
         claimed["execution_id"] = fire  # what the real run_one_job stamps on the claimed snapshot

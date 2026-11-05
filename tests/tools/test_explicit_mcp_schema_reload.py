@@ -24,8 +24,10 @@ def test_explicit_reload_updates_same_name_schema_and_retains_history(surface, m
                {"role": "assistant", "content": "Saved the item"}]
     original_history = deepcopy(history)
     db = Mock()
+    persistence = SimpleNamespace(read_only=False, sessions=Mock())  # the writer handle beside the store
     agent = SimpleNamespace(tools=[old], valid_tool_names={name}, enabled_toolsets=None,
-        disabled_toolsets=None, quiet_mode=True, session_id="retained-session", _session_db=db)
+        disabled_toolsets=None, quiet_mode=True, session_id="retained-session", _session_db=db,
+        persistence=persistence)
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [deepcopy(new)])
     monkeypatch.setattr(mcp_tool_lifecycle, "shutdown_mcp_servers", lambda **kw: None)
     monkeypatch.setattr(mcp_tool_discovery, "discover_mcp_tools", lambda: [name])
@@ -62,7 +64,8 @@ def test_explicit_reload_updates_same_name_schema_and_retains_history(surface, m
     assert agent.tools == [new]
     assert agent.valid_tool_names == {name}
     assert history[:len(original_history)] == original_history
-    db.update_session_tool_names.assert_called_once()
-    saved_id, pin = db.update_session_tool_names.call_args.args
+    persistence.sessions.update_tool_pin.assert_called_once()
+    db.update_session_tool_names.assert_not_called()
+    saved_id, pin = persistence.sessions.update_tool_pin.call_args.args
     assert saved_id == agent.session_id
     assert pin["tools"] == [new]

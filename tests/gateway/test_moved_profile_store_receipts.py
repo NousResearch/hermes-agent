@@ -12,8 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state_local import POLICY_PREFIX
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence import SessionId
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_holder import policy_key, raw_holder
 
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit'})
 
@@ -28,7 +30,7 @@ def authority_for(tmp_path, monkeypatch):
 
     async def build(profile_id, instance_id):
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+        runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
         return await initialize_session_authority(runner, profile_id=profile_id, instance_id=instance_id)
     return build
 
@@ -58,9 +60,9 @@ async def test_rehomed_receipt_never_restores_under_another_profiles_route(tmp_p
     from gateway.session_local_recovery import owned_receipt
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'mine')
-    key = POLICY_PREFIX + ref.session_id
-    receipt = json.loads(authority.db.get_meta(key))
-    authority.db.set_meta(key, json.dumps(dict(receipt, route='agent:sibling:local:dm:' + ref.session_id)))
+    meta, key = authority_persistence(authority).state_meta, policy_key(ref.session_id)
+    receipt = json.loads(meta.get(key))
+    meta.set(key, json.dumps(dict(receipt, route='agent:sibling:local:dm:' + ref.session_id)))
     with pytest.raises(ValueError, match='route mismatch'):
         owned_receipt(authority, ref.session_id)
 
@@ -74,12 +76,13 @@ async def test_picker_offers_an_ended_chat_only_when_resume_would_take_it(tmp_pa
     old_home, new_home = str(tmp_path / 'mac' / 'work'), str(tmp_path / 'cloud' / 'work')
     first = await authority_for(old_home, 'mac')
     kept, foreign = _create(first, 'kept'), _create(first, 'foreign')
+    store = authority_persistence(first)
     for ref in (kept, foreign):
-        receipt = json.loads(first.db.get_meta(POLICY_PREFIX + ref.session_id))
-        first.db.end_session(receipt['entry']['session_id'], 'closed')
-    receipt = json.loads(first.db.get_meta(POLICY_PREFIX + foreign.session_id))
-    first.db.set_meta(POLICY_PREFIX + foreign.session_id,
-                      json.dumps(dict(receipt, route='agent:sibling:local:dm:' + foreign.session_id)))
+        receipt = json.loads(store.state_meta.get(policy_key(ref.session_id)))
+        store.sessions.end(SessionId(receipt['entry']['session_id']), 'closed')
+    receipt = json.loads(store.state_meta.get(policy_key(foreign.session_id)))
+    store.state_meta.set(policy_key(foreign.session_id),
+                         json.dumps(dict(receipt, route='agent:sibling:local:dm:' + foreign.session_id)))
 
     moved = await authority_for(new_home, 'cloud')
     actor = SessionActor('owner', new_home, _CAPS, 'peer')
@@ -97,15 +100,15 @@ async def test_picker_leaves_out_a_chat_whose_policy_or_lineage_resume_refuses(t
     from gateway.session_local_recovery import restore_local_session
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'ended')
-    key = POLICY_PREFIX + ref.session_id
-    receipt = json.loads(authority.db.get_meta(key))
-    authority.db.end_session(receipt['entry']['session_id'], 'closed')
+    store, key = authority_persistence(authority), policy_key(ref.session_id)
+    receipt = json.loads(store.state_meta.get(key))
+    store.sessions.end(SessionId(receipt['entry']['session_id']), 'closed')
     actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
     assert _stored_closed(authority, actor, ref.session_id)
     damage(receipt)
-    authority.db.set_meta(key, json.dumps(receipt))
+    store.state_meta.set(key, json.dumps(receipt))
     authority.sessions.pop(ref.session_id, None)
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         restore_local_session(authority, ref.session_id)
     assert not _stored_closed(authority, actor, ref.session_id)
 
@@ -120,8 +123,8 @@ async def test_picker_judges_a_pending_compression_catch_up_as_restore_would(tmp
     from gateway.session_local_recovery import restorable_receipt
     authority = await authority_for(str(tmp_path / 'home'), 'i')
     ref = _create(authority, 'compacted')
-    key = POLICY_PREFIX + ref.session_id
-    receipt = json.loads(authority.db.get_meta(key))
+    meta, key = authority_persistence(authority).state_meta, policy_key(ref.session_id)
+    receipt = json.loads(meta.get(key))
     tip = receipt['entry']['session_id']
 
     def compact(conn):
@@ -131,9 +134,9 @@ async def test_picker_judges_a_pending_compression_catch_up_as_restore_would(tmp
             chat_id,chat_type,origin_json,started_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             ('child', 'gui', parent['model'], tip, parent['cwd'], parent['profile_name'], parent['user_id'],
              parent['session_key'], parent['chat_id'], parent['chat_type'], parent['origin_json'], time.time(), time.time()))
-    authority.db._execute_write(compact)
+    raw_holder(authority_persistence(authority))._execute_write(compact)
     if corrupt:
-        authority.db.set_meta(key, json.dumps(dict(receipt, lineage=['not-the-root', tip])))
+        meta.set(key, json.dumps(dict(receipt, lineage=['not-the-root', tip])))
     authority.sessions.pop(ref.session_id, None)
     actor = SessionActor('owner', authority.profile_id, _CAPS, 'peer')
 
@@ -142,4 +145,4 @@ async def test_picker_judges_a_pending_compression_catch_up_as_restore_would(tmp
     else:
         assert restorable_receipt(authority, ref.session_id)[1].session_id == 'child'
         assert _stored_closed(authority, actor, ref.session_id)
-    assert json.loads(authority.db.get_meta(key))['entry']['session_id'] == tip, 'the listing wrote the catch-up'
+    assert json.loads(meta.get(key))['entry']['session_id'] == tip, 'the listing wrote the catch-up'

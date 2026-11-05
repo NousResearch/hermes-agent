@@ -32,10 +32,9 @@ async def probe(peer):
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.run import GatewayRunner
     from gateway.run_api import start_gateway_api, stop_gateway_api
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from gateway.session_contract import SessionRef
     from hermes_cli import web_server
-    from hermes_state_runtime import list_session_admissions
 
     runner = GatewayRunner()
     await initialize_session_authority(runner, profile_id='default', instance_id='api-peer')
@@ -81,7 +80,7 @@ async def probe(peer):
                 final = await until(lambda f: f.get('params', {}).get('type') == 'message.complete')
                 assert 'LOCAL_ACK_WS_SHARED' in json.dumps(final), final
                 assert authority.agent(ref) is agent, 'WS replaced the selected API agent'
-                rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+                rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
                 assert len(rows) == 2 and all(r['status'] == 'terminal' for r in rows), rows
                 systems = [[m for m in req['messages'] if m['role'] in ('system', 'developer')] for req in peer.requests]
                 assert systems[0] == systems[1] and 'API_STABLE_SYSTEM' in json.dumps(systems[0]), systems
@@ -92,12 +91,12 @@ async def probe(peer):
                         accepted = await response.json()
                         assert response.status == 202, accepted
                     run_id = accepted['run_id']
-                    admitted = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+                    admitted = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
                     assert any(row['request_id'] == run_id for row in admitted), 'HTTP 202 preceded canonical admission'
                     status = await _poll_run_terminal(client, f'http://127.0.0.1:{api_port}/v1/runs/{run_id}', headers)
                     assert status['status'] == 'completed', status
                     assert authority.agent(ref) is agent
-                    admitted = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+                    admitted = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
                     assert len(admitted) == 3 and all(row['status'] == 'terminal' for row in admitted), admitted
                 if os.environ.get('API_RUN') == 'controls':
                     async def create_run(text):
@@ -115,7 +114,7 @@ async def probe(peer):
                     async with client.post(f'http://127.0.0.1:{api_port}/v1/runs/{queued}/stop', headers=headers) as response:
                         stopped = await response.json()
                         assert response.status == 200 and stopped['status'] == 'cancelled', stopped
-                    pending_rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+                    pending_rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
                     assert next(r for r in pending_rows if r['request_id'] == queued)['outcome'] == 'cancelled'
                     assert next(r for r in pending_rows if r['request_id'] == blocking)['status'] == 'started'
                     peer.release.set()
@@ -131,8 +130,8 @@ async def probe(peer):
                             assert response.status == 200, text
                             return text
                     pending = asyncio.create_task(request_follow())
-                    await async_wait_until(lambda: any(r['payload'].get('text') == 'FIFO_SECOND' for r in list_session_admissions(
-                        authority.db, session_id=ref.session_id)), timeout=10, what='FIFO_SECOND admitted')
+                    await async_wait_until(lambda: any(r.payload.get('text') == 'FIFO_SECOND' for r in authority.persistence.admissions.list(
+                        session_id=ref.session_id)), timeout=10, what='FIFO_SECOND admitted')
                     peer.release.set()
                     first_reply = json.loads(await pending)
                     assert first_reply['choices'][0]['message']['content']

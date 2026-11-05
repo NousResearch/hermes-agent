@@ -21,7 +21,7 @@ These tests pin the production guard's reuse decision across:
   L5 — legacy 2-tuples and pending sentinels are still untouched.
 
 All tests drive the REAL production helper (``_refresh_agent_cache_message_count``)
-against a REAL ``SessionDB`` and exercise the cache-hit guard's logic with the
+against a REAL store and exercise the cache-hit guard's logic with the
 REAL cache lock, mirroring the structure used by
 ``TestAgentCacheMessageCountRebaseline``.
 """
@@ -30,14 +30,36 @@ import threading
 
 import pytest
 
-from hermes_state import AsyncSessionDB
+from tests.fixtures.storage_seed import seed_messages, seed_session
+
+
+# Storage interface handles the tests opened; closed after each test.
+_STORAGE_HANDLES = []
+
+
+@pytest.fixture(autouse=True)
+def _close_storage_handles():
+    yield
+    while _STORAGE_HANDLES:
+        _STORAGE_HANDLES.pop().close()
+
+
+def _storage_handle(home):
+    """A storage interface handle on ``home``'s state.db, closed after the test."""
+    from persistence_assembly import open_persistence, profile_scope
+
+    _STORAGE_HANDLES.append(open_persistence(profile_scope(home=home)))
+    return _STORAGE_HANDLES[-1]
 
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
     from gateway.run import GatewayRunner
 
-    runner = GatewayRunner.__new__(GatewayRunner)
+    class _Runner(GatewayRunner):
+        persistence = None  # the storage interface handle the test gives the runner
+
+    runner = _Runner.__new__(_Runner)
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     return runner
@@ -64,10 +86,10 @@ def _guard_would_reuse(runner, session_key, session_id):
         session — guard fires, agent rebuilds).
     """
     try:
-        # Mirror the production guard, which reads the sync underlying DB
-        # (``self._session_db._db.get_session``) off the async facade.
-        row = runner._session_db._db.get_session(session_id)
-        live = row.get("message_count", 0) if row else None
+        # Mirror the production guard, which reads the session row through
+        # the runner's store (``persistence.sessions.get``).
+        row = runner.persistence.sessions.get(session_id)
+        live = row.message_count if row else None
     except Exception:
         live = None
     with runner._agent_cache_lock:
@@ -106,18 +128,16 @@ class TestSessionIdCacheCoherence:
         (the message_count comparison is meaningless across different
         session_ids), not rebuild and bust the prompt cache.
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("sA", source="telegram")
-        db.create_session("sB", source="telegram")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "sA", "telegram")
+        seed_session(db, "sB", "telegram")
         # Make counts differ to make the bug observable.
-        db.append_message("sA", role="user", content="hello from A")
-        db.append_message("sA", role="assistant", content="hi A")
-        db.append_message("sA", role="user", content="another from A")
+        seed_messages(db, "sA", {"role": "user", "content": "hello from A"})
+        seed_messages(db, "sA", {"role": "assistant", "content": "hi A"})
+        seed_messages(db, "sA", {"role": "user", "content": "another from A"})
         # sA count = 3, sB count = 0
         runner = _make_runner()
-        runner._session_db = AsyncSessionDB(db)
+        runner.persistence = _storage_handle(tmp_path)
         agent = object()
 
         # Build cache from session A (mc=3, sid=sA).
@@ -138,23 +158,21 @@ class TestSessionIdCacheCoherence:
     async def test_same_session_id_turns_still_reuse(self, tmp_path):
         """#46237 / #45966 invariant: consecutive same-session turns must
         REUSE the cached agent (prompt cache preserved)."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
         runner = _make_runner()
-        runner._session_db = AsyncSessionDB(db)
+        runner.persistence = _storage_handle(tmp_path)
         agent = object()
 
-        _row = db.get_session("s1")
-        build_count = _row.get("message_count", 0) if _row else 0
+        _row = db.sessions.get("s1")
+        build_count = _row.message_count if _row else 0
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (agent, "sig", build_count, "s1")
 
         reuses = 0
         for _ in range(1, 6):
-            db.append_message("s1", role="user", content="u")
-            db.append_message("s1", role="assistant", content="a")
+            seed_messages(db, "s1", {"role": "user", "content": "u"})
+            seed_messages(db, "s1", {"role": "assistant", "content": "a"})
             # Post-turn re-baseline (the #46237 fix).
             await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
             if _guard_would_reuse(runner, "telegram:s1", "s1"):
@@ -169,29 +187,27 @@ class TestSessionIdCacheCoherence:
         """The original #45966 invariant must hold: a DIFFERENT process
         appending to the same session in the shared DB invalidates the
         cache (genuine cross-process write)."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
         runner = _make_runner()
-        runner._session_db = AsyncSessionDB(db)
+        runner.persistence = _storage_handle(tmp_path)
         agent = object()
 
         with runner._agent_cache_lock:
-            _row = db.get_session("s1")
+            _row = db.sessions.get("s1")
             runner._agent_cache["telegram:s1"] = (
-                agent, "sig", (_row.get("message_count", 0) if _row else 0), "s1",
+                agent, "sig", (_row.message_count if _row else 0), "s1",
             )
 
         # Our own turn + re-baseline → reuse next turn.
-        db.append_message("s1", role="user", content="u")
-        db.append_message("s1", role="assistant", content="a")
+        seed_messages(db, "s1", {"role": "user", "content": "u"})
+        seed_messages(db, "s1", {"role": "assistant", "content": "a"})
         await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert _guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a
         # turn to the SAME session in the shared DB.
-        db.append_message("s1", role="user", content="external from dashboard")
+        seed_messages(db, "s1", {"role": "user", "content": "external from dashboard"})
 
         # Guard must invalidate.
         assert _guard_would_reuse(runner, "telegram:s1", "s1") is False
@@ -207,13 +223,11 @@ class TestSessionIdCacheCoherence:
         live count != snapshot count, the guard fires and the agent
         rebuilds (same behavior as before the fix for legacy entries).
         """
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "sessions.db")
-        db.create_session("s1", source="telegram")
-        db.append_message("s1", role="user", content="x")
+        db = _storage_handle(tmp_path)
+        seed_session(db, "s1", "telegram")
+        seed_messages(db, "s1", {"role": "user", "content": "x"})
         runner = _make_runner()
-        runner._session_db = AsyncSessionDB(db)
+        runner.persistence = _storage_handle(tmp_path)
 
         # Existing entry in old 3-tuple shape, no session_id recorded.
         # Snapshot is mc=0; live is mc=1 — guard must fire (invalidate).

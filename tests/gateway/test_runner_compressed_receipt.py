@@ -23,7 +23,7 @@ class _CompressingAgent(_CompressionThenFailureAgent):
 
 @pytest.mark.parametrize('rotate', [True, False], ids=['rotated', 'in_place'])
 def test_runner_compression_keeps_the_replacement_transcript_in_the_receipt(monkeypatch, rotate):
-    from hermes_state_terminal import compact_result
+    from session_rules.results import compact_result
     monkeypatch.setattr(_CompressingAgent, 'rotate', rotate)
     _install_compression_failure_agent(monkeypatch, _CompressingAgent)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='12345', chat_type='dm', user_id='user-1')
@@ -47,7 +47,7 @@ class _NudgedImageAgent(_CompressionThenFailureAgent):
 
 
 def test_runner_passes_the_proven_turn_boundary_so_a_nudge_cannot_erase_tool_output(monkeypatch):
-    from hermes_state_terminal import compact_result
+    from session_rules.results import compact_result
     _install_compression_failure_agent(monkeypatch, _NudgedImageAgent)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='12345', chat_type='dm', user_id='user-1')
     result = _run_compression_failure_turn(_runner(_SessionStore()), source)

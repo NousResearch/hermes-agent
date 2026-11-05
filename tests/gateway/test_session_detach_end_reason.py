@@ -4,6 +4,7 @@ reason main's classic CLI wrote itself (``cli_close`` on quit, ``new_session`` /
 from types import SimpleNamespace
 
 import pytest
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.mark.asyncio
@@ -14,15 +15,14 @@ async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypa
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    from hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
-    db = authority.db
+    db = authority.persistence
 
     def viewer():
         return AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'fixture'})
@@ -33,7 +33,7 @@ async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypa
         for name in ('quit', 'shared', 'plain'):
             ref = create_local_session(authority, first.actor, {'request_id': name, 'source': 'cli',
                                                                 'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
-            refs[name] = ref, local_receipt(db, ref.session_id)['entry']['session_id']
+            refs[name] = ref, db.bindings.receipt(ref.session_id).entry['session_id']
         subs = {}
         for name, (ref, _) in refs.items():
             reply = await first.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
@@ -45,7 +45,7 @@ async def test_detach_with_end_reason_ends_the_idle_local_row(tmp_path, monkeypa
                 'session_id': refs[name][0].session_id, 'subscription_id': subs[name], **extra}})
 
         def ended(name):
-            row = db.get_session(refs[name][1])
+            row = session_row(db, refs[name][1])
             return row['ended_at'] is not None, row['end_reason']
 
         reply = await detach('quit', end_reason='cli_close')

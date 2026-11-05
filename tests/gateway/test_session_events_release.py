@@ -9,6 +9,7 @@ import gc
 
 import pytest
 
+from tests.fixtures.storage_read import session_row
 from tests.gateway.test_viewer_close_lifecycle import _call, _open, _owner
 
 
@@ -34,7 +35,7 @@ async def test_closing_the_last_viewer_frees_the_ring_and_detach_keeps_it(tmp_pa
 
     await _call(viewer, 'session.detach', session_id='chat', subscription_id=again['subscription_id'],
                 end_reason='cli_close')
-    assert db.get_session('chat')['end_reason'] == 'cli_close'
+    assert session_row(db, 'chat')['end_reason'] == 'cli_close'
     assert not _recorded(stream._key)
     # A later resume of the ended session refetches history instead of trusting a stale cursor.
     await _call(viewer, 'session.resume', session_id='chat')

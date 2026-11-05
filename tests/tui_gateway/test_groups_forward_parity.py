@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_holder import hosted_upload
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 import tui_gateway.server as srv
 from tui_gateway import methods_groups, owner_forward
 
@@ -78,7 +80,6 @@ def test_every_gateway_room_method_reaches_the_owning_gateway(home, monkeypatch)
 
 
 def test_a_file_attached_to_a_handed_room_lands_in_the_gateway_copy(home, monkeypatch):
-    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway.hosted_rooms import default_db_path
     from gateway.session_hosted_attachments import store_upload
     target = _hand_room_to_gateway(monkeypatch)
@@ -97,9 +98,9 @@ def test_a_file_attached_to_a_handed_room_lands_in_the_gateway_copy(home, monkey
 
     assert "error" not in reply, reply  # main: "This Group Chat is managed by another gateway."
     assert calls == ["groups.attachment.upload"]
-    held = HostedRoomAttachmentStore(target).find_upload(room_id="room-desk", upload_id="upload-1")
+    held = hosted_upload(storage_handle(target.parent), "profile", "room-desk", "upload-1")
     assert held is not None and held["attachment_id"] == reply["result"]["attachment_id"]
-    fenced = HostedRoomAttachmentStore(default_db_path()).find_upload(room_id="room-desk", upload_id="upload-1")
+    fenced = hosted_upload(storage_handle(default_db_path().parent), "shared", "room-desk", "upload-1")
     assert fenced is None  # nothing was written to the frozen standalone copy
 
 

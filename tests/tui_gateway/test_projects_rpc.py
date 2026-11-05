@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from persistence.conversation.sessions import NewSession
 from tui_gateway import server
 
 
@@ -185,7 +186,7 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     worked_in = tmp_path / "worked-in"
     worked_in.mkdir()
     subprocess.run(["git", "init"], cwd=worked_in, check=True, capture_output=True)
-    server._get_db().create_session("worked-in-session", "cli", cwd=str(worked_in))
+    server._get_db().sessions.create(NewSession(session_id="worked-in-session", source="cli", cwd=str(worked_in)))
 
     never_opened = tmp_path / "never-opened"
     never_opened.mkdir()
@@ -453,7 +454,7 @@ def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_p
     subprocess.run(
         ["git", "init"], cwd=session_repo, check=True, capture_output=True
     )
-    server._get_db().create_session("session-repo", "cli", cwd=str(session_repo))
+    server._get_db().sessions.create(NewSession(session_id="session-repo", source="cli", cwd=str(session_repo)))
     _call("projects.record_repos", {"repos": [{"root": str(repo)}]})
 
     monkeypatch.setattr(
@@ -554,14 +555,12 @@ def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -
 
 def _create_session(home: Path, session_id: str, cwd: Path) -> None:
     """Seed one message-bearing session in ``home``'s state.db."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=home / "state.db")
-    try:
-        db.create_session(session_id, "cli", cwd=str(cwd))
-        db.append_message(session_id, "user", f"hello from {session_id}")
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, session_id, "cli", cwd=str(cwd))
+        seed_messages(db, session_id, {"role": "user", "content": f"hello from {session_id}"})
 
 
 @contextlib.contextmanager
@@ -571,12 +570,12 @@ def _serving_launch_profile(launch_home: Path):
     Both the ambient override AND ``server._hermes_home`` point at it: once the process
     multiplexes, a launch-profile RPC binds the server's own launch home (#118538), so an
     override alone no longer stands in for "this backend was launched here"."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
     token = set_hermes_home_override(launch_home)
     prev_db, prev_error, prev_home = server._db, server._db_error, server._hermes_home
     server._hermes_home = launch_home
-    server._db = SessionDB(db_path=launch_home / "state.db")
+    server._db = open_persistence(profile_scope(home=launch_home), eager=True)
     server._db_error = None
     try:
         yield
@@ -759,3 +758,38 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 
 
+def test_project_tree_rows_name_every_lineage_segment():
+    """A row names its segments in ``_lineage_ids`` whether or not it has a compression root: a compression tip
+    carries its chain, a local conversation reset once carries both segments with no root, a plain row None."""
+    import json
+
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+
+    db = open_persistence(profile_scope())
+    try:
+        for offset, (sid, source, parent, end) in enumerate((
+                ("plain", "cli", None, None), ("comp-root", "cli", None, "compression"),
+                ("comp-tip", "cli", "comp-root", None), ("loc-a", "local", None, "session_reset"),
+                ("loc-b", "local", "loc-a", None))):
+            seed_session(db, sid, source, parent_session_id=parent)
+            raw_holder(db)._execute_write(lambda conn: conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (1_700_000_000.0 + offset, sid)))
+            seed_messages(db, sid, {"role": "user", "content": f"hello from {sid}"})
+            if end:
+                db.sessions.end(sid, end)
+        db.sessions.patch_model_config("loc-b", {"_reset_from": "loc-a"})
+        db.state_meta.set(
+            "gateway.local_policy.v1:loc-a", json.dumps({"session_id": "loc-a", "lineage": ["loc-a", "loc-b"]}))
+        with server._persistence_for(db) as persistence:
+            sessions = server._project_tree_inputs(persistence, 2000, include_discovered=False)[0]
+    finally:
+        db.close()
+
+    rows = {row["id"]: (row["_lineage_root_id"], row["_lineage_ids"]) for row in sessions}
+    assert rows == {
+        "plain": (None, None),
+        "comp-tip": ("comp-root", ["comp-root", "comp-tip"]),
+        "loc-b": (None, ["loc-a", "loc-b"]),
+    }

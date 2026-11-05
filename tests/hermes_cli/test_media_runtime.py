@@ -28,6 +28,7 @@ import pytest
 
 from hermes_cli.local_runtime import media_runtime as mr
 from hermes_cli.local_runtime.admission import AdmissionStore, Grant
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -387,9 +388,12 @@ def test_tick_renews_and_detects_sigkill_crash(tmp_path, live):
     assert ticked.epoch == epoch_before, "renew must not change the epoch"
     assert store.status(_RESOURCE).residency == "resident"
     deadline_before = store.status(_RESOURCE).deadline
-    time.sleep(0.05)
-    ctl.tick()
-    assert store.status(_RESOURCE).deadline > deadline_before, "tick must renew the lease"
+
+    def renewed():
+        ctl.tick()
+        return store.status(_RESOURCE).deadline > deadline_before
+
+    wait_until(renewed, what="a tick to renew the lease")
 
     os.kill(running.pid, signal.SIGKILL)
     status = status_after_ticks = None

@@ -435,10 +435,19 @@ def _default_spawn(cmd, **kwargs):
     return spawn_server(cmd, **kwargs)
 
 
+def _best_effort_errors() -> tuple:
+    """What a teardown call can raise when its target is already gone: a dead pid, a closed handle, a vanished psutil process."""
+    try:
+        import psutil
+    except ImportError:             # platforms without psutil: the OS errors are all there is
+        return (OSError, ValueError)
+    return (OSError, ValueError, psutil.Error)
+
+
 def _quiet(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
-    except Exception:
+    except _best_effort_errors():
         return None
 
 
@@ -543,7 +552,7 @@ class MediaRuntimeController:
             self._exit_code = rc if rc is not None else failed.exit_code
             self._set_failed(f"{failed.detail}; {self._release_on_verified_exit(verified)}")
             return self.status()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- start() never raises: anything unexpected tears the child down and becomes state=failed; no traceback is logged because one can carry the sidecar's one-time password
             verified, rc = self._teardown_tree(timeout=10.0)
             self._exit_code = rc
             self._set_failed(f"start aborted: {type(exc).__name__}: {exc}; "
@@ -639,7 +648,7 @@ class MediaRuntimeController:
         """Credential-scrubbed tail of the captured sidecar stdout/stderr."""
         if self._log_path is None or not self._log_path.exists():
             return ""
-        text = self._log_path.read_text(encoding="utf-8", errors="replace")
+        text = self._log_path.read_text(encoding="utf-8-sig", errors="replace")
         return sanitize_credentials("\n".join(text.splitlines()[-max_lines:]))
 
     def __repr__(self) -> str:
@@ -932,7 +941,7 @@ class MediaRuntimeController:
     def _read_log(self) -> str:
         if self._log_path is None or not self._log_path.exists():
             return ""
-        return self._log_path.read_text(encoding="utf-8", errors="replace")
+        return self._log_path.read_text(encoding="utf-8-sig", errors="replace")
 
     def _await_bound_endpoint(self, deadline: float) -> tuple[str | None, int]:
         proc = self._proc
@@ -988,11 +997,11 @@ class MediaRuntimeController:
             _quiet(proc.terminate)
             try:
                 rc = proc.wait(timeout=half)
-            except Exception:
+            except (subprocess.TimeoutExpired, OSError):
                 _quiet(proc.kill)
                 try:
                     rc = proc.wait(timeout=half)
-                except Exception:
+                except (subprocess.TimeoutExpired, OSError):
                     rc = None
         for child in children:
             with suppress(Exception):
@@ -1022,7 +1031,7 @@ class MediaRuntimeController:
     def _safe_identity(self, pid: int) -> str | None:
         try:
             return self._identity_fn(pid)
-        except Exception:
+        except Exception:  # health: allow BLE001 -- the identity provider is injectable; whatever it raises means "identity unknown", and unknown keeps the grant (fail closed)
             return None
 
     def _process_gone(self, pid: int | None, proc: subprocess.Popen | None = None) -> bool:

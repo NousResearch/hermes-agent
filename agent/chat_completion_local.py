@@ -101,12 +101,12 @@ def merge_native_local_settings(agent, request_overrides: dict | None) -> dict:
         # caller's explicit payload is what was refused: surface it.
         try:
             nms.resolve_native_request_settings(model_id, None, inherited=False)
-        except Exception as saved_exc:
-            logger.warning("saved native model settings for %s are invalid and were ignored: %s", model_id, saved_exc)
+        except Exception as saved_exc:  # a broken saved row of any kind must not break chat; the message names the setting, the traceback is attached
+            logger.warning("saved native model settings for %s are invalid and were ignored: %s", model_id, saved_exc, exc_info=True)
             return overrides
         raise
-    except Exception as exc:
-        logger.debug("native model settings for %s unavailable: %s", model_id, exc)
+    except Exception:  # settings are optional: any failure here must leave the request exactly as it was
+        logger.debug("native model settings for %s unavailable", model_id, exc_info=True)
         return overrides
 
     for key, value in standard.items():

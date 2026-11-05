@@ -1436,11 +1436,6 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
-    # Managed llama.cpp: the staged artifact's saved native settings feed this
-    # request; explicit per-request values keep precedence, extensions merge
-    # per key into extra_body (see chat_completion_local). No-op for everyone
-    # else; settings-store trouble never blocks inference.
-    request_overrides = merge_native_local_settings(agent, request_overrides)
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
 
     _is_qwen = agent._is_qwen_portal()
@@ -1475,7 +1470,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
-        request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
+        request_overrides=merge_native_local_settings(agent, request_overrides), session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),

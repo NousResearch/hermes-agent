@@ -25,6 +25,7 @@ answers (it reads as ``inherit``).
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -44,6 +45,8 @@ from hermes_cli.local_runtime.model_settings import (
     UnknownSettingError,
     split_request_fields,
 )
+
+logger = logging.getLogger(__name__)
 
 ENGINE = "llamacpp"
 WORKFLOW = "chat"
@@ -292,7 +295,8 @@ def _read_gguf_metadata(model_id: str) -> dict:
     """Raw GGUF metadata of the staged model; {} when it cannot be read."""
     try:
         return dict(read_gguf_header(resolve_staged_model(model_id)).metadata)
-    except Exception:
+    except Exception:  # the settings pane must render for a missing or damaged file of any kind
+        logger.debug("GGUF metadata of %s is unreadable", model_id, exc_info=True)
         return {}
 
 
@@ -431,8 +435,8 @@ def _runtime_facts() -> dict:
             facts["backend"] = engine.backend
             facts["installed_tag"] = engine.tag
             facts["pinned_tag"] = binaries.pinned_tag(engine.backend)
-    except Exception:
-        pass
+    except Exception:  # facts degrade to nulls; the settings pane must render before any runtime is installed
+        logger.debug("runtime facts unavailable", exc_info=True)
     return facts
 
 
@@ -446,7 +450,8 @@ def _loading_facts(model_id: str) -> dict:
         decision = presets.read_preset_decisions().get(model_id)
         if decision is not None and decision.window > 0:
             context_length = int(decision.window)
-    except Exception:
+    except Exception:  # a missing or unreadable preset record just means "no window decided yet"
+        logger.debug("preset decision of %s unreadable", model_id, exc_info=True)
         context_length = None
     return {"policy": "auto", "context_length": context_length}
 

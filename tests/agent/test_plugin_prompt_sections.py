@@ -102,12 +102,13 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
         from hermes_cli import plugins
         from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-        from hermes_state import SessionDB
+        from persistence.conversation.sessions import NewSession
+        from persistence_assembly import open_persistence, profile_scope
         from run_agent import AIAgent
 
-        db = SessionDB(db_path=Path(os.environ["TEST_DB"]))
+        db = open_persistence(profile_scope(home=Path(os.environ["TEST_DB"]).parent))
         session_id = "resume-plugin-section"
-        db.ensure_session(session_id, source="cli", model="test/model")
+        db.sessions.create(NewSession(session_id=session_id, source="cli", model="test/model"))
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
@@ -118,7 +119,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             skip_context_files=True,
             skip_memory=True,
             session_id=session_id,
-            session_db=db,
+            persistence=db,
         )
 
         manager = PluginManager()

@@ -3,41 +3,42 @@
 from types import SimpleNamespace
 
 from agent.conversation_compression import recover_rotated_compression_session
-from hermes_state import SessionDB
-from hermes_state_errors import CompressionSessionClosedError
+from persistence import CompressionClosed
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_recover_rotated_compression_session_reopens_legacy_orphan(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("orphan", source="cli")
-        db.append_message("orphan", "user", "before compression")
-        db.end_session("orphan", "compression")
-        agent = SimpleNamespace(_session_db=db, session_id="orphan")
+        seed_session(store, "orphan", "cli")
+        seed_messages(store, "orphan", {"role": "user", "content": "before compression"})
+        store.sessions.end("orphan", "compression")
+        agent = SimpleNamespace(_session_db=store, persistence=store, session_id="orphan")
 
         assert recover_rotated_compression_session(agent) is None
-        db.append_message("orphan", "user", "after recovery")
+        seed_messages(store, "orphan", {"role": "user", "content": "after recovery"})
     finally:
-        db.close()
+        store.close()
 
 
 def test_recover_rotated_compression_session_keeps_parent_closed_with_child(
     tmp_path,
 ):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    store = open_persistence(profile_scope(home=tmp_path))
     try:
-        db.create_session("parent", source="cli")
-        db.append_message("parent", "user", "before compression")
-        db.end_session("parent", "compression")
-        db.create_session("child", source="cli", parent_session_id="parent")
-        agent = SimpleNamespace(_session_db=db, session_id="parent")
+        seed_session(store, "parent", "cli")
+        seed_messages(store, "parent", {"role": "user", "content": "before compression"})
+        store.sessions.end("parent", "compression")
+        seed_session(store, "child", "cli", parent_session_id="parent")
+        agent = SimpleNamespace(_session_db=store, persistence=store, session_id="parent")
 
         assert recover_rotated_compression_session(agent) is None
         try:
-            db.append_message("parent", "user", "must stay closed")
-        except CompressionSessionClosedError:
+            seed_messages(store, "parent", {"role": "user", "content": "must stay closed"})
+        except CompressionClosed:
             pass
         else:
             raise AssertionError("compression parent with child was reopened")
     finally:
-        db.close()
+        store.close()

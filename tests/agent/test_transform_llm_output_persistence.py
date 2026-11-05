@@ -11,8 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.fixtures.storage_read import transcript_rows
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _rewriting_hook(calls):
@@ -38,7 +39,7 @@ def _fake_completion(text):
 def db_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
-    db = SessionDB(db_path=tmp_path / ".hermes" / "state.db")
+    db = storage_handle(tmp_path / ".hermes")
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -47,7 +48,7 @@ def db_agent(tmp_path, monkeypatch):
         agent = AIAgent(
             api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", model="fake/model",
             quiet_mode=True, skip_context_files=True, skip_memory=True, platform="cli",
-            session_id="sess-44239", session_db=db,
+            session_id="sess-44239", persistence=db,
         )
     agent.client = MagicMock()
     return agent, db
@@ -62,7 +63,7 @@ def test_transformed_reply_is_the_stored_and_replayed_text(db_agent, monkeypatch
     result = agent.run_conversation("hello")
 
     last_assistant = next(m for m in reversed(result["messages"]) if m.get("role") == "assistant")
-    stored = [r["content"] for r in db.get_messages("sess-44239") if r["role"] == "assistant"]
+    stored = [r["content"] for r in transcript_rows(db, "sess-44239") if r["role"] == "assistant"]
     assert result["final_response"] == "REWRITTEN:RAW MODEL TEXT"
     assert last_assistant["content"] == result["final_response"]
     assert stored == [result["final_response"]]

@@ -7,11 +7,29 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.conversation.messages import NewMessage, TranscriptRead, TranscriptView
+from persistence_assembly import open_persistence_reader
 from tests.agent.test_tool_call_incremental_persistence import (
-    _attach_real_session_db,
     _make_agent,
     _mock_tool_call,
 )
+from tests.fixtures import storage_read
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
+
+def _attach_store(agent, home: Path, session_id: str):
+    """Wire ``agent`` to a real store on ``home``, pinned to a fresh ``session_id`` row."""
+    db = storage_handle(home)
+    seed_session(db, session_id, "tui", model="test/model")
+    agent._session_db = agent.persistence = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    return db
 
 
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
@@ -22,7 +40,6 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     from agent.context_compressor import ContextCompressor
     from agent import secret_scope
     from agent.turn_context import build_api_messages
-    from hermes_state import SessionDB
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
     from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
@@ -69,7 +86,7 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
         agent = _make_agent()
         agent.valid_tool_names = {tool_name}
         db_path = home / "state.db"
-        db = _attach_real_session_db(agent, db_path, name)
+        db = _attach_store(agent, home, name)
         register_task_env_overrides(name, {"cwd": str(work), "env_type": "local"})
         monkeypatch.setitem(progress._sessions, name, {"agent": agent, "session_key": name})
         # Wire the real gateway callbacks, including pre-commit preparation.
@@ -92,8 +109,8 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
         def emit(kind, sid, name, args, payload):
             emitted.append((kind, copy.deepcopy(payload)))
             if kind == "tool.complete":
-                with SessionDB(db_path=db_path) as cold:
-                    at_emission.extend(cold.get_messages(sid))
+                with open_persistence_reader(db_path) as cold:
+                    at_emission.extend(storage_read.transcript_rows(cold, sid))
 
         monkeypatch.setattr(progress, "_emit_tool_lifecycle", emit)
         try:
@@ -115,8 +132,8 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
             assert metadata.get("inline_diff") == completion.get("inline_diff")
             if changed:
                 assert after.strip() in metadata["inline_diff"]
-            with SessionDB(db_path=db_path) as cold:
-                conversation = cold.get_messages_as_conversation(name)
+            with open_persistence_reader(db_path) as cold:
+                conversation = storage_read.conversation(cold, name)
             projected = progress._history_to_messages(conversation)
             projected_tool = next(row for row in projected if row["role"] == "tool")
             assert projected_tool["tool_call_id"] == call_id
@@ -147,10 +164,10 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
                 compacted, tool_index, {call_id: (tool_name, json.dumps(args))}, 0,
             )
             assert compacted[tool_index].get("display_metadata") == row.get("display_metadata")
-            db.archive_and_compact(name, compacted)
-            with SessionDB(db_path=db_path) as cold:
-                archived = cold.get_messages(name, include_compacted=True)
-                active = cold.get_messages_as_conversation(name)
+            db.messages.compact(name, [NewMessage.from_live(m) for m in compacted])
+            with open_persistence_reader(db_path) as cold:
+                archived = storage_read.transcript_rows(cold, name, TranscriptRead(view=TranscriptView.DISPLAY))
+                active = storage_read.conversation(cold, name)
             assert next(m for m in archived if m["id"] == row["id"])["content"] == row["content"]
             assert next(m for m in active if m["role"] == "tool").get("display_metadata") == row.get("display_metadata")
         finally:

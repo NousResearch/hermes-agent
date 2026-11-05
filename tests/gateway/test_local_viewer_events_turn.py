@@ -591,7 +591,7 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
         # After a replacement parent is built, and through _owner_objects when no resident parent is cached, only the matching (db_a, route-a) fallback child is returned.
         assert [r['subagent_id'] for r in subagent_records(replacement)] == ['fallback-child']
         authority_a = SimpleNamespace(
-            db=db_a, runner=SimpleNamespace(), agent=lambda ref: None,
+            persistence=db_a, runner=SimpleNamespace(), agent=lambda ref: None,
             store=SimpleNamespace(_entries={'route-a': SimpleNamespace(session_id='same-parent')}),
             sessions={'same-parent': SimpleNamespace(route='route-a', source=SimpleNamespace(platform=Platform.TELEGRAM))})
         ref = SimpleNamespace(profile_id='p', session_id='same-parent')
@@ -614,18 +614,16 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
         # Ancestry is walked backward from the live session on the real store, so an orphaned closed sibling under a compressed parent never hides the evicted parent's children.
         import tempfile
         from pathlib import Path
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
         with tempfile.TemporaryDirectory() as tmp:
-            real_db = SessionDB(db_path=Path(tmp) / 'state.db')
+            real_db = open_persistence(profile_scope(home=Path(tmp)))
             with real_db:
-                real_db.create_session('same-parent', source='cli')
-                real_db.end_session('same-parent', 'compression')
-                real_db.create_session('orphan', source='cli', parent_session_id='same-parent')
-                real_db.end_session('orphan', 'ws_orphan_reap')
-                real_db.create_session('live', source='cli', parent_session_id='same-parent')
-                real_db.end_session('live', 'compression')
-                real_db.create_session('tip', source='cli', parent_session_id='live')
-                real_db.create_session('elsewhere', source='cli')
+                seed_session(real_db, 'same-parent', 'cli', end_reason='compression')
+                seed_session(real_db, 'orphan', 'cli', parent_session_id='same-parent', end_reason='ws_orphan_reap')
+                seed_session(real_db, 'live', 'cli', parent_session_id='same-parent', end_reason='compression')
+                seed_session(real_db, 'tip', 'cli', parent_session_id='live')
+                seed_session(real_db, 'elsewhere', 'cli')
                 original._session_db = real_db
                 assert [r['subagent_id'] for r in subagent_records(None, session_id='tip', session_db=real_db, route='route-a')] == ['fallback-child']
                 assert subagent_records(None, session_id='elsewhere', session_db=real_db, route='route-a') == []

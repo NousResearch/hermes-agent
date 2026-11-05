@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
 
 
 async def local_session(tmp_path, monkeypatch, source='cli'):
@@ -16,7 +17,7 @@ async def local_session(tmp_path, monkeypatch, source='cli'):
     from gateway.session_local import create_local_session
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': [], 'acp': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
         _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
         _evict_cached_agent=lambda route: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
@@ -33,7 +34,6 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
     evict that turn's cached agent (the projection is fenced by execution generation)."""
     from gateway import session_mutations
     from gateway.session_policy import restore_policy
-    from hermes_state_runtime import admit_session_input, claim_session_input
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     async def prepare(authority, live, payload, prepared):
         old = restore_policy(prepared['snapshot']['receipt']['policy'])
@@ -55,9 +55,9 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
         first = await session_mutations.mutate_session(owner, connection.actor, ref, dict(params))
         if live.task is not None:
             await asyncio.gather(live.task, return_exceptions=True)
-        admit_session_input(owner.db, epoch=owner.epoch, principal_id=connection.actor.subject,
-                            session_id=ref.session_id, request_id='next', payload={'text': 'next'})
-        assert claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id) is not None
+        owner.persistence.admissions.admit(epoch=owner.epoch, principal_id=connection.actor.subject,
+                                           session_id=ref.session_id, request_id='next', payload={'text': 'next'})
+        assert owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id) is not None
         cached[live.route] = agent
         evicted.clear()
         again = await session_mutations.mutate_session(owner, connection.actor, ref, dict(params))
@@ -65,25 +65,24 @@ async def test_replayed_receipt_keeps_a_newer_turns_agent(tmp_path, monkeypatch,
         assert cached.get(live.route) is agent, f'{operation} replay evicted the newer turn agent: {evicted}'
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_session_busy_pause_keeps_the_notice_episode(tmp_path, monkeypatch):
     """A head blocked behind running work is the same pause episode: the "saved, will be answered"
     notice is not repeated for every message queued behind it."""
-    from hermes_state_runtime import admit_session_input, claim_session_input
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     live = owner.sessions[ref.session_id]
     try:
         for request_id in ('running', 'queued'):
-            admit_session_input(owner.db, epoch=owner.epoch, principal_id=connection.actor.subject,
-                                session_id=ref.session_id, request_id=request_id, payload={'text': request_id})
+            owner.persistence.admissions.admit(epoch=owner.epoch, principal_id=connection.actor.subject,
+                                               session_id=ref.session_id, request_id=request_id, payload={'text': request_id})
             if request_id == 'running':
-                assert claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id) is not None
+                assert owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id) is not None
         live.pause_notified = True  # the user was already told about this busy episode
         await owner._drain(ref)
         assert live.pause_notified is True, 'session_busy pause reset the notice episode'
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)

@@ -150,6 +150,12 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = ""
+    # Heal invalid / secret-shaped base_url strings (e.g. API key pasted into base_url override)
+    if base_url:
+        from hermes_cli.auth import has_usable_secret
+        if not base_url.startswith(("http://", "https://")) or has_usable_secret(base_url):
+            logger.warning("Dropping invalid stored session base_url %r", base_url[:12])
+            base_url = ""
     # Heal a stale provider persisted by an older build (renamed/removed custom provider → "Unknown provider"):
     # recover ``custom:<name>`` from the stored base_url, then from the entry serving the model; else drop it.
     if provider and not _is_routable_provider(provider):

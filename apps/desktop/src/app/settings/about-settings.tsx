@@ -11,6 +11,7 @@ import { $desktopVersion, checkBackendUpdates, refreshDesktopVersion } from '@/s
 import { SectionHeading, SettingsContent } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { UninstallSection } from './uninstall-section'
+import { UpdateChannelRow } from './update-channel-row'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 interface AboutSettingsProps {
@@ -56,9 +57,10 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
       <div className="mx-auto mt-4 w-full max-w-2xl">
         <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
         <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
-          <UpdateStatusCard target="client" />
+          <UpdateStatusCard target="client" version={version} />
+          <UpdateChannelRow />
           {/* Client and remote backend updates are independent. Only the client has release notes. */}
-          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
+          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
         </div>
         {version && <VersionDetails version={version} />}
         {includeUninstall && <UninstallSection />}

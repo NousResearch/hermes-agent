@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 LivenessKind = Literal["static", "server_json", "interactive_session"]
 LivenessState = Literal[
     "app_not_running",
+    "hermes_not_connected",
     "endpoint_unavailable",
     "no_interactive_session",
     "version_too_old",
     "missing_app",
+    "unsupported_gpu",
 ]
 Retry = Literal["after_user_action", "never_here"]
 
@@ -106,15 +108,30 @@ def liveness_for(server_name: str) -> Liveness:
         return Liveness("static")
 
 
-def _action(state: LivenessState, app_name: str) -> tuple[str, Retry]:
+def _action(state: LivenessState, app_name: str, gpu_label: str) -> tuple[str, Retry]:
     actions: dict[LivenessState, tuple[str, Retry]] = {
         "app_not_running": (f"Start {app_name}, then try again.", "after_user_action"),
+        "hermes_not_connected": (f"Reconnect {app_name} in Hermes, then try again.", "after_user_action"),
         "endpoint_unavailable": (f"Open {app_name} and enable its local connection, then try again.", "after_user_action"),
         "no_interactive_session": (f"Open an interactive desktop session and start {app_name}, then try again.", "never_here"),
         "version_too_old": (f"Update {app_name}, then try again.", "after_user_action"),
         "missing_app": (f"Install {app_name}, then try again.", "after_user_action"),
+        "unsupported_gpu": (f"Use {app_name} on a machine with {gpu_label}.", "never_here"),
     }
     return actions[state]
+
+
+_AVAILABILITY_PROBLEMS: dict[str, LivenessState] = {
+    "missing_app": "missing_app",
+    "unsupported_os": "missing_app",
+    "unsupported_gpu": "unsupported_gpu",
+    "version_too_old": "version_too_old",
+}
+
+
+def availability_problem(available: Availability) -> LivenessState | None:
+    """The unavailable state an install-time availability verdict maps to; None when it is not a problem."""
+    return _AVAILABILITY_PROBLEMS.get(available.state)
 
 
 def status(server_name: str) -> Status | None:
@@ -124,10 +141,9 @@ def status(server_name: str) -> Status | None:
         return None
     available = availability(decl)
     live = liveness_for(server_name)
-    if available.state in {"missing_app", "unsupported_os"}:
-        state: LivenessState = "missing_app"
-    elif available.state == "version_too_old":
-        state = "version_too_old"
+    problem = availability_problem(available)
+    if problem is not None:
+        state: LivenessState = problem
     elif live.kind == "interactive_session" and not facts.interactive_session():
         state = "no_interactive_session"
     elif live.kind == "server_json":
@@ -143,19 +159,36 @@ def status(server_name: str) -> Status | None:
             elif probe.endpoint.state is not CheckState.PRESENT:
                 state = "endpoint_unavailable"
             else:
-                state = "app_not_running"
+                # The app runs and its endpoint answers: the only thing missing is Hermes' own
+                # MCP connection to it. Telling the user to "start" an app that IS running is
+                # the wrong instruction (#119975).
+                state = "hermes_not_connected"
     else:
-        state = "app_not_running"
-    action, retry = _action(state, decl.name)
+        # static / unknown liveness kinds cannot observe the app, so they cannot conclude it
+        # is not running; the honest answer is that Hermes is not connected (#119975).
+        state = "hermes_not_connected"
+    action, retry = _action(state, decl.name, declaration.gpu_label(decl.required_gpu))
     return Status(state, available, live, action, retry)
 
 
-def describe(decl: declaration.Declaration, available: Availability, liveness_state: LivenessState) -> str:
-    """Compose one unavailable-state sentence with one user action."""
-    app_name = decl.name
-    action, _retry = _action(liveness_state, app_name)
-    if liveness_state == "missing_app":
+def describe(decl: declaration.Declaration, available: Availability, liveness_state: LivenessState,
+             display_name: str | None = None) -> str:
+    """Compose one unavailable-state sentence with one user action.
+
+    ``display_name`` overrides the declaration's slug when the caller knows the plugin's
+    catalog/manifest title — the Plugins tab does, and a raw slug reads like an error code."""
+    app_name = display_name or decl.name
+    gpu = declaration.gpu_label(decl.required_gpu)
+    action, _retry = _action(liveness_state, app_name, gpu)
+    if liveness_state == "missing_app" and available.state == "unsupported_os":
+        reason = f"{app_name} is not supported on this operating system."
+        action = "Use a supported operating system."
+    elif liveness_state == "missing_app":
         reason = f"{app_name} is not installed."
+        if available.min_version:
+            action = f"Install {app_name} {available.min_version} or newer, then try again."
+    elif liveness_state == "unsupported_gpu":
+        reason = f"{app_name} needs {gpu}; none was found on this machine."
     elif liveness_state == "version_too_old":
         found = f" version {available.version}" if available.version else ""
         minimum = f"; version {available.min_version} or newer is required" if available.min_version else ""
@@ -164,6 +197,8 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
         reason = f"{app_name} needs an interactive desktop session."
     elif liveness_state == "endpoint_unavailable":
         reason = f"{app_name}'s local endpoint is unavailable."
+    elif liveness_state == "hermes_not_connected":
+        reason = f"{app_name}'s MCP connection is missing."
     else:
         reason = f"{app_name} is not running."
     return f"{reason} {action}"

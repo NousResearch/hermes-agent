@@ -12,6 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from tests.waiting import wait_until
+
 
 def _clear_clarify_state():
     """Reset module-level state between tests."""
@@ -52,6 +54,16 @@ class TestClarifyPrimitive:
         assert cm.resolve_gateway_clarify("id-race", "") is False
         assert entry.response == "A"
 
+    def test_get_pending_tracks_lifecycle(self):
+        """Adapters read a pending entry through ``get_pending``; answered or unknown ids read None."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-pend", "sk-pend", "Pick", ["A", "B"])
+        assert cm.get_pending("id-pend") is entry
+        cm.resolve_gateway_clarify("id-pend", "A")
+        assert cm.get_pending("id-pend") is None
+        assert cm.get_pending("never-registered") is None
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm
@@ -77,7 +89,7 @@ class TestClarifyPrimitive:
 
 
     def test_clear_session_cancels_pending_entries(self):
-        """clear_session unblocks blocked threads with empty response."""
+        """clear_session unblocks blocked threads."""
         from tools import clarify_gateway as cm
 
         cm.register("id7", "sk7", "Q?", ["A"])
@@ -91,8 +103,7 @@ class TestClarifyPrimitive:
             cancelled = cm.clear_session("sk7")
             assert cancelled == 1
             result = fut.result(timeout=10.0)
-            # clear_session sets response="" then the wait returns it
-            assert result == ""
+            assert result == cm.CANCELLED
 
 
     def test_clear_session_preserves_resolved_response(self):
@@ -266,6 +277,32 @@ class TestUnlimitedWait:
         t.join(timeout=5.0)
         assert not t.is_alive()
         assert result_box["r"] == "B"
+
+    def test_interrupt_on_waiting_thread_withdraws_unlimited_wait(self):
+        """/stop or gateway shutdown signals the turn's thread; the wait is released as cancelled
+        (as the approval wait is) instead of holding the turn for the whole clarify timeout."""
+        from tools import clarify_gateway as cm
+        from tools.interrupt import set_interrupt
+
+        cm.register("u2", "sk", "Q?", ["A", "B"])
+        box = {}
+
+        def waiter():
+            box["tid"] = threading.get_ident()
+            box["r"] = cm.wait_for_response("u2", timeout=0)
+
+        t = threading.Thread(target=waiter, daemon=True)  # a regression must fail, not hang exit
+        t.start()
+        wait_until(lambda: "tid" in box, timeout=5, what="the waiter thread to start")
+        try:
+            set_interrupt(True, box["tid"], reason="gateway shutdown")
+            t.join(timeout=5.0)
+        finally:
+            set_interrupt(False, box["tid"])
+        assert not t.is_alive()
+        assert box["r"] == cm.CANCELLED
+        assert not cm.has_pending("sk")
+        assert cm.resolve_gateway_clarify("u2", "late") is False
 
 
 class TestMultiSelectTextFallback:

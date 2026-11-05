@@ -1,0 +1,60 @@
+name: weixin-platform
+label: Weixin / WeChat
+kind: platform
+version: 1.0.0
+description: >
+  Weixin (personal WeChat) gateway adapter for Hermes Agent over Tencent's
+  iLink Bot API. Long-polls getupdates for inbound messages, echoes each
+  peer's context_token on replies, and moves media through the AES-128-ECB
+  encrypted CDN. `hermes gateway setup` performs the iLink QR login.
+author: NousResearch
+requires_env:
+  - name: WEIXIN_ACCOUNT_ID
+    description: "iLink Bot account ID obtained through QR login in hermes gateway setup"
+    prompt: "iLink Bot account ID"
+    password: false
+  - name: WEIXIN_TOKEN
+    description: "iLink Bot token obtained through QR login in hermes gateway setup"
+    prompt: "iLink Bot token"
+    password: true
+optional_env:
+  - name: WEIXIN_BASE_URL
+    description: "iLink API base URL saved by QR login (default: https://ilinkai.weixin.qq.com)"
+    prompt: "iLink API base URL"
+    password: false
+  - name: WEIXIN_CDN_BASE_URL
+    description: "iLink media CDN base URL (default: https://novac2c.cdn.weixin.qq.com/c2c)"
+    prompt: "iLink CDN base URL"
+    password: false
+  - name: WEIXIN_DM_POLICY
+    description: "Direct-message policy: pairing, open, allowlist, or disabled (default: pairing)"
+    prompt: "DM policy (pairing|open|allowlist|disabled)"
+    password: false
+  - name: WEIXIN_GROUP_POLICY
+    description: "Group-chat policy: disabled, open, or allowlist (default: disabled)"
+    prompt: "Group policy (disabled|open|allowlist)"
+    password: false
+  - name: WEIXIN_ALLOWED_USERS
+    description: "Comma-separated Weixin user IDs allowed to DM the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: WEIXIN_GROUP_ALLOWED_USERS
+    description: "Comma-separated group chat IDs allowed when WEIXIN_GROUP_POLICY=allowlist"
+    prompt: "Allowed group chat IDs (comma-separated)"
+    password: false
+  - name: WEIXIN_ALLOW_ALL_USERS
+    description: "Allow any Weixin user to trigger the bot"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: WEIXIN_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: WEIXIN_HOME_CHANNEL_NAME
+    description: "Display name for the Weixin home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: WEIXIN_SPLIT_MULTILINE_MESSAGES
+    description: "Send each line of a multi-line reply as its own message (default: false)"
+    prompt: "Split multi-line messages? (true/false)"
+    password: false

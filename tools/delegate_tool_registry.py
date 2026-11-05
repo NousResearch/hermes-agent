@@ -17,13 +17,13 @@ _spawn_paused: bool = False
 _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
-_active_subagents: Dict[str, Dict[str, Any]] = {}
+_active_subagents: dict[str, dict[str, Any]] = {}
 # subagent_id -> {goal, delegation_id, owner_agent_session_id} retained AFTER the child finishes (bounded FIFO).
 # Child-started background processes routinely outlive the child (its npm ci with notify_on_complete=true finishes
 # after the summary was delivered); their completion notifications reach the parent via the shared completion_queue
 # and need delegation attribution even though the live registry entry is gone.
 _RECENT_SUBAGENTS_CAP = 200
-_recent_subagents: Dict[str, Dict[str, Any]] = {}
+_recent_subagents: dict[str, dict[str, Any]] = {}
 # Display names handed out at spawn but not yet registered (allocation → registration runs on
 # different threads; see _run_single_child). Keeps concurrent spawns from computing the same
 # name between the live-registry snapshot and _register_subagent (review of #118104).
@@ -50,7 +50,7 @@ def release_display_name(name: Optional[str]) -> None:
     with _active_subagents_lock:
         _reserved_display_names.discard(name)
 
-def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def get_subagent_attribution(task_id: Optional[str]) -> Optional[dict[str, Any]]:
     """``{subagent_id, goal, delegation_id}`` for a process task_id that belongs to a live or recently-finished child
     (children run their terminal sessions under ``task_id == subagent_id``), else None."""
     if not task_id or not isinstance(task_id, str):
@@ -72,7 +72,7 @@ def is_spawn_paused() -> bool:
     with _spawn_pause_lock:
         return _spawn_paused
 
-def _register_subagent(record: Dict[str, Any]) -> None:
+def _register_subagent(record: dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
@@ -208,7 +208,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
 # Registry record fields never exposed to the TUI/RPC snapshot.
 _PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
 
-def list_active_subagents() -> List[Dict[str, Any]]:
+def list_active_subagents() -> list[dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
     started_at, tool_count, status, ...}); safe from any thread."""
     with _active_subagents_lock:
@@ -248,7 +248,7 @@ def _resolve_session_lineage(session_id: Optional[str], parent_agent: Any) -> st
     except Exception:
         return sid
 
-def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
+def _owns_subagent_record(record: dict[str, Any], parent_agent: Any) -> bool:
     """True when *parent_agent*'s conversation owns this live-child record.
 
     Tier 1: identity — the ``_delegate_parent_ref`` weakref chain reaches
@@ -272,7 +272,7 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
     # Compression rotation on either side: compare lineage tips.
     return _resolve_session_lineage(owner_sid, parent_agent) in {parent_sid, _resolve_session_lineage(parent_sid, parent_agent)}
 
-def _list_payload(parent_agent: Any) -> Dict[str, Any]:
+def _list_payload(parent_agent: Any) -> dict[str, Any]:
     with _active_subagents_lock:
         records = list(_active_subagents.values())
     entries = []
@@ -291,7 +291,7 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })
-    payload: Dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
+    payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
         payload["note"] = (
             "No live subagents right now. Children that already finished "

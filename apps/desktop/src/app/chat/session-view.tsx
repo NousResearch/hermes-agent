@@ -13,6 +13,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentReasoningEffortWire,
+  $currentServiceTier,
   $messages,
   $selectedStoredSessionId,
   $turnStartedAt
@@ -58,6 +59,7 @@ export interface SessionView {
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
+  $serviceTier?: ReadableAtom<string>
   $reasoningEffort: ReadableAtom<string>
   /** The session's effort is not known yet (a resume in flight, or its agent
    *  still building), so an empty `$reasoningEffort` must not render as the
@@ -120,6 +122,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $busy: $primaryBusy,
   $cwd: primaryField<string>(state => state.cwd, $currentCwd),
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
+  $serviceTier: primaryField<string>(state => state.serviceTier, $currentServiceTier),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
   $messages: $primaryMessages,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),

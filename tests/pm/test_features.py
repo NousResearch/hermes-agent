@@ -78,11 +78,11 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     (environment / "pyvenv.cfg").write_text("home = fixture\n")
     Facts(runtime_facts_path(repo)).record_state("venv", "stamp", ["web"], environment=environment)
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
-    venv_pkg = ensure_mod.get_package("venv")
-    monkeypatch.setattr(
-        venv_pkg, "expected_stamp", lambda extras: "stamp"
-    )
-    monkeypatch.setattr(venv_pkg, "apply", lambda *args, **kwargs: pytest.fail("current frozen environment rebuilt"))
+    # Patch the class: an instance patch on the registry singleton leaves its bound method shadowing
+    # every later class-level patch in the process once monkeypatch restores it.
+    venv_cls = type(ensure_mod.get_package("venv"))
+    monkeypatch.setattr(venv_cls, "expected_stamp", lambda self, extras: "stamp")
+    monkeypatch.setattr(venv_cls, "apply", lambda *args, **kwargs: pytest.fail("current frozen environment rebuilt"))
     ensure_mod.sync_venv(["web"])
     (environment / "pyvenv.cfg").unlink()
     from pm.package import InstallError
@@ -97,7 +97,7 @@ def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(r
     that lacks whatever the foreign interpreter carried (the CI "anthropic/aiohttp vanished"
     class). Only an explicit install may create it. Exercised at the client seam every
     ensure_import caller goes through, in the in-process (is_runtime) shape."""
-    import pm.client as client
+    from pm import client
     import pm.install as ensure_mod
     from pm import paths
     from pm.package import InstallError
@@ -109,10 +109,10 @@ def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(r
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     monkeypatch.setattr(client, "is_runtime", lambda: True)
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
-    venv_pkg = ensure_mod.get_package("venv")
-    monkeypatch.setattr(venv_pkg, "expected_stamp", lambda extras, **kwargs: "stamp")
+    venv_cls = type(ensure_mod.get_package("venv"))
+    monkeypatch.setattr(venv_cls, "expected_stamp", lambda self, extras, **kwargs: "stamp")
     monkeypatch.setattr(
-        venv_pkg, "apply", lambda *args, **kwargs: pytest.fail("lazy sync built a generation for a foreign interpreter"))
+        venv_cls, "apply", lambda *args, **kwargs: pytest.fail("lazy sync built a generation for a foreign interpreter"))
 
     assert not runtime_facts_path(repo).exists()
     with pytest.raises(InstallError, match="not running from the install's dependency environment"):
@@ -120,6 +120,6 @@ def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(r
     assert not runtime_facts_path(repo).exists(), "a refused sync must not commit a selection"
 
     # The remedy the refusal names still works: an explicit install creates the selection.
-    monkeypatch.setattr(venv_pkg, "apply", lambda *args, **kwargs: {})
+    monkeypatch.setattr(venv_cls, "apply", lambda *args, **kwargs: {})
     client.sync_venv(["bedrock"], explicit=True)
     assert runtime_facts_path(repo).is_file()

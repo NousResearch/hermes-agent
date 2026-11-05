@@ -300,7 +300,7 @@ def pixel_art_video(
              "-i", os.path.join(frames_dir, "frame_%04d.png"),
              "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
              output_path],
-            check=True,
+            stdin=subprocess.DEVNULL, check=True,
         )
 
         gif_path = None
@@ -314,7 +314,7 @@ def pixel_art_video(
                  "scale=320:-1:flags=neighbor,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
                  "-loop", "0",
                  gif_path],
-                check=True,
+                stdin=subprocess.DEVNULL, check=True,
             )
 
     return output_path, gif_path

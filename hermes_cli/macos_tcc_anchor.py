@@ -256,9 +256,10 @@ def _passes_boot_gate(staged: Path, venv_dir: Path) -> bool:
         proc = subprocess.run(
             [str(staged), "-c", "import encodings, sys; print(sys.prefix)"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=30,
             env=env,
+            check=False,
         )
     except OSError as exc:
         if exc.errno in (errno.ENOENT, errno.ENOEXEC):

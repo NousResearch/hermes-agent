@@ -40,7 +40,10 @@ export interface CloudBootCascadeCandidate {
  * the cascade; without one the cascade cannot succeed and would only add a
  * hidden window and a delay in front of the same error.
  */
-export function shouldAttemptCloudBootCascade(remote: CloudBootCascadeCandidate | null | undefined, error: unknown): boolean {
+export function shouldAttemptCloudBootCascade(
+  remote: CloudBootCascadeCandidate | null | undefined,
+  error: unknown
+): boolean {
   if (!remote || typeof remote !== 'object') {
     return false
   }

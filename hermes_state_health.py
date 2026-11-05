@@ -39,7 +39,7 @@ STORAGE_OK = "ok"
 STORAGE_CORRUPT = "corrupt"
 
 _lock = threading.Lock()
-_corrupt: Dict[str, str] = {}  # resolved db path -> first error text (log only, never served)
+_corrupt: dict[str, str] = {}  # resolved db path -> first error text (log only, never served)
 
 
 def _key(db_path) -> str:

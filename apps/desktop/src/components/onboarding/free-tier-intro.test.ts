@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $desktopOnboarding, refreshOnboarding } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
+
+// The boot due check has run and no first-run onboarding is open.
+markOnboardingDecided()
 
 const READY: FreeTierStatus = {
   available: true,
@@ -23,7 +27,7 @@ function gatewayReturning(freeTier: FreeTierStatus, route = true) {
     }
 
     if (method === 'setup.runtime_check') {
-      return { free_tier: route, ok: true } as T
+      return { free_tier_route: route, ok: true } as T
     }
 
     return { provider_configured: true } as T

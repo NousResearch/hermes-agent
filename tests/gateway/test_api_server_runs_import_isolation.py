@@ -9,7 +9,7 @@ from aiohttp import web
 
 
 def test_missing_requestkey_keeps_web_module_bound():
-    import gateway.platforms.api_server_runs as api_server_runs
+    from gateway.platforms import api_server_runs
 
     stub = types.ModuleType("aiohttp.web_request")
     real = sys.modules["aiohttp.web_request"]

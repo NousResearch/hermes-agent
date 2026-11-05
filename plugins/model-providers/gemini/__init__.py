@@ -25,10 +25,16 @@ class GeminiProfile(ProviderProfile):
         raw = _build_gemini_thinking_config(context.get("model") or "", context.get("reasoning_config"))
         if not raw:
             return {}
-        if self.name == "gemini" and _is_gemini_openai_compat_base_url(context.get("base_url") or self.base_url):
+        base_url = context.get("base_url") or self.base_url
+        if self.name == "gemini" and _is_gemini_openai_compat_base_url(base_url):
             thinking_config = _snake_case_gemini_thinking_config(raw)
             return {"extra_body": {"google": {"thinking_config": thinking_config}}} if thinking_config else {}
-        return {"thinking_config": raw}
+        from agent.gemini_long_decode import long_decode_max_output_tokens
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        # Long decode exists only on native generateContent (not /openai, not proxies).
+        budget = long_decode_max_output_tokens(context.get("model") or "", context.get("reasoning_config"))
+        return {"thinking_config": raw, **({"max_output_tokens": budget} if budget and is_native_gemini_base_url(base_url) else {})}
 
 
 gemini = GeminiProfile(

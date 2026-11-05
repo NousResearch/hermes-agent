@@ -37,6 +37,8 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, config_body)
 
     from run_agent import AIAgent
@@ -167,6 +169,56 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     agent._run_budget_started_at = None
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
+
+
+@pytest.mark.parametrize(
+    "config_body,env_value,expected",
+    [
+        ("", None, 60.0),
+        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 1200.0),
+        ("", "900", 900.0),
+    ],
+)
+def test_cloud_stream_budget_preserves_explicit_deadlines(
+    monkeypatch, tmp_path, config_body, env_value, expected
+):
+    """Both stream owners cap implicit patience without changing explicit precedence."""
+    from agent import chat_completion_helpers as helpers
+
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        config_body,
+        model="deepseek/deepseek-v4-pro",
+        run_budget_seconds=900,
+    )
+    if env_value is not None:
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", env_value)
+    monkeypatch.setattr(helpers.time, "time", lambda: 1000.0)
+    agent._run_budget_started_at = 1000.0 - 800
+    payload = {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
+    call = helpers._StreamingCall(agent, payload, None)
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == expected
+
+
+def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):
+    """A short remaining run budget does not shorten local model prefill grace."""
+    from agent import chat_completion_helpers as helpers
+
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        base_url="http://127.0.0.1:11434/v1",
+        run_budget_seconds=900,
+    )
+    call = helpers._StreamingCall(agent, {"model": agent.model}, None)
+    call._resolve_stale_timeout()
+    without_clock = call._stream_stale_timeout
+    agent._run_budget_started_at = time.time() - 800
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == without_clock == 900.0
+
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────
 
@@ -307,3 +359,18 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
         session_db.close()
 
 # ── turn clock stamping ────────────────────────────────────────────────────
+
+def test_gemini_long_decode_scales_implicit_stale_timeout_by_hops(monkeypatch, tmp_path):
+    """One non-streaming stale timer spans every unary long-decode hop: an xhigh budget (262,144 tokens,
+    8 hops of 32,768) gets 8x the 600s gemini-4 floor, not 600s for the whole answer. Explicit config
+    still wins untouched, and a request without a long-decode budget is unchanged."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(tmp_path, monkeypatch, model="gemini-4-argon", provider="gemini", api_key="AQ.dummy",
+                        base_url="https://generativelanguage.googleapis.com/v1beta")
+    payload = {"messages": [{"role": "user", "content": "hi"}], "model": "gemini-4-argon"}
+    assert agent._compute_non_stream_stale_timeout(payload) == 600.0
+    long_decode = {**payload, "extra_body": {"max_output_tokens": 262_144}}
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 600.0 * 8
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "120")
+    assert agent._compute_non_stream_stale_timeout(long_decode) == 120.0

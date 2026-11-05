@@ -132,7 +132,7 @@ See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a tem
 
 Use the full checklist below when your provider needs any of the following:
 
-- OAuth or token refresh (Nous Portal, Codex, Qwen Portal, Copilot)
+- OAuth or token refresh (Nous Portal, Codex, Qwen Portal)
 - A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
 - Custom endpoint detection or multi-region probing (z.ai, Kimi)
 - A curated static model catalog or live `/models` fetch
@@ -261,9 +261,7 @@ Add a cheap / fast default aux model to `_API_KEY_PROVIDER_AUX_MODELS` if this i
 Auxiliary tasks include things like:
 
 - vision summarization
-- web extraction summarization
 - context compression summaries
-- session-search summaries
 - memory flushes
 
 If the provider has no sensible aux default, side tasks may fall back badly or use an expensive main model unexpectedly.

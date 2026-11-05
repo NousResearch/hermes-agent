@@ -27,10 +27,7 @@ export interface CloudAgentSessionBridge {
  * live (call `ensureCloudPortalSession` first); returns whether the gateway
  * session cookie landed.
  */
-async function cascadeCloudAgentSession(
-  desktop: CloudAgentSessionBridge,
-  url: string
-): Promise<boolean> {
+async function cascadeCloudAgentSession(desktop: CloudAgentSessionBridge, url: string): Promise<boolean> {
   const result = await desktop.cloud!.agentSignIn(url)
 
   return result.connected === true

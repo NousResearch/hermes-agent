@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 from prompt_toolkit.utils import get_cwidth
 
+from agent.i18n import t
+
 
 def _wait(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
@@ -32,20 +34,23 @@ def test_dock_paints_processes_under_agents_and_retires_finished_rows(monkeypatc
         assert dock.refresh()
         text = dock.dock_text(columns=100, rows=30)
         lines = text.splitlines()
-        assert 'Subagents · 1 live' in lines[0]
+        assert t('cli.subagents.subagents_heading', count=1) in lines[0]
         agents_at = next(i for i, line in enumerate(lines) if 'Check module' in line)
-        procs_at = next(i for i, line in enumerate(lines) if 'Processes · 1 running · 1 done' in line)
+        summary = ' · '.join((t('cli.subagents.count_running', count=1), t('cli.subagents.count_done', count=1)))
+        procs_at = next(i for i, line in enumerate(lines)
+                        if t('cli.subagents.processes_heading', summary=summary, controls='') in line)
         assert agents_at < procs_at
-        assert any('⚙ sleep 30' in line and 'starting' in line for line in lines)
-        assert any('✘ echo hello-dock; exit 3 · exit 3' in line for line in lines)
+        assert any('⚙ sleep 30' in line and t('cli.dock.starting') in line for line in lines)
+        assert any(f"✘ echo hello-dock; exit 3 · {t('cli.dock.exit_code', code=3)}" in line for line in lines)
         assert all(get_cwidth(line) <= 100 for line in lines)
         # Every viewport keeps at least one row of each block.
         narrow = dock.dock_text(columns=40, rows=14).splitlines()
-        assert any('Check module' in line for line in narrow) and any('Processes' in line for line in narrow)
+        assert any('Check module' in line for line in narrow)
+        assert any(t('cli.subagents.title_processes') in line for line in narrow)
         assert all(get_cwidth(line) <= 40 for line in narrow)
         dock.collapsed = True
         assert dock.dock_text(columns=100, rows=30).count('\n') == 0
-        assert '1 live · 1 proc' in dock.dock_text(columns=100, rows=30)
+        assert f"{t('cli.subagents.count_live', count=1)} · {t('cli.subagents.count_procs_one', count=1)}" in dock.dock_text(columns=100, rows=30)
         # Finished rows leave after the retention window; running ones stay.
         later = cli_process_dock.process_rows(time.time() + cli_process_dock.RETAIN_SECONDS + 1)
         assert [r['id'] for r in later] == [slow_id]

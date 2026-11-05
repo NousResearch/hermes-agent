@@ -1,7 +1,7 @@
 name: sentry
 title: Sentry
 repo: https://github.com/YAN-XBT/hermes-sentry
-sha: 564f6a8ae35cc244ac3815052da6cd4f92a0127b
+sha: 671c3e565ab76fd353d80704e055d24698832107
 version: "0.1.0"
 description: >-
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came
@@ -15,7 +15,11 @@ description: >-
   is evaluated as the call it really makes: tool_call, execute_code and process_manage are unwrapped
   to what they actually run, and taint is copied into subagents.
   Eight rules, each tunable to allow/monitor/escalate/block; a receipts ledger; a `hermes sentry`
-  CLI with a dry-run policy tester. Disclosure — no network access, no credentials, no
+  CLI with a dry-run policy tester. Ships a Desktop half in the same package: a pane, a status-bar
+  chip and ⌘K commands showing live taint state, the receipt feed and per-rule actions, backed by
+  `/api/plugins/sentry/`. The pane changes a rule on the user's click; a tool call that tries the
+  same thing — the CLI, `config.yaml`, or that API over loopback — is refused. Disclosure — no
+  network access, no credentials, no
   python dependencies and no core overrides: it reads tool arguments and results in-process, writes
   its decisions to a local SQLite ledger under the plugin's own data dir, and reads an optional
   policy file there. Nothing needs configuring; `mode: monitor` records without interfering and

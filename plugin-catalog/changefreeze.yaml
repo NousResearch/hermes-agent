@@ -1,6 +1,6 @@
 name: changefreeze
 repo: https://github.com/arults/hermes-changefreeze
-sha: 4bc0dc432caecbec378c7197c20d4514a51d756e
+sha: 6bf3c374238dd7c92711f8e0bdc98a853342ad51
 description: "An AI helper can ship code at a bad time and break something that is live. ChangeFreeze lets you set a quiet window. During that window, Hermes asks you before it ships. Everyday work still runs. When the window ends, shipping continues again. Local only — no off-machine data."
 maintainer: arults
 tier: community

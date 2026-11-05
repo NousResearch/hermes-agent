@@ -390,7 +390,10 @@ class _CuaDriverSession:
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
         return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))
+                # The stdio child exited (driver upgraded / daemon restarted): the mcp client surfaces it as
+                # McpError("Connection closed"), and without a reconnect every later call fails the same way.
+                or (name == "McpError" and "connection closed" in str(exc).lower()))
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:

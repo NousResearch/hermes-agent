@@ -1,0 +1,39 @@
+name: fashion-design
+repo: https://github.com/priticolours/hermes-fashion-design-plugin
+sha: fe9704320234c8676c66ca374a94bb1909bf5905
+subdir: ""
+description: >
+  Fashion design workspace for Hermes Agent: pattern drafting math, size
+  grading across a size range, fabric yardage estimation, and manufacturing
+  note generation — everything from conversation.
+maintainer: Priticolours
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/priticolours/hermes-fashion-design-plugin/main/screenshots/design-list.png
+  - https://raw.githubusercontent.com/priticolours/hermes-fashion-design-plugin/main/screenshots/pattern-svg.png
+  - https://raw.githubusercontent.com/priticolours/hermes-fashion-design-plugin/main/screenshots/size-sheet.png
+readme: true
+platforms: [macos]
+title: "Fashion Design"
+capabilities:
+  provides_tools:
+    - design_create
+    - design_load
+    - design_list
+    - design_delete
+    - measurement_add
+    - measurement_list
+    - pattern_draft
+    - pattern_svg
+    - size_sheet
+    - size_sheet_preview
+    - fabric_calc
+    - manufacturing_note
+    - design_export
+  provides_hooks:
+    - post_tool_call
+  requires_env:
+    - DESIGN_NOTEBOOK_TOKEN

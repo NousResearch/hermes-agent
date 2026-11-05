@@ -606,7 +606,7 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
 
 _PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
 
-def normalize_provider_tool_call_ids(tool_calls: list) -> list:
+def normalize_provider_tool_call_ids(tool_calls: list, provider_data: Any = None) -> list:
     """Rewrite known provider ids when a parallel batch would be rejected on replay.
 
     The digest is deterministic so persisted messages and prompt-cache prefixes remain
@@ -619,6 +619,7 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
         return tool_calls
     logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    renamed: dict[str, str] = {}
     for tc in tool_calls:
         # Rewrite each field's call half separately: ``id`` may carry the response-item
         # half while ``call_id`` is bare, and that half must survive.
@@ -633,7 +634,14 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
             # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
             # and errors=replace would collapse distinct ids onto one digest.
             digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            renamed[primary] = f"call_{digest}"
             _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
+    # Signed-thinking turns replay from this sidecar instead of tool_calls. A stale id here
+    # orphans the turn's results, and the converter strips them before the request is sent.
+    blocks = provider_data.get("anthropic_content_blocks") if isinstance(provider_data, dict) else None
+    for block in blocks or ():
+        if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") in renamed:
+            block["id"] = renamed[block["id"]]
     return tool_calls
 
 

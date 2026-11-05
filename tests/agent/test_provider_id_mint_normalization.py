@@ -172,3 +172,49 @@ def test_unencodable_provider_ids_do_not_crash_and_stay_distinct():
 
     assert all(i.startswith("call_") for i in ids)
     assert len(set(ids)) == 2
+
+
+def test_parallel_batch_with_signed_thinking_keeps_results_on_anthropic_replay():
+    from types import SimpleNamespace
+
+    from agent.anthropic_message_convert import convert_messages_to_anthropic
+    from agent.message_sanitization import normalize_provider_tool_call_ids
+
+    raw_ids = ["chatcmpl-tool-aaa", "chatcmpl-tool-bbb"]
+    calls = [
+        SimpleNamespace(id=raw, call_id=None, function=SimpleNamespace(name="read_file", arguments="{}"))
+        for raw in raw_ids
+    ]
+    thinking = {"type": "thinking", "thinking": "t", "signature": "s"}
+    provider_data = {
+        "anthropic_content_blocks": [
+            thinking,
+            *({"type": "tool_use", "id": raw, "name": "read_file", "input": {}} for raw in raw_ids),
+        ]
+    }
+
+    normalize_provider_tool_call_ids(calls, provider_data)
+
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "anthropic_content_blocks": provider_data["anthropic_content_blocks"],
+        "reasoning_details": [thinking],
+        "tool_calls": [
+            {"id": c.id, "type": "function", "function": {"name": "read_file", "arguments": "{}"}} for c in calls
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "go"},
+        assistant,
+        *({"role": "tool", "tool_call_id": c.id, "content": "RESULT"} for c in calls),
+        {"role": "user", "content": "next"},
+    ]
+
+    _, converted = convert_messages_to_anthropic(
+        messages, base_url="https://opencode.ai/zen/go", model="minimax-m3.1-flash"
+    )
+
+    block_types = [b["type"] for m in converted if isinstance(m["content"], list) for b in m["content"]]
+    assert block_types.count("tool_use") == 2
+    assert block_types.count("tool_result") == 2

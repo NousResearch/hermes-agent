@@ -532,8 +532,11 @@ class GatewayTurnPersistenceMixin:
             # locks the chat — the "stuck session" report. The agent flushed the user row at turn start;
             # drop that turn now that the lease is released (soft-delete, the same rewind /undo uses) so
             # the next turn rebuilds from a clean transcript. The refusal was already delivered to the
-            # user. Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
-            await self._hmwa_drop_content_policy_refused_turn(sid, session_key)
+            # user. Only when the agent persisted the turn (``agent_persisted``) is there a durable row to
+            # drop; a non-persisting runtime wrote nothing, so rewinding would hit a prior accepted turn.
+            # Mirrors the context_overflow no-grow rule (#1630); only a non-retryable block drops.
+            if agent_persisted:
+                await self._hmwa_drop_content_policy_refused_turn(sid, session_key)
         else:
             if not history and source.platform != Platform.LOCAL:
                 # Fresh session: the tool definitions (as sent in the API request) make the transcript
@@ -611,13 +614,22 @@ class GatewayTurnPersistenceMixin:
         rewind ``/undo`` uses — and evict the cached agent so the next turn rebuilds from the
         active-only transcript. Otherwise the cached agent keeps the refused turn in its in-memory
         history and the deterministic filter re-refuses every later message (the "stuck session"
-        report). The refusal was already delivered to the user. Best-effort: a failure here must
-        never crash turn teardown.
+        report). The refusal was already delivered to the user.
+
+        ``rewind_session`` reports failure by returning ``None`` (it swallows its own errors), so only
+        evict on a confirmed drop and warn otherwise — a silently-failed un-stick leaves the chat
+        locked, and that is the one outcome worth a visible signal. Dropping un-sticks the chat; the
+        ``/undo`` guidance in the refusal is the user-facing fallback when it could not.
         """
         try:
-            await self.async_session_store.rewind_session(sid, 1)
+            outcome = await self.async_session_store.rewind_session(sid, 1)
         except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash turn teardown
-            logger.debug("content-policy refusal: could not drop the refused turn for %s: %s", sid, e)
+            logger.warning("content-policy refusal: dropping the refused turn for %s raised: %s", sid, e)
+            return
+        if outcome is None:
+            logger.warning(
+                "content-policy refusal: could not drop the refused turn for %s (rewind found none); "
+                "the chat may stay locked until the user runs /undo", sid)
             return
         with suppress(Exception):
             self._evict_cached_agent(session_key)

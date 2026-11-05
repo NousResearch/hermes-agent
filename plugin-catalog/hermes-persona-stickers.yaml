@@ -1,0 +1,25 @@
+name: hermes-persona-stickers
+title: Persona Stickers
+repo: https://github.com/EricBlack47/hermes-persona-stickers
+sha: 20ec01721598cc335125a80be66f35fa9951de03
+description: >-
+  Instant persona-aware emotion reaction stickers for Hermes: stamps pre-baked
+  chibi bases with comic captions in about 13 ms, falls back to a pure Pillow
+  vector path when the pool misses, and can optionally forge new emotion bases
+  via a local ComfyUI SDXL-Lightning endpoint. Slash command /sticker and tool
+  generate_persona_sticker return MEDIA:<path> PNG/WebP. Disclosure: writes
+  sticker PNGs under ~/.hermes/stickers/; optional HTTP to the configured
+  ComfyUI URL (default http://127.0.0.1:8188) only when mode needs offline
+  forge; no third-party network, no telemetry, no self-update, no shell
+  commands; ships pre-baked RGBA persona assets in-repo.
+maintainer: EricBlack47
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/EricBlack47/hermes-persona-stickers#readme
+version: "1.0.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [generate_persona_sticker]
+  provides_hooks: [post_llm_call]
+  requires_env: []

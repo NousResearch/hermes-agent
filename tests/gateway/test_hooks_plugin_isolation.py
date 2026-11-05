@@ -1,7 +1,9 @@
-"""Gateway HOOK.yaml handlers load the same way under every ``plugins.isolation`` mode.
+"""Gateway HOOK.yaml handlers currently load the same way under every ``plugins.isolation`` mode.
 
-The hook loader has never checked ``plugins.isolation``: a profile's ``hooks/<name>/handler.py`` is
-imported into the gateway process under ``host`` exactly as under ``in_process``.
+This records today's behaviour, not the intended contract: the hook loader has never checked
+``plugins.isolation``, so a profile's ``hooks/<name>/handler.py`` is imported into the gateway
+process under ``host`` exactly as under ``in_process``. Keeping hooks out of the process under
+``host`` is a follow-up; it should flip the ``host`` row here.
 """
 
 import sys
@@ -45,3 +47,18 @@ async def test_user_hook_handler_loads_in_the_gateway_under_every_isolation_mode
         assert await reg.emit_collect("agent:start", {}) == ["user-hook"]
     finally:
         sys.modules.pop(MODULE, None)
+
+
+def test_a_handler_that_raises_is_reported_and_not_left_in_sys_modules(tmp_path, capsys):
+    hook_dir = tmp_path / "hooks" / "isoprobe"
+    hook_dir.mkdir(parents=True)
+    (hook_dir / "HOOK.yaml").write_text("name: isoprobe\nevents: [\"agent:start\"]\n", encoding="utf-8")
+    (hook_dir / "handler.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+    sys.modules.pop(MODULE, None)
+    reg = HookRegistry()
+    with patch("gateway.hooks.HOOKS_DIR", tmp_path / "hooks"):
+        reg.discover_and_load()
+
+    assert "[hooks] Error loading hook isoprobe: boom" in capsys.readouterr().out
+    assert MODULE not in sys.modules
+    assert reg.loaded_hooks == []

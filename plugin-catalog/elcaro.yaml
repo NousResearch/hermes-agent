@@ -4,7 +4,7 @@
 name: elcaro
 title: Elcaro
 repo: https://github.com/udirobert/elcaro
-sha: c80cc00954a8a3613ac0b1669a53d8664747b65b  # pragma: allowlist secret — git SHA pin, required by catalog rules
+sha: c5966a89476fc4a23c9ba3d7e4bf73baa4284612  # pragma: allowlist secret — git SHA pin, required by catalog rules
 subdir: hermes-plugin
 version: "1.0.0"
 description: >-

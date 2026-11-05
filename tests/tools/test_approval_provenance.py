@@ -94,3 +94,19 @@ def test_session_grant_left_by_a_withdrawn_always_answer_is_not_called_a_session
     assert verdict.note == (
         "Command was flagged (world/other-writable permissions) and auto-approved by "
         "an approval the user gave earlier in this session.")
+
+
+@pytest.mark.parametrize("guard", [check_all_command_guards, check_dangerous_command])
+def test_label_is_the_grant_the_check_accepted_even_if_revoked_after(guard, monkeypatch):
+    writable = "world/other-writable permissions"
+    approve_permanent(writable)
+    real_check = approval_module._pending_findings
+
+    def check_then_revoke(*args):
+        result = real_check(*args)
+        approval_module._permanent_approved.discard(writable)  # concurrent revocation after acceptance
+        return result
+
+    monkeypatch.setattr(approval_module, "_pending_findings", check_then_revoke)
+    result = guard("chmod 777 build-out", "local", approval_callback=_no_prompt)
+    assert result["pre_approved"] == [{"description": writable, "scope": "permanent"}]

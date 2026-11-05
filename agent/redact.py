@@ -795,23 +795,41 @@ def _compile_prefix_matcher(patterns: list) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
 
 
-def _compile_prefix_after_sep_matcher(patterns: list) -> re.Pattern[str]:
-    """Known-prefix credentials glued to an identifier by ``-``/``_`` (``backup-sk-…``, ``x-ghp_…``),
-    which the matcher above rejects so that ``scikit-learn`` stays whole. The match is kept only
-    when _is_opaque_prefixed_token says the body is opaque (#147240)."""
-    return re.compile(r"(?<=[A-Za-z0-9][-_])(" + "|".join(patterns) + r")(?![A-Za-z0-9_-])")
+def _compile_prefix_sub_matcher(patterns: list) -> re.Pattern[str]:
+    """_PREFIX_RE for the masking pass, also admitting a key glued to an identifier by ``-``/``_``
+    (``backup-sk-…``, ``x-ghp_…``), which _PREFIX_RE rejects so ``scikit-learn`` stays whole. One
+    fixed-width lookbehind keeps main's single scan; _mask_prefix_match masks a glued match only
+    when its body is opaque, so ``backup-sk-learn`` stays whole too (#147240)."""
+    # Branches grouped by their literal first char (every pattern opens on one, see
+    # register_redaction_patterns): admitting ``-``/``_`` before a key makes every separator a
+    # candidate, and a flat 60-way alternation per candidate doubled the cost of a ``_ghp_`` flood.
+    # Groups are disjoint by first char, so leftmost-first match order is unchanged.
+    by_first: dict = {}
+    for pattern in patterns:
+        by_first.setdefault(pattern[0], []).append(pattern[1:])
+    body = "|".join(f"{re.escape(c)}(?:{'|'.join(rest)})" for c, rest in by_first.items())
+    return re.compile(r"(?<![A-Za-z0-9])(" + body + r")(?![A-Za-z0-9_-])")
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
-_PREFIX_AFTER_SEP_RE = _compile_prefix_after_sep_matcher(_PREFIX_PATTERNS)
+_PREFIX_SUB_RE = _compile_prefix_sub_matcher(_PREFIX_PATTERNS)
 # A real key body has a 16+ char run with no separator mixing two of lower/upper/digit;
 # ``sk-prod-deployment-01`` and ``fc-feature-flags-v2`` do not.
-_OPAQUE_TOKEN_RUN_RE = re.compile(
-    r"(?=[A-Za-z0-9]*?[0-9])(?=[A-Za-z0-9]*?[A-Za-z])[A-Za-z0-9]{16,}|(?=[a-z0-9]*?[A-Z])(?=[A-Z0-9]*?[a-z])[A-Za-z0-9]{16,}")
+_LONG_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]{16,}+")
 
 
 def _is_opaque_prefixed_token(token: str) -> bool:
-    return any(_OPAQUE_TOKEN_RUN_RE.fullmatch(run) for run in re.split(r"[^A-Za-z0-9]+", token))
+    for run in _LONG_ALNUM_RUN_RE.finditer(token):
+        run = run.group(0)
+        if (run.isalpha() and (run.islower() or run.isupper())) or run.isdigit():
+            continue
+        return True
+    return False
+
+
+def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
+    glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
+    return m.group(0) if glued and not _is_opaque_prefixed_token(m.group(1)) else mask(m.group(1))
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
@@ -1427,10 +1445,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # runs by first matching on a control-stripped copy, then re-masking the corresponding span in the
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
-        text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
-        if "-" in text or "_" in text:
-            text = _PREFIX_AFTER_SEP_RE.sub(
-                lambda m: _prefix_sub(m.group(1)) if _is_opaque_prefixed_token(m.group(1)) else m.group(0), text)
+        text = _PREFIX_SUB_RE.sub(lambda m: _mask_prefix_match(m, _prefix_sub), text)
 
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
@@ -1808,10 +1823,10 @@ def _plugin_patterns() -> list:
 def _rebuild_prefix_matcher() -> None:
     """Recompile the prefix alternation and pre-screen substrings; callers read the
     module globals at call time, so the swap propagates immediately."""
-    global _PREFIX_RE, _PREFIX_AFTER_SEP_RE, _PREFIX_SUBSTRINGS
+    global _PREFIX_RE, _PREFIX_SUB_RE, _PREFIX_SUBSTRINGS
     combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = _compile_prefix_matcher(combined)
-    _PREFIX_AFTER_SEP_RE = _compile_prefix_after_sep_matcher(combined)
+    _PREFIX_SUB_RE = _compile_prefix_sub_matcher(combined)
     _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in combined)
 
 

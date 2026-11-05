@@ -84,7 +84,8 @@ def test_groups_state_shows_only_confirmed_active_recovered_peer_progress(tmp_pa
     turn, peer, info, state = _recovering_peer(tmp_path, monkeypatch)
     [activity] = state()["member_activity"]
     assert activity == {"member_id": "member-peer", "status": "running", "thread_id": "thread-1",
-                        "round_index": 0, "started_at": 100.0, "tool": "terminal", "progress_at": 1234.5}
+                        # A retried attempt is timed from the retry (P2-2), not its first start at 100.
+                        "round_index": 0, "started_at": 108.0, "tool": "terminal", "progress_at": 1234.5}
     assert state()["working"] is True and state()["counts"] == {"indeterminate": 1}
     for update in ({"active": False}, {"active": True, "execution_generation": 99}):
         info.update(update)

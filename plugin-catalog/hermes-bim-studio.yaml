@@ -1,6 +1,6 @@
 name: hermes-bim-studio
 repo: https://github.com/stupidburgers/hermes-bim-studio
-sha: "97b6fa202bf41578d655f4bc6cecf3305a415ff6"
+sha: "98c14956e75e6bae2235a3db70b95100dba0742b"
 subdir: plugin
 description: "Building Information Modeling (BIM) inspection, deterministic 5D quantity takeoff with Excel and SHA-256 audit trail, and interactive 3D WebGL building model viewer for AEC engineering. Disclosure: 3D viewer artifact references three.js from CDN (cdnjs/jsdelivr) at browser render time."
 maintainer: stupidburgers

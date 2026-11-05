@@ -2,8 +2,8 @@
 cron lifecycle_guard) that false-positive on heredoc *bodies*. Stripping every body is unsafe the
 other way (a fake ``<<`` in quotes can swallow an operator; unquoted bodies expand; ``bash <<'EOF'``
 executes), so a body is masked ONLY when every delimiter is quoted, every heredoc has an exact
-terminator line, the owning simple command is an allowlisted non-shell interpreter, and no list
-operator follows the heredoc. Otherwise the command is returned untouched: a false positive is
+terminator line, the owning simple command is an allowlisted non-shell interpreter, and no
+pipe/background/conditional operator follows the heredoc. Otherwise the command is returned untouched: a false positive is
 acceptable, hiding shell syntax from a guard is not.
 Masked bodies keep their newline count (re.MULTILINE)."""
 
@@ -112,8 +112,10 @@ def _scan_heredoc_command_unit(command: str, start: int):
     """Scan one logical command.
 
     Return ``(end, specs, unknown_operator, post_heredoc_list_operator, owner_start)``.
-    List operators before the first heredoc select the simple command that owns it. A list
-    operator after a heredoc keeps the body visible because another command may consume it.
+    List operators before the first heredoc select the simple command that owns it. After a
+    heredoc, ``;`` only ends the owning command (the body still belongs to it); a pipe,
+    background/conditional operator, or a second heredoc in a later command keeps the body
+    visible because the owner is no longer unambiguous.
     """
     cursor = start
     quote = None
@@ -122,6 +124,7 @@ def _scan_heredoc_command_unit(command: str, start: int):
     unknown_operator = False
     post_heredoc_list_operator = False
     owner_start = start
+    owner_closed = False
     while cursor < len(command):
         char = command[cursor]
         if char == "\n" and (comment or quote is None):
@@ -148,12 +151,16 @@ def _scan_heredoc_command_unit(command: str, start: int):
                 cursor += 2
             else:
                 cursor, delimiter, strip_tabs, quoted = parsed
+                if owner_closed:
+                    post_heredoc_list_operator = True
                 specs.append((delimiter, strip_tabs, quoted))
         else:
             if char in ";|&" and not (
                 char == "&" and _is_fd_redirect_ampersand(command, cursor)
             ):
-                if specs:
+                if specs and char == ";":
+                    owner_closed = True
+                elif specs:
                     post_heredoc_list_operator = True
                 else:
                     owner_start = cursor + 1
@@ -177,13 +184,14 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def _inert_heredoc_ranges(command: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return inert ranges and the subset fed to Python (see module docstring)."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
-        return command
+        return [], []
     last_opener_index = command.rfind("<<")
     ranges: list[tuple[int, int]] = []
+    python_ranges: list[tuple[int, int]] = []
     command_start = 0
     while command_start <= last_opener_index:
         (
@@ -194,20 +202,20 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             owner_start,
         ) = _scan_heredoc_command_unit(command, command_start)
         if unknown_operator:
-            return command
+            return [], []
         if not specs:
             if command_end >= len(command):
                 break
             command_start = command_end + 1
             continue
         if command_end >= len(command):
-            return command  # opener with no body line: unterminated — leave visible
+            return [], []  # opener with no body line: unterminated — leave visible
         body_cursor = command_end + 1
         body_ranges: list[tuple[int, int]] = []
         for delimiter, strip_tabs, _quoted in specs:
             close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
             if close_end is None:
-                return command  # unterminated
+                return [], []  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
         if (
@@ -216,12 +224,27 @@ def strip_inert_heredoc_bodies(command: str) -> str:
         ):
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
             masked_owner = _mask_simple_quotes(command[owner_start:command_end])
+            consumer_match = _INERT_HEREDOC_CONSUMER_RE.search(masked_owner)
             if not any(
                 marker in masked_opener
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
-            ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
+            ) and consumer_match:
                 ranges.extend(body_ranges)
+                if re.search(r"(?i)python(?:3(?:\.\d+)*)?$", consumer_match.group(0)):
+                    python_ranges.extend(body_ranges)
         command_start = body_cursor
+    return ranges, python_ranges
+
+
+def inert_python_heredoc_bodies(command: str) -> tuple[str, ...]:
+    """Return safely bounded Python stdin source for interpreter-level scanning."""
+    _ranges, python_ranges = _inert_heredoc_ranges(command)
+    return tuple(command[start:end] for start, end in python_ranges)
+
+
+def strip_inert_heredoc_bodies(command: str) -> str:
+    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+    ranges, _python_ranges = _inert_heredoc_ranges(command)
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.
     parts: list[str] = []
     previous = 0

@@ -88,7 +88,7 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
     monkeypatch.setattr(main, "_finalize_update_output", lambda token: None)
     monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: update_inventory.UpdatePlan())
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: reached.append("backup"))
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: reached.append("pause"))
+    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda *_, **__: reached.append("pause"))
     monkeypatch.setattr(main, "_desktop_packaged_executable", lambda root: None)
     monkeypatch.setattr(main, "_desktop_dist_exists", lambda root: False)
 

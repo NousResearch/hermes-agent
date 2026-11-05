@@ -14,7 +14,6 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_mutations import mutate_session
-    from hermes_state_local import local_receipt
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('alpha',))
@@ -35,14 +34,14 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
                 result = await mutate_session(authority, actor, ref, dict(
                     session_id=ref.session_id, request_id='branch', expected_revision=0,
                     expected_generation=0, operation='branch', payload={}))
-            parent = local_receipt(authority.db, ref.session_id)
-            child = local_receipt(authority.db, result['branched_session_id'])
+            parent = authority.persistence.bindings.receipt(ref.session_id)
+            child = authority.persistence.bindings.receipt(result['branched_session_id'])
             # Same owning profile on both halves of the identity: the stored origin and the route.
-            assert child['entry']['origin'].get('profile') == parent['entry']['origin'].get('profile'), name
-            assert child['route'].split(':')[:2] == parent['route'].split(':')[:2], name
-            branched[name] = (home, result['branched_session_id'], child['route'], parent['entry']['origin'])
+            assert child.entry['origin'].get('profile') == parent.entry['origin'].get('profile'), name
+            assert child.route.split(':')[:2] == parent.route.split(':')[:2], name
+            branched[name] = (home, result['branched_session_id'], child.route, parent.entry['origin'])
         for authority in list(first.session_authorities):
-            authority.db.close()
+            authority.runner.session_store.close_all_db_handles()
 
         second = _runner(root, homes)  # restart: fresh authorities over the same state.db files
         runners.append(second)
@@ -58,6 +57,6 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
     finally:
         for runner in runners:
             for authority in list(getattr(runner, 'session_authorities', None) or []):
-                authority.db.close()
+                authority.runner.session_store.close_all_db_handles()
         for _, home in homes:
             process_ownership.release(home)

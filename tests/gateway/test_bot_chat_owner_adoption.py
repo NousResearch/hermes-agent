@@ -4,11 +4,19 @@ its own chat but never moves the owner's aside."""
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway import test_peer_dm_bot_chat_headless as peer
 from tests.gateway.test_bot_chat_unadoptable_local_title import _deliver
 from tests.waiting import async_wait_until
 
 headless = peer.headless
+
+
+def _session_ids(db):
+    with raw_holder(db)._read_ctx() as conn:
+        return [row[0] for row in conn.execute("SELECT id FROM sessions")]
 
 
 @pytest.mark.parametrize("open_first", [False, True], ids=["delivery-first", "open-first"])
@@ -28,13 +36,12 @@ async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
     import gateway.session_worker_reservation as reservation
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
-    db = headless.authority.db
+    db = headless.authority.persistence
     sid = "existing-bot-chat"
-    db.create_session(sid, source=source, user_id=stamp)
-    db.set_session_title(sid, "Bot Chat")
-    db.append_message(sid, "user", "existing project context")
-    db.append_message(sid, "assistant", "existing answer")
-    history = db.get_messages_as_conversation(sid)
+    seed_session(db, sid, source, user_id=stamp, title="Bot Chat")
+    seed_messages(db, sid, {"role": "user", "content": "existing project context"},
+                  {"role": "assistant", "content": "existing answer"})
+    history = conversation(db, sid)
     owner = peer._local_owner(headless.authority)
     try:
         if open_first:
@@ -53,9 +60,9 @@ async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
         assert response.status == 200, body
         assert body["message"]["content"] == "pong"
         assert [entry[0] for entry in headless.executed] == [sid, sid]
-        assert db.get_session_by_title("Bot Chat")["id"] == sid
-        assert db.get_messages_as_conversation(sid)[: len(history)] == history
-        assert [row[0] for row in db._read_all("SELECT id FROM sessions")] == [sid]
+        assert db.sessions.get_by_title("Bot Chat").session_id == sid
+        assert conversation(db, sid)[: len(history)] == history
+        assert _session_ids(db) == [sid]
     finally:
         await owner.close()
 
@@ -71,29 +78,29 @@ async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
         release_active_session,
         try_acquire_active_session,
     )
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
+    from persistence_assembly import store_location
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
-    db = headless.authority.db
+    db = headless.authority.persistence
     sid = "busy-existing-bot-chat"
-    db.create_session(sid, source="tui", user_id="basic:alice")
-    db.set_session_title(sid, "Bot Chat")
-    db.append_message(sid, "assistant", "existing project context")
+    seed_session(db, sid, "tui", user_id="basic:alice", title="Bot Chat")
+    seed_messages(db, sid, {"role": "assistant", "content": "existing project context"})
     lease, refusal = try_acquire_active_session(
         session_id=sid,
         surface="desktop",
-        registry_home=Path(db.db_path).parent,
+        registry_home=Path(store_location(db.scope)).parent,
         config={},
     )
     assert lease is not None, refusal
     try:
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             await _deliver(headless.authority, "b")
         assert refused.value.reason == "runtime_coordination_required"
-        assert db.get_session_by_title("Bot Chat")["id"] == sid
+        assert db.sessions.get_by_title("Bot Chat").session_id == sid
         assert not headless.executed
-        assert not db.get_session(sid)["chat_id"]
-        assert [row[0] for row in db._read_all("SELECT id FROM sessions")] == [sid]
+        assert not session_row(db, sid)["chat_id"]
+        assert _session_ids(db) == [sid]
     finally:
         release_active_session(lease)
     delivered = await _deliver(headless.authority, "c")
@@ -102,7 +109,7 @@ async def test_owner_login_chat_is_not_replaced_while_its_legacy_writer_is_live(
         lambda: len(headless.executed) == 1, timeout=10, interval=0.05
     )
     assert (
-        db.get_messages_as_conversation(sid)[0]["content"] == "existing project context"
+        conversation(db, sid)[0]["content"] == "existing project context"
     )
 
 
@@ -122,19 +129,18 @@ async def test_a_forwarded_login_delivers_into_its_own_chat_in_both_orders(
     import gateway.session_worker_reservation as reservation
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
-    db = headless.authority.db
+    db = headless.authority.persistence
     sid = "forwarded-bot-chat"
-    db.create_session(sid, source="tui", user_id=stamp)
-    db.set_session_title(sid, "Bot Chat")
-    db.append_message(sid, "user", "existing project context")
+    seed_session(db, sid, "tui", user_id=stamp, title="Bot Chat")
+    seed_messages(db, sid, {"role": "user", "content": "existing project context"})
     login = peer._local_owner(headless.authority, FORWARDED)
     try:
         if open_first:
             await peer._rpc(login, "session.resume", session_id=sid)
         record = await _deliver(headless.authority, "4", connection=login)
         assert record["session_id"] == sid
-        assert db.get_session_by_title("Bot Chat")["id"] == sid
-        assert [row[0] for row in db._read_all("SELECT id FROM sessions")] == [sid]
+        assert db.sessions.get_by_title("Bot Chat").session_id == sid
+        assert _session_ids(db) == [sid]
     finally:
         await login.close()
 
@@ -144,20 +150,19 @@ async def test_a_forwarded_login_never_moves_the_owners_chat_aside(headless, mon
     # The owner's own Bot Chat stays where it is when a forwarded login that cannot adopt it
     # delivers: that delivery is refused, the owner's history keeps the title.
     import gateway.session_worker_reservation as reservation
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
-    db = headless.authority.db
+    db = headless.authority.persistence
     sid = "owner-bot-chat"
-    db.create_session(sid, source="tui", user_id="basic:alice")
-    db.set_session_title(sid, "Bot Chat")
-    db.append_message(sid, "user", "existing project context")
+    seed_session(db, sid, "tui", user_id="basic:alice", title="Bot Chat")
+    seed_messages(db, sid, {"role": "user", "content": "existing project context"})
     login = peer._local_owner(headless.authority, FORWARDED)
     try:
-        with pytest.raises(RuntimeStoreError) as refused:
+        with pytest.raises(AuthorityRefusal) as refused:
             await _deliver(headless.authority, "5", connection=login)
         assert refused.value.reason == "not_found"
-        assert db.get_session_by_title("Bot Chat")["id"] == sid
-        assert [row[0] for row in db._read_all("SELECT id FROM sessions")] == [sid]
+        assert db.sessions.get_by_title("Bot Chat").session_id == sid
+        assert _session_ids(db) == [sid]
     finally:
         await login.close()

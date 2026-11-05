@@ -28,18 +28,17 @@ from __future__ import annotations
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
+from persistence.conversation.messages import NewMessage, ReplaceMode
+from tests.fixtures.storage_seed import seed_session
 
 
 # ---------------------------------------------------------------------------
 # Behavioral contract: reset yields a clean next-turn transcript
 # ---------------------------------------------------------------------------
 def _make_store(tmp_path):
-    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
-    # Isolate the SQLite transcript store so we exercise per-session_id
-    # transcripts without touching the developer's real state.db.
-    store._db = SessionDB(db_path=tmp_path / "state.db")
-    return store
+    # The store keeps per-session_id transcripts in the test HERMES_HOME's
+    # state.db, never the developer's real one.
+    return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
 
 
 def _make_source():
@@ -73,10 +72,10 @@ class TestAutoResetLoadsCleanContext:
         entry = store.get_or_create_session(source)
         session_key = entry.session_key
         bloated_sid = entry.session_id
-        store._db.create_session(
-            session_id=bloated_sid, source="telegram", user_id="u1"
+        seed_session(store.persistence, bloated_sid, "telegram", user_id="u1")
+        store.persistence.messages.replace_transcript(
+            bloated_sid, [NewMessage.from_live(m) for m in _bloat(120)], ReplaceMode.DESTRUCTIVE
         )
-        store._db.replace_messages(bloated_sid, _bloat(120))
         assert len(store.load_transcript(bloated_sid)) == 120  # precondition
 
         new_entry = store.reset_session(session_key)

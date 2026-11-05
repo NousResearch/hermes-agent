@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence_assembly import profile_scope
+
 
 def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -16,7 +18,7 @@ def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
                      'base_url': 'http://127.0.0.1:1234/v1'}}
     (home / 'config.yaml').write_text(json.dumps(cfg))
     def owner(path=home, profile='owned', instance='new'):
-        return SimpleNamespace(db=SimpleNamespace(db_path=path / 'state.db'),
+        return SimpleNamespace(db=SimpleNamespace(db_path=path / 'state.db'), persistence=SimpleNamespace(scope=profile_scope(home=path)),
                                profile_id=profile, instance_id=instance, epoch=2)
     private = {}
     policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
@@ -24,7 +26,7 @@ def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
     assert policy.config(owner())['model']['api_key'] == cfg['model']['api_key']
     assert cfg['model']['api_key'] not in json.dumps(asdict(policy))
     for wrong, mismatched in ((owner(profile='wrong'), 'profile'), (owner(path=tmp_path), 'home')):
-        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable') as refused:
             policy.config(wrong)
         assert refused.value.field == mismatched
     # A whole-policy stamp that predates the current snapshot (a profile edit rewrote the frozen
@@ -35,9 +37,9 @@ def test_config_credentials_recover_only_exact_source(tmp_path, monkeypatch):
     assert stale.config(owner())['model']['api_key'] == cfg['model']['api_key']
     cfg['model']['api_key'] = 'changed-unrelated-token'
     (home / 'config.yaml').write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
         stale.config(owner())
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
         policy.config(owner())
 
 
@@ -54,7 +56,7 @@ async def test_config_creation_retry_does_not_rebind_current_credentials(tmp_pat
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
     def runner():
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        return SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+        return SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False)
     first = await initialize_session_authority(runner(), profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create'}), 'socket')
     params = dict(request_id='retry', cwd=str(tmp_path), model='frozen')
@@ -74,7 +76,7 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
     holds instead of failing every read of the chat with ``launch_credentials_unavailable``. A
     ROUTE credential that disappeared still refuses, and a settings-only read never needs either."""
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -85,7 +87,7 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
 
     def owner():
         # A fresh authority per read, like a restarted owner: no in-memory secret cache.
-        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
+        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'), persistence=SimpleNamespace(scope=profile_scope(home=home)),
                                profile_id='owned', instance_id='new', epoch=2)
     private = {}
     policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
@@ -102,7 +104,7 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
 
     del cfg['model']['api_key']  # the session's own route credential is gone: still refused
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
         policy.config(owner())
     settings = policy.config(owner(), secrets=False)  # a display/model-option read needs no secret
     assert settings['model']['provider'] == 'custom' and settings['model']['api_key'] is None
@@ -114,7 +116,7 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
     session after a restart. Only the session's own route credential may refuse, and that refusal
     names the credential; the unrelated secret is simply no longer supplied, never swapped."""
     from gateway.session_policy import build_policy, bind_launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -124,7 +126,7 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
     config_path.write_text(json.dumps(cfg))
 
     def owner():  # a fresh authority per read, like a restarted owner
-        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
+        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'), persistence=SimpleNamespace(scope=profile_scope(home=home)),
                                profile_id='owned', instance_id='new', epoch=2)
     private = {}
     policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
@@ -144,7 +146,7 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
     else:
         del cfg['model']['api_key']
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+    with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable') as refused:
         policy.config(owner())
     assert refused.value.field == 'model.api_key'
     assert 'route-token' not in str(refused.value.detail) and 'another' not in str(refused.value.detail)
@@ -162,7 +164,7 @@ def _bound_session(tmp_path, monkeypatch, cfg):
     cfg = _load_gateway_config(home / 'config.yaml')
 
     def owner():
-        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
+        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'), persistence=SimpleNamespace(scope=profile_scope(home=home)),
                                profile_id='owned', instance_id='new', epoch=2)
     private = {}
     policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
@@ -173,7 +175,7 @@ def _bound_session(tmp_path, monkeypatch, cfg):
 def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypatch):
     """A route key saved under a list (``custom_providers[0].api_key``) is found again after a
     restart; it used to read as removed and refuse every turn of the session."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cfg = {'model': {'provider': 'custom:local', 'default': 'm'},
            'custom_providers': [{'name': 'Local', 'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'cp-token'}]}
     policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
@@ -181,7 +183,7 @@ def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypa
 
     cfg['custom_providers'][0]['api_key'] = 'rotated-token'
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         policy.config(owner())
     assert refused.value.field == 'custom_providers.0.api_key'
     assert 'changed in' in refused.value.detail
@@ -191,7 +193,7 @@ def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
     """Two ``custom_providers`` entries share a name: the runtime routes through the FIRST, so
     rotating the unused second key leaves the session running (that key is simply not supplied);
     rotating the selected one refuses and names it."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cfg = {'model': {'provider': 'custom:shared', 'default': 'm'},
            'custom_providers': [
                {'name': 'Shared', 'base_url': 'http://127.0.0.1:1111/v1', 'api_key': 'first-token'},
@@ -206,7 +208,7 @@ def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
 
     cfg['custom_providers'][0]['api_key'] = 'rotated-first'
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         policy.config(owner())
     assert refused.value.field == 'custom_providers.0.api_key'
 
@@ -214,7 +216,7 @@ def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
 def test_a_custom_prefixed_providers_key_is_the_route(tmp_path, monkeypatch):
     """``providers['custom:foo']`` is what ``model.provider: custom:foo`` resolves to at runtime; a
     rotated key there refuses by name instead of being silently dropped."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cfg = {'model': {'provider': 'custom:foo', 'default': 'm'},
            'providers': {'custom:foo': {'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'foo-token'}}}
     policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
@@ -222,7 +224,7 @@ def test_a_custom_prefixed_providers_key_is_the_route(tmp_path, monkeypatch):
 
     cfg['providers']['custom:foo']['api_key'] = 'rotated-foo'
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         policy.config(owner())
     assert refused.value.field == 'providers.custom:foo.api_key'
 
@@ -232,7 +234,7 @@ def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
     ``custom_providers`` entry owning that URL. Rotating that key and recovering cold used to skip
     the frozen value as an unrelated secret, so the pool seeded the rotated key from live config;
     it now refuses by name, like a named route."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     url = 'http://127.0.0.1:1234/v1'
     cfg = {'model': {'provider': 'custom', 'base_url': url, 'default': 'm'},
            'custom_providers': [
@@ -247,7 +249,7 @@ def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
 
     cfg['custom_providers'][1]['api_key'] = 'rotated-url-token'
     config_path.write_text(json.dumps(cfg))
-    with pytest.raises(RuntimeStoreError) as refused:
+    with pytest.raises(AuthorityRefusal) as refused:
         policy.config(owner())
     assert refused.value.field == 'custom_providers.1.api_key'
     assert 'rotated' not in str(refused.value.detail)
@@ -358,7 +360,7 @@ def test_a_rotated_bare_custom_key_is_never_sent(tmp_path, monkeypatch, phase):
     that key is rotated in config.yaml, neither the running owner (warm: its in-process secret cache)
     nor a restarted one (cold) sends the rotated key: the credential pool seeds from the session's
     frozen config, never live config, and cold recovery refuses the changed route key by name."""
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     from tests.fakes.fake_llm_provider import FakeLLMServer
     with FakeLLMServer() as llm:
         cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': llm.base_url},
@@ -373,7 +375,7 @@ def test_a_rotated_bare_custom_key_is_never_sent(tmp_path, monkeypatch, phase):
         authority = running if phase == 'warm' else owner()
         try:
             _send(*_policy_runtime(policy, lambda: authority))
-        except RuntimeStoreError as refused:
+        except AuthorityRefusal as refused:
             assert phase == 'cold' and refused.field == 'custom_providers.0.api_key'
         sent = [r['auth'] for r in llm.requests]
         assert not any('sk-rotated-route' in a for a in sent), sent

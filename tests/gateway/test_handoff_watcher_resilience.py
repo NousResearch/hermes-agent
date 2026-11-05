@@ -23,6 +23,12 @@ from pathlib import Path
 import pytest
 
 from gateway import run
+from persistence.authority.coordination import PendingHandoff
+
+
+def _store(coordination):
+    """A storage handle stand-in exposing ``coordination`` in its awaitable form."""
+    return types.SimpleNamespace(aio=types.SimpleNamespace(coordination=coordination))
 
 
 def _running_flag(ticks):
@@ -48,20 +54,20 @@ class _SlowDB:
 
     async def list_pending_handoffs(self):
         self.polls += 1
-        return [{"id": "slow-row"}]
+        return (PendingHandoff(session_id="slow-row", platform=None, title=None, started_at=0.0),)
 
-    async def claim_handoff(self, sid):
+    async def claim_handoff(self, *, session_id):
         # Real claim is atomic pending→running: it succeeds exactly once.
-        if sid in self.claimed:
+        if session_id in self.claimed:
             return False
-        self.claimed.append(sid)
+        self.claimed.append(session_id)
         return True
 
-    async def complete_handoff(self, sid):
+    async def complete_handoff(self, *, session_id):
         return None
 
-    async def fail_handoff(self, sid, err):
-        return None
+    async def fail_handoff(self, *, session_id, error, only_states=None):
+        return True
 
 
 @pytest.mark.asyncio
@@ -99,7 +105,7 @@ async def test_slow_handoff_does_not_block_later_polls(monkeypatch):
         await release.wait()
 
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _running_flag(3)
     fake._process_handoff = _process_handoff
 
@@ -147,7 +153,7 @@ async def test_inflight_row_is_not_claimed_twice(monkeypatch):
         await asyncio.sleep(3600)
 
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _running_flag(4)
     fake._process_handoff = _process_handoff
 
@@ -164,7 +170,7 @@ class _ReclaimDB:
         self.stale_ids = list(stale_ids)
         self.reclaim_calls = []
 
-    async def reclaim_stale_running_handoffs(self, error):
+    async def reclaim_stale_running_handoffs(self, *, error):
         self.reclaim_calls.append(error)
         return self.stale_ids
 
@@ -188,7 +194,7 @@ async def test_startup_reclaims_rows_stranded_in_running(monkeypatch):
 
     db = _ReclaimDB()
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _running_flag(1)
 
     async def _process_handoff(row, profile_name=None):
@@ -234,7 +240,7 @@ async def test_reclaim_runs_per_profile_store(monkeypatch):
 
     db = _ReclaimDB(stale_ids=[])
     fake = types.SimpleNamespace()
-    fake._session_db = db
+    fake.persistence = _store(db)
     fake._running = _running_flag(1)
 
     async def _process_handoff(row, profile_name=None):
@@ -254,28 +260,25 @@ async def test_reclaim_runs_per_profile_store(monkeypatch):
 
 def test_reclaim_stale_running_handoffs_flips_only_running_rows(tmp_path):
     """DB-level: only 'running' rows are touched, and their ids are returned."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    for sid, state in (
-        ("dead", "running"),
-        ("queued", "pending"),
-        ("done", "completed"),
-    ):
-        db.create_session(sid, "cli")
-        db._execute_write(
-            lambda conn, s=sid, st=state: conn.execute(
-                "UPDATE sessions SET handoff_state = ? WHERE id = ?", (st, s)
-            )
-        )
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        handoffs = store.coordination
+        for sid in ("dead", "queued", "done"):
+            seed_session(store, sid, "cli")
+            handoffs.request_handoff(session_id=sid, platform="telegram")  # pending
+        for sid in ("dead", "done"):
+            handoffs.claim_handoff(session_id=sid)  # running
+        handoffs.complete_handoff(session_id="done")  # completed
 
-    reclaimed = db.reclaim_stale_running_handoffs("gateway died")
+        reclaimed = handoffs.reclaim_stale_running_handoffs(error="gateway died")
 
-    assert reclaimed == ["dead"]
-    assert db.get_handoff_state("dead")["state"] == "failed"
-    assert db.get_handoff_state("dead")["error"] == "gateway died"
-    assert db.get_handoff_state("queued")["state"] == "pending"
-    assert db.get_handoff_state("done")["state"] == "completed"
+        assert reclaimed == ("dead",)
+        assert handoffs.get_handoff(session_id="dead").state == "failed"
+        assert handoffs.get_handoff(session_id="dead").error == "gateway died"
+        assert handoffs.get_handoff(session_id="queued").state == "pending"
+        assert handoffs.get_handoff(session_id="done").state == "completed"
 
 
 def test_reclaimed_session_can_request_handoff_again(tmp_path):
@@ -284,22 +287,21 @@ def test_reclaimed_session_can_request_handoff_again(tmp_path):
     ``request_handoff`` only accepts NULL/completed/failed, so a stranded
     'running' row is what permanently locks the session out.
     """
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("stuck", "cli")
-    db._execute_write(
-        lambda conn: conn.execute(
-            "UPDATE sessions SET handoff_state = 'running' WHERE id = 'stuck'"
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        handoffs = store.coordination
+        seed_session(store, "stuck", "cli")
+        handoffs.request_handoff(session_id="stuck", platform="telegram")
+        handoffs.claim_handoff(session_id="stuck")  # running
+
+        assert handoffs.request_handoff(session_id="stuck", platform="telegram") is False, (
+            "precondition: a stranded 'running' row blocks new handoff requests"
         )
-    )
 
-    assert db.request_handoff("stuck", "telegram") is False, (
-        "precondition: a stranded 'running' row blocks new handoff requests"
-    )
+        handoffs.reclaim_stale_running_handoffs(error="gateway died")
 
-    db.reclaim_stale_running_handoffs("gateway died")
-
-    assert db.request_handoff("stuck", "telegram") is True, (
-        "after reclaim the session must be able to hand off again"
-    )
+        assert handoffs.request_handoff(session_id="stuck", platform="telegram") is True, (
+            "after reclaim the session must be able to hand off again"
+        )

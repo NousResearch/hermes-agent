@@ -2,12 +2,12 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 324
+   "undecided": 327
   },
   "rpc": {
-   "authority": 102,
+   "authority": 103,
    "keep-host-wide": 1,
-   "undecided": 183
+   "undecided": 184
   },
   "websocket": {
    "undecided": 9
@@ -65,6 +65,7 @@
   {"current_path": "hermes_cli.web_routers.status:get_curator_status", "decision": "undecided", "handler": "GET /api/curator", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:get_dashboard_font", "decision": "undecided", "handler": "GET /api/dashboard/font", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:get_dashboard_plugins", "decision": "undecided", "handler": "GET /api/dashboard/plugins", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.dashboard_ui:get_plugins_auto_update", "decision": "undecided", "handler": "GET /api/dashboard/plugins/auto-update", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:get_plugins_catalog", "decision": "undecided", "handler": "GET /api/dashboard/plugins/catalog", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:get_plugins_hub", "decision": "undecided", "handler": "GET /api/dashboard/plugins/hub", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:rescan_dashboard_plugins", "decision": "undecided", "handler": "GET /api/dashboard/plugins/rescan", "kind": "http", "ref": ""},
@@ -215,6 +216,7 @@
   {"current_path": "hermes_cli.web_routers.status:run_curator", "decision": "undecided", "handler": "POST /api/curator/run", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugin_activate", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/activate", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugin_install", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/install", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugins_update_all", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/update-all", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugin_disable", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/{name:path}/disable", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugin_enable", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/{name:path}/enable", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:post_agent_plugin_update", "decision": "undecided", "handler": "POST /api/dashboard/agent-plugins/{name:path}/update", "kind": "http", "ref": ""},
@@ -322,6 +324,7 @@
   {"current_path": "hermes_cli.web_routers.status:set_curator_paused", "decision": "undecided", "handler": "PUT /api/curator/paused", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:set_dashboard_font", "decision": "undecided", "handler": "PUT /api/dashboard/font", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:put_plugin_providers", "decision": "undecided", "handler": "PUT /api/dashboard/plugin-providers", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.dashboard_ui:put_plugins_auto_update", "decision": "undecided", "handler": "PUT /api/dashboard/plugins/auto-update", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.dashboard_ui:set_dashboard_theme", "decision": "undecided", "handler": "PUT /api/dashboard/theme", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.delegation:select_delegation_backend", "decision": "undecided", "handler": "PUT /api/delegation/backend", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.delegation:save_model_routes", "decision": "undecided", "handler": "PUT /api/delegation/backends/model_map", "kind": "http", "ref": ""},
@@ -429,6 +432,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.attachment.upload", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.capabilities", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.context", "kind": "rpc", "ref": ""},
+  {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.continue", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.create", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "groups.demote", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "groups.disband", "kind": "rpc", "ref": ""},
@@ -455,6 +459,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "image.attach_bytes", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "image.detach", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "image.generate", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "image.render", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "input.detect_drop", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "insights.get", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "kanban.run", "kind": "rpc", "ref": ""},

@@ -36,3 +36,13 @@ def test_ambiguous_addition_does_not_echo_hint():
     assert result.errors
     assert secret not in str(result.errors)
     assert 'ambiguous' in str(result.errors)
+
+
+def test_fuzzy_ambiguous_matches_do_not_echo_source():
+    secret = 'opaqueSecretValue7X4Y5Z6'
+    content = f'call(foo,  bar) # {secret}\n' * 2
+    hunk = Hunk(lines=[HunkLine('-', 'call(foo, bar)'), HunkLine('+', 'changed')])
+    result = _plan_hunks(content, [hunk])
+    assert result.errors
+    assert secret not in str(result.errors)
+    assert '2 matches' in str(result.errors)

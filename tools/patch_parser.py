@@ -508,6 +508,10 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             notes.extend([correction] if correction else [])
             core = _written_core(start, content[start:cursor], hunk)
             written = _shift(written, old_end, cursor - old_end) + ([core] if core else [])
+    # Fuzzy ambiguity diagnostics include source-line excerpts. Preserve their
+    # locations but never echo arbitrary source bytes into the error result.
+    errors = [re.sub(r"(?m)^  L(\d+):[^\n]*", r"  L\1: [source omitted]", error)
+              for error in errors]
     return _Plan(content, errors, changes, notes, strategies)
 
 

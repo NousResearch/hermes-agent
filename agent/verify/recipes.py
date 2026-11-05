@@ -99,15 +99,48 @@ _LOCKFILE_MANAGERS = (
     ("Pipfile.lock", "pipenv"),
 )
 
+# Markers an installer leaves in the tree it installed. Unlike a lockfile, these
+# cannot be stale leftovers: they only exist where that manager actually ran. A
+# repository can carry a vestigial lockfile from an abandoned manager next to the
+# live one (a `pnpm-lock.yaml` a contributor committed once, long after the repo
+# moved to npm), and filename precedence alone then selects a manager that never
+# installed this tree — its bootstrap rewrites that vestigial lockfile and its
+# script runner resolves a different `node_modules` layout, so verification fails
+# on a project that builds. See `_installed_managers`.
+_INSTALL_MARKERS = (
+    (Path("node_modules") / ".package-lock.json", "npm"),
+    (Path("node_modules") / ".pnpm", "pnpm"),
+    (Path("node_modules") / ".yarn-integrity", "yarn"),
+)
+
 
 def _first_existing(root: Path, names: tuple[str, ...]) -> str | None:
     """First of ``names`` present under ``root``, else ``None``."""
     return next((n for n in names if (root / n).exists()), None)
 
 
+def _installed_managers(root: Path) -> set[str]:
+    """Managers whose install marker is present in *root*'s tree."""
+    return {manager for marker, manager in _INSTALL_MARKERS if (root / marker).exists()}
+
+
 def detect_package_manager(root: Path) -> str | None:
-    """Lockfile-based package-manager detection (grok's detectPackageManager)."""
-    return next((m for f, m in _LOCKFILE_MANAGERS if (root / f).exists()), None)
+    """Package manager for *root*: lockfile detection (grok's detectPackageManager),
+    settled by the installed tree when several lockfiles coexist.
+
+    One lockfile is unambiguous evidence and decides alone (keeping detection
+    unchanged for every repo that has a single one). Two or more is exactly the
+    case filename order gets wrong, so the tree itself — which manager's marker is
+    in ``node_modules`` — is asked first, falling back to the lockfile order when
+    nothing is installed yet (a fresh clone).
+    """
+    managers = [m for f, m in _LOCKFILE_MANAGERS if (root / f).exists()]
+    if len(managers) > 1:
+        installed = _installed_managers(root)
+        for manager in managers:
+            if manager in installed:
+                return manager
+    return managers[0] if managers else None
 
 
 def _infer_port_from_command(command: str | None) -> int | None:

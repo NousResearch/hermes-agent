@@ -201,6 +201,85 @@ def is_proxy_stream_drop(response: Any, normalized: Any = None) -> bool:
     return False
 
 
+_OBSERVED_PROXY_DROP_STREAMS: set[int] = set()
+
+
+def _chunk_has_proxy_drop_marker(chunk: Any) -> bool:
+    """True when a stream chunk or its first choice/delta carries an explicit proxy abort flag."""
+    for obj in (chunk, *(getattr(chunk, "choices", None) or ())[:1]):
+        if getattr(obj, "proxy_stream_drop", False) or getattr(obj, "_proxy_stream_drop", False):
+            return True
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict) and extra.get("proxy_stream_drop"):
+            return True
+        delta = getattr(obj, "delta", None)
+        if delta is not None:
+            if getattr(delta, "proxy_stream_drop", False) or getattr(delta, "_proxy_stream_drop", False):
+                return True
+            d_extra = getattr(delta, "model_extra", None)
+            if isinstance(d_extra, dict) and d_extra.get("proxy_stream_drop"):
+                return True
+    return False
+
+
+def _mark_stream_proxy_drop(stream: Any) -> None:
+    if stream is None:
+        return
+    _OBSERVED_PROXY_DROP_STREAMS.add(id(stream))
+    try:
+        stream._proxy_stream_drop = True
+    except Exception:
+        logger.debug("Could not attach _proxy_stream_drop to stream object", exc_info=True)
+
+
+def iter_provider_stream_with_drop_guard(stream: Any):
+    """Yield chunks from ``stream`` while recording an observed proxy/transport abort
+    that occurs on or immediately after a ``finish_reason == "content_filter"`` frame."""
+    import httpx as _httpx
+
+    saw_content_filter = False
+    try:
+        for chunk in stream:
+            if _chunk_has_proxy_drop_marker(chunk):
+                _mark_stream_proxy_drop(stream)
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, (list, tuple)) and choices:
+                fr = getattr(choices[0], "finish_reason", None)
+                if isinstance(fr, str) and fr.strip().lower() == "content_filter":
+                    saw_content_filter = True
+            yield chunk
+    except _httpx.HTTPError:
+        if not saw_content_filter:
+            raise
+        _mark_stream_proxy_drop(stream)
+
+
+def stamp_proxy_stream_drop(
+    stream: Any,
+    response: Any,
+    effective_finish_reason: Optional[str],
+    content_parts: Any,
+    refusal_parts: Any,
+    tool_calls_acc: Any,
+    *,
+    proxy_stream_drop: bool = False,
+) -> None:
+    """Stamp ``response._proxy_stream_drop = True`` only when an independent transport/proxy
+    abort was observed for a terminal ``content_filter`` stream with no visible payload."""
+    observed = bool(proxy_stream_drop) or bool(getattr(stream, "_proxy_stream_drop", False))
+    if stream is not None and id(stream) in _OBSERVED_PROXY_DROP_STREAMS:
+        _OBSERVED_PROXY_DROP_STREAMS.discard(id(stream))
+        observed = True
+    if (
+        observed
+        and effective_finish_reason == "content_filter"
+        and not content_parts
+        and not refusal_parts
+        and not tool_calls_acc
+    ):
+        response._proxy_stream_drop = True
+
+
 def partial_result(
     messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,

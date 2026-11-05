@@ -170,7 +170,7 @@ def check_api_response(
             _cf_explicit = has_explicit_refusal(response, _cf_norm)
             _cf_drop = is_proxy_stream_drop(response, _cf_norm)
         except Exception as _cf_exc:  # never let the guard break the upstream refusal path
-            logger.debug("content_filter guard could not inspect response: %s", _cf_exc)
+            logger.debug("content_filter guard could not inspect response: %s", _cf_exc, exc_info=True)
             _cf_text, _cf_explicit, _cf_drop = "", True, False
         if (
             getattr(agent, "api_mode", "chat_completions") == "chat_completions"

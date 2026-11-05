@@ -284,8 +284,9 @@ def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
 
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
     """Yield SDK chunks while translating SDK-level SSE decode failures."""
+    from agent.turn_truncation import iter_provider_stream_with_drop_guard
     try:
-        yield from stream
+        yield from iter_provider_stream_with_drop_guard(stream)
     except json.JSONDecodeError as error:
         stream_response = response() if callable(response) else response
         if stream_response is None:
@@ -3292,18 +3293,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
-        refusal_parts=None):
-        """Assemble the non-streaming-shaped response after the chunk loop. A
-        stream ending with no finish_reason is a drop, not a completion: return a
-        partial-stream stub so the loop fails fast instead of executing empty
-        args or stamping "stop"."""
+        refusal_parts=None, proxy_stream_drop=False):
+        """Assemble the non-streaming-shaped response after the chunk loop (partial-stream stub on EOF drop)."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         if not full_reasoning and full_content:
-            # Inline-reasoning providers (MiniMax-M3 streams <think>…</think> in content) send no
-            # reasoning delta; fill the structured field from the raw content (#89647).
+            # Inline-reasoning providers (MiniMax-M3 streams <think>…</think> in content) send no reasoning delta (#89647).
             from agent.agent_runtime_helpers import extract_reasoning
-
             full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
@@ -3311,8 +3307,7 @@ class _StreamingCall(StreamingWaitMonitor):
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response).")
         if has_truncated_tool_args and finish_reason is None:
-            # Partial args WITH finish_reason="length" is a real output cap; with NONE the
-            # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
+            # Partial args WITH finish_reason="length" is a real output cap; with NONE the upstream dropped mid tool-call.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
@@ -3323,10 +3318,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
                 clean_eof=True)
         if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
-            # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
-            # and the next step is lost — for reasoning-only, the clean-stop promotion in
-            # finish_text_response would then surface a truncated thought as the answer.
-            # A usage object proves the provider finished (include_usage's final chunk).
+            # Text-only (or reasoning-only) drop without usage: return a partial stub instead of stamping "stop".
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) after delivering "
                 "text with no tool calls. The server or a proxy closed the stream cleanly.")
@@ -3340,25 +3332,14 @@ class _StreamingCall(StreamingWaitMonitor):
             # ``normalize_response`` reads ``message.refusal`` — same contract as the non-streaming object.
             refusal="".join(refusal_parts or ()) or None)
         if reasoning_details:
-            # Only when present: _build_assistant_message's passthrough persists them
-            # for replay, and non-reasoning providers keep the attribute absent.
             message.reasoning_details = reasoning_details
-        # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
-        # look a request up. Fabricated only when the stream never sent one.
         response = SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
             provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
-        if (
-            effective_finish_reason == "content_filter"
-            and usage_obj is None
-            and (reasoning_parts or reasoning_details)
-            and not content_parts
-            and not refusal_parts
-            and not tool_calls_acc
-        ):
-            # Stream aborted mid-reasoning without a final usage chunk or refusal delta
-            # (e.g. translation proxy mapping an upstream stream cut to content_filter).
-            response._proxy_stream_drop = True
+        from agent.turn_truncation import stamp_proxy_stream_drop
+        stamp_proxy_stream_drop(
+            stream, response, effective_finish_reason, content_parts, refusal_parts, tool_calls_acc,
+            proxy_stream_drop=proxy_stream_drop)
         # A held router timeout shim (#68396) is rejected by validate_response and retried;
         # releasing its text here would show the provider failure as assistant output.
         if not is_router_timeout_shim(response):

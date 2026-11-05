@@ -21,6 +21,11 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Pre-login auth discovery (``GET /api/auth/providers``): native clients'
+    # login bootstrap and the SPA sign-in page read provider names and
+    # ``supports_password`` flags only; 503 when none registered. The OAuth gate
+    # already serves this publicly — keep both gates on the shared allowlist.
+    "/api/auth/providers",
     # Chronos managed-cron fire webhook (NAS -> agent). NOT cookie-gated: it
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies — the JWT, not this allowlist, is the security boundary.

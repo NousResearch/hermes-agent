@@ -1,16 +1,16 @@
 name: fitbit-mcp
 title: Fitbit
 repo: https://github.com/davidmosiah/fitbit-mcp
-sha: "2d99ae9875a317b4414dfe08b5bd8a74cdbc3e7b"
+sha: "c669895c6c96ded8c35978c7461c02dbed7fa0fc"
 subdir: agent-plugin
-description: "Read the user's Fitbit activity, heart rate, sleep and body data through the local fitbit MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Runs the `fitbit-mcp-unofficial@0.6.3` npm package locally over stdio through `npx` (Node.js 20+ required); the package is downloaded from npm on first start. Data source: the official Fitbit Web API. Credentials and OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal and stay on the machine (`~/.fitbit-mcp/`); the plugin declares no environment variables and reads no Hermes credentials. Tools that change state: fitbit_profile_update (local profile only); fitbit_exchange_code (stores OAuth tokens locally); fitbit_revoke_access (revokes the Fitbit grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
+description: "Read the user's Fitbit activity, heart rate, sleep and body data through the local fitbit MCP server. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — Runs the `fitbit-mcp-unofficial@0.7.0` npm package locally over stdio through `npx` (Node.js 20+ required); the package is downloaded from npm on first start. Data source: the official Fitbit Web API. Credentials and OAuth tokens are created by the connector's own `setup`/`auth` commands in the user's terminal and stay on the machine (`~/.fitbit-mcp/`); the plugin declares no environment variables and reads no Hermes credentials. Tools that change state: fitbit_profile_update (local profile only); fitbit_exchange_code (stores OAuth tokens locally); fitbit_revoke_access (revokes the Fitbit grant and deletes local tokens). The tool set comes from the pinned npm version, not from this repository's source tree."
 maintainer: davidmosiah
 tier: community
 category: tools
-version: "0.6.3"
+version: "0.7.0"
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/davidmosiah/fitbit-mcp/blob/2d99ae9875a317b4414dfe08b5bd8a74cdbc3e7b/agent-plugin/README.md
-image: https://raw.githubusercontent.com/davidmosiah/fitbit-mcp/2d99ae9875a317b4414dfe08b5bd8a74cdbc3e7b/assets/banner.png
+docs_url: https://github.com/davidmosiah/fitbit-mcp/blob/c669895c6c96ded8c35978c7461c02dbed7fa0fc/agent-plugin/README.md
+image: https://raw.githubusercontent.com/davidmosiah/fitbit-mcp/c669895c6c96ded8c35978c7461c02dbed7fa0fc/assets/banner.png
 platforms: []
 capabilities:
   provides_tools: []

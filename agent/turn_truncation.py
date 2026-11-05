@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -769,8 +770,36 @@ def handle_content_policy_refusal(
         summary=_refusal_text or "the model returned no explanation",
     )
     agent._cleanup_task_resources(effective_task_id)
-    agent._persist_session(messages, conversation_history)
+    # Do not persist the refused turn. A safety refusal is deterministic for the unchanged
+    # conversation (the filter judges the whole thread), so a durable refused turn re-trips the
+    # filter on every later message and locks the chat — the "stuck session" report. Hand the caller
+    # the PRE-refusal history so the in-process message list carries nothing forward, and flush token
+    # usage for the call that was made; the durable rows the turn already wrote are dropped once the
+    # turn lease releases (``_drop_refused_turn`` in the run_conversation finalizer — a transcript
+    # mutation is refused while the lease is held). Mirrors the context_overflow no-grow rule (#1630);
+    # transient failures keep their persist-and-replay path, only a non-retryable block is dropped.
+    _db = getattr(agent, "_session_db", None)
+    if _db is not None:
+        with suppress(Exception):
+            _db.flush_token_counts()
+    clean_history = conversation_history if isinstance(conversation_history, list) else []
     return RefusalVerdict("return", _content_policy_blocked_result(
-        messages, api_call_count, final_response=_refusal_response,
+        clean_history, api_call_count, final_response=_refusal_response,
         error_detail=_refusal_text or "model declined (content_filter)",
     ), active_system_prompt)
+
+
+def _drop_refused_turn(agent: Any) -> None:
+    """Soft-delete the last (just-refused) user turn from the durable transcript, so a deterministic
+    safety refusal cannot re-trigger on every later message. MUST run after the turn lease releases
+    (the DB refuses a transcript mutation while a turn lease is held). Best-effort: a rewind failure
+    must never turn a refusal into a crash."""
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return
+    try:
+        db.rewind_user_turn(session_id, -1)
+    except Exception as e:  # health: allow BLE001 -- best-effort cleanup; a refusal must never crash on a rewind failure
+        logger.debug("%scontent-policy refusal: could not drop the refused turn from the "
+                     "transcript: %s", getattr(agent, "log_prefix", ""), e)

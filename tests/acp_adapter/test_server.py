@@ -444,6 +444,86 @@ class TestPrompt:
         assert state.agent.run_conversation.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_interim_reply_reaches_client_while_tool_is_still_running(self, agent, mock_manager):
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openai-codex"
+        events = []
+        mock_conn = MagicMock(spec=acp.Client)
+
+        async def _record(session_id, update):
+            events.append(update)
+
+        mock_conn.session_update = _record
+        agent._conn = mock_conn
+        from threading import Event
+        release_tool = Event()
+
+        def _turn(*args, **kwargs):
+            state.agent.interim_assistant_callback("Checking the build now.", already_streamed=False)
+            state.agent.tool_progress_callback("tool.started", "terminal", "build", {"command": "build"})
+            assert release_tool.wait(3), "test did not release the tool"
+            state.agent.tool_progress_callback("tool.completed", "terminal", result="ok")
+            return {"final_response": "The build finished.", "messages": []}
+
+        with patch.object(HermesACPAgent, "_run_agent_turn", side_effect=_turn), patch.dict(
+            "sys.modules", {"agent.conversation_loop": SimpleNamespace(INTERRUPT_WAITING_FOR_MODEL_PREFIX="[waiting]")},
+        ):
+            task = asyncio.create_task(agent.prompt(
+                prompt=[TextContentBlock(type="text", text="build")], session_id=resp.session_id,
+            ))
+            try:
+                async def _wait_for_tool_start():
+                    while not any(isinstance(update, ToolCallStart) for update in events):
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(_wait_for_tool_start(), 2)
+                interim = [update for update in events if update.session_update == "agent_message_chunk"]
+                assert [update.content.text for update in interim] == ["Checking the build now."]
+                assert events.index(interim[0]) < next(
+                    idx for idx, update in enumerate(events) if isinstance(update, ToolCallStart)
+                )
+                assert not task.done()
+            finally:
+                release_tool.set()
+            response = await asyncio.wait_for(task, 2)
+
+        assert response.stop_reason == "end_turn"
+        replies = [update for update in events if update.session_update == "agent_message_chunk"]
+        assert [update.content.text for update in replies] == ["Checking the build now.", "The build finished."]
+        assert replies[0].message_id != replies[1].message_id
+
+    @pytest.mark.asyncio
+    async def test_already_streamed_interim_is_not_duplicated(self, agent, mock_manager):
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openrouter"
+        events = []
+        mock_conn = MagicMock(spec=acp.Client)
+
+        async def _record(session_id, update):
+            events.append(update)
+
+        mock_conn.session_update = _record
+        agent._conn = mock_conn
+
+        def _turn(*args, **kwargs):
+            state.agent.stream_delta_callback("Already visible.")
+            state.agent.interim_assistant_callback("Already visible.", already_streamed=True)
+            state.agent.tool_progress_callback("tool.started", "terminal", "build", {"command": "build"})
+            state.agent.stream_delta_callback("Final summary.")
+            return {"final_response": "Final summary.", "messages": []}
+
+        with patch.object(HermesACPAgent, "_run_agent_turn", side_effect=_turn), patch.dict(
+            "sys.modules", {"agent.conversation_loop": SimpleNamespace(INTERRUPT_WAITING_FOR_MODEL_PREFIX="[waiting]")},
+        ):
+            await agent.prompt(prompt=[TextContentBlock(type="text", text="build")], session_id=resp.session_id)
+
+        replies = [update for update in events if update.session_update == "agent_message_chunk"]
+        assert [update.content.text for update in replies] == ["Already visible.", "Final summary."]
+        assert replies[0].message_id != replies[1].message_id
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("executor_raises", [False, True])
     async def test_prompt_fails_tool_calls_left_open_before_responding(self, agent, mock_manager, executor_raises):
         """A ``tool.started`` that never sees ``tool.completed`` (blocked/denied/crashed turn) must

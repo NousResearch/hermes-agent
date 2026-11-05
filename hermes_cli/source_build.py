@@ -48,9 +48,13 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    npmrc = get_hermes_home() / "npmrc"
-    if npmrc.is_file():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+    hermes_npmrc = get_hermes_home() / "npmrc"
+    if hermes_npmrc.is_file():
+        env.setdefault("NPM_CONFIG_USERCONFIG", str(hermes_npmrc))
+    # The file npm itself would read: an explicit userconfig (any case) wins over Hermes's.
+    userconfig = next((value for name, value in env.items() if name.upper() == "NPM_CONFIG_USERCONFIG"), "")
+    npmrc = Path(userconfig).expanduser() if userconfig else None
+    if npmrc is not None and npmrc.is_file():
         # pnpm reads that file only for its registry and auth. npm also handed every
         # other key to dependency install scripts as npm_config_<key>, which is how
         # node-pre-gyp finds a binary mirror (node_get_windows_binary_host_mirror).
@@ -68,15 +72,17 @@ _NPMRC_ENV_REF = re.compile(r"\$\{([^}]+)\}")
 
 def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
     """``key=value`` lines of an npmrc that name a plain setting, with npm's ``${VAR}``
-    references expanded from ``env``. Skipped: comments, credentials (``//host/:_authToken``,
-    ``_auth``), scoped registries (``@scope:registry``), array keys (``key[]``) and lines
-    referring to an unset variable."""
+    references expanded from ``env`` and surrounding quotes removed, as npm reads them.
+    Skipped: comments, credentials (``//host/:_authToken``, ``_auth``), scoped registries
+    (``@scope:registry``), array keys (``key[]``) and lines referring to an unset variable."""
     settings = []
     for line in npmrc.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith(("#", ";")) or "=" not in line:
             continue
         key, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
         if not _NPMRC_SETTING.fullmatch(key) or not all(ref in env for ref in _NPMRC_ENV_REF.findall(value)):
             continue
         settings.append((key, _NPMRC_ENV_REF.sub(lambda ref: env[ref.group(1)], value)))

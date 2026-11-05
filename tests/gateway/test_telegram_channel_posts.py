@@ -148,3 +148,77 @@ def test_build_message_event_uses_channel_identity_for_channel_posts(telegram_ad
     assert event.platform_update_id == 12345
 
 
+def _make_channel_photo_message(caption="look at this @hermes_bot"):
+    """A channel post carrying a photo instead of text."""
+    msg = _make_channel_message(text=None)
+    file_obj = SimpleNamespace(
+        file_path="photos/file_1.jpg",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"\xff\xd8\xff\xd9")),
+    )
+    photo_size = SimpleNamespace(
+        file_id="AgACphoto123",
+        file_unique_id="uniq123",
+        width=1280,
+        height=720,
+        file_size=2048,
+        get_file=AsyncMock(return_value=file_obj),
+    )
+    msg.photo = [photo_size]
+    msg.caption = caption
+    msg.sticker = None
+    msg.document = None
+    msg.video = None
+    msg.audio = None
+    msg.voice = None
+    msg.media_group_id = None
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_handle_media_message_processes_channel_post_photo(telegram_adapter_cls, monkeypatch):
+    """A channel-post photo must reach the photo routing path, not be dropped.
+
+    ``_handle_media_message`` previously read ``update.message`` directly, so a
+    channel post (delivered as ``update.channel_post``) hit the ``if not msg:
+    return`` guard and was consumed before any event was built, even though the
+    text handlers already resolved ``effective_message``.
+    """
+    adapter = _make_adapter(telegram_adapter_cls)
+    msg = _make_channel_photo_message()
+    update = _make_channel_update(msg)
+
+    # Let the payload through auth/trigger gating; this test is about whether
+    # the media handler resolves the channel-post payload at all.
+    adapter._is_user_authorized_from_message = lambda _m: True
+    adapter._should_process_message = lambda _m: True
+    monkeypatch.setattr(
+        sys.modules["plugins.platforms.telegram.adapter"],
+        "cache_image_from_bytes_async",
+        AsyncMock(return_value="/tmp/cached-photo.jpg"),
+    )
+    routed = AsyncMock()
+    adapter._route_photo_event = routed
+
+    await adapter._handle_media_message(update, None)
+
+    assert routed.await_count == 1, "channel-post photo was dropped before photo routing"
+    event = routed.await_args.args[1]
+    assert event.message_type == MessageType.PHOTO
+    assert event.source.chat_id == "-1003950368353"
+    assert event.platform_update_id == 12345
+    assert "look at this" in (event.text or "")
+
+
+@pytest.mark.asyncio
+async def test_handle_media_message_still_ignores_empty_update(telegram_adapter_cls):
+    """No message-like payload at all must remain a no-op, not an exception."""
+    adapter = _make_adapter(telegram_adapter_cls)
+    routed = AsyncMock()
+    adapter._route_photo_event = routed
+    adapter.handle_message = AsyncMock()
+    empty = SimpleNamespace(update_id=1, message=None, channel_post=None, effective_message=None)
+
+    await adapter._handle_media_message(empty, None)
+
+    assert routed.await_count == 0
+    assert adapter.handle_message.await_count == 0

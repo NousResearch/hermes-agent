@@ -1,13 +1,15 @@
 # Catalog entry for bumblebee-guard (Hermes Agent Plugin Hackathon 2026)
 name: bumblebee-guard
 repo: https://github.com/kahnanX/bumblebee-guard
-sha: 36bf43d05b3f0843485437db0369d96fae64df15
+sha: 8cdf7e03493eedbd8fd7abb5a2aed53b230e53c6
 description: "Supply-chain guard: runs the local Bumblebee scanner bridge (read-only, no sudo), exact-matches every installed package, MCP server and editor/browser extension against curated catalogs of known-compromised packages, and adds OSV.dev advisory counts via the bridge's OSV layer. Tools: bumblebee_guard_scan / _status / _diff (baseline diff of findings). A rate-limited pre_llm_call hook injects a one-line supply-chain alert only when curated findings exist (never when clean, at most once per hour). /bumblebee slash command plus a bundled triage skill covering confidence classes, OSV alias deduplication and a documented false-positive pattern (scanner fixtures containing threat-intel strings). Disclosure — the plugin itself makes no network calls and holds no credentials; the wrapped bridge's scan queries OSV.dev and an opt-in, off-by-default catalog refresh fetches threat-intel JSON from the upstream perplexityai/bumblebee repository; scans run daily_scan.sh as the current user and read package metadata in $HOME (never .env or token files, never executes package managers); a full scan takes up to ~3 minutes and honors a configurable timeout; the hook fails open and never blocks turns, so cron and unattended runs are unaffected."
 maintainer: kahnanX
 tier: community
 category: security
 requires_hermes: ">=0.21.6"
-version: "0.1.0"
+version: "0.1.1"
+screenshots:
+  - https://raw.githubusercontent.com/kahnanX/bumblebee-guard/8cdf7e03493eedbd8fd7abb5a2aed53b230e53c6/docs/proof-page.png
 readme: true
 platforms: [linux, macos]
 capabilities:

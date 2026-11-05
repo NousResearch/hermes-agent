@@ -579,6 +579,10 @@ def _nvidia_smi_facts() -> dict:
         gpu_name=query["gpu_name"],
         gpu_util_percent=query["gpu_util_percent"],
         vram_used_bytes=query["used_bytes"],
+        gpus=[{
+            "name": gpu["gpu_name"], "vram_total_bytes": gpu["total_bytes"],
+            "vram_used_bytes": gpu["used_bytes"], "gpu_util_percent": gpu["gpu_util_percent"],
+        } for gpu in query["gpus"]],
     )
 
 

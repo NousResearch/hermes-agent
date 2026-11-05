@@ -13,6 +13,7 @@ import { $connection } from '@/store/session'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
+  isComposerSourceManual,
   setAvailablePersonalities,
   setCurrentFastMode,
   setCurrentPersonality,
@@ -118,10 +119,14 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDefaultReasoningEffort(reasoning)
 
+        // Both manual flavors shield the tuned effort/fast from this reseed:
+        // a picked model (manual) or a hand-tuned effort/speed (manual-effort,
+        // #134677) each represent composer intent the profile defaults must
+        // not overwrite on a non-forced refresh.
         const shouldSeedComposer =
           !activeSessionIdRef.current &&
           getComposerSelectionGeneration() === selectionGeneration &&
-          (force || getCurrentModelSource() !== 'manual')
+          (force || !isComposerSourceManual(getCurrentModelSource()))
 
         if (shouldSeedComposer) {
           if (!canPublish()) {

@@ -206,3 +206,15 @@ def test_pager_fits_the_terminal_in_cells_with_a_cjk_prompt(cli, monkeypatch, co
     cli._backtrack_step(5)  # jump to the oldest: brought into view
     selected = [text for text, rev in _rows(cli) if rev]
     assert selected and "P0" in selected[0]
+
+
+@pytest.mark.parametrize("cols,footer", [
+    (100, "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back"),
+    (80, "Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · f fork · esc back"),
+    (50, "Browsing transcript · ↵ edit · esc back"),
+])
+def test_footer_sheds_whole_hints_at_narrow_widths(cli, monkeypatch, cols, footer):
+    _terminal(monkeypatch, cols, 24)
+    assert cli._open_backtrack_picker()
+    hint_rows = [text.strip("│ ").rstrip() for text, _rev in _rows(cli) if "Browsing" in text]
+    assert hint_rows == [footer]  # one row, never wrapped mid-hint

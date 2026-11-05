@@ -16,6 +16,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { handleEscBacktrack } from '../app/useInputHandlers.js'
 import { RewindBrowse } from '../components/rewindBrowse.js'
 import { useBacktrackHint } from '../components/rewindFocus.js'
+import { fitBrowseHint } from '../lib/transcriptPager.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
@@ -289,7 +290,7 @@ const targets = [
   { rowId: 15, text: 'GAMMA please', throughRowId: 14, turn: 3 }
 ]
 
-function mountBrowse(native = false) {
+function mountBrowse(native = false, cols = 100) {
   const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
 
   const req: RewindOverlay = {
@@ -300,11 +301,11 @@ function mountBrowse(native = false) {
   }
 
   const stdin = new FakeInput()
-  const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+  const stdout = Object.assign(new PassThrough(), { columns: cols, isTTY: false, rows: 24 })
   const frames: string[] = []
   stdout.on('data', chunk => frames.push(chunk.toString()))
 
-  const instance = renderSync(<RewindBrowse cols={80} native={native} {...handlers} req={req} t={DEFAULT_THEME} />, {
+  const instance = renderSync(<RewindBrowse cols={cols} native={native} {...handlers} req={req} t={DEFAULT_THEME} />, {
     patchConsole: false,
     stdin: stdin as any,
     stdout: stdout as any
@@ -375,6 +376,30 @@ describe('RewindBrowse keys', () => {
 
     expect(next).toMatch(inverse('BETA please'))
     expect(next).not.toMatch(inverse('GAMMA please'))
+    instance.unmount()
+  })
+})
+
+describe('browse footer at narrow widths (Codex drops hints, never cuts one)', () => {
+  const full = 'Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ↵ edit · f fork · esc back'
+
+  it('sheds whole hints in order as the width shrinks', () => {
+    expect(fitBrowseHint(full, 100)).toBe(full)
+    expect(fitBrowseHint(full, 78)).toBe('Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · f fork · esc back')
+    expect(fitBrowseHint(full, 55)).toBe('Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · esc back')
+    expect(fitBrowseHint(full, 40)).toBe('Browsing transcript · ↵ edit · esc back')
+    expect(fitBrowseHint(full, 30)).toBe('Browsing transcript · esc back')
+    expect(fitBrowseHint(full, 10)).toBe('Browsing transcript')
+  })
+
+  it('the native pager at 80 columns draws a whole footer, no ellipsis', async () => {
+    const { frames, instance } = mountBrowse(true, 80)
+
+    await settle()
+    const screen = stripAnsi(frames.join(''))
+
+    expect(screen).toContain('Browsing transcript · ↑↓/jk ←→/hl · ↵ edit · f fork · esc back')
+    expect(screen).not.toContain('…')
     instance.unmount()
   })
 })

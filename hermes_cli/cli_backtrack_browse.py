@@ -85,12 +85,29 @@ def scroll_into_view(offset: int, span: tuple[int, int], visible: int, total: in
     return max(0, min(offset, max(0, total - visible)))
 
 
+def fit_browse_hint(hint: str, width: int) -> str:
+    """The browse footer for ``width`` cells, shedding hints the way Codex's prompt-navigation footer
+    does: full, then scroll/prompt keys without their words, then without fork, then edit + back,
+    then back, then the label. ``hint`` is the localized ``label · keys word · …`` line (5 hints)."""
+    from prompt_toolkit.utils import get_cwidth
+    label, *hints = hint.split(" · ")
+    if len(hints) != 5 or get_cwidth(hint) <= width:
+        return hint
+    scroll, prompts, edit, fork, back = hints
+    nav = f"{scroll.split(' ')[0]} {prompts.split(' ')[0]}"
+    for rung in ([nav, edit, fork, back], [nav, edit, back], [edit, back], [back]):
+        line = " · ".join([label, *rung])
+        if get_cwidth(line) <= width:
+            return line
+    return label
+
+
 def render_pager(state, turns, title: str, hint: str, reserved_below: int) -> list:
     """Panel fragments. ``state["_scroll_offset"]`` is clamped in place; a pending
     ``state["_reveal"]`` (set on open and by ←/→) first scrolls the selected prompt into view.
     ``state["_page"]`` records the visible row count for PgUp/PgDn."""
     inner, _ = pager_geometry(reserved_below)
-    hint_rows = _wrap_panel_text(hint, inner)
+    hint_rows = _wrap_panel_text(fit_browse_hint(hint, inner), inner)
     inner, visible = pager_geometry(reserved_below, len(hint_rows))
     ordinal = state["entries"][state["selected"]][0]
     rows, span = transcript_rows(turns, ordinal, inner)

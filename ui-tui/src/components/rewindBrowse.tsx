@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { RewindOverlay } from '../app/interfaces.js'
 import { $rewindFocus, $rewindScrollRestore } from '../app/rewindFocusStore.js'
 import { useT } from '../i18n/useT.js'
-import { clampOffset, ensureVisible, messageRange, pagerLines, pagerMessages } from '../lib/transcriptPager.js'
+import { clampOffset, ensureVisible, fitBrowseHint, messageRange, pagerLines, pagerMessages } from '../lib/transcriptPager.js'
 import type { Theme } from '../theme.js'
 
 // Rows the native pager leaves for the hint, the composer chrome and the status rule.
@@ -100,9 +100,10 @@ export function RewindBrowse({
     action && run[action]()
   })
 
+  // The overlay box pads one column each side.
   const hint = (
     <Text color={t.color.muted} wrap="truncate-end">
-      {T.prompt.rewind.browse}
+      {fitBrowseHint(T.prompt.rewind.browse, Math.max(1, cols - 2))}
     </Text>
   )
 

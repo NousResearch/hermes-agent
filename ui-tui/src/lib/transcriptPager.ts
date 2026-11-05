@@ -1,4 +1,4 @@
-import { wrapAnsi } from '@hermes/ink'
+import { stringWidth, wrapAnsi } from '@hermes/ink'
 
 import type { Msg } from '../types.js'
 
@@ -64,4 +64,33 @@ export function ensureVisible(offset: number, range: [number, number] | null, ro
   }
 
   return clampOffset(end >= offset + rows ? end - rows + 1 : offset, total, rows)
+}
+
+/**
+ * The browse footer for `width` cells, shedding hints the way Codex's prompt-navigation footer does:
+ * full, then scroll/prompt keys without their words, then without fork, then only edit + back, then
+ * back, then the label. `hint` is the localized full line, `label · keys word · …` (5 hints).
+ */
+export function fitBrowseHint(hint: string, width: number): string {
+  const [label = '', ...hints] = hint.split(' · ')
+
+  if (hints.length !== 5 || stringWidth(hint) <= width) {
+    return hint
+  }
+
+  const [scroll, prompts, edit, fork, back] = hints as [string, string, string, string, string]
+  const keys = (segment: string) => segment.split(' ')[0]!
+  const nav = `${keys(scroll)} ${keys(prompts)}`
+
+  const ladder = [[nav, edit, fork, back], [nav, edit, back], [edit, back], [back], []]
+
+  for (const rung of ladder) {
+    const line = [label, ...rung].join(' · ')
+
+    if (stringWidth(line) <= width) {
+      return line
+    }
+  }
+
+  return label
 }

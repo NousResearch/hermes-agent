@@ -1009,9 +1009,21 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
 
 
 def _iter_top_level_shell_segments(command: str):
-    """Yield top-level command segments in one left-to-right pass."""
+    """Yield top-level command segments in one left-to-right pass.
+
+    ``subst="uq"`` is load-bearing, not decoration: with the default empty
+    *subst* a ``$(...)`` inside a double-quoted string is scanned as plain
+    chars, so the first ``"`` of a quoted operand nested in that substitution
+    closes the OUTER quote. A ``|`` that follows -- a regex alternation such as
+    ``"^#|^$"``, or the next pipeline stage inside the substitution -- is then
+    read as a top-level separator and cuts the segment mid-string. The truncated
+    segment carries an unterminated quote, the grep tokenizer fails closed, and
+    a benign command is reported as ``malformed executable payload``, which is an
+    unconditional hardline block: no approval prompt, no yolo bypass. Recognising
+    substitutions here keeps their inner quoting local to the substitution.
+    """
     start = 0
-    for kind, i, j, quote in _scan_shell(command, comments=True):
+    for kind, i, j, quote in _scan_shell(command, comments=True, subst="uq"):
         if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n"):
             if start < i:
                 yield command[start:i]

@@ -297,6 +297,25 @@ class TestWslCwdTranslation:
 # ---------------------------------------------------------------------------
 
 
+def test_fork_builds_the_new_agent_on_the_source_route(monkeypatch):
+    """A fork continues the source conversation, so its agent is built on the source's
+    provider/base_url/api_mode, not re-resolved from the config default provider."""
+    manager = SessionManager(agent_factory=lambda: SimpleNamespace(
+        model="claude-sonnet-4-5", provider="anthropic",
+        base_url="https://anthropic.example/v1", api_mode="anthropic_messages"), db=None)
+    source = manager.create_session(cwd="/work")
+    source.model = "claude-sonnet-4-5"
+    builds = []
+    real_make_agent = manager._make_agent
+    monkeypatch.setattr(manager, "_make_agent", lambda **kw: builds.append(kw) or real_make_agent(**kw))
+
+    assert manager.fork_session(source.session_id, cwd="/work") is not None
+
+    (build,) = builds
+    assert (build.get("model"), build.get("requested_provider"), build.get("base_url"), build.get("api_mode")) == (
+        source.model, source.agent.provider, source.agent.base_url, source.agent.api_mode)
+
+
 
 
 # ---------------------------------------------------------------------------

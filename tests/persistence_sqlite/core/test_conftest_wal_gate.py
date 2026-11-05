@@ -1,7 +1,7 @@
 """The conftest WAL gate must agree with the backend's WAL-reset predicate.
 
 ``tests/conftest.py::_wal_is_usable`` duplicates the SQLite WAL-reset version
-predicate of ``persistence.sqlite._state.wal`` instead of importing it, so the
+predicate of ``sqlite_support`` instead of importing it, so the
 gate runs at collection without loading the store.
 
 Duplication needs a guard, so these tests pin the two implementations in
@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state_wal import is_sqlite_wal_reset_vulnerable
+from sqlite_support import is_sqlite_wal_reset_vulnerable
 from tests.conftest import _wal_is_usable
 
 

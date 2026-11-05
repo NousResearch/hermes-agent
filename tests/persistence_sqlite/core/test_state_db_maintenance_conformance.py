@@ -41,7 +41,7 @@ from hermes_cli.backup import (
 from persistence import StoreContention
 from persistence.sqlite import _registry
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_repair as repair_module
+from persistence.sqlite._state import repair as repair_module
 from persistence.sqlite.admin import SQLiteStoreAdmin
 from persistence.sqlite.admin._maintenance import _optimize_fts
 from persistence.sqlite.conversation._store.messages import append_message

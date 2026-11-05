@@ -41,7 +41,7 @@ def _store_compression_lock(holder: str) -> Any:
 
 
 def _holder(pid: int, name: str) -> str:
-    from hermes_state_pidns import holder_namespace_token
+    from process_identity import holder_namespace_token
 
     return f"pid={pid}{holder_namespace_token()}:{name}"
 

@@ -19,11 +19,11 @@ from unittest.mock import patch
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_wal as state_wal
+import sqlite_support
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
 import storage_user_copy
 from storage_user_copy import get_last_init_error
-from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
+from sqlite_support import WalUnsupportedError, apply_wal_with_fallback
 
 
 # ``sqlite3.Connection.execute`` is a C-level slot and can't be monkeypatched
@@ -86,22 +86,22 @@ def _reset_last_init_error():
 @pytest.fixture(autouse=True)
 def _reset_wal_fallback_warned_paths():
     """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
-    state_wal._wal_fallback_warned_paths.clear()
-    state_wal._wal_delete_fallback_failed_paths.clear()
+    sqlite_support._wal_fallback_warned_paths.clear()
+    sqlite_support._wal_delete_fallback_failed_paths.clear()
     yield
-    state_wal._wal_fallback_warned_paths.clear()
-    state_wal._wal_delete_fallback_failed_paths.clear()
+    sqlite_support._wal_fallback_warned_paths.clear()
+    sqlite_support._wal_delete_fallback_failed_paths.clear()
 
 
 @pytest.fixture(autouse=True)
 def _assume_fixed_sqlite(monkeypatch):
     """NFS-fallback tests assume a SQLite build without the WAL-reset bug."""
     monkeypatch.setattr(
-        state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
-    state_wal._wal_reset_bug_warned_paths.clear()
+    sqlite_support._wal_reset_bug_warned_paths.clear()
     yield
-    state_wal._wal_reset_bug_warned_paths.clear()
+    sqlite_support._wal_reset_bug_warned_paths.clear()
 
 
 class TestApplyWalWithFallback:
@@ -577,7 +577,7 @@ class TestGetLastInitError:
             kwargs.pop("factory", None)
             return real_connect(str(target), factory=_ForeignKeysFailConnection, **kwargs)
 
-        with patch("hermes_state_dbfile.sqlite3.connect", side_effect=gated_connect):
+        with patch("persistence.sqlite._state.dbfile.sqlite3.connect", side_effect=gated_connect):
             with pytest.raises(sqlite3.OperationalError):
                 StoreHolder(db_path=target)
 
@@ -605,7 +605,7 @@ class TestSessionDbUsesWalFallback:
             kwargs.pop("factory", None)
             return real_connect(str(target), factory=factory, **kwargs)
 
-        with patch("hermes_state_dbfile.sqlite3.connect", side_effect=gated_connect):
+        with patch("persistence.sqlite._state.dbfile.sqlite3.connect", side_effect=gated_connect):
             db = StoreHolder(db_path=target)
 
         try:
@@ -637,7 +637,7 @@ class TestSessionDbUsesWalFallback:
             kwargs.pop("factory", None)
             return real_connect(str(target), factory=factory, **kwargs)
 
-        with patch("hermes_state_dbfile.sqlite3.connect", side_effect=gated_connect):
+        with patch("persistence.sqlite._state.dbfile.sqlite3.connect", side_effect=gated_connect):
             with caplog.at_level("ERROR", logger="hermes_state"):
                 db = StoreHolder(db_path=target)
 

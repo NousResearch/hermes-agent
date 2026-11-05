@@ -40,6 +40,9 @@ from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
+from agent.context_compressor_clarify import (
+    _sum_clarify, clarify_answer_quote, clarify_compact_form, clarify_projection_answers, result_tool_name,
+)
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -578,13 +581,16 @@ def salvage_grown_transcript(
     out = [dict(msg) if isinstance(msg, dict) else msg for msg in candidate]
     tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and msg.get("role") == "tool"]
     keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
+    call_id_to_tool = _tool_calls_by_id([msg for msg in out if isinstance(msg, dict)])
     for index, msg in enumerate(out):
         if not isinstance(msg, dict):
             continue
         if msg.get("role") == "tool" and index not in keep_tools:
             content = msg.get("content")
             if isinstance(content, str) and len(content) > _PRUNE_MIN_CHARS:
-                msg["content"] = _PRUNED_TOOL_PLACEHOLDER
+                # A clarify result keeps the user's answers, never the cleared placeholder (#124169).
+                kept = clarify_compact_form(content) if result_tool_name(msg, call_id_to_tool) == "clarify" else None
+                msg["content"] = kept if kept is not None else _PRUNED_TOOL_PLACEHOLDER
         content = msg.get("content")
         if (
             isinstance(content, str)
@@ -953,14 +959,23 @@ def _typed_user_text(content: str) -> str:
 
 
 def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
-    """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
+    """Compacted region's REAL user messages and clarify answers verbatim, newest-first under a char budget
+    (straddler truncated); "" if none."""
     collected: list[str] = []
     used = 0
+    call_id_to_tool: dict[str, tuple] | None = None
     for msg in reversed(turns):
-        if msg.get("role") != "user":
-            continue
-        content = _typed_user_text(_content_text_for_contains(msg.get("content")))
-        if _synthetic_user_row(content):
+        role = msg.get("role")
+        if role == "tool":
+            # Clarify answers are quoted like typed messages (#124169); identity comes from the owning call.
+            call_id_to_tool = _tool_calls_by_id(turns) if call_id_to_tool is None else call_id_to_tool
+            if (content := clarify_answer_quote(msg, call_id_to_tool)) is None:
+                continue
+        elif role == "user":
+            content = _typed_user_text(_content_text_for_contains(msg.get("content")))
+            if _synthetic_user_row(content):
+                continue
+        else:
             continue
         remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
         if remaining <= 0:
@@ -1724,106 +1739,6 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     keep = SKILL_PRUNED_MARKER_PREFIX in content if _is_summary_stub(content) else not failed
     marker = " " + _skill_pruned_marker(str(skill)) if skill != "?" and keep else ""
     return f"[skill_view] name={skill}{failed} ({content_len:,} chars)" + marker
-
-
-# Runtime notices that clarify producers persisted as user_response before per-response
-# status existed. Only status-less (legacy) entries are checked; explicit status wins.
-_CLARIFY_NON_RESPONSE_PREFIXES = (
-    "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
-    "[user did not respond",  # gateway clarify delivery timeout
-    "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
-    "[oneshot mode:",  # hermes_cli/oneshot.py
-)
-# Matched whole: as a prefix these would also swallow real answers that start the same way.
-_CLARIFY_NON_RESPONSE_TEXTS = (
-    "The user cancelled. Use your best judgement to proceed.",  # classic CLI Ctrl+C
-)
-
-
-# Historical callbacks used repr(question) and repr(list[str]). Quoted fields
-# must close before a suffix counts: user text can contain the suffix itself.
-_CLARIFY_QUOTED_TEXT = r"(?:'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")"
-_CLARIFY_HEADLESS_NOTICE = re.compile(
-    r"\[(?:oneshot mode: no user available\. |"
-    rf"single-query mode: no user available to answer {_CLARIFY_QUOTED_TEXT}\. )"
-    r"(?:Make the most reasonable assumption you can and continue\.|"
-    rf"Pick the best (?:option|subset) from \[{_CLARIFY_QUOTED_TEXT}"
-    rf"(?:,\s*{_CLARIFY_QUOTED_TEXT})*\] using your own judgment and continue\.)\]",
-    re.DOTALL,
-)
-
-
-def _is_clarify_non_response(item) -> bool:
-    if not isinstance(item, str):
-        return False
-    text = item.strip()
-    return (text in _CLARIFY_NON_RESPONSE_TEXTS
-            or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
-            or _CLARIFY_HEADLESS_NOTICE.fullmatch(text) is not None)
-
-
-def _filter_legacy_clarify_answers(values):
-    """Remove complete notices, including contiguous comma-normalized fragments."""
-    answers = []
-    index = 0
-    while index < len(values):
-        item = values[index]
-        if isinstance(item, str) and item.strip().startswith((
-            "[oneshot mode: no user available.",
-            "[single-query mode: no user available to answer ",
-        )):
-            text = ""
-            notice_end = None
-            for end in range(index, len(values)):
-                if not isinstance(values[end], str):
-                    break
-                text += ("," if end > index else "") + values[end].strip()
-                if _CLARIFY_HEADLESS_NOTICE.fullmatch(text):
-                    notice_end = end
-                    break
-            if notice_end is not None:
-                index = notice_end + 1
-                continue
-        if not _is_clarify_non_response(item):
-            answers.append(item)
-        index += 1
-    return answers
-
-
-def _sum_clarify(name, args, content, content_len, line_count):
-    response_prefix = "[clarify] user responded: "
-    # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
-    # min_prune_chars guard and skips the >=200-char dedup.
-    max_summary_chars = _PRUNE_MIN_CHARS - 1
-    payload = _json_dict(content)
-    responses = payload.get("responses")
-    if not isinstance(responses, list) and "user_response" in payload:
-        # Clarify results written before per-response status was introduced used
-        # the response fields directly on the top-level object.
-        responses = [payload]
-    answers: list = []
-    for entry in responses if isinstance(responses, list) else ():
-        if isinstance(entry, dict) and (
-            entry.get("status") == "answered"
-            or ("status" not in entry and "user_response" in entry)
-        ):
-            value = entry.get("user_response")
-            values = value if isinstance(value, list) else [value]
-            # Pre-status sessions also stored timeout/delivery notices as user_response.
-            # Only those legacy records need the old sentinel check; explicit status wins.
-            # Drop just the notice items so other selections in the same entry survive.
-            if "status" not in entry:
-                # Scan complete envelopes, not the whole list: genuine selections
-                # can surround a notice split by the old multi-select normalizer.
-                values = _filter_legacy_clarify_answers(values)
-            answers.extend(values)
-    answers = [answer for answer in answers if isinstance(answer, str) and answer]
-    if not answers:
-        return "[clarify] asked user a question"
-    # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
-    serialized = json.dumps(answers[0] if len(answers) == 1 else answers,
-                            ensure_ascii=False).encode("utf-8", errors="backslashreplace")
-    return elide(response_prefix + serialized.decode("utf-8"), max_summary_chars)
 
 
 def _sum_skill_manage(name, args, content, content_len, line_count):
@@ -3205,6 +3120,9 @@ class ContextCompressor(
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        # Already the answer projection: summarizing it again would leave "asked user a question" (#124169).
+        if tool_name == "clarify" and clarify_projection_answers(content) is not None:
+            return False
         if protected_skills and tool_name == "skill_view":
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:

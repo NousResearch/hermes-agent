@@ -16,9 +16,9 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
-    _sum_clarify,
     _is_summary_access_or_quota_error,
 )
+from agent.context_compressor_clarify import CLARIFY_ANSWER_MAX_CHARS, _sum_clarify, clarify_projection_answers
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from hermes_state import SessionDB
 from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
@@ -98,8 +98,7 @@ class TestLegacyClarifyResults:
         if shape == "current":
             expected = answer  # Explicit status wins even for notice-like answer text.
         expected_summary = ("[clarify] asked user a question" if expected is None else
-                            module.elide("[clarify] user responded: " + json.dumps(expected, ensure_ascii=False),
-                                         _PRUNE_MIN_CHARS - 1))
+                            "[clarify] user responded: " + json.dumps(expected, ensure_ascii=False))
         entry = {"question": "Which environment? " + "q" * question_size,
                  "choices_offered": ["staging", "production"], "user_response": answer}
         if shape == "current":
@@ -317,18 +316,19 @@ class TestSummarizeToolResultClarify:
             "question": "Describe the deployment constraints",
             "choices_offered": None,
             "status": "answered",
-            "user_response": "A" * 1_000,
+            "user_response": "A" * 10_000,
         }], "outcome": "submitted"})
 
         summary = _summarize_tool_result("clarify", "{}", content)
 
-        # Strictly below the prune floor so a later prune pass can never
-        # re-summarize the preserved answer away (idempotency below). The exact
-        # length varies with the digit width of the elision marker's counts.
-        assert len(summary) <= _PRUNE_MIN_CHARS - 1
-        assert summary.startswith('[clarify] user responded: "AAA')
-        assert _COMPRESSION_MARKER_PREFIX in summary
-        assert summary.endswith("⟫")
+        # Bounded per answer like a quoted user message, and elided inside the JSON so the
+        # projection still parses and later prune passes leave it alone (#124169).
+        answers = clarify_projection_answers(summary)
+        assert answers is not None and len(answers) == 1 and len(answers[0]) <= CLARIFY_ANSWER_MAX_CHARS
+        assert answers[0].startswith("AAA")
+        assert _COMPRESSION_MARKER_PREFIX in answers[0]
+        assert answers[0].endswith("⟫")
+        # Handed back as raw clarify output, a summary is still not trusted as an answer.
         assert (
             _summarize_tool_result("clarify", "{}", summary)
             == "[clarify] asked user a question"
@@ -380,7 +380,7 @@ class TestSummarizeToolResultClarify:
         summary = pruned_messages[1]["content"]
 
         assert pruned_count == 1
-        assert len(summary) <= _PRUNE_MIN_CHARS
+        assert clarify_projection_answers(summary) is not None
         assert summary.encode("utf-8")
         assert "Привет 😀" in summary
         assert "\\ud83d" in summary

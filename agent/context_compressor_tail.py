@@ -77,7 +77,9 @@ def demote_stale_tail_tools(
     (untouched rows shared, demoted copied) and the number of rows demoted."""
     from agent.context_compressor import (
         SKILL_PRUNED_MARKER_PREFIX, _is_summary_stub, _result_failure_suffix, _rewritten, _skill_pruned_marker,
+        _tool_calls_by_id,
     )
+    from agent.context_compressor_clarify import clarify_compact_form, result_tool_name
 
     rounds_seen = 0
     protected: set[int] = set()
@@ -91,12 +93,20 @@ def demote_stale_tail_tools(
     result = list(messages)
     demoted = 0
     skills: dict[str, str] | None = None
+    call_id_to_tool: dict[str, tuple] | None = None
     for i in range(tail_start, len(messages)):
         msg = messages[i]
         content = msg.get("content")
         if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
             continue
         if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
+            continue
+        call_id_to_tool = _tool_calls_by_id(messages) if call_id_to_tool is None else call_id_to_tool
+        # The user's clarify answers stay in the tail as their projection, never a recovery stub (#124169).
+        if result_tool_name(msg, call_id_to_tool) == "clarify" and (kept := clarify_compact_form(content)) is not None:
+            if kept != content:
+                result[i] = _rewritten(msg, kept)
+                demoted += 1
             continue
         stub = _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id)
         skills = skill_view_names_by_call_id(messages) if skills is None else skills

@@ -638,8 +638,8 @@ def _selection_lock() -> threading.Lock:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
-    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled
-    plugin on the kill list raises :class:`PluginOperationError` (every enable surface lands here)."""
+    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled plugin
+    on the kill list raises :class:`PluginOperationError`; the `hermes plugins` picker checks it itself."""
     from pm.plugins_state import read_home_selection
 
     if enable:

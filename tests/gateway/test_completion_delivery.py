@@ -904,7 +904,8 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
     """Unavailable owners/transports cannot consume any sibling's durable attempts."""
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_session
     from tools import async_delegation
 
     events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]
@@ -917,7 +918,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
         _persist_pending_completion(event)
 
     adapter = SimpleNamespace(handle_message=AdmittingHandler())
-    api = SimpleNamespace(supports_async_delivery=False, _ensure_session_db=lambda: None)
+    api = SimpleNamespace(supports_async_delivery=False, _ensure_store=lambda: None)
     for _restart in range(3):
         runner = _runner(adapter)
         runner.adapters = {Platform.API_SERVER: api} if unavailable == "api_db" else {}
@@ -928,28 +929,31 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
             row = async_delegation.get_durable_delegation(event["delegation_id"])
             assert (row["delivery_state"], row["delivery_attempts"]) == ("pending", 0)
 
+    from persistence_assembly import open_persistence, profile_scope
     runner = _runner(adapter)
-    db = SessionDB(tmp_path / "owner.db")
+    store = open_persistence(profile_scope(home=tmp_path / "owner"))
     try:
         if raw:
-            db.create_session("opaque-client-session", "api_server")
-            api._ensure_session_db = lambda: db
+            seed_session(store, "opaque-client-session", "api_server")
+            api._ensure_store, api._store_beside = (lambda: store), (lambda _db: store)
             runner.adapters = {Platform.API_SERVER: api}
         if unavailable == "owner_db":
-            runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value={"ended_at": None}))
+            live = SimpleNamespace(ended_at=None, end_reason=None, source=None, model_config={})
+            runner.session_store.persistence = SimpleNamespace(
+                aio=SimpleNamespace(sessions=SimpleNamespace(get=AsyncMock(return_value=live))))
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
             assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
         if raw:
-            rows = db.get_messages("opaque-client-session")
+            rows = transcript_rows(store, "opaque-client-session")
             assert len(rows) == 1
             assert rows[0]["display_kind"] == "async_delegation_complete"
             adapter.handle_message.assert_not_awaited()
         else:
             adapter.handle_message.assert_awaited_once()
     finally:
-        db.close()
+        store.close()
 
 
 @pytest.mark.parametrize("available", [False, True])

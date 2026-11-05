@@ -19,46 +19,45 @@ import pytest
 
 from gateway.session_contract import SessionActor
 from gateway.session_group_controls import _bot_sessions, _read_bot_sessions, _sibling_sessions
-from hermes_state import SessionDB
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 READER = SessionActor('uid:desk', 'alpha', frozenset({'session:operator'}), 'transport:test')
 
 
 @pytest.fixture
-def db(tmp_path):
-    store = SessionDB(db_path=tmp_path / 'state.db')
-    yield store
-    store.close()
+def store(tmp_path):
+    return storage_handle(tmp_path)
 
 
-def _authority(db, **extra):
+def _authority(store, **extra):
     class _Authority:  # weak-referenceable: ``_sibling_sessions`` tracks degraded authorities in a WeakSet
         def __init__(self):
-            self.db, self.retiring, self.retired, self.profile_id = db, False, False, 'alpha'
+            self.persistence, self.retiring, self.retired, self.profile_id = store, False, False, 'alpha'
             self.__dict__.update(extra)
 
     return _Authority()
 
 
-def _session(db, sid, *, source='kanban', title='', last_active=0, hidden=0, archived=0):
+def _session(store, sid, *, source='kanban', title='', last_active=0, hidden=0, archived=0):
     """A stored row with a fixed activity stamp, so "newest worker" is decided by this test."""
-    db.create_session(sid, source=source)
-    with db._lock:
-        db._conn.execute(
-            'UPDATE sessions SET title=?, last_activity_at=?, started_at=?, hidden=?, archived=? WHERE id=?',
-            (title, last_active, last_active, hidden, archived, sid))
+    seed_session(store, sid, source)
+    raw_holder(store)._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET title=?, last_activity_at=?, started_at=?, hidden=?, archived=? WHERE id=?',
+        (title, last_active, last_active, hidden, archived, sid)))
 
 
-def test_the_newest_live_worker_is_reported_with_the_contract_fields(db):
-    _session(db, 'work-old', title='Task 4', last_active=1000)
-    _session(db, 'work-new', title='Task 9', last_active=3000)
-    _session(db, 'tool-run', source='tool', title='Subagent', last_active=2000)
-    _session(db, 'oneshot-run', source='oneshot', title='One-shot', last_active=2500)
-    _session(db, 'chat', source='gui', title='Chat', last_active=5000)  # newest, but a conversation
-    _session(db, 'work-archived', title='Retired', last_active=9000, archived=1)
-    _session(db, 'work-hidden', title='Internal', last_active=9500, hidden=1)
+def test_the_newest_live_worker_is_reported_with_the_contract_fields(store):
+    _session(store, 'work-old', title='Task 4', last_active=1000)
+    _session(store, 'work-new', title='Task 9', last_active=3000)
+    _session(store, 'tool-run', source='tool', title='Subagent', last_active=2000)
+    _session(store, 'oneshot-run', source='oneshot', title='One-shot', last_active=2500)
+    _session(store, 'chat', source='gui', title='Chat', last_active=5000)  # newest, but a conversation
+    _session(store, 'work-archived', title='Retired', last_active=9000, archived=1)
+    _session(store, 'work-hidden', title='Internal', last_active=9500, hidden=1)
 
-    fields = _read_bot_sessions(db, 'uid:desk', False)
+    fields = _read_bot_sessions(store, 'uid:desk', False)
 
     assert fields['worker_session'] == {'id': 'work-new', 'source': 'kanban',
                                         'title': 'Task 9', 'last_active': 3000}, fields['worker_session']
@@ -67,15 +66,15 @@ def test_the_newest_live_worker_is_reported_with_the_contract_fields(db):
     assert [key for key in fields] == ['last_session', 'worker_session', 'canonical_session']
 
 
-def test_a_profile_without_workers_reports_none(db):
-    _session(db, 'chat', source='gui', title='Chat', last_active=1000)
+def test_a_profile_without_workers_reports_none(store):
+    _session(store, 'chat', source='gui', title='Chat', last_active=1000)
 
-    assert _read_bot_sessions(db, 'uid:desk', False)['worker_session'] is None
+    assert _read_bot_sessions(store, 'uid:desk', False)['worker_session'] is None
 
 
-def test_the_own_row_and_a_host_scoped_sibling_row_both_carry_the_worker(db, tmp_path):
-    _session(db, 'work-alpha', title='Task 1', last_active=2000)
-    authority = _authority(db)
+def test_the_own_row_and_a_host_scoped_sibling_row_both_carry_the_worker(store):
+    _session(store, 'work-alpha', title='Task 1', last_active=2000)
+    authority = _authority(store)
 
     # The own row (``_profiles`` does ``row.update(_bot_sessions(authority, actor))``).
     own = _bot_sessions(authority, READER)

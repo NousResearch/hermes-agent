@@ -8,18 +8,18 @@ import pytest
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from gateway.session_controls import AuthorityConnection
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 @pytest.mark.asyncio
 async def test_repeated_resume_and_close_preserve_only_live_memberships(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
-        db.create_session('s', source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        seed_session(db, 's', 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         authority.sessions['s'] = LiveSession(None, 'route')
         first = AuthorityConnection(authority, object(), {'user_id': 'human'})
         peer = AuthorityConnection(authority, object(), {'user_id': 'human'})
@@ -46,14 +46,15 @@ async def test_close_after_a_subscribed_session_was_deleted_releases_every_membe
     """Deletion evicts the live session before the viewer disconnects; teardown must still
     release the other subscription and the transport instead of raising not_found."""
     import tui_gateway.ws
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
         for sid in ('doomed', 'kept'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
-        store = SimpleNamespace(_routing_db=db, retire_runtime_sessions=lambda ids: None)
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
+        store = SimpleNamespace(_routing_persistence=storage_handle(tmp_path), retire_runtime_sessions=lambda ids: None)
         runner = SimpleNamespace(_draining=False, session_store=store, _evict_cached_agent=lambda route: None)
-        authority = SessionAuthority(runner, profile_id='test', instance_id='test', db=db, epoch=epoch)
+        authority = SessionAuthority(runner, profile_id='test', instance_id='test', epoch=epoch,
+                                     persistence=db)
         runner.session_authority = authority  # the runtime owns this authority, so its delete passes the guard
         for sid in ('doomed', 'kept'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
@@ -78,15 +79,15 @@ async def test_close_after_a_subscribed_session_was_deleted_releases_every_membe
 
 @pytest.mark.asyncio
 async def test_detach_releases_only_the_paired_subscription_without_stopping_execution(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     running = None
     viewer = observer = None
     try:
         for sid in ('a', 'b'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         for sid in ('a', 'b'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
         running = asyncio.create_task(asyncio.Event().wait())
@@ -125,14 +126,14 @@ async def test_detach_releases_only_the_paired_subscription_without_stopping_exe
 
 @pytest.mark.asyncio
 async def test_stale_or_mismatched_pair_reports_detached_false_and_keeps_the_live_token(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     viewer = observer = None
     try:
         for sid in ('s', 'other'):
-            db.create_session(sid, source='test')
-        epoch = begin_runtime_epoch(db, instance_id='test')
+            seed_session(db, sid, 'test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test',
-                                     instance_id='test', db=db, epoch=epoch)
+                                     instance_id='test', epoch=epoch, persistence=db)
         for sid in ('s', 'other'):
             authority.sessions[sid] = LiveSession(None, sid + '-route')
         viewer = AuthorityConnection(authority, object(), {'user_id': 'human'})
@@ -176,11 +177,11 @@ async def test_stale_or_mismatched_pair_reports_detached_false_and_keeps_the_liv
 @pytest.mark.asyncio
 async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path, caplog):
     """Storage failures retain their client contract while leaving an operator diagnostic."""
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
-                                     db=db, epoch=epoch)
+                                     persistence=db, epoch=epoch)
 
         class Connection(AuthorityConnection):
             def handlers(self):
@@ -205,11 +206,11 @@ async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path
 async def test_a_retrying_client_cannot_flood_the_log_with_storage_failures(tmp_path, caplog):
     """Clients retry on ``storage_unavailable``: each failure keeps one short line, the traceback comes
     once per method and error class, and a client-sized ``session_id`` is never copied whole."""
-    db = SessionDB(db_path=tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     try:
-        epoch = begin_runtime_epoch(db, instance_id='test')
+        epoch = db.runtime.begin_epoch(instance_id='test')
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
-                                     db=db, epoch=epoch)
+                                     persistence=db, epoch=epoch)
 
         class Connection(AuthorityConnection):
             def handlers(self):

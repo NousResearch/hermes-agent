@@ -27,7 +27,6 @@ async def test_only_the_local_cli_owner_may_submit_an_unattended_turn(monkeypatc
     from gateway import run
     from gateway.session_controls import AuthorityConnection
     from hermes_constants import get_hermes_home
-    from hermes_state_runtime import list_session_admissions
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run, '_hermes_home', home)
@@ -57,8 +56,8 @@ async def test_only_the_local_cli_owner_may_submit_an_unattended_turn(monkeypatc
                                              (operator, 'cli', 'operator-attach')):
             refused = await submit(connection, name, request_id)
             assert refused.get('error', {}).get('message') == 'invalid_params', (request_id, refused)
-            assert not [row for row in list_session_admissions(authority.db, session_id=sessions[name])
-                        if row['request_id'] == request_id]
+            assert not [row for row in authority.persistence.admissions.list(session_id=sessions[name])
+                        if row.request_id == request_id]
         # A plain finite turn (``-q``) stays available to every submitter.
         assert 'result' in await _rpc(operator, 'prompt.submit', session_id=sessions['cli'], input_id='q',
                                       text='hi', finite=True)

@@ -227,6 +227,32 @@ export function UserSectionHeader({
 
 // ── drop zone ────────────────────────────────────────────────────────────────
 
+/** The pointer-drop registry. macOS 26+ kills native HTML5 drag sessions right
+ *  after dragstart (no dragover/drop/dragend ever reach the page), so bot rows
+ *  drive filing with pointer events instead: the dragging row hit-tests
+ *  `elementFromPoint` against `data-slot="bots-section"` and calls back into
+ *  whichever zone registered itself here. Zones self-register while mounted and
+ *  keep their entry fresh (isSource, callbacks) via effect deps. */
+export interface PointerDropZoneEntry {
+  /** True when the in-flight key is already filed here — the zone refuses the
+   *  drop and never lights up (the same contract the drag handlers use). */
+  isSource: boolean
+  /** Drives the zone's own highlight state (bg + ring + data-drop-over). */
+  setOver: (over: boolean) => void
+  /** Files the key into this zone: clears the in-flight atom and calls the
+   *  pane's mover, exactly like the drag `onDrop` path does. */
+  drop: (rosterKey: string) => void
+}
+
+const pointerDropZones = new Map<HTMLElement, PointerDropZoneEntry>()
+
+/** The registered zone under a viewport point, or null over dead space. */
+export function findPointerDropZone(x: number, y: number): PointerDropZoneEntry | null {
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-slot="bots-section"]')
+
+  return el ? pointerDropZones.get(el) ?? null : null
+}
+
 /** While a bot is in flight, Escape cancels the gesture. Mount once in the
  *  roster pane. */
 export function useEscapeCancelsBotDrag(): void {
@@ -266,8 +292,39 @@ interface SectionDropZoneProps {
 export function SectionDropZone({ children, isSource, nested, onDropBot }: SectionDropZoneProps) {
   const dragging = useValue($draggingBot)
   const [over, setOver] = useState(false)
+  const zoneRef = useRef<HTMLDivElement>(null)
   const armed = Boolean(dragging) && !isSource
   const lit = armed && over
+
+  // Self-register for pointer-driven drops (see the registry above). The entry
+  // refreshes whenever the pane recomputes isSource or passes a new mover, so
+  // an in-flight gesture always consults current state.
+  useEffect(() => {
+    const el = zoneRef.current
+
+    if (!el) {
+      return
+    }
+
+    pointerDropZones.set(el, {
+      drop: rosterKey => {
+        setOver(false)
+        // Same contract as the drag onDrop below: the dropped row remounts
+        // under its new section, so clear the in-flight state here.
+        $draggingBot.set(null)
+
+        if (!isSource) {
+          onDropBot(rosterKey)
+        }
+      },
+      isSource,
+      setOver,
+    })
+
+    return () => {
+      pointerDropZones.delete(el)
+    }
+  }, [isSource, onDropBot])
 
   // Escape cancels the gesture: the in-flight key is cleared (see the
   // keydown hook in the roster pane), so every zone disarms at once and a
@@ -338,6 +395,7 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
         event.preventDefault()
         onDropBot(key)
       }}
+      ref={zoneRef}
     >
       {children}
     </div>

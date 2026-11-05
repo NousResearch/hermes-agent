@@ -66,6 +66,7 @@ import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
+import { useRosterPointerDrag } from './roster-pointer-drag'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { rowAge } from './row-age'
 import {
@@ -82,7 +83,6 @@ import type { GroupMember, RosterRow } from './types'
 import {
   $botSections,
   $draggingBot,
-  BOT_DRAG_MIME,
   botSectionId,
   groupChatSectionId,
   groupDragKey,
@@ -221,14 +221,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const open = (event?: { ctrlKey?: boolean; metaKey?: boolean }) =>
     void openRosterBot(bot, { intent: event?.metaKey || event?.ctrlKey ? 'tab' : 'in-place' })
 
-  // DRAG lives on the row button itself: it already takes pointer events, so
-  // the click that opens the bot and the drag that files it are one element's
-  // gestures. The drag carries the roster key under a private MIME type, so
-  // only a section block can accept it.
+  // Click and filing share one row gesture; the hook owns the pointer state
+  // machine and the section registry supplies the drop targets.
   const rosterKey = botRosterKey(bot)
   const sections = useValue($botSections)
   const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
+  const pointerDragHandlers = useRosterPointerDrag({ onOpen: open, rosterKey })
 
   const row = (
     <RowButton
@@ -238,19 +237,12 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         isActive && 'bg-(--ui-row-active-background)',
-        // The row being dragged fades in place; the browser's drag image is
-        // the row itself, so the ghost under the pointer is the full row.
+        // The row being dragged fades in place; there is no drag ghost to
+        // follow the pointer — the lit target under it carries the feedback.
         dragging && 'opacity-40'
       )}
       data-roster-key={rosterKey}
-      draggable
-      onClick={open}
-      onDragEnd={() => $draggingBot.set(null)}
-      onDragStart={event => {
-        event.dataTransfer.setData(BOT_DRAG_MIME, rosterKey)
-        event.dataTransfer.effectAllowed = 'move'
-        $draggingBot.set(rosterKey)
-      }}
+      {...pointerDragHandlers}
       onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
@@ -536,6 +528,14 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
   const dragKey = groupDragKey(group)
   const dragging = useValue($draggingBot) === dragKey
 
+  const pointerDragHandlers = useRosterPointerDrag({
+    onOpen: () => {
+      haptic('tap')
+      onOpen(group)
+    },
+    rosterKey: dragKey
+  })
+
   const row = (
     <RowButton
       aria-label={`${group}, ${b.group.memberCount(members.length)}, ${availabilityLabel}`}
@@ -545,17 +545,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
         active && 'bg-(--ui-row-active-background)',
         dragging && 'opacity-40'
       )}
-      draggable
-      onClick={() => {
-        haptic('tap')
-        onOpen(group)
-      }}
-      onDragEnd={() => $draggingBot.set(null)}
-      onDragStart={event => {
-        event.dataTransfer.setData(BOT_DRAG_MIME, dragKey)
-        event.dataTransfer.effectAllowed = 'move'
-        $draggingBot.set(dragKey)
-      }}
+      {...pointerDragHandlers}
     >
       <div className="relative flex w-[34px] shrink-0 items-center justify-center">
         {room.image ? (

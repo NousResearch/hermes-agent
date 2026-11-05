@@ -39,7 +39,6 @@ from gateway.session import (
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
-from typing import Any, Dict, List, Optional, Tuple
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)

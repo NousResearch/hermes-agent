@@ -52,6 +52,33 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
     assert "write=" not in line and "id=" not in line and "upstream=" not in line
 
 
+def test_usage_is_queued_through_the_writer_handle_with_every_keyword(tmp_path, monkeypatch, caplog):
+    """With a writer's handle beside the store, the per-call delta goes to the handle's usage queue and
+    carries every keyword the store's queue receives."""
+    from unittest.mock import MagicMock
+
+    from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
+    a = _agent(tmp_path, monkeypatch)
+    resp = SimpleNamespace(usage=_usage(34_283, 28_604, 62_889), id=None, model="anthropic/claude-fable-5.1")
+    try:
+        a._session_db, a._session_db_created = MagicMock(), True
+        _line(a, caplog, resp)
+        (store_sid,), kwargs = a._session_db.queue_token_counts.call_args
+        a._session_db.reset_mock()
+        a.persistence = SimpleNamespace(read_only=False, usage=MagicMock(), sessions=MagicMock())
+        _line(a, caplog, resp)
+        (sid, delta), _ = a.persistence.usage.queue_usage.call_args
+        a._session_db.queue_token_counts.assert_not_called()
+    finally:
+        a.persistence = a._session_db = None
+        a.close()
+    tokens = TokenCounts(**{key: kwargs.pop(key) for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
+    route = BillingRoute(**{key: kwargs.pop(key) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")})
+    assert sid == store_sid == "t"
+    assert delta == UsageDelta(tokens=tokens, route=route, **kwargs) and delta.tokens.cache_write_tokens == 28_604
+
+
 def test_forensics_parser_reads_the_new_fields(tmp_path):
     from evals.postmortem.forensics.logcalls import parse_logs
     log = tmp_path / "agent.log"

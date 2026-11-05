@@ -2916,6 +2916,11 @@ export interface Translations extends NoticeTranslations {
   }
 
   composer: {
+    steerNotSentTitle: string
+    steerExternalNotSentBody: string
+    steerUnconfirmedTitle: string
+    steerUnconfirmedBody: string
+    steerExternalUnconfirmedBody: string
     message: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
@@ -3004,16 +3009,6 @@ export interface Translations extends NoticeTranslations {
     terminalSelectionMissingTitle: string
     terminalSelectionMissingBody: string
     queuedTerminalSelectionExpiredBody: string
-    queueSteerRefusedTitle: string
-    queueSteerRefusedBody: string
-    steerNotSentTitle: string
-    steerExternalNotSentBody: string
-    steerUnconfirmedTitle: string
-    steerUnconfirmedBody: string
-    steerExternalUnconfirmedBody: string
-    steerQueuedTitle: string
-    steerQueuedBody: string
-    steerQueuedCompressionBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

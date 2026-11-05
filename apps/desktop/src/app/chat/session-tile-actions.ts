@@ -17,12 +17,7 @@ import type { WorkspaceMode } from '@/contrib/types'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
-import {
-  notifyCorrectionQueued,
-  notifyCorrectionUnconfirmed,
-  queuedCorrectionJoinsLiveTurn,
-  UnconfirmedCorrectionError
-} from '@/lib/correction-receipt'
+import { UnconfirmedCorrectionError } from '@/lib/correction-delivery'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
@@ -32,8 +27,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection } from '@/store/session'
-import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
+import { $connection, $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import {
   requestForSessionProfile,
   type SessionOwnerScope,
@@ -427,13 +421,21 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           }
         )
 
-        if (result?.status === 'queued') {return true}
+        if (result?.status === 'queued') {
+          return true
+        }
 
-        if (result?.status === 'rejected' && result.delivered === false) {return false}
+        if (result?.status === 'rejected' && result.delivered === false) {
+          return false
+        }
+
         throw new Error('Correction delivery unconfirmed')
-      } catch (error) {
-        if (isUndeliveredCorrectionRefusal(error)) {return false}
-        throw new UnconfirmedCorrectionError(error)
+      } catch (err) {
+        if (isUndeliveredCorrectionRefusal(err)) {
+          return false
+        }
+
+        throw err
       }
     },
     [bindRecoveredRuntime, requestSessionGateway]
@@ -448,15 +450,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         return false
       }
 
-      const sourceStoredId = storedIdRef.current
-      const connectionAtSend = $connection.get()
-      const profileAtSend = $activeGatewayProfile.get()
+      const source = storedIdRef.current
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
 
       const stillHere = () =>
-        runtimeIdRef.current === sessionId &&
-        storedIdRef.current === sourceStoredId &&
-        $connection.get() === connectionAtSend &&
-        $activeGatewayProfile.get() === profileAtSend
+        storedIdRef.current === source && $connection.get() === connection && $activeGatewayProfile.get() === profile
 
       const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -513,18 +512,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
 
         if (result?.status === 'queued') {
-          // An accepted steer joins this turn after its running tool; a
-          // correction queued for the next turn (build window, compaction)
-          // keeps the live stream running and says where it went.
-          if (queuedCorrectionJoinsLiveTurn(result, mode)) {
+          // A redirect queued in the build window is the next turn; an
+          // accepted steer joins this one after its running tool.
+          if (mode === 'steer') {
             flushStreamDeltas(sessionId)
             mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
           } else {
             moveOptimisticMessageToEnd()
-
-            if (stillHere()) {
-              notifyCorrectionQueued(result)
-            }
           }
 
           triggerHaptic('submit')
@@ -547,10 +541,10 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           return false
         }
 
-        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyCorrectionUnconfirmed() : undefined)
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyError(err, copy.promptFailed) : undefined)
       }
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

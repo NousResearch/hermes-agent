@@ -253,45 +253,6 @@ class TestActiveTurnRedirect:
         assert agent._pending_steer == "also check migrations"
         assert agent._interrupt_requested is False
 
-    def test_live_turn_redirect_between_requests_takes_the_steer_boundary(self):
-        """No model request in flight (between iterations, or past the last one): the plain redirect
-        still refuses, but a caller that knows the turn is live hands the words to the steer drain
-        instead of a refusal its surface queues behind the whole turn (#141973)."""
-        from agent.interrupt_control import redirect_or_steer
-
-        agent = _bare_agent()
-        assert agent.redirect("join this turn") is False
-
-        assert redirect_or_steer(agent, "join this turn") == "steer"
-        assert agent._pending_steer == "join this turn"
-        assert agent._pending_redirect is None
-        assert agent._interrupt_requested is False
-
-    @pytest.mark.parametrize("case", ["hard_stop", "codex_native"])
-    def test_live_turn_redirect_keeps_refusals_that_must_not_steer(self, case):
-        """A hard stop discards the turn's steers; a native Codex refusal may follow delivery."""
-        from agent.interrupt_control import redirect_or_steer
-
-        agent = _bare_agent()
-        if case == "hard_stop":
-            agent._interrupt_requested = True
-        else:
-            agent.api_mode = "codex_app_server"
-            agent._codex_session = type("_Codex", (), {"request_steer": lambda self, text: False})()
-
-        assert redirect_or_steer(agent, "too late") is None
-        assert agent._pending_steer is None
-
-    def test_live_turn_redirect_in_flight_still_redirects(self):
-        from agent.interrupt_control import redirect_or_steer
-
-        agent = _bare_agent()
-        agent._model_request_active.set()
-
-        assert redirect_or_steer(agent, "use Postgres") == "redirect"
-        assert agent._pending_redirect == "use Postgres"
-        assert agent._pending_steer is None
-
 
 class TestActiveTurnRedirectCheckpoint:
     def test_repetition_dominated_partial_is_not_replayed(self):

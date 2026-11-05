@@ -5,8 +5,6 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -636,11 +634,6 @@ class SessionCorrectionParams(SessionParams):
 class SessionCorrectionResult(Result):
     status: CorrectionStatus
     text: str
-    # Legacy steer receipt: enqueue/entry acceptance, not model consumption.
-    disposition: Literal["steer", "queue"] | None = None
-    reason: Literal["compression", "turn_ended"] | None = None
-    # Match the canonical correction contract: only known pre-delivery refusal.
-    delivered: Literal[False] | None = None
 
 
 method("session.steer", params=SessionCorrectionParams, result=SessionCorrectionResult,

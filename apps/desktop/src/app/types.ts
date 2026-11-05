@@ -85,20 +85,16 @@ export interface SessionCompressResponse {
 
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
-  // tool-result boundary). A bare 'rejected' is not proof of non-delivery.
+  // tool-result boundary); 'rejected' == no live tool window, caller queues.
   status?: 'queued' | 'rejected'
   text?: string
 }
 
 export interface SessionRedirectResponse {
+  /** Only explicit non-delivery permits a new-turn fallback. */
+  delivered?: boolean
   status?: 'redirected' | 'queued' | 'rejected'
   text?: string
-  /** Where a `queued` correction went: the live turn's steer slot, or the next-turn queue.
-   *  Absent from older backends (and the canonical reply), which name no destination. */
-  disposition?: 'steer' | 'queue' | null
-  reason?: string | null
-  /** Only false proves that a rejected correction is safe to submit as a new turn. */
-  delivered?: false | null
   /** TUI-26: the text was a bare stop phrase that ended the LOCAL voice chat; no turn saw it. */
   voice_stopped?: boolean
 }
@@ -197,6 +193,9 @@ export interface ClientSessionState {
   /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
    *  re-sent start of the same turn is not a new occurrence. */
   streamTurnId?: null | string
+  /** The owner admission the live turn executes, from its frames' execution stamp (`admission_id`). The in-flight
+   *  journal stores it so a reopen can ask the owner whether that exact execution is still pending. */
+  turnAdmissionId?: null | string
   /** Newest row on screen when that message.start arrived: rows above it are
    *  earlier turns, even when an interim seal left them marked `interim`. */
   turnAnchorId?: null | string

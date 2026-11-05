@@ -2284,6 +2284,13 @@ export const jaOverrides = {
   },
 
   composer: {
+    steerNotSentTitle: 'メッセージは送信されていません',
+    steerExternalNotSentBody:
+      'このメッセージは送信もキューへの追加もされていません。テキストをコピーして、ご自身で送信してください。',
+    steerUnconfirmedTitle: '送信を確認できません',
+    steerUnconfirmedBody: '送達は未確認です。再送する前にメッセージとキューを確認してください。',
+    steerExternalUnconfirmedBody:
+      '前の送信は未確認です。テキストをコピーし、再送する前にメッセージとキューを確認してください。',
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
@@ -2453,18 +2460,6 @@ export const jaOverrides = {
       'ターン中にゲートウェイが再起動したため完了できません。破棄すると後続のキュー済みターンが実行されます。',
     queueResume: '再開',
     queueResumeTip: '停止により一時停止中 — キュー済みターンの送信を再開します',
-    queueSteerRefusedTitle: 'ステアが受け付けられませんでした',
-    queueSteerRefusedBody: '現在のターンはこの修正を受け付けられませんでした。メッセージはキューに残り、先頭に移動しました。',
-    steerNotSentTitle: "メッセージは送信されていません",
-    steerExternalNotSentBody:
-      "このメッセージは送信もキューへの追加もされていません。テキストをコピーして、ご自身で送信してください。",
-    steerUnconfirmedTitle: '送信を確認できません',
-    steerUnconfirmedBody: '送達は未確認です。再送する前にメッセージとキューを確認してください。',
-    steerExternalUnconfirmedBody:
-      '前の送信は未確認です。テキストをコピーし、再送する前にメッセージとキューを確認してください。',
-    steerQueuedTitle: '次のターンにキューしました',
-    steerQueuedBody: '現在のターンがこのメッセージを受け取れなかったため、次に実行されるようキューに入れました。',
-    steerQueuedCompressionBody: 'コンテキストを圧縮中のため、このメッセージは次に実行されるようキューに入れました。',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',

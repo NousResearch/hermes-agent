@@ -3310,6 +3310,13 @@ export const en: Translations = {
   },
 
   composer: {
+    steerNotSentTitle: 'Message not sent',
+    steerExternalNotSentBody: 'This message was not sent or queued. Copy its text to send it yourself.',
+    steerUnconfirmedTitle: 'Delivery unconfirmed',
+    steerUnconfirmedBody:
+      'Delivery is unconfirmed. Check messages and the queue before deciding whether to send again.',
+    steerExternalUnconfirmedBody:
+      'A previous submission is unconfirmed. Copy its text and check messages and the queue before deciding whether to send again.',
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
@@ -3499,20 +3506,6 @@ export const en: Translations = {
       'Re-select the terminal lines (Ctrl/Cmd+L) before sending — this chip has no original text.',
     queuedTerminalSelectionExpiredBody:
       'This queued terminal selection is no longer available. Re-select the lines (Ctrl/Cmd+L) and queue the message again.',
-    queueSteerRefusedTitle: 'Steer not taken',
-    queueSteerRefusedBody:
-      'The live turn could not take the redirect. Your message stays queued and is now first in line.',
-    steerNotSentTitle: "Message not sent",
-    steerExternalNotSentBody:
-      "This message was not sent or queued. Copy its text to send it yourself.",
-    steerUnconfirmedTitle: 'Delivery unconfirmed',
-    steerUnconfirmedBody:
-      'Delivery is unconfirmed. Check messages and the queue before deciding whether to send again.',
-    steerExternalUnconfirmedBody:
-      'A previous submission is unconfirmed. Copy its text and check messages and the queue before deciding whether to send again.',
-    steerQueuedTitle: 'Queued for the next turn',
-    steerQueuedBody: 'The running turn could not take this message, so it was queued to run next.',
-    steerQueuedCompressionBody: 'Context is being compacted, so this message was queued to run next.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

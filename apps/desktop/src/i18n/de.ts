@@ -3748,6 +3748,14 @@ export const deOverrides = {
     markAllRead: 'Alle als gelesen markieren'
   },
   composer: {
+    steerNotSentTitle: 'Nachricht nicht gesendet',
+    steerExternalNotSentBody:
+      'Diese Nachricht wurde weder gesendet noch eingereiht. Kopiere den Text, um sie selbst zu senden.',
+    steerUnconfirmedTitle: 'Zustellung unbestätigt',
+    steerUnconfirmedBody:
+      'Die Zustellung ist unbestätigt. Prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
+    steerExternalUnconfirmedBody:
+      'Eine frühere Übermittlung ist unbestätigt. Kopiere den Text und prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
     message: 'Nachricht',
     wakingProfile: profile => `Wecke ${profile}…`,
     placeholderStarting: 'Hermes wird gestartet…',
@@ -3930,19 +3938,6 @@ export const deOverrides = {
     queueLostDiscard: 'Verwerfen',
     queueLostDiscardTip:
       'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',
-    queueSteerRefusedTitle: 'Steuern nicht übernommen',
-    queueSteerRefusedBody: 'Der laufende Turn konnte die Umleitung nicht übernehmen. Ihre Nachricht bleibt in der Warteschlange und steht jetzt an erster Stelle.',
-    steerNotSentTitle: "Nachricht nicht gesendet",
-    steerExternalNotSentBody:
-      "Diese Nachricht wurde weder gesendet noch eingereiht. Kopiere den Text, um sie selbst zu senden.",
-    steerUnconfirmedTitle: 'Zustellung unbestätigt',
-    steerUnconfirmedBody:
-      'Die Zustellung ist unbestätigt. Prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
-    steerExternalUnconfirmedBody:
-      'Eine frühere Übermittlung ist unbestätigt. Kopiere den Text und prüfe Nachrichten und Warteschlange, bevor du erneut sendest.',
-    steerQueuedTitle: 'Für den nächsten Turn eingereiht',
-    steerQueuedBody: 'Der laufende Turn konnte diese Nachricht nicht aufnehmen, daher wurde sie als Nächstes eingereiht.',
-    steerQueuedCompressionBody: 'Der Kontext wird gerade komprimiert, daher wurde diese Nachricht als Nächstes eingereiht.',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',

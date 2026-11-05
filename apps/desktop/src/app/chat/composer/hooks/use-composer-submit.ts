@@ -4,12 +4,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
-import {
-  notifyCorrectionNotSent,
-  notifyCorrectionQueued,
-  notifyCorrectionUnconfirmed,
-  UnconfirmedCorrectionError
-} from '@/lib/correction-receipt'
+import { notifyCorrectionRecovery, UnconfirmedCorrectionError } from '@/lib/correction-delivery'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isTouchInteraction } from '@/lib/touch-interaction'
@@ -215,16 +210,13 @@ export function useComposerSubmit({
       .then(accepted => {
         if (accepted === false) {
           rejected()
-
-          return
-        }
-
-        onAccepted?.()
-
-        if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
-          // Through the composer's own save, so a next message the user types
-          // into this emptied draft counts as unsaved and is saved again.
-          stashAt(submittedScope, '', [])
+        } else {
+          if (onAccepted) {
+            onAccepted()
+          } else if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
+            // A newer saved draft belongs to the next message.
+            stashAt(submittedScope, '', [])
+          }
         }
       })
       .catch(rejected)
@@ -258,16 +250,13 @@ export function useComposerSubmit({
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
           const submittedScope = draftScopeRef.current
-          const connectionAtSend = $connection.get()
-          const profileAtSend = $activeGatewayProfile.get()
+          const connection = $connection.get()
+          const profile = $activeGatewayProfile.get()
 
           const stillHere = () =>
             draftScopeRef.current === submittedScope &&
-            $connection.get() === connectionAtSend &&
-            $activeGatewayProfile.get() === profileAtSend
-
-          const unconfirmed = (error: unknown) =>
-            notifyCorrectionUnconfirmed(text, error instanceof UnconfirmedCorrectionError ? error.noticeId : undefined)
+            $connection.get() === connection &&
+            $activeGatewayProfile.get() === profile
 
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
           const enqueue = (key: string | null = queueKey, id?: string) =>
@@ -277,13 +266,6 @@ export function useComposerSubmit({
               ...(id ? { id } : {}),
               ...(displayKind ? { displayKind } : {})
             })
-
-          const keepUnsent = () => {
-            // Do not re-home a late fallback; an external request has no draft to retain its words.
-            if (!stillHere() || !enqueue()) {
-              notifyCorrectionNotSent(text)
-            }
-          }
 
           if (!current.busy) {
             // Explicitly no attachments: the send must not pick up the draft's files. A rejected
@@ -301,57 +283,48 @@ export function useComposerSubmit({
             return
           }
 
-          // A hidden note never becomes a user turn: it rides session.steer into
-          // the model's next tool result, and keeps its kind if it has to queue.
-          if (displayKind) {
-            if (current.onSteerHidden) {
-              if (pendingSteers.current.has(submittedScope)) {
-                notifyCorrectionNotSent(text)
-
-                return
-              }
-
-              pendingSteers.current.add(submittedScope)
-              void new Promise<boolean>(resolve => resolve(current.onSteerHidden!(text)))
-                .then(accepted => {
-                  if (!accepted) {
-                    keepUnsent()
-                  }
-                })
-                .catch(unconfirmed)
-                .finally(() => pendingSteers.current.delete(submittedScope))
-            } else {
-              enqueue()
+          const keepUnsent = () => {
+            if (!stillHere() || !enqueue()) {
+              notifyCorrectionRecovery(text, true)
             }
+          }
+
+          // Hidden notes use steer without becoming a user turn; visible requests keep
+          // their existing redirect policy. Neither may replay an uncertain acknowledgement.
+          const steer = displayKind
+            ? current.onSteerHidden
+            : !hasBlockingPromptRequest(sessionId) && text.trim() && !SLASH_COMMAND_RE.test(text.trim())
+              ? current.onSteer
+              : undefined
+
+          if (!steer) {
+            keepUnsent()
 
             return
           }
 
-          if (
-            current.onSteer &&
-            !hasBlockingPromptRequest(sessionId) &&
-            text.trim() &&
-            !SLASH_COMMAND_RE.test(text.trim())
-          ) {
-            if (pendingSteers.current.has(submittedScope)) {
-              // Bus requests are separate work, not repeated Enter on the owned draft.
-              notifyCorrectionNotSent(text)
+          if (pendingSteers.current.has(submittedScope)) {
+            // A distinct bus request has no draft for this guard to preserve.
+            notifyCorrectionRecovery(text, true)
 
-              return
-            }
-
-            pendingSteers.current.add(submittedScope)
-            void new Promise<boolean>(resolve => resolve(current.onSteer!(text)))
-              .then(accepted => {
-                if (!accepted) {
-                  keepUnsent()
-                }
-              })
-              .catch(unconfirmed)
-              .finally(() => pendingSteers.current.delete(submittedScope))
-          } else {
-            enqueue()
+            return
           }
+
+          pendingSteers.current.add(submittedScope)
+          void new Promise<boolean>(resolve => resolve(steer(text)))
+            .then(accepted => {
+              if (!accepted) {
+                keepUnsent()
+              }
+            })
+            .catch(error =>
+              notifyCorrectionRecovery(
+                text,
+                false,
+                error instanceof UnconfirmedCorrectionError ? error.noticeId : undefined
+              )
+            )
+            .finally(() => pendingSteers.current.delete(submittedScope))
         }
       }),
     [activeQueueSessionKeyRef, draftScopeRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
@@ -642,9 +615,9 @@ export function useComposerSubmit({
     triggerHaptic('submit')
 
     const submittedScope = draftScopeRef.current
-    const connectionAtSend = $connection.get()
-    const profileAtSend = $activeGatewayProfile.get()
-    const sameOwner = () => $connection.get() === connectionAtSend && $activeGatewayProfile.get() === profileAtSend
+    const connection = $connection.get()
+    const profile = $activeGatewayProfile.get()
+    const sameOwner = () => $connection.get() === connection && $activeGatewayProfile.get() === profile
     const stillHere = () => draftScopeRef.current === submittedScope && sameOwner()
     pendingSteers.current.add(submittedScope)
 
@@ -660,8 +633,8 @@ export function useComposerSubmit({
       }
     }
 
-    // Retain the draft until acceptance. Only a proven undelivered refusal may
-    // use the existing fallback (#68927): the canonical gateway queue when the server owns
+    // Retain the draft until acceptance. Only proven non-delivery may use
+    // the fallback (#68927): the canonical gateway queue when the server owns
     // it, the local queue otherwise, or the composer itself when there is no
     // queue yet (a new chat is busy before its first session exists). Keep the
     // frozen transport for the queue; restoring to the composer keeps the chip
@@ -669,16 +642,7 @@ export function useComposerSubmit({
     const hasTerminalTransport = frozen.displayText !== frozen.transportText
     const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
 
-    const queued = () => {
-      clearSentDraft()
-
-      if (stillHere()) {
-        notifyCorrectionQueued({ disposition: 'queue' })
-      }
-    }
-
     const keep = () => {
-      // A different owner must not acquire this operation's fallback or draft.
       if (!stillHere() || !activeQueueSessionKey) {
         return
       }
@@ -696,7 +660,7 @@ export function useComposerSubmit({
             storedSessionId: activeQueueSessionKey
           },
           () => {},
-          queued
+          clearSentDraft
         )
       } else {
         const entry = enqueueQueuedPrompt(activeQueueSessionKey, {
@@ -706,12 +670,12 @@ export function useComposerSubmit({
         })
 
         if (entry) {
-          queued()
+          clearSentDraft()
         }
       }
     }
 
-    // Invoke synchronously: the action captures the source before navigation can change its refs.
+    // Capture the action's source synchronously, before navigation can mutate its refs.
     void new Promise<boolean>(resolve => resolve(onSteer(frozen.transportText, mode)))
       .then(accepted => {
         if (accepted) {
@@ -721,9 +685,12 @@ export function useComposerSubmit({
         }
       })
       .catch(error => {
-        // A lost ACK may have delivered the correction: never replay it as a new turn.
-        if (stillHere() && !(error instanceof UnconfirmedCorrectionError)) {
-          notifyCorrectionUnconfirmed()
+        if (stillHere()) {
+          notifyCorrectionRecovery(
+            undefined,
+            false,
+            error instanceof UnconfirmedCorrectionError ? error.noticeId : undefined
+          )
         }
       })
       .finally(() => pendingSteers.current.delete(submittedScope))

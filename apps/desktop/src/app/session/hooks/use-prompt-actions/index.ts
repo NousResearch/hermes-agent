@@ -10,12 +10,7 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
-import {
-  notifyCorrectionQueued,
-  notifyCorrectionUnconfirmed,
-  queuedCorrectionJoinsLiveTurn,
-  UnconfirmedCorrectionError
-} from '@/lib/correction-receipt'
+import { UnconfirmedCorrectionError } from '@/lib/correction-delivery'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -36,9 +31,9 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection } from '@/store/session'
 import {
   $busy,
+  $connection,
   $currentCwd,
   $messages,
   $terminalBackend,
@@ -48,12 +43,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import {
-  $sessionStates,
-  isLiveTurnAwaitingEvents,
-  isSessionRemote,
-  probeLiveTurn
-} from '@/store/session-states'
+import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
 import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -109,10 +99,6 @@ import {
   type SubmitTextOptions,
   withSessionNotFoundResume
 } from './utils'
-
-// Steering is an interactive action: a stale cache must not hold the composer
-// for the full watchdog timeout before it falls back to queueing.
-const LIVE_TURN_STEER_PROBE_TIMEOUT_MS = 3_000
 
 interface HandoffResult {
   ok: boolean
@@ -885,30 +871,21 @@ export function usePromptActions({
         return false
       }
 
-      const selectedAtSend = selectedStoredSessionIdRef.current
-      const connectionAtSend = $connection.get()
-      const profileAtSend = $activeGatewayProfile.get()
-
-      const stillHere = () =>
-        selectedStoredSessionIdRef.current === selectedAtSend &&
-        $connection.get() === connectionAtSend &&
-        $activeGatewayProfile.get() === profileAtSend
-
       // #105176: a steer reaches here on the composer's own busy belief, and
       // the composer keeps that belief one effect tick past the busy→false
       // settle. When it lags, the turn has already ended: redirecting would
       // echo the bubble into a chat the user never typed in and RPC an idle
       // session whose text the backend can cross-deliver into another
-      // session's live run. A contradictory slice may itself be stale on a
-      // long-lived or reattached session, so ask the owning backend before
-      // deciding to queue. Only a confirmed running turn overrides local state;
-      // ended or unknown keeps the conservative refusal.
+      // session's live run. The slice is authoritative, so refuse before the
+      // optimistic insert and the caller queues the text for the conversation
+      // whose run is actually live. Without a stale belief there is nothing
+      // stale to catch: the caller deliberately asked for a correction (a
+      // rotation gap, a recovery retry) and the gateway authoritatively
+      // rejects an idle redirect.
       const liveTurn = $sessionStates.get()[target.sessionId]
 
       if (busyRef.current && liveTurn && !isLiveTurnAwaitingEvents(liveTurn)) {
-        if ((await probeLiveTurn(target.sessionId, LIVE_TURN_STEER_PROBE_TIMEOUT_MS)) !== 'running') {
-          return false
-        }
+        return false
       }
 
       // Accepted whether the live turn was redirected in place or queued for
@@ -916,6 +893,15 @@ export function usePromptActions({
       // way the correction reaches the model, so record it once as a real user
       // message after the interrupted checkpoint, matching the durable core
       // transcript rather than a system note that changes role after reload.
+      const source = selectedStoredSessionIdRef.current
+      const connection = $connection.get()
+      const profile = $activeGatewayProfile.get()
+
+      const stillHere = () =>
+        selectedStoredSessionIdRef.current === source &&
+        $connection.get() === connection &&
+        $activeGatewayProfile.get() === profile
+
       const send = async (id: string): Promise<boolean> => {
         // Reserve the correction's arrival position, but do not seal the live
         // stream until acceptance: a refusal must leave in-flight deltas intact.
@@ -962,18 +948,13 @@ export function usePromptActions({
           }
 
           if (result?.status === 'queued') {
-            // An accepted steer joins this turn after its running tool; a
-            // correction queued for the next turn (build window, compaction)
-            // keeps the live stream running and says where it went.
-            if (queuedCorrectionJoinsLiveTurn(result, mode)) {
+            // A redirect queued in the build window is the next turn; an
+            // accepted steer joins this one after its running tool.
+            if (mode === 'steer') {
               flushStreamDeltas(id)
               updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
             } else {
               moveOptimisticMessageToEnd()
-
-              if (stillHere()) {
-                notifyCorrectionQueued(result)
-              }
             }
 
             triggerHaptic('submit')
@@ -1009,13 +990,14 @@ export function usePromptActions({
 
         return result
       } catch (err) {
-        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyCorrectionUnconfirmed() : undefined)
+        throw new UnconfirmedCorrectionError(err, stillHere() ? notifyError(err, copy.promptFailed) : undefined)
       }
     },
     [
       activeSessionIdRef,
       appendSessionTextMessage,
       busyRef,
+      copy.promptFailed,
       getRoutedStoredSessionId,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
@@ -1046,36 +1028,29 @@ export function usePromptActions({
       }
 
       const send = async (id: string): Promise<boolean> => {
-        try {
-          const response = await target.requestGateway<SessionRedirectResponse>('session.steer', {
-            session_id: id,
-            text
-          })
+        const response = await target.requestGateway<SessionRedirectResponse>('session.steer', { session_id: id, text })
 
-          if (response?.status === 'queued') {
-            return true
-          }
-
-          if (response?.status === 'rejected' && response.delivered === false) {
-            return false
-          }
-
-          throw new Error('Correction delivery unconfirmed')
-        } catch (error) {
-          if (isUndeliveredCorrectionRefusal(error)) {
-            return false
-          }
-
-          throw error
+        if (response?.status === 'queued') {
+          return true
         }
+
+        if (response?.status === 'rejected' && response.delivered === false) {
+          return false
+        }
+
+        throw new Error('Correction delivery unconfirmed')
       }
 
       try {
         const { result } = await withSessionNotFoundResume(target.sessionId, target.storedSessionId, send, target)
 
         return result
-      } catch (error) {
-        throw new UnconfirmedCorrectionError(error)
+      } catch (err) {
+        if (isUndeliveredCorrectionRefusal(err)) {
+          return false
+        }
+
+        throw err
       }
     },
     [

@@ -2,6 +2,11 @@ import type { TranslationOverrides } from './define-locale'
 
 export const zhHantChat = {
   composer: {
+    steerNotSentTitle: '訊息未傳送',
+    steerExternalNotSentBody: '這則訊息未傳送，也未加入佇列。請複製文字後自行傳送。',
+    steerUnconfirmedTitle: '傳送未確認',
+    steerUnconfirmedBody: '無法確認是否已送達。請先檢查訊息和佇列，再決定是否重送。',
+    steerExternalUnconfirmedBody: '先前提交的訊息尚未確認。請複製文字並檢查訊息和佇列，再決定是否重送。',
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,
     placeholderStarting: '正在啟動 Hermes...',
@@ -164,17 +169,6 @@ export const zhHantChat = {
     queueDelete: '刪除',
     queueResume: '繼續',
     queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
-    queueSteerRefusedTitle: '未能引導',
-    queueSteerRefusedBody: '目前回合無法接受這次修正。你的訊息仍在佇列中，並已移到最前面。',
-    steerNotSentTitle: "訊息未傳送",
-    steerExternalNotSentBody:
-      "這則訊息未傳送，也未加入佇列。請複製文字後自行傳送。",
-    steerUnconfirmedTitle: '傳送未確認',
-    steerUnconfirmedBody: '無法確認是否已送達。請先檢查訊息和佇列，再決定是否重送。',
-    steerExternalUnconfirmedBody: '先前提交的訊息尚未確認。請複製文字並檢查訊息和佇列，再決定是否重送。',
-    steerQueuedTitle: '已排入下一回合',
-    steerQueuedBody: '目前回合無法接收這則訊息，已將其排入佇列，下一回合執行。',
-    steerQueuedCompressionBody: '正在壓縮上下文，這則訊息已排入佇列，下一回合執行。',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
     queueDroppedTitle: '已捨棄佇列內容',

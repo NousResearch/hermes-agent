@@ -65,7 +65,7 @@ export interface HarnessHandle {
   editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
   reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
-  redirectPrompt: (text: string, mode?: 'interrupt' | 'steer') => Promise<boolean>
+  redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
   steerPrompt: (text: string) => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
@@ -93,8 +93,10 @@ export function Harness({
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
   activeSessionId,
-  createBackendSessionForSend
+  createBackendSessionForSend,
+  children
 }: {
+  children?: (actions: ReturnType<typeof usePromptActions>) => React.ReactNode
   activeSessionIdRef?: MutableRefObject<string | null>
   busyRef?: MutableRefObject<boolean>
   getRoutedStoredSessionId?: () => null | string
@@ -253,5 +255,5 @@ export function Harness({
     onReady
   ])
 
-  return null
+  return children?.(actions) ?? null
 }

@@ -103,7 +103,6 @@ interface LockPackage {
 }
 
 function lockPackages(): Record<string, LockPackage> {
-  if (!fs.existsSync(LOCK_PATH)) {return {}}
   const lock = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8'))
 
   return (lock.packages ?? {}) as Record<string, LockPackage>
@@ -130,9 +129,6 @@ function sharedTapVersion(packages: Record<string, LockPackage>): string {
 
 test('every @assistant-ui/* package\'s tap requirement is satisfiable', () => {
   const packages = lockPackages()
-
-  if (Object.keys(packages).length === 0) {return} // lockfile not materialized
-
   const tapVersion = sharedTapVersion(packages)
 
   const offenders: string[] = []

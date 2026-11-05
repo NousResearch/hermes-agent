@@ -623,7 +623,7 @@ class PluginLoaderMixin:
         try:
             if run_with_load_deadline(plugin_key, ctx, _import_and_register):
                 self._attribute_registrations(loaded, plugin_key, registration_start)
-                self._publish_staged_registrations(plugin_key, registration_start)
+                self._publish_staged_registrations(ctx)
                 loaded.enabled = True
                 from hermes_cli.plugins_ledger import _hook_source_of
 

@@ -66,15 +66,25 @@ class _Clock:
         return self.now
 
 
+_PROBED = watchdog.ProcessIdentity(4242, 1_000)  # a classified gateway: PID + start-time fingerprint
+_GATEWAY = watchdog.ProcessIdentity(55, 2_000)
+
+
+def _restart(home, identity, **kwargs):
+    """``restart_gateway`` with the identity re-proof granted; ``IdentityTest`` exercises the proof."""
+    kwargs.setdefault("verify", lambda home, identity: True)
+    return watchdog.restart_gateway(home, identity, **kwargs)
+
+
 class _Probe:
     """Returns the queued verdicts in order (the last one repeats)."""
 
-    def __init__(self, *verdicts, pid=4242):
-        self.verdicts, self.pid = list(verdicts), pid
+    def __init__(self, *verdicts, identity=_PROBED):
+        self.verdicts, self.identity = list(verdicts), identity
 
     def __call__(self, home):
         verdict = self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
-        return verdict, (None if verdict in (watchdog.DOWN, watchdog.STOPPED) else self.pid)
+        return verdict, (None if verdict in (watchdog.DOWN, watchdog.STOPPED) else self.identity)
 
 
 class DecideTest(unittest.TestCase):
@@ -205,7 +215,7 @@ class RunOnceTest(_Home):
             if verdict is None:  # the operator stops the hung gateway while the third probe runs
                 watchdog.forget_owed_restart(home)
                 verdict = watchdog.WEDGED
-            return verdict, 4242
+            return verdict, _PROBED
 
         restart = mock.Mock(return_value=(True, "alive"))
         self.run_probes(probe, restart, clock, 3)
@@ -246,6 +256,19 @@ class RunOnceTest(_Home):
         # The stop is recorded while the state file claims the debt; the file is never rewritten.
         watchdog.forget_owed_restart(self.home)
         self.assertTrue(watchdog.load_state(self.home)["owed_token"] is not None)
+        for _ in range(4):  # across several backoff periods and owed-restart windows
+            clock.now += 2 * watchdog.BACKOFF_MAX_S
+            self.run_probes(_Probe(watchdog.STOPPED), restart, clock, 3)
+        self.assertEqual(restart.call_count, 1)
+
+    def test_a_pending_restart_is_cancelled_by_a_stop_whose_marker_replace_fails_permanently(self):
+        clock = _Clock()
+        restart = mock.Mock(return_value=(False, "not_recovered"))
+        self.run_probes(_Probe(watchdog.WEDGED), restart, clock, 3)
+        self.assertTrue(watchdog.owed_restart_pending(self.home))
+        with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+            watchdog.operator_stop(self.home, mock.Mock())
+        self.assertFalse(watchdog.owed_restart_pending(self.home))
         for _ in range(4):  # across several backoff periods and owed-restart windows
             clock.now += 2 * watchdog.BACKOFF_MAX_S
             self.run_probes(_Probe(watchdog.STOPPED), restart, clock, 3)
@@ -317,7 +340,7 @@ class RunOnceTest(_Home):
                                   restart, _Clock(), 4)
         self.assertEqual(actions[2], watchdog.ACTION_RESTART)
         restart.assert_called_once()
-        self.assertEqual(restart.call_args.args, (self.home, 4242))
+        self.assertEqual(restart.call_args.args, (self.home, _PROBED))
         events = [r for r in self.log_records() if r["event"].startswith("restart")]
         self.assertEqual([r["event"] for r in events], ["restart_begin", "restart_result"])
         self.assertEqual(events[0]["reason"], watchdog.WEDGED)
@@ -380,20 +403,29 @@ class RunOnceTest(_Home):
 
 
 class ClassifyTest(_Home):
-    def classify(self, pid, runtime=None, loop="alive"):
+    def classify(self, pid, runtime=None, loop="alive", start_time=lambda pid: 500):
         probe = mock.Mock(return_value=loop)
         read_runtime = mock.Mock(return_value=runtime)
         verdict = watchdog.classify(self.home, live_pid=lambda home: pid, read_runtime=read_runtime,
-                                    loop_probe=probe, retained_state=_retained_gateway_state)
+                                    loop_probe=probe, retained_state=_retained_gateway_state,
+                                    start_time=start_time)
         if pid is None:
             read_runtime.assert_called_once_with(self.home / "gateway_state.json")
         return verdict, probe
 
     def test_live_pid_is_judged_by_loop_responsiveness_not_process_existence(self):
         for loop, expected in (("alive", watchdog.ALIVE), ("wedged", watchdog.WEDGED), ("unknown", watchdog.UNKNOWN)):
-            (verdict, pid), probe = self.classify(77, loop=loop)
-            self.assertEqual((verdict, pid), (expected, 77))
+            (verdict, identity), probe = self.classify(77, loop=loop)
+            self.assertEqual((verdict, identity), (expected, watchdog.ProcessIdentity(77, 500)))
             probe.assert_called_once_with(77, home=self.home)
+
+    def test_a_verdict_carries_the_start_time_and_fails_closed_without_a_stable_one(self):
+        (verdict, identity), probe = self.classify(77, loop="wedged", start_time=lambda pid: None)
+        self.assertEqual((verdict, identity), (watchdog.UNKNOWN, None))  # no fingerprint: no authority
+        probe.assert_not_called()
+        readings = iter([500, 900])  # the process exited during the probe and its PID was reused
+        (verdict, identity), _ = self.classify(77, loop="wedged", start_time=lambda pid: next(readings))
+        self.assertEqual((verdict, identity), (watchdog.UNKNOWN, None))
 
     def test_missing_gateway_is_down_only_when_a_watchdog_proved_it_wedged(self):
         cases = (
@@ -417,15 +449,15 @@ class ClassifyTest(_Home):
 class RestartGatewayTest(_Home):
     def test_stops_the_wedged_pid_then_spawns_and_confirms_recovery(self):
         calls = []
-        ok = watchdog.restart_gateway(self.home, 55, wait=lambda home: True,
+        ok = _restart(self.home, _GATEWAY, wait=lambda home: True,
                                       stop=lambda pid: calls.append(("stop", pid)) or True,
                                       spawn=lambda **kw: calls.append(("spawn", kw)) or 9, updating=lambda: False)
         self.assertEqual(ok, (True, "alive"))
-        self.assertEqual(calls, [("stop", 55), ("spawn", {"home": self.home})])
+        self.assertEqual(calls, [("stop", _GATEWAY), ("spawn", {"home": self.home})])
 
     def test_never_spawns_a_second_gateway_beside_one_it_could_not_stop(self):
         spawn = mock.Mock()
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=lambda pid: False, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=lambda pid: False, spawn=spawn,
                                           updating=lambda: False)
         self.assertEqual(result, (False, "stop_failed"))
         spawn.assert_not_called()
@@ -439,17 +471,17 @@ class RestartGatewayTest(_Home):
 
     def test_an_update_starting_mid_restart_stops_the_restart_before_it_touches_anything(self):
         stop, spawn = mock.Mock(return_value=True), mock.Mock()
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=stop, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
                                           updating=lambda: True)
         self.assertEqual(result, (False, watchdog.REASON_UPDATE_IN_PROGRESS))
         stop.assert_not_called()
         spawn.assert_not_called()
 
         answers = iter([False, True])  # free before the stop, taken before the spawn
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=stop, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
                                           updating=lambda: next(answers))
         self.assertEqual(result, (False, watchdog.REASON_UPDATE_AFTER_STOP))
-        stop.assert_called_once_with(55)
+        stop.assert_called_once_with(_GATEWAY)
         spawn.assert_not_called()
 
     def test_a_stop_while_the_wedged_gateway_is_being_killed_prevents_the_start(self):
@@ -459,7 +491,7 @@ class RestartGatewayTest(_Home):
             watchdog.forget_owed_restart(self.home)  # operator's `gateway stop` lands mid-kill
             return True
 
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=stop, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
                                           updating=lambda: False)
         self.assertEqual(result, (False, watchdog.REASON_OPERATOR_STOPPED))
         spawn.assert_not_called()
@@ -468,7 +500,7 @@ class RestartGatewayTest(_Home):
         tick_token = watchdog.read_stop_token(self.home)
         watchdog.forget_owed_restart(self.home)  # landed after the tick read its token
         stop, spawn = mock.Mock(return_value=True), mock.Mock()
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=stop, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
                                           updating=lambda: False, stop_token=tick_token)
         self.assertEqual(result, (False, watchdog.REASON_OPERATOR_STOPPED))
         stop.assert_not_called()
@@ -486,14 +518,14 @@ class RestartGatewayTest(_Home):
     def test_the_outage_notice_is_queued_right_before_the_start_and_only_then(self):
         calls = []
         outage = {"last_healthy_at": 100.0, "detected_at": 160.0}
-        ok = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=lambda pid: True,
+        ok = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=lambda pid: True,
                                       spawn=lambda **kw: calls.append("spawn"), updating=lambda: False,
                                       outage=outage, announce=lambda home, record: calls.append(("notice", record)))
         self.assertEqual(ok, (True, "alive"))
         self.assertEqual(calls, [("notice", outage), "spawn"])
 
         announce = mock.Mock()
-        watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=lambda pid: False, spawn=mock.Mock(),
+        _restart(self.home, _GATEWAY, wait=lambda home: True, stop=lambda pid: False, spawn=mock.Mock(),
                                  updating=lambda: False, outage=outage, announce=announce)
         announce.assert_not_called()  # nothing was restarted: no claim that it was
 
@@ -503,7 +535,7 @@ class RestartGatewayTest(_Home):
         def announce(home, record):
             watchdog.forget_owed_restart(home)  # operator's `gateway stop` lands while the notice is written
 
-        result = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=lambda pid: True, spawn=spawn,
+        result = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=lambda pid: True, spawn=spawn,
                                           updating=lambda: False, outage={"last_healthy_at": 1.0, "detected_at": 2.0},
                                           announce=announce)
         self.assertEqual(result, (False, watchdog.REASON_OPERATOR_STOPPED))
@@ -525,12 +557,13 @@ class RestartGatewayTest(_Home):
             stop_finished.set()
 
         stopper = threading.Thread(target=run_operator_stop)
+        before = watchdog.read_stop_token(self.home)
 
         def spawn(**_):
             # Past the final check, inside the spawn section: the operator's stop starts now.
             stopper.start()
             deadline = time.monotonic() + 10
-            while watchdog.read_stop_token(self.home) == "":  # the stop has persisted its intent
+            while watchdog.read_stop_token(self.home) == before:  # the stop has persisted its intent
                 self.assertLess(time.monotonic(), deadline, "the stop never recorded its intent")
                 time.sleep(0.01)
             self.assertFalse(stop_finished.is_set(), "the stop must wait for the spawn section")
@@ -548,8 +581,8 @@ class RestartGatewayTest(_Home):
     def test_a_stop_holding_the_section_before_the_final_check_prevents_the_spawn(self):
         spawn, entered = mock.Mock(), threading.Event()
         release, result = threading.Event(), {}
+        tick_token = watchdog.read_stop_token(self.home)  # the token the watchdog's tick started from
         watchdog.forget_owed_restart(self.home)  # the stop persists its intent before it locks
-        tick_token = ""  # the token the watchdog's tick started from
 
         def stop_holding_the_lock():
             with watchdog.spawn_lock(self.home) as held:
@@ -585,10 +618,33 @@ class RestartGatewayTest(_Home):
 
     def test_operator_stop_persists_its_intent_before_waiting_and_never_skips_its_sweep(self):
         sweep = mock.Mock()
+        before = watchdog.read_stop_token(self.home)
         with watchdog.spawn_lock(self.home):  # a wedged holder: the stop must still stop
-            watchdog.operator_stop(self.home, sweep, lock_timeout=0.3)
-        self.assertNotEqual(watchdog.read_stop_token(self.home), "")
+            self.assertFalse(watchdog.operator_stop(self.home, sweep, lock_timeout=0.3))  # not synchronised
+        self.assertNotEqual(watchdog.read_stop_token(self.home), before)
         sweep.assert_called_once()
+
+    def test_a_stop_whose_marker_cannot_be_replaced_still_beats_a_waiting_watchdog(self):
+        """CORP-836 review blocker 1: the stop marker stays unreplaceable (a reader holds it open) but
+        the spawn section works. A watchdog whose tick read the token before the stop, and that gets
+        the section after the stop's sweep, must start nothing."""
+        tick_token = watchdog.read_stop_token(self.home)
+        sweep, spawn = mock.Mock(), mock.Mock()
+        with mock.patch.object(os, "replace", side_effect=PermissionError(5, "Access is denied")):
+            self.assertIs(watchdog.forget_owed_restart(self.home), False)
+            self.assertTrue(watchdog.operator_stop(self.home, sweep))  # recorded through the section
+        sweep.assert_called_once()
+        result = watchdog.restart_gateway(self.home, None, wait=lambda home: True, spawn=spawn,
+                                          updating=lambda: False, stop_token=tick_token)
+        self.assertEqual(result, (False, watchdog.REASON_OPERATOR_STOPPED))
+        spawn.assert_not_called()
+
+    def test_operator_stop_reports_a_stop_it_could_not_record_anywhere(self):
+        sweep = mock.Mock()
+        with mock.patch.object(watchdog, "forget_owed_restart", return_value=False), \
+                mock.patch.object(watchdog, "_stamp_stop", return_value=False):
+            self.assertFalse(watchdog.operator_stop(self.home, sweep))
+        sweep.assert_called_once()  # the operator's stop itself always runs
 
     def test_a_failing_notice_never_blocks_the_restart_and_logs_no_detail(self):
         secret = "xoxb-SECRET-TOKEN-1234567890"
@@ -597,7 +653,7 @@ class RestartGatewayTest(_Home):
         def announce(home, record):
             raise OSError(f"disk full writing token={secret}")
 
-        ok = watchdog.restart_gateway(self.home, 55, wait=lambda home: True, stop=lambda pid: True, spawn=spawn,
+        ok = _restart(self.home, _GATEWAY, wait=lambda home: True, stop=lambda pid: True, spawn=spawn,
                                       updating=lambda: False, outage={"last_healthy_at": 1.0, "detected_at": 2.0},
                                       announce=announce)
         self.assertEqual(ok, (True, "alive"))
@@ -624,6 +680,129 @@ class RestartGatewayTest(_Home):
         ok = watchdog.wait_for_recovery(self.home, timeout=30, interval=10, sleep=lambda s: None,
                                         monotonic=lambda: next(ticks), probe=lambda home: (watchdog.WEDGED, 1))
         self.assertFalse(ok)
+
+
+class OutageNoticeTruthTest(_Home):
+    """CORP-836 review blocker 2: the outage notice says the watchdog restarted the gateway, so it may
+    only outlive a restart attempt that actually started one."""
+
+    OUTAGE = {"last_healthy_at": 100.0, "detected_at": 160.0}
+
+    def marker(self):
+        from gateway import watchdog_outage
+        return self.home / watchdog_outage.PLANNED_RESTART_MARKER_FILENAME
+
+    def restart(self, **kwargs):
+        kwargs.setdefault("stop_token", watchdog.read_stop_token(self.home))
+        return watchdog.restart_gateway(self.home, None, wait=lambda home: True, updating=lambda: False,
+                                        outage=self.OUTAGE, **kwargs)
+
+    def test_a_section_that_cannot_be_locked_leaves_no_notice(self):
+        spawn = mock.Mock()
+        with watchdog.spawn_lock(self.home):  # a stop holds the section
+            result = self.restart(spawn=spawn, lock_timeout=0.3)
+        self.assertEqual(result, (False, watchdog.REASON_SPAWN_LOCK_UNAVAILABLE))
+        spawn.assert_not_called()
+        self.assertFalse(self.marker().exists())
+
+    def test_a_stop_landing_while_the_notice_is_written_withdraws_it(self):
+        spawn = mock.Mock()
+
+        def announce(home, outage):
+            receipt = watchdog.announce_outage(home, outage)
+            watchdog.forget_owed_restart(home)  # `hermes gateway stop` lands right after the write
+            return receipt
+
+        self.assertEqual(self.restart(spawn=spawn, announce=announce), (False, watchdog.REASON_OPERATOR_STOPPED))
+        spawn.assert_not_called()
+        self.assertFalse(self.marker().exists())
+
+    def test_a_spawn_that_raises_withdraws_the_notice_and_keeps_an_earlier_planned_restart(self):
+        earlier = json.dumps({"requested_at": 1.0, "delivered_targets": [["", "slack", "C1", None]]})
+        self.marker().write_text(earlier, encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            self.restart(spawn=mock.Mock(side_effect=RuntimeError("schtasks failed")))
+        self.assertEqual(self.marker().read_text(encoding="utf-8"), earlier)
+
+    def test_a_spawn_that_never_becomes_visible_withdraws_the_notice(self):
+        result = self.restart(spawn=mock.Mock(return_value=False))
+        self.assertEqual(result, (False, watchdog.REASON_SPAWN_FAILED))
+        self.assertFalse(self.marker().exists())
+
+    def test_a_started_gateway_keeps_its_notice(self):
+        self.assertEqual(self.restart(spawn=mock.Mock(return_value=True)), (True, "alive"))
+        from gateway import watchdog_outage
+        data = json.loads(self.marker().read_text(encoding="utf-8"))
+        self.assertEqual(data[watchdog_outage.OUTAGE_KEY], self.OUTAGE)
+
+    def test_a_retraction_leaves_a_marker_someone_rewrote_since_alone(self):
+        from gateway import watchdog_outage
+        receipt = watchdog_outage.record_outage(self.home, last_healthy_at=100.0, detected_at=160.0)
+        self.marker().write_text(json.dumps({"requested_at": 9.0}), encoding="utf-8")  # the gateway's own write
+        watchdog_outage.retract_outage(self.home, receipt)
+        self.assertEqual(json.loads(self.marker().read_text(encoding="utf-8")), {"requested_at": 9.0})
+
+
+class IdentityTest(_Home):
+    """CORP-836 review blocker 3: destructive authority is the classified process identity, re-proved
+    right before the stop, never a bare PID."""
+
+    def verify(self, live_pid, start_time):
+        return lambda home, identity: watchdog.identity_still_serves(
+            home, identity, live_pid=lambda h: live_pid, start_time=start_time)
+
+    def test_a_pid_recycled_between_classification_and_stop_is_never_terminated(self):
+        for live_pid, start_time in ((55, lambda pid: 9_999),  # same PID, another process
+                                     (88, lambda pid: 2_000),  # the home's gateway is another PID now
+                                     (None, lambda pid: 2_000),  # the gateway is gone
+                                     (55, lambda pid: None)):  # start time unreadable
+            stop, spawn = mock.Mock(return_value=True), mock.Mock()
+            result = watchdog.restart_gateway(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
+                                              updating=lambda: False, verify=self.verify(live_pid, start_time))
+            self.assertEqual(result, (False, watchdog.REASON_IDENTITY_CHANGED), (live_pid,))
+            stop.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_the_same_process_is_stopped_with_its_classified_start_time(self):
+        stop, spawn = mock.Mock(return_value=True), mock.Mock()
+        result = watchdog.restart_gateway(self.home, _GATEWAY, wait=lambda home: True, stop=stop, spawn=spawn,
+                                          updating=lambda: False, verify=self.verify(55, lambda pid: 2_000))
+        self.assertEqual(result, (True, "alive"))
+        stop.assert_called_once_with(_GATEWAY)
+
+    def test_an_identity_check_that_raises_fails_closed(self):
+        def boom(home):
+            raise OSError("process table unavailable")
+
+        self.assertFalse(watchdog.identity_still_serves(self.home, _GATEWAY, live_pid=boom, start_time=lambda pid: 1))
+
+    def test_escalation_refuses_a_process_whose_start_time_changed(self):
+        from hermes_cli import gateway
+
+        for current in (9_999, None):
+            with mock.patch("gateway.status.get_process_start_time", return_value=current), \
+                    mock.patch.object(gateway, "terminate_pid") as terminate:
+                self.assertFalse(gateway._escalate_wedged_gateway(55, expected_start_time=2_000,
+                                                                 term_grace=0, kill_wait=0))
+            terminate.assert_not_called()
+
+    def test_escalation_force_kill_is_bound_to_the_classified_start_time(self):
+        from hermes_cli import gateway
+
+        with mock.patch("gateway.status.get_process_start_time", return_value=2_000), \
+                mock.patch.object(gateway, "terminate_pid") as terminate, \
+                mock.patch.object(gateway, "_wait_for_pid_exit", side_effect=[False, True]):
+            self.assertTrue(gateway._escalate_wedged_gateway(55, expected_start_time=2_000, term_grace=0, kill_wait=0))
+        self.assertEqual(terminate.call_args_list[-1], mock.call(55, force=True, expected_start_time=2_000))
+
+    def test_a_skipped_restart_for_a_changed_identity_owes_nothing(self):
+        restart = mock.Mock(return_value=(False, watchdog.REASON_IDENTITY_CHANGED))
+        for _ in range(3):
+            watchdog.run_once(self.home, probe=_Probe(watchdog.WEDGED), restart=restart, clock=_Clock(),
+                              updating=lambda: False)
+        state = watchdog.load_state(self.home)
+        self.assertEqual((state["restart_times"], state["backoff_until"]), ([], 0.0))
+        self.assertFalse(watchdog.owed_restart_pending(self.home))
 
 
 class _FakeSchtasks:

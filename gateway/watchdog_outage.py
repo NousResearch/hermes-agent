@@ -35,42 +35,72 @@ def _number(value: Any) -> Optional[float]:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _read_marker(path: Path) -> dict[str, Any]:
+def _read_text(path: Path) -> Optional[str]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        # surrogateescape: a foreign or torn file still reads, and a retraction writes its bytes back.
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
     except FileNotFoundError:
-        return {}
+        return None
+
+
+def _parse_marker(text: Optional[str]) -> dict[str, Any]:
+    try:
+        data = json.loads((text or "{}").lstrip("﻿"))
     except ValueError:
         return {}  # a torn or foreign file: the outage record replaces it
     return data if isinstance(data, dict) else {}
 
 
-def _write_marker(path: Path, data: dict[str, Any]) -> None:
+def _write_marker(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data))
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
+            fh.write(text)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
 
 
-def record_outage(home: Path, *, last_healthy_at: Optional[float], detected_at: float) -> None:
+def record_outage(
+    home: Path, *, last_healthy_at: Optional[float], detected_at: float,
+) -> Optional[tuple[Optional[str], str]]:
     """Merge the outage window into ``home``'s planned-restart marker; raises on I/O errors (the
     caller decides that a lost notice must not stop a restart).
 
     An outage still waiting for its notice keeps its earlier start (one notice for one long outage).
     A new outage resets ``delivered_targets``: homes that already got an earlier "online" notice
-    still owe this one. Other fields of a pending planned restart are kept."""
+    still owe this one. Other fields of a pending planned restart are kept.
+
+    Returns the receipt ``retract_outage`` needs — the marker text before and after this write —
+    or None when nothing was written."""
     path = Path(home) / PLANNED_RESTART_MARKER_FILENAME
-    data = _read_marker(path)
+    previous = _read_text(path)
+    data = _parse_marker(previous)
     pending = data.get(OUTAGE_KEY)
     if isinstance(pending, dict) and "recovered_at" not in pending and _number(pending.get("detected_at")):
-        return
+        return None
     data[OUTAGE_KEY] = {"last_healthy_at": _number(last_healthy_at), "detected_at": float(detected_at)}
     data.pop("delivered_targets", None)
-    _write_marker(path, data)
+    written = json.dumps(data)
+    _write_marker(path, written)
+    return previous, written
+
+
+def retract_outage(home: Path, receipt: Optional[tuple[Optional[str], str]]) -> None:
+    """Undo ``record_outage`` when the automatic start it announced did not happen: put the marker
+    back exactly as it was (or remove it when there was none). Only while it still holds this
+    write — a marker someone rewrote since is theirs and is left alone. Raises on I/O errors."""
+    if receipt is None:
+        return
+    previous, written = receipt
+    path = Path(home) / PLANNED_RESTART_MARKER_FILENAME
+    if _read_text(path) != written:
+        return
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        _write_marker(path, previous)
 
 
 def carry_pending_outage(path: Path, marker: dict[str, Any]) -> dict[str, Any]:

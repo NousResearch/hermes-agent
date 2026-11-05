@@ -60,6 +60,24 @@ class RecordOutageTest(_Home):
         self.assertEqual(self.read()[outage.OUTAGE_KEY], {"last_healthy_at": None, "detected_at": 1060.0})
 
 
+class RetractOutageTest(_Home):
+    def test_retracting_restores_the_marker_exactly_or_removes_a_new_one(self):
+        earlier = json.dumps({"requested_at": 1.0, "delivered_targets": [["", "slack", "C1", None]]})
+        self.marker.write_text(earlier, encoding="utf-8")
+        outage.retract_outage(self.home, outage.record_outage(self.home, last_healthy_at=1.0, detected_at=2.0))
+        self.assertEqual(self.marker.read_text(encoding="utf-8"), earlier)
+        self.marker.unlink()
+        outage.retract_outage(self.home, outage.record_outage(self.home, last_healthy_at=1.0, detected_at=2.0))
+        self.assertFalse(self.marker.exists())
+
+    def test_a_record_that_wrote_nothing_retracts_nothing(self):
+        outage.record_outage(self.home, last_healthy_at=1000.0, detected_at=1060.0)
+        receipt = outage.record_outage(self.home, last_healthy_at=2000.0, detected_at=2060.0)
+        self.assertIsNone(receipt)  # the earlier, still-pending outage stays the one owed
+        outage.retract_outage(self.home, receipt)
+        self.assertEqual(self.read()[outage.OUTAGE_KEY]["detected_at"], 1060.0)
+
+
 class CarryPendingOutageTest(_Home):
     def test_a_rewritten_planned_restart_marker_keeps_the_pending_outage(self):
         outage.record_outage(self.home, last_healthy_at=1000.0, detected_at=1060.0)

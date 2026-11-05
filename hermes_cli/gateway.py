@@ -499,15 +499,14 @@ def probe_gateway_loop_liveness(
     return GATEWAY_LOOP_UNKNOWN  # Armed but unreachable socket: ambiguity — never kill on it.
 
 
-def _escalate_wedged_gateway(pid: int, *, term_grace: float = 5.0, kill_wait: float = 5.0) -> bool:
+def _escalate_wedged_gateway(pid: int, *, term_grace: float = 5.0, kill_wait: float = 5.0,
+                             expected_start_time: int | None = None) -> bool:
     """Bounded stop (SIGTERM, ``term_grace``, SIGKILL, ``kill_wait``) for a provably dead loop; True once gone.
-    Callers MUST have classified ``GATEWAY_LOOP_WEDGED`` first: escalating a merely busy gateway
-    bypasses the cron drain floor and SIGKILLs live work.
-
-    See #86684.
-    """
+    Callers MUST have classified ``GATEWAY_LOOP_WEDGED`` first: a merely busy gateway would lose live work.
+    A PID that no longer carries a given ``expected_start_time``, or cannot prove it, is never signalled. #86684"""
     from gateway.status import get_process_start_time
-    expected_start_time = get_process_start_time(pid)
+    if (start_time := get_process_start_time(pid)) != expected_start_time and expected_start_time is not None:
+        return False  # recycled PID or unreadable start time: never signal a process nobody classified
     try:
         terminate_pid(pid, force=False)
     except (ProcessLookupError, PermissionError, OSError):
@@ -515,7 +514,7 @@ def _escalate_wedged_gateway(pid: int, *, term_grace: float = 5.0, kill_wait: fl
     if _wait_for_pid_exit(pid, max(float(term_grace), 0.0)):
         return True
     try:
-        terminate_pid(pid, force=True, expected_start_time=expected_start_time)
+        terminate_pid(pid, force=True, expected_start_time=start_time)
         print(f"⚠ Gateway PID {pid} unresponsive to SIGTERM; sent SIGKILL")
     except (ProcessLookupError, PermissionError, OSError):
         pass

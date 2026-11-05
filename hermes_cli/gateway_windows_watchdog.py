@@ -51,7 +51,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 ALIVE, WEDGED, DOWN, UNKNOWN, STOPPED, UPDATING = "alive", "wedged", "down", "unknown", "stopped", "updating"
 STARTUP_FAILED = "startup_failed"
@@ -65,6 +65,8 @@ REASON_UPDATE_IN_PROGRESS = "update_in_progress"  # yielded before touching the 
 REASON_UPDATE_AFTER_STOP = "update_in_progress_after_stop"  # yielded after stopping it: still owed
 REASON_OPERATOR_STOPPED = "operator_stopped"  # `hermes gateway stop` landed mid-restart: never start
 REASON_SPAWN_LOCK_UNAVAILABLE = "spawn_lock_unavailable"  # cannot sync with a stop: fail closed
+REASON_IDENTITY_CHANGED = "identity_changed"  # the probed process is no longer the gateway: never kill
+REASON_SPAWN_FAILED = "spawn_failed"  # no new gateway became visible: no automatic start to announce
 
 FAILURE_THRESHOLD = 3
 RESTART_LIMIT = 3
@@ -95,32 +97,72 @@ _LOG_MAX_BYTES = 1024 * 1024
 
 # ── Probe
 
+class ProcessIdentity(NamedTuple):
+    """A gateway process as classified: the PID together with its start-time fingerprint
+    (``gateway.status.get_process_start_time``), so a PID recycled later never inherits the verdict."""
+
+    pid: int
+    start_time: int
+
+
 def classify(
     home: Path, *, live_pid: Optional[Callable[[Path], Optional[int]]] = None,
     read_runtime: Optional[Callable[[Path], Any]] = None, loop_probe: Optional[Callable[..., str]] = None,
     retained_state: Optional[Callable[[Any], str]] = None,
-) -> tuple[str, Optional[int]]:
-    """``(verdict, pid)`` for the gateway serving ``home``. The keyword seams default to the canonical
-    readers, resolved late so importing this module stays cheap for the task action.
+    start_time: Optional[Callable[[int], Optional[int]]] = None,
+) -> tuple[str, Optional[ProcessIdentity]]:
+    """``(verdict, identity)`` for the gateway serving ``home``. The keyword seams default to the
+    canonical readers, resolved late so importing this module stays cheap for the task action.
 
     A missing gateway is ``down`` only when an in-process watchdog stamped the hard exit of a wedged
     loop (``retained_gateway_state`` -> ``degraded``). Anything else is ``stopped``: Ctrl+C on a
     foreground run and a force-stopped hung gateway both leave ``gateway_state: running`` behind, and
-    Windows ``gateway stop`` records no ``desired_state``, so a leftover "running" proves no crash."""
-    if live_pid is None or read_runtime is None or retained_state is None:
+    Windows ``gateway stop`` records no ``desired_state``, so a leftover "running" proves no crash.
+
+    A live gateway's verdict binds the start time read BEFORE the probe and re-read after it: an
+    unreadable or changed start time is ``unknown``, so no verdict ever names a recycled PID."""
+    if live_pid is None or read_runtime is None or retained_state is None or start_time is None:
         import gateway.status as gateway_status
         live_pid = live_pid or gateway_status.live_gateway_pid_for_home
         read_runtime = read_runtime or gateway_status.read_runtime_status
         retained_state = retained_state or gateway_status.retained_gateway_state
+        start_time = start_time or gateway_status.get_process_start_time
     pid = live_pid(home)
     if pid is None:
         retained = retained_state(read_runtime(home / "gateway_state.json"))
         return {"degraded": DOWN, "startup_failed": STARTUP_FAILED}.get(retained, STOPPED), None
+    started = start_time(pid)
+    if started is None:
+        return UNKNOWN, None
     if loop_probe is None:
         from hermes_cli.gateway import probe_gateway_loop_liveness as loop_probe
     # ALIVE/WEDGED share probe_gateway_loop_liveness's values; anything else is ambiguity.
     loop = loop_probe(pid, home=home)
-    return (loop if loop in (ALIVE, WEDGED) else UNKNOWN), pid
+    if start_time(pid) != started:
+        return UNKNOWN, None  # the process exited during the probe: its PID may already be reused
+    return (loop if loop in (ALIVE, WEDGED) else UNKNOWN), ProcessIdentity(pid, started)
+
+
+def identity_still_serves(
+    home: Path, identity: ProcessIdentity, *, live_pid: Optional[Callable[[Path], Optional[int]]] = None,
+    start_time: Optional[Callable[[int], Optional[int]]] = None,
+) -> bool:
+    """Re-prove, right before any signal, that ``identity`` is still ``home``'s gateway: the canonical
+    matcher (pid file + runtime lock, start-time guard, gateway argv belonging to ``home``) must name
+    the same PID, and that PID must carry the classified start time. Anything else fails closed."""
+    if live_pid is None or start_time is None:
+        import gateway.status as gateway_status
+        live_pid = live_pid or gateway_status.live_gateway_pid_for_home
+        start_time = start_time or gateway_status.get_process_start_time
+    try:
+        return live_pid(home) == identity.pid and start_time(identity.pid) == identity.start_time
+    except Exception:
+        return False
+
+
+def _escalate(identity: ProcessIdentity) -> bool:
+    from hermes_cli.gateway import _escalate_wedged_gateway
+    return _escalate_wedged_gateway(identity.pid, expected_start_time=identity.start_time)
 
 
 def update_in_progress() -> bool:
@@ -234,13 +276,15 @@ def _stop_marker_path(home: Path) -> Path:
 _STOP_WRITE_ATTEMPTS = 5
 
 
-def forget_owed_restart(home: Path) -> None:
+def forget_owed_restart(home: Path) -> bool:
     """``hermes gateway stop``: record a fresh stop token in a marker ONLY this path writes.
 
     The watchdog's own state file is never touched here, so no read/modify/replace of it — however
     it interleaves with this stop — can lose the stop: every decision compares against the token
     (``decide``, ``_stopped``), and any debt or streak from before it is void. Retries a replace the
-    watchdog's brief read holds open; never raises, so the stop itself always proceeds."""
+    watchdog's brief read holds open; never raises, so the stop itself always proceeds. Returns
+    whether the marker was written: ``operator_stop`` then also stamps the spawn section, so a marker
+    that stays unwritable cannot hand a waiting watchdog its old token."""
     path = _stop_marker_path(home)
     token = f"{time.time():.6f}-{uuid.uuid4().hex}"
     for attempt in range(_STOP_WRITE_ATTEMPTS):
@@ -254,22 +298,29 @@ def forget_owed_restart(home: Path) -> None:
             finally:
                 with contextlib.suppress(OSError):
                     os.unlink(tmp)
-            return
+            return True
         except OSError:
             if attempt + 1 < _STOP_WRITE_ATTEMPTS:
                 time.sleep(0.05)
+    return False
 
 
-def read_stop_token(home: Path) -> str:
-    """The latest operator stop token; ``""`` when no stop was ever recorded. Fails closed: an
-    unreadable marker yields a token nothing else equals, so it reads as a stop just recorded and
-    nothing is restarted until the marker can be read again."""
+def _read_marker_token(home: Path) -> str:
     try:
         return _stop_marker_path(home).read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return ""
     except (OSError, ValueError):
         return f"unreadable-{uuid.uuid4().hex}"
+
+
+def read_stop_token(home: Path) -> str:
+    """The latest operator stop token: the stop marker plus the stamp every stop also writes into
+    the spawn section's lock file (``_stamp_stop``). A stop moves at least one of them, so either
+    channel alone is enough for every comparison here to see it. Fails closed: an unreadable part
+    yields a token nothing else equals, so it reads as a stop just recorded and nothing is
+    restarted until it can be read again."""
+    return f"{_read_marker_token(home)}:{_read_lock_stamp(home)}"
 
 
 def _stopped(home: Path, tick_token: str) -> bool:
@@ -308,7 +359,7 @@ def _log(home: Path, event: str, **fields: Any) -> None:
 def wait_for_recovery(
     home: Path, *, timeout: float = RECOVERY_TIMEOUT_S, interval: float = RECOVERY_POLL_S,
     sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
-    probe: Callable[[Path], tuple[str, Optional[int]]] = classify,
+    probe: Callable[[Path], tuple[str, Optional[ProcessIdentity]]] = classify,
 ) -> bool:
     """True once the gateway answers as ``alive`` within ``timeout``."""
     deadline = monotonic() + timeout
@@ -348,17 +399,24 @@ def spawn_lock(home: Path, *, timeout: float = SPAWN_LOCK_TIMEOUT_S):
     stop's sweep (``state/gateway-watchdog.spawn.lock``; 1-byte ``msvcrt.locking`` range on Windows,
     ``flock`` on POSIX, as elsewhere in Hermes). Yields True when held, False when it could not be
     taken within ``timeout`` or the lock file could not be opened — callers decide how to fail closed."""
+    with _spawn_section(home, timeout=timeout) as (held, _handle):
+        yield held
+
+
+@contextlib.contextmanager
+def _spawn_section(home: Path, *, timeout: float):
+    """``spawn_lock`` that also yields the open lock-file handle (None when it could not be opened)."""
     try:
         handle = _open_lock_file(home)
     except OSError:
-        yield False
+        yield False, None
         return
     held = False
     try:
         deadline = time.monotonic() + timeout
         while not (held := _try_lock(handle)) and time.monotonic() < deadline:
             time.sleep(0.05)
-        yield held
+        yield held, handle
     finally:
         if held:
             with contextlib.suppress(OSError):
@@ -366,14 +424,51 @@ def spawn_lock(home: Path, *, timeout: float = SPAWN_LOCK_TIMEOUT_S):
         handle.close()
 
 
+# Lock-file layout: byte 0 is the locked byte (msvcrt.locking needs one); bytes 1..32 hold the stamp
+# of the latest operator stop (``_stamp_stop``), outside the locked range so a reader never blocks.
+_LOCK_STAMP_OFFSET = 1
+_LOCK_STAMP_WIDTH = 32
+
+
+def _lock_path(home: Path) -> Path:
+    return home / "state" / "gateway-watchdog.spawn.lock"
+
+
 def _open_lock_file(home: Path):
-    path = home / "state" / "gateway-watchdog.spawn.lock"
+    path = _lock_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "a+b")  # closed by spawn_lock
-    if handle.seek(0, os.SEEK_END) == 0:
-        handle.write(b"\0")  # msvcrt.locking needs a byte to lock
-        handle.flush()
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0))
+    handle = os.fdopen(fd, "r+b", buffering=0)  # closed by _spawn_section
+    if handle.seek(0, os.SEEK_END) < _LOCK_STAMP_OFFSET + _LOCK_STAMP_WIDTH:
+        # Extending never overwrites bytes another process already wrote (a write from a stale offset
+        # could erase a stop's stamp), and a stop then never has to grow the file to record itself.
+        with contextlib.suppress(OSError):
+            handle.truncate(_LOCK_STAMP_OFFSET + _LOCK_STAMP_WIDTH)
     return handle
+
+
+def _stamp_stop(handle) -> bool:
+    """Write a fresh stop stamp through the already-open lock handle; True once it is on disk. No
+    rename, so a reader holding the stop marker open cannot block it."""
+    try:
+        handle.seek(_LOCK_STAMP_OFFSET)
+        handle.write(uuid.uuid4().hex.encode("ascii"))
+        os.fsync(handle.fileno())
+    except OSError:
+        return False
+    return True
+
+
+def _read_lock_stamp(home: Path) -> str:
+    try:
+        with open(_lock_path(home), "rb", buffering=0) as fh:
+            fh.seek(_LOCK_STAMP_OFFSET)
+            raw = fh.read(_LOCK_STAMP_WIDTH)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return f"unreadable-{uuid.uuid4().hex}"
+    return raw.decode("ascii", errors="replace").strip("\0")
 
 
 def _try_lock(handle) -> bool:
@@ -405,69 +500,116 @@ def operator_stop(home: Path, sweep: Callable[[], Any], *, lock_timeout: float =
     inside the spawn section. A watchdog start either had not reached its final check when the token
     moved (it then starts nothing) or completed its whole section — gateway started AND visible —
     before this sweep looked. The sweep always runs: a section that cannot be taken (a wedged holder,
-    an unopenable lock) never skips the operator's stop. Returns whether the section was held."""
-    forget_owed_restart(home)
-    with spawn_lock(home, timeout=lock_timeout) as held:
+    an unopenable lock) never skips the operator's stop.
+
+    The intent is recorded on two channels: the stop marker (``forget_owed_restart``, a replace a
+    reader can block) and, before the sweep, a stamp written through this section's own lock handle
+    (``_stamp_stop``, no replace). Either one moves ``read_stop_token``, so a watchdog that waited
+    for this section starts nothing. Returns True only when the section was held AND the intent was
+    recorded; False tells the caller the watchdog may not have seen this stop."""
+    persisted = forget_owed_restart(home)
+    with _spawn_section(home, timeout=lock_timeout) as (held, handle):
+        stamped = handle is not None and _stamp_stop(handle)
         sweep()
-    return held
+    return held and (persisted or stamped)
 
 
-def announce_outage(home: Path, outage: dict[str, Any]) -> None:
+def announce_outage(home: Path, outage: dict[str, Any]) -> Any:
     """Queue the recovered gateway's home-channel outage notice (``gateway/watchdog_outage.py``):
-    only the window's timestamps are written; the gateway sends it through its own adapters."""
+    only the window's timestamps are written; the gateway sends it through its own adapters.
+    Returns the receipt ``retract_outage_notice`` needs to undo it."""
     from gateway.watchdog_outage import record_outage
-    record_outage(home, last_healthy_at=outage.get("last_healthy_at"), detected_at=outage["detected_at"])
+    return record_outage(home, last_healthy_at=outage.get("last_healthy_at"), detected_at=outage["detected_at"])
+
+
+def retract_outage_notice(home: Path, receipt: Any) -> None:
+    """Undo ``announce_outage`` for an automatic start that did not happen."""
+    from gateway.watchdog_outage import retract_outage
+    retract_outage(home, receipt)
+
+
+def _queue_notice(home: Path, outage: Optional[dict[str, Any]], announce: Callable[..., Any]) -> Any:
+    if outage is None:
+        return None
+    try:
+        return announce(home, outage)
+    except Exception as exc:  # message text may carry anything; only the type is logged
+        _log(home, "notice_failed", reason=f"error:{type(exc).__name__}")
+        return None
+
+
+def _withdraw_notice(home: Path, receipt: Any, retract: Callable[[Path, Any], None]) -> None:
+    if receipt is None:
+        return
+    try:
+        retract(home, receipt)
+    except Exception as exc:  # message text may carry anything; only the type is logged
+        _log(home, "notice_retract_failed", reason=f"error:{type(exc).__name__}")
 
 
 def restart_gateway(
-    home: Path, pid: Optional[int], *, wait: Callable[[Path], bool] = wait_for_recovery,
-    stop: Optional[Callable[[int], bool]] = None, spawn: Callable[..., Any] = start_gateway,
+    home: Path, identity: Optional[ProcessIdentity], *, wait: Callable[[Path], bool] = wait_for_recovery,
+    stop: Callable[[ProcessIdentity], bool] = _escalate, spawn: Callable[..., Any] = start_gateway,
     updating: Callable[[], bool] = update_in_progress, stop_token: Optional[str] = None,
-    outage: Optional[dict[str, Any]] = None, announce: Callable[[Path, dict[str, Any]], None] = announce_outage,
+    outage: Optional[dict[str, Any]] = None, announce: Callable[[Path, dict[str, Any]], Any] = announce_outage,
+    retract: Callable[[Path, Any], None] = retract_outage_notice,
+    verify: Callable[[Path, ProcessIdentity], bool] = identity_still_serves,
     lock_timeout: float = SPAWN_LOCK_TIMEOUT_S,
 ) -> tuple[bool, str]:
-    """Stop the wedged ``pid`` (``_escalate_wedged_gateway``: terminate, then a start-time-guarded
-    force kill), start a fresh gateway, confirm it answers. An update or an operator stop that began
-    since the probe wins: both are re-checked before each step that touches the gateway.
-    ``stop_token`` is the stop token the tick started from, so a stop landing before this call counts.
+    """Stop the wedged gateway ``identity`` (``_escalate_wedged_gateway`` bound to the classified
+    start time: terminate, then a start-time-guarded force kill), start a fresh gateway, confirm it
+    answers. An update or an operator stop that began since the probe wins: both are re-checked
+    before each step that touches the gateway. ``stop_token`` is the stop token the tick started
+    from, so a stop landing before this call counts.
 
-    The outage notice is queued right before the start — never for a restart that did not happen —
-    and a failure to queue it is logged (type only) and never holds the restart back.
+    Destructive authority is the classified identity, re-proved (``verify``: same PID for ``home``,
+    same start time) immediately before the stop; a process that no longer proves it is never
+    signalled and nothing is started (``identity_changed``).
 
-    The final stop check and the start run as ONE section under ``spawn_lock``, the lock the operator
-    stop sweeps under after persisting its token (``operator_stop``): no stop can slip between the
-    check and the start. A section that cannot be locked fails closed — nothing is started."""
+    The final stop check, the outage notice and the start run as ONE section under ``spawn_lock``,
+    the lock the operator stop sweeps under after recording its token (``operator_stop``): no stop
+    can slip between the check and the start, and a section that cannot be locked fails closed —
+    nothing is started. The notice is written only once the start is about to happen and withdrawn
+    when it does not (a stop landing during the write, a spawn that raises or never becomes
+    visible), so no later start can deliver it for an automatic restart that never occurred. A
+    failure to queue it is logged (type only) and never holds the restart back."""
     if stop_token is None:
         stop_token = read_stop_token(home)
-    if pid is not None:
+    if identity is not None:
         if updating():
             return False, REASON_UPDATE_IN_PROGRESS
         if _stopped(home, stop_token):
             return False, REASON_OPERATOR_STOPPED
-        if stop is None:
-            from hermes_cli.gateway import _escalate_wedged_gateway as stop
-        if not stop(pid):
+        if not verify(home, identity):
+            return False, REASON_IDENTITY_CHANGED
+        if not stop(identity):
             return False, "stop_failed"  # a second gateway beside a live one would fight it for the lock
     if updating():
-        return False, REASON_UPDATE_IN_PROGRESS if pid is None else REASON_UPDATE_AFTER_STOP
+        return False, REASON_UPDATE_IN_PROGRESS if identity is None else REASON_UPDATE_AFTER_STOP
     if _stopped(home, stop_token):
         return False, REASON_OPERATOR_STOPPED
-    if outage is not None:
-        try:
-            announce(home, outage)
-        except Exception as exc:  # message text may carry anything; only the type is logged
-            _log(home, "notice_failed", reason=f"error:{type(exc).__name__}")
     with spawn_lock(home, timeout=lock_timeout) as held:
         if not held:
             return False, REASON_SPAWN_LOCK_UNAVAILABLE
-        if _stopped(home, stop_token):  # final check: a stop up to now, the notice write included
+        if _stopped(home, stop_token):  # final check: every stop up to now
             return False, REASON_OPERATOR_STOPPED
-        spawn(home=home)
+        receipt = _queue_notice(home, outage, announce)
+        if _stopped(home, stop_token):  # a stop that landed while the notice was written
+            _withdraw_notice(home, receipt, retract)
+            return False, REASON_OPERATOR_STOPPED
+        try:
+            started = spawn(home=home)
+        except BaseException:
+            _withdraw_notice(home, receipt, retract)
+            raise
+        if started is False:
+            _withdraw_notice(home, receipt, retract)
+            return False, REASON_SPAWN_FAILED
     return (True, "alive") if wait(home) else (False, "not_recovered")
 
 
 def run_once(
-    home: Path, *, probe: Callable[[Path], tuple[str, Optional[int]]] = classify,
+    home: Path, *, probe: Callable[[Path], tuple[str, Optional[ProcessIdentity]]] = classify,
     restart: Callable[..., tuple[bool, str]] = restart_gateway,
     clock: Callable[[], float] = time.time, updating: Callable[[], bool] = update_in_progress,
 ) -> str:
@@ -476,13 +618,14 @@ def run_once(
     home = Path(home)
     tick_token = read_stop_token(home)
     previous = load_state(home)
-    verdict, pid = (UPDATING, None) if updating() else probe(home)
+    verdict, identity = (UPDATING, None) if updating() else probe(home)
     state, action = decide(previous, verdict, clock(), tick_token)
     counted = state["consecutive_failures"] > previous["consecutive_failures"]
     if counted or verdict != previous["last_verdict"]:
-        _log(home, "probe", verdict=verdict, pid=pid, consecutive_failures=state["consecutive_failures"])
+        _log(home, "probe", verdict=verdict, pid=identity and identity.pid,
+             consecutive_failures=state["consecutive_failures"])
     if action == ACTION_RESTART:
-        state = _attempt_restart(home, state, verdict, pid, restart, clock, tick_token)
+        state = _attempt_restart(home, state, verdict, identity, restart, clock, tick_token)
     elif action != ACTION_NONE:
         _log(home, "restart_suppressed", action=action, consecutive_failures=state["consecutive_failures"],
              backoff_until=state["backoff_until"] or None)
@@ -498,7 +641,7 @@ def _cancel_for_stop(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _attempt_restart(
-    home: Path, state: dict[str, Any], verdict: str, pid: Optional[int],
+    home: Path, state: dict[str, Any], verdict: str, identity: Optional[ProcessIdentity],
     restart: Callable[..., tuple[bool, str]], clock: Callable[[], float], tick_token: str,
 ) -> dict[str, Any]:
     if _stopped(home, tick_token):
@@ -511,9 +654,10 @@ def _attempt_restart(
     state["restart_times"].append(clock())
     state["owed_token"] = tick_token  # void as soon as any stop moves the token
     _save_state(home, state)
-    _log(home, "restart_begin", reason=verdict, pid=pid, consecutive_failures=state["consecutive_failures"])
+    _log(home, "restart_begin", reason=verdict, pid=identity and identity.pid,
+         consecutive_failures=state["consecutive_failures"])
     try:
-        ok, reason = restart(home, pid, stop_token=tick_token, outage=outage)
+        ok, reason = restart(home, identity, stop_token=tick_token, outage=outage)
     except Exception as exc:  # message text may carry anything; only the type is logged
         ok, reason = False, f"error:{type(exc).__name__}"
     if _stopped(home, tick_token):
@@ -525,6 +669,12 @@ def _attempt_restart(
         state["restart_times"].pop()
         state["consecutive_failures"] = 0
         state["owed_token"] = tick_token if reason == REASON_UPDATE_AFTER_STOP else owed_before
+        result = "skipped"
+    elif reason == REASON_IDENTITY_CHANGED:
+        # The classified process is gone or replaced; nothing was touched, so nothing is owed. The
+        # next tick judges whatever runs now on its own.
+        state["restart_times"].pop()
+        state.update(consecutive_failures=0, owed_token=owed_before, first_failed_at=None)
         result = "skipped"
     else:
         state = _record_restart_result(state, ok, clock())

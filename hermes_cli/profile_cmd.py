@@ -300,12 +300,12 @@ def _profile_delete(args):
 
 
 def _describe_target_dir(name: str) -> Path:
-    """Profile dir for ``describe``: ``default`` maps to the CURRENT home (get_hermes_home),
-    everything else to its named directory."""
+    """Profile dir for ``describe``: ``default`` is the install root, never the calling
+    profile's home. ``get_profile_dir`` owns that alias (``get_default_hermes_root``), which
+    is also what ``read_profile_meta`` callers and the web routers use — resolving it through
+    ``get_hermes_home()`` made ``describe default --text`` overwrite the satellite profile that
+    happened to host the session (#149281)."""
     from hermes_cli import profiles as _profiles_mod
-    if _profiles_mod.normalize_profile_name(name) == "default":
-        from hermes_constants import get_hermes_home as _hh
-        return Path(_hh())
     return _profiles_mod.get_profile_dir(name)
 
 

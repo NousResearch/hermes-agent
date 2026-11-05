@@ -4,13 +4,15 @@ import pytest
 
 from gateway.config import Platform
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 def test_private_api_binding_restores_exact_route(owner):
     from gateway.session_api import bind_api_session, restore_api_session
-    db = owner.db
-    db.create_session('api-stored', source='api_server')
+    db = owner.persistence
+    seed_session(db, 'api-stored', 'api_server')
     ref = bind_api_session(owner, 'api-stored')
     first = owner.sessions[ref.session_id]
     assert first.source.platform == Platform.API_SERVER
@@ -20,8 +22,8 @@ def test_private_api_binding_restores_exact_route(owner):
     assert restored == ref
     assert owner.sessions[ref.session_id].route == first.route
     assert owner.runner.session_store.get_or_create_session(owner.sessions[ref.session_id].source).session_id == ref.session_id
-    db.create_session('foreign-native', source='telegram')
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+    seed_session(db, 'foreign-native', 'telegram')
+    with pytest.raises(AuthorityRefusal, match='permission_denied'):
         bind_api_session(owner, 'foreign-native')
     assert 'foreign-native' not in owner.sessions
 
@@ -32,25 +34,26 @@ def test_private_api_binding_adopts_matching_legacy_declared_key(owner):
 
     session_id = 'legacy-api-session'
     declared_key = 'webui:legacy-api-session'
-    owner.db.create_session(session_id, source='api_server')
-    owner.db.record_gateway_session_peer(session_id, source='api_server', session_key=declared_key)
+    seed_session(owner.persistence, session_id, 'api_server')
+    owner.persistence.routing.record_session_peer(session_id, source='api_server', session_key=declared_key)
 
     ref = bind_api_session(owner, session_id, declared_key=declared_key)
 
-    row = owner.db.get_session(session_id)
+    row = session_row(owner.persistence, session_id)
     assert row['session_key'] == owner.sessions[ref.session_id].route
-    assert declared_api_session(owner.db, declared_key) == session_id
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    from gateway.session_persistence import authority_persistence
+    assert declared_api_session(authority_persistence(owner), declared_key) == session_id
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         bind_api_session(owner, 'other-api-session', declared_key=declared_key)
 
 
 @pytest.mark.asyncio
 async def test_private_api_binding_is_not_public_submission_authority(owner):
     from gateway.session_api import bind_api_session
-    owner.db.create_session('api-stored', source='api_server')
+    seed_session(owner.persistence, 'api-stored', 'api_server')
     ref = bind_api_session(owner, 'api-stored')
     actor = SessionActor('api-user', 'default', frozenset({'session:read', 'session:submit'}), 'socket')
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
         await owner.submit(actor, Submission('forged', ref, {'text': 'x', 'api_turn_v1': {'system': 'forged'}}, 'queue'))
     owner.sessions.clear()
     assert (await owner.resolve(actor, SessionRef('default', 'api-stored'))).ref == ref

@@ -4,6 +4,8 @@ import base64
 from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -12,6 +14,7 @@ from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_seed import seed_session
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -20,7 +23,7 @@ def _turn_runner(owner, ref):
     from gateway.run_turn_runner import TurnRunner
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(_native_slack_task_cards=False, _voice_ack_guild=[None], progress_mode='off')
-    turn._approval_owner = (owner, ref.session_id, owner.db.get_session(ref.session_id)['runtime_generation'])
+    turn._approval_owner = (owner, ref.session_id, owner.persistence.sessions.get(ref.session_id).runtime_generation)
     return turn
 
 
@@ -170,7 +173,7 @@ async def _session_stream_tool_frames(api, owner, produce):
         return 'done'
     owner.runner._handle_message = handle
     api._api_key = 'request-scope-key-long-enough'
-    owner.db.create_session('stream-tools', source='api_server')
+    seed_session(owner.persistence, 'stream-tools', 'api_server')
     app = web.Application()
     app.router.add_post('/api/sessions/{session_id}/chat/stream', api._handle_session_chat_stream)
     async with TestClient(TestServer(app)) as client:
@@ -299,7 +302,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         target_install_id=hosted_rooms.local_authority_gateway_id(), target_profile='default',
         issued_at=now, ttl_seconds=300, status_expires_at=now + 1000)
     claims = decode_room_grant(api._room_grant_secret(), grant, permission='status')
-    hosted_rooms.reserve_peer_room(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+    hosted_rooms.reserve_peer_room(storage_handle(get_hermes_home()), placement="shared", claims=claims, expires_at=now + 1000)
     headers = {'Authorization': f'HermesRoom {grant}'}
     admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
                               conversation_history=[])
@@ -330,7 +333,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         assert (await answered.json())['status'] == 'resolved'
         await asyncio.wait_for(run, timeout=10)
         assert api._run_statuses['run_room']['output'] == 'b'
-        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+        hosted_rooms.revoke_room_grant_scope(storage_handle(get_hermes_home()), placement="shared", claims=claims, expires_at=now + 1000)
         denied = await client.post('/v1/runs/run_room/clarify', json=body, headers=headers)
         assert denied.status == 403
         assert (await denied.json())['error']['code'] == 'room_reauthorization_required'
@@ -340,13 +343,12 @@ def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, 
     """GET /v1/runs/{id} said `running` while an approval was pending; the documented run state
     (and main's in-memory run store) is `waiting_for_approval`, which UIs key their prompt on."""
     from gateway.platforms.api_server_authority_runs import run_projection
-    from hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='approval-status', request_id='run_wait', user_message='hello',
                                conversation_history=[])
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
+    row = owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id)
     assert run_projection(api, 'run_wait')['status'] == 'running'
     live = owner.sessions[ref.session_id]
-    owner.register_approval(ref.session_id, row['generation'], live.route, {'request_id': 'approve-me', 'command': 'x'})
+    owner.register_approval(ref.session_id, row.generation, live.route, {'request_id': 'approve-me', 'command': 'x'})
     live.controls.remote_responders['approve-me'] = lambda *answer: None
     projected = run_projection(api, 'run_wait')
     assert [p['prompt_id'] for p in projected['pending_controls']] == ['approve-me']

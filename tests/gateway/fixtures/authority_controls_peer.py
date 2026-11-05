@@ -53,12 +53,12 @@ async def probe(peer, target):
     from gateway.platforms.base import BasePlatformAdapter, SendResult
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from hermes_cli import web_server
     from gateway.run_api import start_gateway_api, stop_gateway_api
     from tools.approval import list_gateway_approvals, resolve_gateway_approval
-    from hermes_state_runtime import list_session_admissions
     from run_agent import AIAgent
+    from tests.fixtures.storage_read import conversation
 
     class NativeAdapter(BasePlatformAdapter):
         def __init__(self):
@@ -147,13 +147,13 @@ async def probe(peer, target):
         await asyncio.wait_for(authority.sessions[ref.session_id].task, 25)
         assert not target.exists(), 'authorized real terminal effect missing'
         assert isinstance(authority.agent(ref), AIAgent)
-        rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+        rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
         assert len(rows) == 2 and all(r['status'] == 'terminal' for r in rows), rows
         final = await rpc(b, 10, 'session.resume')
         assert final['result']['prompts'] == []
         replay = await rpc(b, 11, 'session.events.since', replay_epoch=final['result']['replay_epoch'], last_sequence=0)
         assert 'SECRET_MUST_NOT_REPLAY' not in json.dumps(replay)
-        assert 'SECRET_MUST_NOT_REPLAY' not in json.dumps(authority.db.get_messages_as_conversation(ref.session_id))
+        assert 'SECRET_MUST_NOT_REPLAY' not in json.dumps(conversation(authority.persistence, ref.session_id))
         assert any(f.get('type') == 'approval.request' for f in replay['result']['events'])
         Path(os.environ['HERMES_HOME'], 'receipt.json').write_text(json.dumps({
             'real_terminal_effect': True, 'detach_kept_pending': True, 'fifo_bypassed': True,

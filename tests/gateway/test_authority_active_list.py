@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest_asyncio.fixture
@@ -30,10 +31,10 @@ async def owner(tmp_path, monkeypatch):
         await release.wait()
         return event.text
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False,
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False,
                              _handle_message=answer, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id='live', instance_id='owner')
-    store._db.create_session('chat', source='telegram')
+    seed_session(store.persistence, 'chat', 'telegram')
     authority.sessions['chat'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='chat'), 'chat')
     connection = AuthorityConnection(authority, object(), {'user_id': 'viewer'})
 

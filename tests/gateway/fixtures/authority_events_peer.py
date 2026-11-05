@@ -53,10 +53,9 @@ def main():
         from gateway.config import Platform
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource
-        from gateway.session_authority import initialize_session_authority
+        from gateway.session_authority import admission_row, initialize_session_authority
         from gateway.session_controls import AuthorityConnection
         from gateway.session_contract import Submission
-        from hermes_state_runtime import list_session_admissions
         from run_agent import AIAgent
 
         runner = GatewayRunner()
@@ -72,8 +71,8 @@ def main():
         receipt = await authority.submit(b.actor, Submission('event-input', ref, {'text': 'WS_SHARED'}, 'queue'))
         await authority.sessions[ref.session_id].task
         assert isinstance(authority.agent(ref), AIAgent)
-        row = next(r for r in list_session_admissions(authority.db, session_id=ref.session_id,
-                                                     pending_only=False) if r['admission_id'] == receipt.admission_id)
+        row = admission_row(next(r for r in authority.persistence.admissions.list(
+            session_id=ref.session_id, pending_only=False) if r.admission_id == receipt.admission_id))
         assert row['outcome'] == 'completed', row
         while True:
             frame = await asyncio.to_thread(frames.get, True, 5)

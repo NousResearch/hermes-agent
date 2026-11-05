@@ -121,7 +121,7 @@ def probe(tmp_path):
                 (sessions['fork'], targets['safe']))
             db.execute('INSERT INTO state_meta(key,value) SELECT ?,value FROM state_meta WHERE key=?',
                        ('gateway.local_policy.v1:' + sessions['fork'], 'gateway.local_policy.v1:' + sessions['safe']))
-            from gateway.session_admission import admission_fingerprint
+            from persistence.authority.vocabulary import admission_fingerprint
             payload = {'text': 'FORK_QUEUE'}
             digest = admission_fingerprint(canonical_target=sessions['fork'], payload={'input': payload, 'intent': 'queue'})
             db.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,

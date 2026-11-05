@@ -85,7 +85,7 @@ async def _gateway(tmp_path, instance, **relay):
         async with _relay(runner, **relay) as (send, outgoing, adapter):
             yield runner, authority, send, outgoing, adapter
     finally:
-        authority.db.close()
+        authority.persistence.close()
 
 
 def _stub_model(runner, monkeypatch, behaviours=None):
@@ -242,7 +242,7 @@ async def test_a_follow_up_queued_behind_a_running_turn_is_acknowledged_when_it_
                                what='the first message acknowledged')
         await send('1700000000.000401', 'D4', 'second', thread_id='1700000000.000400')
         await async_wait_until(
-            lambda: authority.db._read_all("SELECT 1 FROM session_admissions WHERE request_id='1700000000.000401'"),
+            lambda: authority.persistence.admissions.match(request_id='1700000000.000401'),
             timeout=20, what='the follow-up committed')
         # Committed behind the running turn, not started: no acknowledgement yet.
         assert _reacts(outgoing, '1700000000.000401') == []

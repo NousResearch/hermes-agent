@@ -19,6 +19,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session_results import execution_result
 from tests.waiting import async_wait_until
+from persistence_assembly import close_stores_under
 
 websockets = pytest.importorskip('websockets')
 
@@ -98,10 +99,9 @@ def _replies(outgoing, chat_id):
 
 
 def _requests(authority):
-    from hermes_state_runtime import list_session_admissions
     rows = []
     for sid in list(authority.sessions):
-        rows += list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        rows += authority.persistence.admissions.list(session_id=sid, pending_only=False)
     return rows
 
 
@@ -127,11 +127,11 @@ async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_pat
             # The stamp is not a route on a single-profile gateway: the one profile, historical namespace.
             assert by_text['hello stamped'] == (launch, 'agent:main:telegram:dm:chat-stamped')
             assert by_text['hello plain'] == (launch, 'agent:main:telegram:dm:chat-plain')
-            rows = {r['request_id']: r for r in _requests(authority)}
+            rows = {r.request_id: r for r in _requests(authority)}
             assert sorted(rows) == ['plain', 'stamped']
             # No profile reaches durable state: the admission and the session origin (which later
             # completion/notification scopes resolve a home from) both name the launch profile only.
-            assert 'profile' not in rows['stamped']['payload']['native_text_v1']['source']
+            assert 'profile' not in rows['stamped'].payload['native_text_v1']['source']
             entry = runner.session_store.lookup_by_session_key('agent:main:telegram:dm:chat-stamped')
             assert entry is not None and not entry.origin.profile
             assert Path(runner._resolve_profile_home_for_source(entry.origin)).resolve() == launch
@@ -144,7 +144,7 @@ async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_pat
                 timeout=10, what='the replay acknowledged')
             assert len(turns) == 2
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def _reserve_homes(tmp_path, monkeypatch, names):
@@ -152,8 +152,6 @@ def _reserve_homes(tmp_path, monkeypatch, names):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setenv('HERMES_HOME', str(root))
-    import hermes_state
-    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
     homes = [('default', root)]
     for name in names:
         home = root / 'profiles' / name
@@ -168,7 +166,7 @@ async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_o
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('work',))
     work = homes[1][1]
@@ -195,21 +193,21 @@ async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_o
             assert by_text['hello to-default'] == (root.resolve(), 'agent:main:telegram:dm:chat-default')
             # The stamped profile's turn runs under its own home, in its own namespace and ledger.
             assert by_text['hello to-work'] == (work.resolve(), 'agent:work:telegram:dm:chat-work')
-            assert sorted(r['request_id'] for r in _requests(default_authority)) == ['plain', 'to-default']
+            assert sorted(r.request_id for r in _requests(default_authority)) == ['plain', 'to-default']
             work_rows = _requests(work_authority)
-            assert [r['request_id'] for r in work_rows] == ['to-work']
+            assert [r.request_id for r in work_rows] == ['to-work']
             # An unserved stamped profile is refused like an unserved profile route: acked, never run.
             assert not _replies(outgoing, 'chat-ghost')
             assert 'hello to-ghost' not in by_text
             # The stamp is sealed into the admission: rewriting it in storage does not reroute a replay.
-            forged = json.loads(json.dumps(work_rows[0]['payload']))
+            forged = json.loads(json.dumps(work_rows[0].payload))
             forged['native_text_v1']['source']['profile'] = 'default'
-            with pytest.raises(RuntimeStoreError):
+            with pytest.raises(AuthorityRefusal):
                 restore_native(forged, runner)
-            restore_native(work_rows[0]['payload'], runner)  # the genuine row still restores
+            restore_native(work_rows[0].payload, runner)  # the genuine row still restores
     finally:
         for authority in list(getattr(runner, 'session_authorities', None) or []):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)
 
@@ -242,7 +240,7 @@ async def test_stamped_profile_completion_finds_its_relay_after_a_restart(tmp_pa
                                    what='the stamped turn answered')
         parent = first.session_store.lookup_by_session_key(key).session_id
         for authority in list(first.session_authorities):
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)
 
         second = GatewayRunner(config)  # restart: fresh runner, authorities and relay over persisted state
         runners.append(second)
@@ -259,7 +257,7 @@ async def test_stamped_profile_completion_finds_its_relay_after_a_restart(tmp_pa
     finally:
         for runner in runners:
             for authority in list(getattr(runner, 'session_authorities', None) or []):
-                authority.db.close()
+                close_stores_under(authority.persistence.scope.profile_dir)
         for _, home in homes:
             process_ownership.release(home)
 
@@ -298,4 +296,4 @@ async def test_single_profile_gateway_serves_stamped_commands_and_discord_intera
                 # The stamp is still echoed on egress.
                 assert _replies(outgoing, chat)[-1]['metadata'].get('profile') == 'work'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

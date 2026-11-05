@@ -10,24 +10,17 @@ rows), recall falls through to content-match.
 """
 from gateway.session import SessionStore
 from gateway.config import GatewayConfig
+from tests.fixtures.storage_seed import seed_session
 
 
-def _pin_db(monkeypatch, tmp_path):
-    """Force SessionDB() to write into tmp_path instead of the real ~/.hermes."""
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
-
-
-def test_recall_branch_a1_exact_id_match_round_trips_through_db(tmp_path, monkeypatch):
+def test_recall_branch_a1_exact_id_match_round_trips_through_db(tmp_path):
     """A user message persisted with ``message_id`` must round-trip through
     state.db so recall can find and redact it by exact id (branch A1)."""
-    _pin_db(monkeypatch, tmp_path)
-
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
 
     sid = "test-yuanbao-recall-a1"
-    store._db.create_session(session_id=sid, source="yuanbao:group:G")
+    seed_session(store.persistence, sid, "yuanbao:group:G")
     store.append_to_transcript(sid, {
         "role": "user",
         "content": "sensitive content",

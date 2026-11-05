@@ -4,6 +4,8 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 
 from gateway.platforms import api_server
 
@@ -60,7 +62,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
         }
     }
     hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims=old_claims,
         expires_at=now + 3600,
         now=now,
@@ -73,7 +75,7 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
     ] == "gateway-old"
 
     hosted_rooms.reserve_peer_room(
-        hosted_rooms.default_db_path(),
+        storage_handle(get_hermes_home()), placement="shared",
         claims={
             **old_claims,
             "authority_gateway_id": "gateway-new",

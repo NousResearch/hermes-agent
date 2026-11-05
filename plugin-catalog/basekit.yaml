@@ -1,12 +1,18 @@
 name: basekit
 repo: https://github.com/D0xedDevi0/hermes-basekit
-sha: 9088ee87cde83ed33e3adaee7f5e262e6b7beb02
+sha: 142bd48ea7755bda6a7c2aff707106bdfbf25ee6
 description: "Read-only live Base (chain 8453) intelligence — gas and real USD cost estimates, wallet portfolios, decoded transaction receipts, token facts with proxy detection, and windowed transfer/approval reads — plus a desktop pane, status-bar chip and a standard-library-only core with no PyPI dependencies. Disclosure — sends the wallet addresses, transaction hashes and token addresses you ask about to public Base RPC endpoints (base-rpc.publicnode.com, mainnet.base.org, base.drpc.org, base.meowrpc.com; a custom rpc_url still fails over to these), prices to coins.llama.fi and api.coinbase.com, and to api.etherscan.io only when a Basescan key is set; a pre_llm_call hook adds one line of live Base state to turns that mention Base or crypto terms (off with inject_chain_context); keeps a local read ledger in its plugin-data folder; no signing, no keys, no telemetry."
 maintainer: D0xedDevi0
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
 version: "1.0.0"
+image: https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/status.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/wallet.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/token.png
+  - https://raw.githubusercontent.com/D0xedDevi0/hermes-basekit/142bd48ea7755bda6a7c2aff707106bdfbf25ee6/docs/screenshots/gate.png
 readme: true
 capabilities:
   provides_tools:

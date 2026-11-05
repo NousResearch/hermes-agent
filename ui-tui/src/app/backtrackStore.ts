@@ -18,8 +18,16 @@ export interface BacktrackPrime {
   sid: string
 }
 
+/** An armed edit's submission, already expanded: `text` goes to the model, `display` is the
+ *  composer text (paste chips folded), `attachments` the image tokens. */
+export interface RewindSubmission {
+  attachments?: Array<{ mime: string; path: string }>
+  display: string
+  text: string
+}
+
 export interface PendingRewind {
-  send: (text: string) => void
+  send: (submission: RewindSubmission) => void
   sid: string
   target: RewindTarget
 }
@@ -61,7 +69,7 @@ export function cancelPendingRewind(sys?: (text: string) => void): boolean {
 /** Submit while an edit is armed: a non-empty, non-slash, non-shell message for the same session
  *  goes to `rewindAndSend`; anything else disarms it (and is handled normally by the caller).
  *  True when the text was consumed. */
-export function sendPendingRewind(text: string, sid: null | string): boolean {
+export function sendPendingRewind(submission: RewindSubmission, sid: null | string): boolean {
   const pending = $pendingRewind.get()
 
   if (!pending) {
@@ -70,11 +78,13 @@ export function sendPendingRewind(text: string, sid: null | string): boolean {
 
   $pendingRewind.set(null)
 
-  if (pending.sid !== sid || !text.trim() || /^[/!]/.test(text.trimStart())) {
+  const typed = submission.display
+
+  if (pending.sid !== sid || !typed.trim() || /^[/!]/.test(typed.trimStart())) {
     return false
   }
 
-  pending.send(text)
+  pending.send(submission)
 
   return true
 }

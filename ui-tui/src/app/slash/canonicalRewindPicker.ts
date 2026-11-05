@@ -9,7 +9,7 @@ import type { SessionInfo } from '@hermes/shared/gateway-types'
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
-import { armPendingRewind, cancelBacktrackPrime } from '../backtrackStore.js'
+import { armPendingRewind, cancelBacktrackPrime, type RewindSubmission } from '../backtrackStore.js'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'
@@ -79,7 +79,9 @@ export function openRewindPicker(ctx: SlashRunCtx) {
       }
 
       const destination = captureDestination()
-      const send = (target: RewindTarget, text: string) => void rewindAndSend(ctx, sid, target, text, destination)
+
+      const send = (target: RewindTarget, edit: RewindSubmission | string) =>
+        void rewindAndSend(ctx, sid, target, edit, destination)
 
       patchOverlayState({
         rewind: {
@@ -87,7 +89,7 @@ export function openRewindPicker(ctx: SlashRunCtx) {
           targets,
           onEdit: target => {
             ctx.composer.setInput(target.text)
-            armPendingRewind({ send: text => send(target, text), sid, target })
+            armPendingRewind({ send: edit => send(target, edit), sid, target })
           },
           onFork: target => void forkFrom(ctx, sid, target),
           onSubmit: send,
@@ -108,16 +110,22 @@ export async function rewindAndSend(
   ctx: SlashRunCtx,
   sid: string,
   target: RewindTarget,
-  text: string,
+  edit: RewindSubmission | string,
   destination: SubmissionDestination = captureDestination()
 ) {
+  const { attachments, display, text } = typeof edit === 'string' ? { display: edit, text: edit } : edit
   const stale = () => getUiState().sid !== sid
   const gw = ctx.gateway.gw
   let cut = false
 
+  // `text` is already expanded (paste chips resolved): the composer's tokens are gone by now.
   const keepEdit = () => {
     if (cut) {
-      ctx.composer.enqueue(text, text, destination)
+      if (attachments?.length) {
+        ctx.composer.enqueue(text, display, destination, attachments)
+      } else {
+        ctx.composer.enqueue(text, display, destination)
+      }
     } else if (!stale()) {
       ctx.composer.setInput(text)
     }
@@ -152,7 +160,12 @@ export async function rewindAndSend(
     ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot?.messages ?? [])])
     patchUiState({ info })
     ctx.transcript.sys(t('slashCmd.core.rewind.done', String(target.turn), String(removed)))
-    ctx.transcript.send(text)
+
+    if (text === display && !attachments?.length) {
+      ctx.transcript.send(text)
+    } else {
+      ctx.transcript.send(text, true, display, value => value, { attachments })
+    }
   } catch (error) {
     keepEdit()
 

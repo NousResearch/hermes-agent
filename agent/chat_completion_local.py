@@ -95,7 +95,16 @@ def merge_native_local_settings(agent, request_overrides: dict | None) -> dict:
         standard, extra = nms.resolve_native_request_settings(
             model_id, explicit or None, inherited=False)
     except (UnknownSettingError, InvalidSettingValueError):
-        raise  # the caller's explicit payload was refused: surface it
+        # The resolver validates BOTH the caller's payload and the saved row, with the same exception types, so the type says nothing about
+        # whose fault it is. Resolve the saved side alone: if THAT is refused, the saved row is the broken one (an older build, tightened
+        # bounds, a hand edit) and breaking every chat request for the model over our own data would be wrong. If it resolves fine, the
+        # caller's explicit payload is what was refused: surface it.
+        try:
+            nms.resolve_native_request_settings(model_id, None, inherited=False)
+        except Exception as saved_exc:
+            logger.warning("saved native model settings for %s are invalid and were ignored: %s", model_id, saved_exc)
+            return overrides
+        raise
     except Exception as exc:
         logger.debug("native model settings for %s unavailable: %s", model_id, exc)
         return overrides

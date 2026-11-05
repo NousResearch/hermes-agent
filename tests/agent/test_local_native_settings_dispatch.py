@@ -152,6 +152,59 @@ def test_corrupt_store_never_breaks_request(home):
     assert merge_native_local_settings(_agent(), explicit) == explicit
 
 
+def _write_raw_row(root, overrides):
+    """A saved row the way an older build, tightened bounds or a hand edit leaves it: the store validates TYPES only, never keys or bounds."""
+    key = nms.settings_key_for_model("Dispatch-Model")
+    ModelSettingsStore(root).write(key, overrides, 0)
+
+
+@pytest.mark.parametrize("bad_row", [
+    {"temperature": 99.0},                      # above the schema's maximum
+    {"temperature": 0.5, "no_such_setting": 1},  # a key the schema does not know
+    {"top_p": -3.0},
+])
+def test_a_saved_row_that_no_longer_validates_never_breaks_inference(home, bad_row):
+    """The row is OUR data, not the caller's payload: refusing the caller for it would break every chat request for that model."""
+    _stage_dispatch_model(home)
+    ModelSettingsStore(home).path.unlink()
+    _write_raw_row(home, bad_row)
+    explicit = {"max_tokens": 128}
+    assert merge_native_local_settings(_agent(), explicit) == explicit
+    assert merge_native_local_settings(_agent(), {}) == {}
+
+
+def test_a_bad_saved_row_is_logged_not_swallowed_silently(home, caplog):
+    import logging
+    _stage_dispatch_model(home)
+    ModelSettingsStore(home).path.unlink()
+    _write_raw_row(home, {"temperature": 99.0})
+    with caplog.at_level(logging.WARNING, logger="agent.chat_completion_local"):
+        merge_native_local_settings(_agent(), {})
+    assert any("temperature" in r.getMessage() and "ignored" in r.getMessage().lower() for r in caplog.records), \
+        [r.getMessage() for r in caplog.records]
+
+
+def test_an_invalid_explicit_payload_is_still_refused_when_the_saved_row_is_fine(home):
+    """Control: provenance decides. The same exception type, raised for the caller's own payload, must still surface."""
+    _stage_dispatch_model(home)
+    with pytest.raises(InvalidSettingValueError):
+        merge_native_local_settings(_agent(), {"temperature": 99.0})
+
+
+def test_an_invalid_explicit_payload_passes_through_when_the_saved_row_is_the_broken_one(home):
+    """Both are bad: the saved row is ours to absorb, and the caller's value goes on unchanged to the transport's own validation."""
+    _stage_dispatch_model(home)
+    ModelSettingsStore(home).path.unlink()
+    _write_raw_row(home, {"temperature": 99.0})
+    assert merge_native_local_settings(_agent(), {"temperature": 3.0}) == {"temperature": 3.0}
+
+
+def test_a_valid_saved_row_still_applies_after_the_fix(home):
+    """Control: the provenance probe must not turn off saved settings that are fine."""
+    _stage_dispatch_model(home)
+    assert merge_native_local_settings(_agent(), {}) == {"top_p": 0.9}
+
+
 # ── scope gates ───────────────────────────────────────────────────────────
 
 

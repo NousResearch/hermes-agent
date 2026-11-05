@@ -461,6 +461,61 @@ def test_stop_without_verified_exit_keeps_grant(tmp_path, monkeypatch, live):
     assert record.residency in ("loading", "resident", "draining")
 
 
+class _CountingStubbornSpawn(_StubbornSpawn):
+    def __init__(self, live):
+        super().__init__(live)
+        self.spawns = 0
+
+    def __call__(self, cmd, *, owned, **kwargs):
+        self.spawns += 1
+        return super().__call__(cmd, owned=owned, **kwargs)
+
+
+def test_a_second_start_never_drops_a_sidecar_that_a_failed_start_could_not_stop(tmp_path, monkeypatch, live):
+    """A start that fails while its child cannot be proven gone lands in 'failed' WITH the live process handle. A second start() used to
+    blank that handle: the sidecar kept running (GPU and RAM held, grant still live), nothing could ever stop it, and stop() then
+    reported 'stopped (no live sidecar)'."""
+    monkeypatch.setattr(mr, "_probe_health", lambda url, timeout=1.0: False)         # the start fails; the stubborn child cannot be stopped
+    store = AdmissionStore(tmp_path / "adm")
+    spawn = _CountingStubbornSpawn(live)
+    ctl = live(_controller(tmp_path, store, spawn=spawn, health_timeout=0.6))
+    script = _write_backend(tmp_path, "ok")[0]
+
+    first = ctl.start(python=sys.executable, run_py=script)
+    assert first.state == "failed"
+    held = ctl._proc
+    assert held is not None and held.poll() is None, "precondition: the failed start left a live child behind"
+    record_before = store.status(_RESOURCE)
+
+    second = ctl.start(python=sys.executable, run_py=script)
+    assert second.state == "failed"
+    assert "stop" in second.detail.lower() and "running" in second.detail.lower(), second.detail
+    assert ctl._proc is held, "the only handle to the live sidecar was dropped"
+    assert spawn.spawns == 1, "a second sidecar must not be launched next to the first"
+    assert store.status(_RESOURCE).epoch == record_before.epoch, "the live grant must not be touched"
+
+    third = ctl.start(python=sys.executable, run_py=script)
+    assert third.detail == second.detail, "repeated attempts must not pile text onto the detail"
+
+    stopped = ctl.stop(timeout=0.5)
+    assert "no live sidecar" not in stopped.detail, "stop() must not claim there is nothing to stop while the child still runs"
+    assert ctl._proc is held
+
+
+def test_a_failed_start_whose_child_is_gone_can_simply_be_started_again(tmp_path, monkeypatch, live):
+    """Control: the guard is only for a LIVE child. A failed start that was torn down and verified must not wedge the controller."""
+    store = AdmissionStore(tmp_path / "adm")
+    ctl = live(_controller(tmp_path, store, health_timeout=1.0))
+    script = _write_backend(tmp_path, "ok")[0]
+    monkeypatch.setattr(mr, "_probe_health", lambda url, timeout=1.0: False)
+    first = ctl.start(python=sys.executable, run_py=script)
+    assert first.state == "failed"
+    assert ctl._proc is None or ctl._proc.poll() is not None, "precondition: that child really is gone"
+    monkeypatch.undo()
+    second = ctl.start(python=sys.executable, run_py=script)
+    assert second.state == "running", second.detail
+
+
 def test_unreadable_identity_after_spawn_fails_closed(tmp_path, monkeypatch, live):
     """A LIVE process whose identity can no longer be read (AccessDenied-style)
     is ambiguous, not gone: the grant must stay held."""

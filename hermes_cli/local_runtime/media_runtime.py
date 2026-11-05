@@ -125,9 +125,15 @@ _LOGIN_TIMEOUT = 15.0
 _REFRESH_TIMEOUT = 15.0
 
 _CHANNEL_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"})
-#: the controller owns these; a caller may never set them
-_FORBIDDEN_CALLER_HEADERS = frozenset(
-    {"authorization", "cookie", "host", "content-length"})
+#: the controller owns these; a caller may never set them. Credentials and the
+#: target (authorization, cookie, host), and request FRAMING / connection handling
+#: (content-length, transfer-encoding and the hop-by-hop set): a caller-set
+#: Transfer-Encoding next to the transport's own Content-Length is the classic
+#: CL.TE pair that lets a second request ride the controller's bearer.
+_FORBIDDEN_CALLER_HEADERS = frozenset({
+    "authorization", "cookie", "host", "content-length", "transfer-encoding",
+    "connection", "keep-alive", "upgrade", "te", "trailer", "trailers",
+    "proxy-authorization", "proxy-connection"})
 #: hop-by-hop headers plus Set-Cookie (upstream token material can ride in
 #: cookies) are stripped from every ChannelResponse/MediaStream header dict
 _STRIPPED_RESPONSE_HEADERS = frozenset({
@@ -160,9 +166,14 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-#: shared opener: loopback-only in practice (the base URL is always our own
-#: bound 127.0.0.1 socket) and strictly no-redirect for every channel request.
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+#: shared opener: loopback-only (the base URL is always our own bound 127.0.0.1
+#: socket), strictly no-redirect, and NEVER proxied. ``build_opener`` installs
+#: ``ProxyHandler()`` by default, which reads ``http_proxy`` & co. from the
+#: environment; with ``NO_PROXY=localhost`` (the usual setting, which does not
+#: name the 127.0.0.1 literal) that sends the login password and every bearer
+#: request to the proxy, and the health probe never reaches the sidecar at all.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _NoRedirectHandler)
 
 
 def _validate_channel_path(path: str) -> str:
@@ -196,6 +207,8 @@ def _validate_channel_path(path: str) -> str:
                     ("?", "a query (pass it via the query= argument)")):
         if ch in path:
             raise ValueError(f"channel path contains {why}")
+    if "//" in path:
+        raise ValueError("channel path contains an empty segment ('//')")
     low = path.lower()
     if ".." in low:
         raise ValueError("channel path contains a '..' segment")
@@ -369,7 +382,7 @@ def parse_bound_endpoint(log_text: str) -> tuple[str | None, int | None]:
 def _probe_health(url: str, timeout: float = 1.5) -> bool:
     """True on HTTP 200 from the health endpoint; anything else keeps polling."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with _NO_REDIRECT_OPENER.open(url, timeout=timeout) as response:
             return response.status == 200
     except urllib.error.HTTPError:
         return False
@@ -498,6 +511,14 @@ class MediaRuntimeController:
         problems: failure lands in ``state='failed'`` with a sanitized detail).
         """
         if self._state in ("starting", "running", "stopping"):
+            return self.status()
+        if self._state == "failed" and self._proc is not None and self._proc.poll() is None:
+            # A start that failed while its child could not be proven gone keeps the only handle to that process. Blanking it here would
+            # orphan a sidecar that still holds GPU/RAM and a live grant, with nothing able to stop it (and stop() would then claim
+            # "no live sidecar"). Refuse until it has been stopped; stop() already knows how to deal with this state.
+            note = f"the previous sidecar is still running (pid {self._pid}); stop it before starting again"
+            if note not in self._detail:
+                self._detail = sanitize_credentials(f"{self._detail}; {note}" if self._detail else note)
             return self.status()
         self._resource, self._engine, self._model = resource, engine, model
         self._instance_id = uuid.uuid4().hex
@@ -849,7 +870,10 @@ class MediaRuntimeController:
         logs = data_root / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         self._log_path = logs / f"sidecar-{self._instance_id}.log"
-        self._log_handle = open(self._log_path, "a", encoding="utf-8", errors="replace")
+        # The raw log is captured BEFORE any scrubbing (sanitize_credentials runs when the tail is read), so it is private to the user.
+        self._log_handle = open(
+            os.open(self._log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600),
+            "a", encoding="utf-8", errors="replace")
         # list-args, never a shell; the password is '-' (stdin), so the command
         # line itself is safe to record for forensics. These are run.py's own flags (the short -H/-p
         # belong to the `unsloth studio` CLI and make run.py exit 2); --no-cloudflare forces a public

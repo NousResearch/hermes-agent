@@ -512,6 +512,17 @@ def test_request_attaches_controller_bearer_and_sanitizes_response(tmp_path, liv
     {"Cookie": "sid=evil"},
     {"Host": "evil.example"},
     {"Content-Length": "999999"},
+    # request FRAMING belongs to the transport alone: a caller-set Transfer-Encoding next to the transport's Content-Length is the
+    # classic CL.TE smuggling pair, and the hop-by-hop headers change how the connection itself is handled
+    {"Transfer-Encoding": "chunked"},
+    {"transfer-encoding": "identity"},
+    {"Connection": "close"},
+    {"Keep-Alive": "timeout=999"},
+    {"Upgrade": "websocket"},
+    {"TE": "trailers"},
+    {"Trailer": "Authorization"},
+    {"Proxy-Authorization": "Basic eDp5"},
+    {"Proxy-Connection": "keep-alive"},
 ])
 def test_caller_cannot_override_credential_headers(tmp_path, live, forged):
     ctl, _status, _ = _started(tmp_path, live)
@@ -551,6 +562,10 @@ def test_caller_cannot_override_credential_headers(tmp_path, live, forged):
     "/other/path",                          # outside /api/
     "/apix/models",
     "/api\\..\\secret",                     # backslash traversal
+    "/api/a//b",                            # an empty segment: a router that collapses '//' may route it elsewhere
+    "/api//models/list",
+    "/api/models//",
+    "/api///x",
 ])
 def test_ssrf_path_guard_rejects_everything_but_relative_api_paths(tmp_path, live, path):
     ctl, _status, _ = _started(tmp_path, live)
@@ -573,6 +588,174 @@ def test_query_dict_is_the_only_query_channel(tmp_path, live):
 # ---------------------------------------------------------------------------
 # redirects: returned as-is, never followed, bearer never re-sent anywhere
 # ---------------------------------------------------------------------------
+
+class _Listener:
+    """A loopback TCP listener that records the first request line of every connection; ``reply`` makes it answer 200 so it can be a target."""
+
+    def __init__(self, reply: bool = False):
+        import socket
+        import threading
+        self.requests: list[str] = []
+        self.bodies: list[str] = []
+        self._reply = reply
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(16)
+        self.port = self._sock.getsockname()[1]
+        self._stop = False
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while not self._stop:
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(1.0)
+                data = self._read_request(conn)
+                self.requests.append(data.splitlines()[0] if data else "")
+                self.bodies.append(data)
+                if self._reply:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _read_request(conn) -> str:
+        """The whole request: urllib may send the headers and the body in separate segments, so one recv() sometimes misses the body."""
+        raw = b""
+        while b"\r\n\r\n" not in raw:
+            chunk = conn.recv(8192)
+            if not chunk:
+                break
+            raw += chunk
+        head, _, rest = raw.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            name, _, value = line.partition(b":")
+            if name.strip().lower() == b"content-length":
+                length = int(value.strip() or 0)
+        while len(rest) < length:
+            chunk = conn.recv(8192)
+            if not chunk:
+                break
+            rest += chunk
+        return (head + b"\r\n\r\n" + rest).decode("latin-1", "replace")
+
+    def close(self):
+        self._stop = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: Runs in a FRESH interpreter whose proxy variables are set before anything is imported: the production condition (Hermes started from a
+#: shell that exports http_proxy). In-process this cannot be tested reliably: urllib builds its global opener once, at first use.
+_PROXY_PROBE = """
+import json, sys, urllib.request
+mode, target = sys.argv[1], sys.argv[2]
+out = {}
+if mode == "default":
+    with urllib.request.build_opener().open(f"http://127.0.0.1:{target}/api/health", timeout=3) as r:
+        out["default_opener_status"] = r.status
+else:
+    from hermes_cli.local_runtime import media_runtime as mr
+    out["health"] = mr._probe_health(f"http://127.0.0.1:{target}/api/health")
+    request = urllib.request.Request(f"http://127.0.0.1:{target}/api/auth/login", data=b'{"password":"SECRET-PASSWORD"}',
+                                     headers={"Authorization": "Bearer SECRET-TOKEN", "Content-Type": "application/json"}, method="POST")
+    with mr._NO_REDIRECT_OPENER.open(request, timeout=3) as r:
+        out["login_status"] = r.status
+print(json.dumps(out))
+"""
+
+
+def _run_probe(mode: str, proxy_port: int, target_port: int) -> dict:
+    import os
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(_REPO_ROOT), "HOME": os.environ.get("HOME", ""),
+           "http_proxy": f"http://127.0.0.1:{proxy_port}", "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+           "https_proxy": f"http://127.0.0.1:{proxy_port}", "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+           "all_proxy": f"http://127.0.0.1:{proxy_port}", "ALL_PROXY": f"http://127.0.0.1:{proxy_port}",
+           "no_proxy": "localhost", "NO_PROXY": "localhost"}
+    done = subprocess.run([sys.executable, "-c", _PROXY_PROBE, mode, str(target_port)], capture_output=True, text=True, env=env,
+                          cwd=str(_REPO_ROOT), timeout=60, check=False)
+    assert done.returncode == 0, done.stderr[-800:]
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture
+def proxy_and_target():
+    proxy, target = _Listener(), _Listener(reply=True)
+    yield proxy, target
+    proxy.close()
+    target.close()
+
+
+def test_the_proxy_environment_would_catch_a_leak(proxy_and_target):
+    """Positive control: urllib's DEFAULT opener sends a 127.0.0.1 request to the proxy under this environment (NO_PROXY=localhost does not
+    cover the 127.0.0.1 literal). If this ever stops being true the two tests below prove nothing."""
+    proxy, target = proxy_and_target
+    with pytest.raises(AssertionError):                           # the stand-in proxy answers nothing, so the default opener fails
+        _run_probe("default", proxy.port, target.port)
+    assert proxy.requests and proxy.requests[0].startswith(f"GET http://127.0.0.1:{target.port}/api/health")
+    assert target.requests == []
+
+
+def test_loopback_health_and_login_never_go_through_a_proxy(proxy_and_target):
+    """The login POST carries the sidecar password and every channel request carries the bearer: neither may ride an ambient proxy,
+    and the health probe must reach the sidecar itself (with a proxy in the way the managed runtime could not even start)."""
+    proxy, target = proxy_and_target
+    result = _run_probe("controller", proxy.port, target.port)
+    assert result == {"health": True, "login_status": 200}
+    assert proxy.requests == [], f"loopback traffic reached the proxy: {proxy.requests[:3]}"
+    assert len(target.requests) == 2
+    assert any("SECRET-PASSWORD" in body and "SECRET-TOKEN" in body for body in target.bodies), "the login reached the sidecar directly"
+
+
+def test_ordinary_caller_headers_still_pass_after_the_denylist_grew(tmp_path, live):
+    """Control: the denylist must not eat the headers a plugin legitimately sends."""
+    ctl, _status, _ = _started(tmp_path, live)
+    resp = ctl.request("GET", "/api/models/list", headers={"X-Trace": "t1", "Accept": "application/json", "Range": "bytes=0-9",
+                                                         "Content-Type": "application/json", "If-None-Match": "abc"})
+    assert resp.status == 200
+
+
+def test_single_slashes_and_a_trailing_slash_are_still_valid_paths(tmp_path, live):
+    """Control for the empty-segment rule."""
+    assert mr._validate_channel_path("/api/models/list") == "/api/models/list"
+    assert mr._validate_channel_path("/api/models/") == "/api/models/"
+    assert mr._validate_channel_path("/api/inference/audio/gallery/abc/file") == "/api/inference/audio/gallery/abc/file"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_the_raw_sidecar_log_is_private_to_the_user(tmp_path, live):
+    """The log is captured before any scrubbing (sanitize_credentials runs only when the tail is READ), so it must not be world-readable."""
+    ctl, _status, _ = _started(tmp_path, live)
+    log = ctl._log_path
+    assert log is not None and log.exists()
+    assert (log.stat().st_mode & 0o077) == 0, oct(log.stat().st_mode)
+
+
+def test_a_proxy_environment_does_not_stop_a_real_sidecar_from_starting_and_serving(tmp_path, live, proxy_and_target, monkeypatch):
+    """The whole lifecycle with proxy variables exported to the test process (a smoke test; the subprocess tests above are the regression guard)."""
+    proxy, _target = proxy_and_target
+    for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.setenv(name, f"http://127.0.0.1:{proxy.port}")
+    monkeypatch.setenv("no_proxy", "localhost")
+    ctl, status, _receipt = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    assert ctl.request("GET", "/api/models/list").status == 200
+    stream = ctl.stream_request("GET", "/api/models/list")
+    assert b"models" in b"".join(stream)
+    stream.close()
+    assert proxy.requests == []
+
 
 def test_redirect_not_followed_and_second_server_sees_zero(tmp_path, live):
     ctl, _status, receipt = _started(tmp_path, live)

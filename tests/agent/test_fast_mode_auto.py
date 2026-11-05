@@ -167,6 +167,38 @@ def test_unprovisioned_detects_only_zero_limit_fast_429s():
     assert fast_mode.fast_mode_unprovisioned(RuntimeError("boom"), _FAST_KWARGS) is False
 
 
+class _FastCreditsError(Exception):
+    """A subscription-OAuth fast 429 (#134777): no limit headers, the body names credits."""
+
+    def __init__(self, message="Usage credits are required for fast mode."):
+        super().__init__(f"Error code: 429 - {{'type': 'error', 'error': {{'type': 'rate_limit_error', 'message': '{message}'}}}}")
+        self.status_code = 429
+        self.body = {"type": "error", "error": {"type": "rate_limit_error", "message": message}}
+
+
+def test_unprovisioned_detects_usage_credit_fast_429s_without_headers():
+    # No limit headers at all — the body's fast-mode + credits wording is the only signal.
+    assert fast_mode.fast_mode_unprovisioned(_FastCreditsError(), _FAST_KWARGS) is True
+    # A non-zero limit header must not mask the credits 429 either.
+    credits_with_limit = _FastCreditsError()
+    credits_with_limit.response = SimpleNamespace(headers={
+        "anthropic-fast-input-tokens-limit": "2000000", "anthropic-fast-output-tokens-limit": "2000000",
+    })
+    assert fast_mode.fast_mode_unprovisioned(credits_with_limit, _FAST_KWARGS) is True
+    # Wording without both markers stays a normal rate limit: only "fast mode"...
+    transient = _FastCreditsError(
+        "This request would exceed your organization's rate limit of 2000000 fast mode "
+        "input tokens per minute."
+    )
+    assert fast_mode.fast_mode_unprovisioned(transient, _FAST_KWARGS) is False
+    # ...and only "credits" (a non-fast billing error on a fast request).
+    billing = _FastCreditsError("Your credit balance is too low.")
+    assert fast_mode.fast_mode_unprovisioned(billing, _FAST_KWARGS) is False
+    # The request still has to have asked for fast speed.
+    plain_kwargs = {"model": "claude-opus-5"}
+    assert fast_mode.fast_mode_unprovisioned(_FastCreditsError(), plain_kwargs) is False
+
+
 def test_unavailable_model_drops_speed_for_the_session_and_only_that_model():
     agent = _agent(
         service_tier="priority", model="claude-opus-5", provider="anthropic",
@@ -194,3 +226,32 @@ def test_recovery_retries_at_standard_speed_before_classification():
     assert (retry, prompt) == (True, "sys")
     assert agent._fast_mode_unavailable_models == {"claude-opus-5"}
     assert any("standard speed" in line for line in printed)
+
+
+def test_recovery_retries_at_standard_speed_on_usage_credit_429():
+    from agent.turn_recovery import recover_before_classification
+
+    agent = SimpleNamespace(
+        model="claude-opus-5-5", provider="anthropic", log_prefix="", _fast_mode_unavailable_models=set(),
+        _image_rejecting_models=set(), _vprint=lambda *a, **k: None,
+    )
+    retry, prompt = recover_before_classification(
+        agent,
+        _FastCreditsError(),
+        messages=[],
+        api_messages=[],
+        api_kwargs=_FAST_KWARGS,
+        active_system_prompt="sys",
+    )
+    assert (retry, prompt) == (True, "sys")
+    assert agent._fast_mode_unavailable_models == {"claude-opus-5-5"}
+    # One retry per model: the second identical 429 falls through to normal classification.
+    retry, prompt = recover_before_classification(
+        agent,
+        _FastCreditsError(),
+        messages=[],
+        api_messages=[],
+        api_kwargs=_FAST_KWARGS,
+        active_system_prompt="sys",
+    )
+    assert (retry, prompt) == (False, "sys")

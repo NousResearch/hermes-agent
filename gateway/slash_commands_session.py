@@ -712,12 +712,9 @@ class GatewaySessionCommandsMixin:
         """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, render_compress_result
-        from gateway.run import _platform_config_key
+        from gateway.run_turn_hygiene import compaction_agent_scope
 
         session_key = self._session_key_for_source(source)
-        # Platform + stable gateway session key bind this agent (for external context engines) to
-        # the original conversation, not a default "cli" host.
-        platform_key = _platform_config_key(source.platform) if source.platform else None
         model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, session_key=session_key)
         if str(runtime_kwargs.get("api_mode") or "").lower() == "codex_app_server":
             # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
@@ -728,11 +725,10 @@ class GatewaySessionCommandsMixin:
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves
         # tool-result pruning and can trip the protect-first/last early-return.
         msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
-        # Assign, not setdefault (a resolver value would be a stale placeholder); platform only when
-        # known so None -> "cli" holds.
-        if platform_key is not None:
-            runtime_kwargs["platform"] = platform_key
-        runtime_kwargs["gateway_session_key"] = session_key
+        # Assign, not setdefault (a resolver value would be a stale placeholder). Platform + stable
+        # gateway session key bind this agent (context engines, memory provider) to the original
+        # conversation, not a default "cli" host; the provider also learns it is a "flush" helper.
+        runtime_kwargs.update(compaction_agent_scope(source, session_key))
         # Same reasoning setting as a live turn (session ``/reasoning`` > per-model > global): without it
         # the transport applies its default effort — a 400 on non-reasoning models.
         runtime_kwargs["reasoning_config"] = self._resolve_session_reasoning_config(source=source, model=model)

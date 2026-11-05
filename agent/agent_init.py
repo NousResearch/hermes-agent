@@ -1170,18 +1170,18 @@ def _apply_display_config(agent, _agent_cfg, platform):
 
 
 def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
-    """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
-    gateway status travels a different path and the indicator no-ops without it)."""
+    """Scoping kwargs for ``MemoryManager.initialize_all``. Status/warning callbacks go only to surfaces
+    that render them out-of-band (CLI, TUI, Desktop): a messaging chat would get every line as a message."""
     kwargs = {
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
+        # cron/subagent (from platform) and flush (explicit, compaction helpers) → providers skip writes.
+        "agent_context": getattr(agent, "agent_context", None) or (
+            platform if platform in ("cron", "subagent") else "primary"),
     }
-    if kwargs["platform"] == "cli":
-        kwargs["warning_callback"] = agent._emit_warning
-        kwargs["status_callback"] = agent._emit_status
+    if kwargs["platform"] in ("cli", "tui", "desktop"):
+        kwargs.update(status_callback=agent._emit_status, warning_callback=agent._emit_warning)
     # Session title (e.g. honcho derives chat-scoped session keys from it).
     if agent._session_db:
         with suppress(Exception):
@@ -2141,7 +2141,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
-    side_agent: bool = False, memory_manager=None,
+    side_agent: bool = False, memory_manager=None, agent_context: str | None = None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled

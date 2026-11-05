@@ -745,7 +745,9 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        from hermes_cli.kanban_db_review import is_review_completion
+        if not is_review_completion(conn, tid, expected_run_id=_worker_run_id(tid)):
+            _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,

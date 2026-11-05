@@ -33,6 +33,10 @@ import pytest
 from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 
 import tui_gateway.server as srv
+from persistence.conversation.messages import ConversationRequest, TranscriptView
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation, session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
@@ -45,30 +49,33 @@ def home(tmp_path, monkeypatch):
 
 
 def _db(profile_dir):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
 
-    return SessionDB(db_path=profile_dir / "state.db")
+    return open_persistence(profile_scope(home=profile_dir))
 
 
 def _add_session(db, sid, *, source="cli", title="", ts, text, hidden=False,
                  parent=None, end_reason=None, archived=False):
     """Create one session with a single user message at an exact timestamp."""
-    db.create_session(sid, source, parent_session_id=parent)
-    db.append_message(sid, "user", text, timestamp=ts)
-    with db._lock:
-        db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, sid))
+    seed_session(db, sid, source, parent_session_id=parent)
+    seed_messages(db, sid, {"role": "user", "content": text, "timestamp": ts})
+
+    def stamp(conn):
+        conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, sid))
         if end_reason:
             # Mark ended AFTER appending: the DB (correctly) refuses writes
             # to a compression-closed session.
-            db._conn.execute(
+            conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
                 (ts + 1, end_reason, sid),
             )
         if archived:
-            db._conn.execute(
+            conn.execute(
                 "UPDATE sessions SET archived = 1 WHERE id = ?", (sid,))
+
+    raw_holder(db)._execute_write(stamp)
     if hidden:
-        db.set_session_hidden(sid, True)
+        db.sessions.set_hidden(sid, True)
 
 
 def _profiles(params):
@@ -205,9 +212,8 @@ def test_canonical_session_ignores_unmarked_normal_child(home):
 
 def _fold_all_rows(db, sid):
     """Fold every row of one session the way an orphaned compaction mark does."""
-    with db._lock:
-        db._conn.execute(
-            "UPDATE messages SET active = 0, _compressed_summary = 1 WHERE session_id = ?", (sid,))
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET active = 0, _compressed_summary = 1 WHERE session_id = ?", (sid,)))
 
 
 def test_canonical_session_live_count_zero_when_all_rows_folded(home):
@@ -229,10 +235,10 @@ def test_canonical_session_live_count_skips_model_only_rows_like_the_reader(home
     """Micro-compaction's model-only rows never paint, so they must not make the open wait."""
     db = _db(home)
     _add_session(db, "modelonly", title="Bot Chat", ts=1000, text="for the model", hidden=True)
-    with db._lock:
-        db._conn.execute("UPDATE messages SET display_metadata = ? WHERE session_id = ?",
-                         (json.dumps({MODEL_ONLY_DISPLAY_METADATA_KEY: True}), "modelonly"))
-    painted = db.get_messages_as_conversation("modelonly", include_compacted=True)
+    raw_holder(db)._execute_write(lambda conn: conn.execute(
+        "UPDATE messages SET display_metadata = ? WHERE session_id = ?",
+        (json.dumps({MODEL_ONLY_DISPLAY_METADATA_KEY: True}), "modelonly")))
+    painted = conversation(db, "modelonly", ConversationRequest(view=TranscriptView.DISPLAY))
     db.close()
 
     canonical = _row(_profiles({}), "default")["canonical_session"]
@@ -313,7 +319,7 @@ def test_canonical_session_archived_by_recoverable_reason_is_resurrected(home, r
     # and the accidental end stamp went with it.
     db = _db(home)
     try:
-        fresh = db.get_session("reaped1")
+        fresh = session_row(db, "reaped1")
         assert not fresh["archived"]
         assert fresh["end_reason"] is None
     finally:
@@ -340,8 +346,8 @@ def test_resurrection_unarchives_the_whole_compression_lineage(home):
 
     db = _db(home)
     try:
-        assert not db.get_session("root1")["archived"]
-        assert not db.get_session("tip1")["archived"]
+        assert not session_row(db, "root1")["archived"]
+        assert not session_row(db, "tip1")["archived"]
     finally:
         db.close()
 
@@ -358,7 +364,7 @@ def test_canonical_session_deliberately_archived_stays_archived(home):
 
     db = _db(home)
     try:
-        assert db.get_session("retired1")["archived"]
+        assert session_row(db, "retired1")["archived"]
     finally:
         db.close()
 
@@ -389,7 +395,7 @@ def test_non_canonical_archived_session_untouched_by_resurrection(home):
 
     db = _db(home)
     try:
-        assert db.get_session("plain1")["archived"]
+        assert session_row(db, "plain1")["archived"]
     finally:
         db.close()
 
@@ -409,7 +415,7 @@ def test_session_list_title_lookup_resurrects_recoverable_bot_chat(home, monkeyp
     assert sessions[0]["id"] == "reaped2"
 
     # The archive flag was durably cleared.
-    assert not db.get_session("reaped2")["archived"]
+    assert not session_row(db, "reaped2")["archived"]
     db.close()
 
 
@@ -421,7 +427,7 @@ def test_session_list_title_lookup_keeps_deliberate_archive_hidden(home, monkeyp
 
     envelope = srv._methods["session.list"](1, {"title": "Bot Chat"})
     assert envelope["result"]["sessions"] == []
-    assert db.get_session("retired2")["archived"]
+    assert session_row(db, "retired2")["archived"]
     db.close()
 
 
@@ -478,7 +484,7 @@ def test_canonical_session_resurrects_despite_unmarked_normal_child(home):
 
     db = _db(home)
     try:
-        assert not db.get_session("reaped3")["archived"]
+        assert not session_row(db, "reaped3")["archived"]
     finally:
         db.close()
 
@@ -544,8 +550,8 @@ def test_deliberate_archive_after_resurrection_stays_archived(home):
 
     # User now deliberately archives the resurrected row.
     db = _db(home)
-    assert db.get_session("cycle1")["end_reason"] is None  # stamp cleared
-    db.set_session_archived("cycle1", True)
+    assert session_row(db, "cycle1")["end_reason"] is None  # stamp cleared
+    db.sessions.set_archived("cycle1", True)
     db.close()
 
     # Second lookup must respect the deliberate archive.
@@ -587,27 +593,31 @@ def test_canonical_session_scoped_per_profile_db(home):
 
 
 def test_profiles_list_opens_session_db_read_only(home, monkeypatch):
-    """Roster inspection must not take a writable SessionDB (20s lock patience)."""
-    import hermes_state
+    """Roster inspection must not take a writable store handle (20s lock patience)."""
+    import persistence_assembly
 
     db = _db(home)
     _add_session(db, "bot", title="Bot Chat", ts=1000, text="hello")
     db.close()
 
     seen = []
-    Real = hermes_state.SessionDB
+    real_reader, real_writer = persistence_assembly.open_persistence_reader, persistence_assembly.open_persistence
 
-    class Spy(Real):
-        def __init__(self, *args, **kwargs):
-            seen.append(kwargs)
-            super().__init__(*args, **kwargs)
+    def reader(target):
+        seen.append("reader")
+        return real_reader(target)
 
-    monkeypatch.setattr(hermes_state, "SessionDB", Spy)
+    def writer(*args, **kwargs):
+        seen.append("writer")
+        return real_writer(*args, **kwargs)
+
+    monkeypatch.setattr(persistence_assembly, "open_persistence_reader", reader)
+    monkeypatch.setattr(persistence_assembly, "open_persistence", writer)
 
     row = _row(_profiles({}), "default")
     assert row["canonical_session"]["preview"]
     assert seen, "profiles.list should open the profile state.db"
-    assert all(call.get("read_only") is True for call in seen)
+    assert all(kind == "reader" for kind in seen)
 
 
 def test_profiles_list_does_not_wait_out_write_lock(home):

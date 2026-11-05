@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import subprocess
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import session_row
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tui_gateway import server
 
 
@@ -27,7 +28,7 @@ def _master_repo(path):
 
 
 def _desktop_session(monkeypatch, tmp_path, cwd):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
@@ -44,12 +45,12 @@ def test_first_submit_row_records_git_branch_and_root(monkeypatch, tmp_path):
     repo = _master_repo(tmp_path / "repo")
     db, sid, session, key = _desktop_session(monkeypatch, tmp_path, repo)
     try:
-        assert db.get_session(key) is None  # lazy: no row until the first submit
+        assert session_row(db, key) is None  # lazy: no row until the first submit
         assert server._ensure_session_db_row(session) is True
     finally:
         server._sessions.pop(sid, None)
 
-    row = db.get_session(key)
+    row = session_row(db, key)
     assert row["cwd"] == str(repo)
     assert row["git_branch"] == "master"
     assert row["git_repo_root"]
@@ -68,7 +69,7 @@ def test_row_git_probe_runs_once_per_session(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
     assert probes == [str(repo)]
-    assert db.get_session(key)["git_branch"] == "master"
+    assert session_row(db, key)["git_branch"] == "master"
 
 
 def test_row_without_cwd_never_probes(monkeypatch, tmp_path):
@@ -81,5 +82,5 @@ def test_row_without_cwd_never_probes(monkeypatch, tmp_path):
     finally:
         server._sessions.pop(sid, None)
 
-    assert not db.get_session(key)["cwd"]
+    assert not session_row(db, key)["cwd"]
     assert probes == []

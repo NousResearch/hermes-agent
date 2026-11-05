@@ -15,12 +15,15 @@ import pytest
 
 import tui_gateway.server as srv
 import tui_gateway.methods_session
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    database = SessionDB(tmp_path / "state.db")
+    database = open_persistence(profile_scope(home=tmp_path))
     monkeypatch.setattr(srv, "_get_db", lambda: database)
     try:
         yield database
@@ -33,9 +36,8 @@ def _call(method: str, params: dict) -> dict:
 
 
 def _seed(db, sid: str) -> None:
-    db.create_session(sid, source="desktop")
-    db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,))
-    db._conn.commit()
+    seed_session(db, sid, "desktop")
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,)))
 
 
 def test_set_hidden_resolves_stored_id_without_live_session(db):
@@ -46,12 +48,12 @@ def test_set_hidden_resolves_stored_id_without_live_session(db):
     envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": True})
     assert "error" not in envelope, envelope
     assert envelope["result"]["hidden"] is True
-    assert db.get_session("stored-chat")["hidden"] == 1
+    assert session_row(db, "stored-chat")["hidden"] == 1
 
     # And back — unhide through the same durable path.
     envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": False})
     assert "error" not in envelope, envelope
-    assert db.get_session("stored-chat")["hidden"] == 0
+    assert session_row(db, "stored-chat")["hidden"] == 0
 
 
 def test_set_hidden_unknown_id_still_errors(db):
@@ -62,17 +64,17 @@ def test_set_hidden_unknown_id_still_errors(db):
 def test_set_hidden_without_flag_leaves_visible_session_alone(db):
     """#122190: a flag-less ``session.set_hidden`` is rejected, never treated as hide."""
     _seed(db, "plain-chat")
-    assert db.get_session("plain-chat")["hidden"] == 0
+    assert session_row(db, "plain-chat")["hidden"] == 0
 
     envelope = _call("session.set_hidden", {"session_id": "plain-chat"})
     assert envelope.get("error"), envelope
-    assert db.get_session("plain-chat")["hidden"] == 0
+    assert session_row(db, "plain-chat")["hidden"] == 0
 
 
 def test_session_list_include_hidden(db):
     _seed(db, "plain-chat")
     _seed(db, "bot-chat")
-    assert db.set_session_hidden("bot-chat", True) is True
+    assert db.sessions.set_hidden("bot-chat", True) is True
 
     default_rows = _call("session.list", {})["result"]["sessions"]
     assert {s["id"] for s in default_rows} == {"plain-chat"}
@@ -86,9 +88,9 @@ def test_session_list_hides_internal_sources(db, source):
     """Finite one-shot runs (`hermes -z`, `chat -q`) and other non-conversation rows never reach the
     human picker; interactive rows stay (#112550)."""
     _seed(db, "plain-chat")
-    db.create_session("internal-run", source=source)
-    db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", ("internal-run",))
-    db._conn.commit()
+    seed_session(db, "internal-run", source)
+    raw_holder(db)._execute_write(
+        lambda conn: conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", ("internal-run",)))
 
     rows = _call("session.list", {})["result"]["sessions"]
     assert {s["id"] for s in rows} == {"plain-chat"}

@@ -14,40 +14,31 @@ A's runtime — the turn then ran with A's persona and wrote A's memory
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from tui_gateway import server
 
 
 class _DB:
-    """Minimal ``SessionDB`` stand-in: every profile store knows ``s1``."""
+    """Minimal profile store stand-in, also the storage handle beside it: every profile store knows ``s1``."""
 
     def __init__(self, db_path=None, **_kwargs):
         self.db_path = db_path
+        self.sessions = SimpleNamespace(
+            get=lambda target: SimpleNamespace(id="s1", cwd="", git_branch=None, git_repo_root=None,
+                                               as_session_row=lambda: {"id": "s1", "cwd": ""}) if target == "s1" else None,
+            get_by_title=lambda _target: None, is_kanban_owned=lambda _target: False,
+            retire_undrained_queue_rows=lambda _target: 0)
+        self.lineage = SimpleNamespace(resolve_resume_target=lambda target: target,
+                                       ancestor_display_prefix=lambda _target: ())
+        self.messages = SimpleNamespace(assert_resume_safe=lambda *_a, **_k: 0,
+                                        read_resume_conversations=lambda _target: SimpleNamespace(model=(), display=()),
+                                        read_conversation=lambda *_a, **_k: ())
 
     def close(self):
         pass
-
-    def get_session(self, target):
-        return {"id": "s1", "cwd": ""} if target == "s1" else None
-
-    def get_session_by_title(self, _target):
-        return None
-
-    def resolve_resume_session_id(self, target):
-        return target
-
-    def reopen_session(self, _target):
-        pass
-
-    def get_resume_conversations(self, _target):
-        return ([], [])
-
-    def get_ancestor_display_prefix(self, _target):
-        return []
-
-    def get_messages_as_conversation(self, _target, **_kwargs):
-        return []
 
 
 @pytest.fixture()
@@ -55,8 +46,11 @@ def homes(monkeypatch, tmp_path):
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
-    monkeypatch.setattr("hermes_state_registry.acquire", _DB)
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_profile_session_db",
+                        lambda home: (_DB(db_path=home / "state.db"), True) if home else (server._get_db(), False))
+    monkeypatch.setattr(server, "_persistence_beside", lambda store: store)
+    monkeypatch.setattr(server, "_release_persistence", lambda _handle: None)
     monkeypatch.setattr(server, "_profile_home", lambda p: homes.get(p) if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)

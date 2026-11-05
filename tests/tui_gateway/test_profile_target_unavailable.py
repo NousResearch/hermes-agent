@@ -6,7 +6,8 @@ import pytest
 
 def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     from tui_gateway import server
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     home = tmp_path / ".hermes"
     worker = home / "profiles" / "worker"
@@ -16,11 +17,11 @@ def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", home)
     for path, marker in ((home, "launch"), (worker, "worker")):
         (path / "config.yaml").write_text(f"terminal:\n  cwd: /{marker}\n")
-        with SessionDB(db_path=path / "state.db") as db:
-            db.create_session(marker, "tui")
+        with open_persistence(profile_scope(home=path)) as db:
+            seed_session(db, marker, "tui")
     for name, marker in ((None, "launch"), ("default", "launch"), ("DEFAULT", "launch"), ("worker", "worker")):
         with server._profile_db({"profile": name}) as db:
-            assert db.get_session(marker)
+            assert db.sessions.get(marker)
         response = server._methods["config.get"](1, {"profile": name, "key": "full"})
         assert response["result"]["config"]["terminal"]["cwd"] == f"/{marker}"
     before = (home / "config.yaml").read_bytes()

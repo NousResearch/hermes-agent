@@ -7,20 +7,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
 from tui_gateway import server
 
 
 @pytest.mark.parametrize("kind", ["completion", "watch_match"])
 def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatch, tmp_path, kind):
-    with contextlib.closing(SessionDB(db_path=tmp_path / "state.db")) as db:
+    with open_persistence(profile_scope(home=tmp_path)) as db:
         key = "notification-owner"
-        db.create_session(key, "desktop")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        admit_session_input(db, epoch=epoch, principal_id="owner", session_id=key,
+        seed_session(db, key, "desktop")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        db.admissions.admit(epoch=epoch, principal_id="owner", session_id=key,
                             request_id="busy", payload={"text": "running"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         monkeypatch.setattr(server, "_session_db", lambda session: contextlib.nullcontext(db))
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: True)
         emitted = []
@@ -46,7 +47,7 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
 
         dispatch()
         assert session["running"] is False
-        assert db.get_messages_as_conversation(key) == []
+        assert conversation(db, key) == []
         assert waits and waits[0] > 0, "refused notification must yield before its caller requeues it"
         assert not emitted, "a retained notification must not paint a failed user turn"
         assert registry.completion_queue.get_nowait() is event

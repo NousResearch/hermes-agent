@@ -1,5 +1,6 @@
 """Two V4A operations spelling one file differently validate as one file (no partial write)."""
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -78,3 +79,31 @@ def test_dotdot_through_a_symlinked_dir_is_a_different_file(tmp_path):
         env.cleanup()
     assert result.success is True, result.error
     assert ((tmp_path / "sub/f.txt").read_text(), (tmp_path / "real/f.txt").read_text()) == ("X\n", "Y\n")
+
+
+@contextlib.contextmanager
+def _non_host_file_ops(cwd, **env_attrs):
+    """Real ShellFileOperations on a LocalEnvironment taking the remote backends' lexical path."""
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+    env = LocalEnvironment(cwd=str(cwd), timeout=30, persistent=False)
+    env.uses_host_filesystem = False
+    for name, value in env_attrs.items():
+        setattr(env, name, value)
+    try:
+        yield ShellFileOperations(env, cwd=str(cwd))
+    finally:
+        env.cleanup()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("dir_spelling", ["a.txt/", "a.txt/.", "a.txt/.//"])
+def test_a_trailing_slash_needs_a_directory_so_never_aliases_the_file(tmp_path, dir_spelling):
+    (tmp_path / "a.txt").write_text("before\n")
+    with _non_host_file_ops(tmp_path) as fo:
+        result = fo.patch_v4a("*** Begin Patch\n" + _update("a.txt", "before", "first")
+                              + _update(dir_spelling, "first", "second") + "*** End Patch\n")
+    assert result.success is False
+    assert "no files were modified" in result.error
+    assert (tmp_path / "a.txt").read_text() == "before\n"
+

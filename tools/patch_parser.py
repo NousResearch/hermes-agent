@@ -157,15 +157,20 @@ def _overlay_key(path: str, file_ops: Any) -> str:
     on POSIX ``..`` is kept, because the kernel resolves it AFTER following symlinks
     (``sub/link/../f`` is ``real/f`` when ``link`` points into ``real/``); Windows collapses
     ``..`` lexically and is case-insensitive, so only a Windows backend gets ntpath folding.
+    A trailing ``/`` or ``/.`` needs a directory, so it keeps a marker and never shares the
+    file's key.
     """
     env = getattr(file_ops, "env", None)
     cwd = getattr(env, "cwd", None) or getattr(file_ops, "cwd", None)
     cwd = cwd if isinstance(cwd, str) else ""
+    path = path.strip()
     if _backend_is_windows(env, cwd):
-        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, path.strip())))
-    raw = posixpath.join(cwd, path.strip()) if cwd.startswith("/") else path.strip()
+        tail = "\\" if re.search(r"[\\/]\.?[\\/]*$", path) else ""
+        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, path))) + tail
+    raw = posixpath.join(cwd, path) if cwd.startswith("/") else path
     segments = [seg for seg in raw.split("/") if seg not in ("", ".")]
-    return ("/" if raw.startswith("/") else "") + "/".join(segments)
+    tail = "/" if segments and raw.split("/")[-1] in ("", ".") else ""
+    return ("/" if raw.startswith("/") else "") + "/".join(segments) + tail
 
 
 def _backend_is_windows(env: Any, cwd: str) -> bool:

@@ -41,6 +41,9 @@ DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
 # stores and reports the choice. Whether that plugin is installed is the renderer's call: it falls
 # back to chained when no registered engine matches.
 EXTENSION_MODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$")
+# ``voice.gpt_live.language``: a BCP 47-shaped tag (fr, pt-BR, zh-Hant). It is interpolated into
+# the live instructions, so anything else (free text, newlines) is refused, never forwarded.
+LANGUAGE_TAG_RE = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -144,9 +147,9 @@ def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
     extra = str(live.get("instructions") or "").strip()
     instructions = f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
     language = str(live.get("language") or "auto").strip()
-    if language == "auto":
+    if language.lower() == "auto":  # a hand-edited "Auto" is still auto, not a broken session
         return instructions  # Preserve the existing multilingual behavior and persona byte-for-byte.
-    if len(language) > 35 or not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", language):
+    if len(language) > 35 or not LANGUAGE_TAG_RE.fullmatch(language):
         raise ValueError("GPT-Live language must be auto or a language tag such as fr or pt-BR")
     # Live controls response language through instructions, not a Realtime/STT language field.
     return (

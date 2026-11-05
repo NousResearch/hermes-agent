@@ -331,9 +331,8 @@ def _(rid, params: dict, service) -> dict:
     from gateway.hosted_room_peer import (
         GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
         room_grant_matches_scope, validate_room_link_url)
-    from gateway.hosted_rooms import (
-        AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError,
-        local_authority_gateway_id, room_state)
+    from gateway.hosted_rooms import local_authority_gateway_id, room_state
+    from persistence.gateway.hosted_rooms import AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
@@ -514,8 +513,9 @@ def _(rid, params: dict, service) -> dict:
     service_message=_WORKER_UNAVAILABLE)
 def _(rid, params: dict, service) -> dict:
     """Permanently tombstone a hosted room id."""
-    from gateway.hosted_rooms import RoomHeldGrantsPendingError, _room_id, disband_room, local_authority_gateway_id, room_state
-    from persistence.gateway.hosted_rooms import AuthorityConflictError, RoomHistoryExpiredError
+    from gateway.hosted_rooms import _room_id, disband_room, local_authority_gateway_id, room_state
+    from persistence.gateway.hosted_rooms import (
+        AuthorityConflictError, RoomHeldGrantsPendingError, RoomHistoryExpiredError)
     room_id = _room_id(params.get("room_id"))
 
     def disband_with_state(state: dict | None = None) -> dict:

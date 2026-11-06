@@ -14,7 +14,7 @@ hosted process loads lazily is listed as a root instead.
 Two dynamic imports are modelled. ``model_tools`` calls ``tools.registry.discover_builtin_tools()``
 while it imports, which imports every built-in tool module that registers a tool at module
 level: when ``model_tools`` is in the graph, so is each module discovery would select in the
-measured tree (``hosted_graph_tools``). And a forwarder declared at import time with
+measured tree (``hosted_graph_tools``), with the package ``__init__`` files importing it runs. And a forwarder declared at import time with
 ``agent.lazy_forward`` (``switch_model = forward("agent.agent_runtime_helpers", ...)`` in the
 ``AIAgent`` class body) imports its module on every call, so the declaration is an edge.
 Plugins loaded by path (``plugins/*``, ``$HERMES_HOME/plugins``) are not Python imports and are
@@ -95,9 +95,12 @@ class _Graph:
         return frozenset(seen)
 
     def _discovered(self) -> list[str]:
-        """The built-in tool modules ``discover_builtin_tools()`` imports, in this tree."""
+        """The built-in tool modules ``discover_builtin_tools()`` imports, in this tree, with every
+        package on the way: ``importlib.import_module("tools.pkg.tool")`` runs ``tools/pkg/__init__.py``
+        (and whatever it imports) first."""
         candidates = sorted(p for p in self.files if p.startswith("tools/"))
-        return discovered_tool_modules(self.files, _read_all(self.repo, self.tree, candidates))
+        modules = discovered_tool_modules(self.files, _read_all(self.repo, self.tree, candidates))
+        return sorted(set(self._found(n for m in modules for n in _prefixes(m[:-3].replace("/", ".")))))
 
 
 def _package(path: str) -> list[str]:

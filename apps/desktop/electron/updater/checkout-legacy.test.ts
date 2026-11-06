@@ -13,6 +13,9 @@ it('moves a checkout without a source probe to main, but surfaces a broken probe
   const modulePath: string = path.join(root, 'hermes_cli', 'source_check.py')
   fs.mkdirSync(path.dirname(modulePath))
   fs.mkdirSync(home)
+  // A real checkout: the probe-less fallback only applies where `hermes update`
+  // can actually run git. A copy without .git is a different case (below).
+  fs.mkdirSync(path.join(root, '.git'))
   fs.writeFileSync(path.join(root, 'hermes_cli', '__init__.py'), '')
 
   const probe: () => Promise<SourceUpdate | null> = (): Promise<SourceUpdate | null> =>
@@ -65,6 +68,48 @@ it('moves a checkout without a source probe to main, but surfaces a broken probe
     fs.writeFileSync(modulePath, 'import missing_probe_dependency\n')
     await expect(probe()).rejects.toThrow('missing_probe_dependency')
     expect(deps.stopBackendsForUpdate).not.toHaveBeenCalled()
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+it('reports a runtime copy with no git checkout as unsupported, not as an update', async (): Promise<void> => {
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'no-checkout-'))
+  const home: string = path.join(root, 'profile')
+  fs.mkdirSync(home)
+
+  // No .git and no source probe: this is what a client-only host has when its
+  // runtime tree is copied rather than cloned. It used to answer
+  // updateAvailable: true, which pinned the statusbar to "client vX (update)"
+  // forever because no update could ever clear it.
+  const deps: CheckoutStrategyDeps = {
+    readSourceUpdate: async (): Promise<SourceUpdate | null> => null,
+    hermesHome: home,
+    isWindows: false,
+    isMac: true,
+    defaultUpdateBranch: 'main',
+    updateHandoffDwellMs: 0,
+    resolveUpdateRoot: (): string => root,
+    resolveUpdaterBinary: vi.fn((): null => null),
+    remoteGatewayActive: (): boolean => false,
+    emitUpdateProgress: vi.fn(),
+    rememberLog: vi.fn(),
+    startHermes: vi.fn(async (): Promise<void> => {}),
+    stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
+    repairMacUpdaterHelper: vi.fn(),
+    preflightStateDb: vi.fn(),
+    runningAppBundle: (): null => null,
+    markQuittingForHandoff: vi.fn(),
+    quit: vi.fn()
+  }
+
+  try {
+    expect(await createCheckoutStrategy(deps).check()).toMatchObject({
+      supported: false,
+      updateAvailable: false,
+      behind: null,
+      reason: 'not-a-checkout'
+    })
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

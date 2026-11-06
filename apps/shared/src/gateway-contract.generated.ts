@@ -5236,6 +5236,7 @@ export interface CanonicalListParams {
   title?: string | null
   include_hidden?: boolean
   workspace?: string | null
+  picker?: boolean
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
@@ -5509,6 +5510,8 @@ export interface StoredTranscriptParams {
   session_id: string
   cursor?: string | null
   limit?: number
+  order?: 'oldest' | 'latest'
+  inline_images?: boolean
 }
 export interface StoredTranscriptResult {
   session_id: string
@@ -5526,6 +5529,7 @@ export interface StoredCompactionsResult {
 export interface StoredCompaction {
   timestamp: number | null
   summary: string
+  compacted_messages: number | null
 }
 /** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
 export interface PluginRpcParams {
@@ -7079,7 +7083,7 @@ export interface CanonicalRpcMethods {
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
-  /** The handoff summaries a stored conversation's compactions wrote, oldest first, across its compression lineage. The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch. */
+  /** The summaries a stored conversation's compactions wrote, oldest first, across its compression lineage, without the parts written for the model (preamble, end marker, re-quoted user messages, recovery footer). The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch. */
   'session.compactions': { params: CanonicalSessionParams; result: StoredCompactionsResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
@@ -7100,7 +7104,7 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
-  /** One page of a stored conversation's display rows, oldest first, across its compression lineage (live rows and rows a compaction archived, each logical message once). Never attaches the caller. A page reads at most `limit` stored rows (1-500), so it can show fewer, even none; read on until `next_cursor` is null. A cursor stays valid across later compactions and new turns. Refusals: invalid_params (a cursor this owner did not issue), not_found, permission_denied, profile_mismatch. */
+  /** One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON (a single larger row has its text cut and carries `truncated`); it can show fewer rows, even none, so read on until `next_cursor` is null. A cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. Refusals: invalid_params (a cursor issued for another session or order, or not by this read), not_found, permission_denied, profile_mismatch. */
   'session.transcript': { params: StoredTranscriptParams; result: StoredTranscriptResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }

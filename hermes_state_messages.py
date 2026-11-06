@@ -1148,13 +1148,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
         compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
         (a micro-compaction merge also stands for the rows it absorbed). *first_ids* gets each kept row's id ->
-        its logical message's first row id: the display sort key, which no compaction or rotation moves."""
+        its message's first durable row id, a removed copy's included (a carried tail's superseded original):
+        the key no compaction or rotation moves."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
         uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
         removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
         identities: dict[tuple[Any, ...], list[Any]] = {}
         removed_ts: set[Any] = set()
+        removed_first: dict[Any, int] = {}  # copy identity -> its first removed row (rows come in id order)
         rows = rows if isinstance(rows, list) else list(rows)
         later_copies = later_tool_copy_ids(self, rows)  # a compacted tool result paints once, as its original
         if drop_removed:
@@ -1176,6 +1178,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                     ("uid", uid) for uid in (row["message_uid"], *_uid_list(row["absorbed_message_uids"])) if uid)]
                 removed.update(dict.fromkeys(copies, gone))
                 if gone:
+                    for copy in copies:
+                        removed_first.setdefault(copy, row["id"])
                     continue
             if self._is_model_only_row(row) or row["id"] in later_copies:
                 continue
@@ -1194,7 +1198,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if drop_removed:
             keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
         if first_ids is not None:
-            first_ids.update((seen[key]["id"], first_id[key]) for key in keys)
+            first_ids.update((seen[key]["id"], min([first_id[key], *(
+                removed_first[copy] for copy in identities[key] or () if copy in removed_first)])) for key in keys)
         return [seen[key] for key in keys]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
@@ -1323,13 +1328,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     @staticmethod
     def _display_rows_from_conn(conn, session_id: str, *, limit: Optional[int] = None,
-                                offset: int = 0, latest: bool = False):
-        """One display-history projection for normal reads and transactional verification."""
+                                offset: int = 0, latest: bool = False, after: Optional[int] = None):
+        """One display-history projection for normal reads and transactional verification. *after*: keyset
+        paging past that ``display_order`` (before it when *latest*)."""
         direction = "DESC" if latest else "ASC"
+        keyset = "" if after is None else f" AND display_order {'<' if latest else '>'} {int(after)}"
         return conn.execute(
             f"""WITH page AS (
                    SELECT display_order FROM messages
-                   WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}{not_a_later_tool_copy_sql("messages")}
+                   WHERE session_id = ? AND (active = 1 OR compacted = 1){DISPLAY_VISIBLE_SQL}{not_a_later_tool_copy_sql("messages")}{keyset}
                    GROUP BY display_order ORDER BY display_order {direction}
                    LIMIT ? OFFSET ?
                )
@@ -1519,20 +1526,19 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
-                                     include_row_ids: bool = False, include_compacted: bool = False,
-                                     display_sort_ids: Optional[dict] = None) -> list[dict[str, Any]]:
+                                     include_row_ids: bool = False,
+                                     include_compacted: bool = False) -> list[dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
-        cannot merge with an original user turn; the stored transcript is never mutated. *display_sort_ids*
-        (with ``include_compacted``): see ``_dedupe_display_generations``'s ``first_ids``."""
+        cannot merge with an original user turn; the stored transcript is never mutated."""
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows, drop_removed=display, first_ids=display_sort_ids)
+            rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import Any, Dict, Optional
 
-from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.context_compressor import (
+    _LEAN_RECOVERY_HEADING, _LEAN_USER_MESSAGES_HEADING, ContextCompressor, is_compaction_summary_message,
+)
 from agent.message_content import flatten_message_text
 
 
@@ -61,10 +65,29 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     return projected
 
 
-def compaction_summary_text(message: Any) -> Optional[str]:
-    """The summary a compaction handoff carries, as the compressor wrote it: no model-facing preamble,
-    no end marker, no prior-tail content or live ask merged into the same carrier. ``None`` for any
-    other message."""
+
+# Lean-mode sections written for the model, not for a reader: the compacted turns' user messages
+# quoted again, and the footer naming ``session_search`` (``ContextCompressor._augment_summary_lean``).
+_MODEL_ONLY_SECTIONS = (_LEAN_USER_MESSAGES_HEADING, _LEAN_RECOVERY_HEADING)
+_HISTORICAL_ONLY_LINE = "Historical only; newer protected-tail messages after this summary win."
+_COMPACTED_COUNT = re.compile(r"The (\d+) compacted message\(s\) remain fully preserved")
+
+
+def compaction_summary(message: Any) -> Optional[dict[str, Any]]:
+    """What a compaction handoff tells a reader: ``{summary, compacted_messages}``, or ``None`` for any
+    other message. ``summary`` is the summary as the compressor wrote it, without the model-facing
+    preamble and end marker, prior-tail content or live ask merged into the carrier, the lean
+    sections above and the snapshot's ranking line; ``compacted_messages`` is the count the recovery
+    footer names (``None`` when it has none)."""
     if not is_compaction_summary_message(message):
         return None
-    return ContextCompressor._strip_summary_prefix(flatten_message_text(message.get("content")))
+    text = ContextCompressor._strip_summary_prefix(flatten_message_text(message.get("content")))
+    count = _COMPACTED_COUNT.search(text)
+    for heading in _MODEL_ONLY_SECTIONS:
+        start = text.find(heading)
+        if start >= 0:
+            end = text.find("\n## ", start + len(heading))
+            text = text[:start] + (text[end + 1:] if end >= 0 else "")
+    text = "\n".join(line for line in text.splitlines() if line.strip() != _HISTORICAL_ONLY_LINE)
+    return {"summary": re.sub(r"\n{3,}", "\n\n", text).strip(),
+            "compacted_messages": int(count[1]) if count else None}

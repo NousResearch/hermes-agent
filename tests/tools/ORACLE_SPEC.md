@@ -16,16 +16,21 @@ resulting file**, including exact terminators; `REFUSE(code)`; or
 version: `NOT_FOUND` and `AMBIGUOUS`; these are stable categories, not source
 text or production diagnostic strings. Unsupported operations, syntax,
 features, encodings, or situations are `OUT_OF_DOMAIN`, never `REFUSE`.
-For baseline diagnostics, map a structured count of two or more matches to
-`AMBIGUOUS` before considering a generic `not found` label; a plain not-found
-without a match count maps to `NOT_FOUND`. Empty-search or any unmappable
-message is a finding, not either refusal code. Diagnostic classification must
-never change the oracle's independently determined result.
+For baseline diagnostics, if `empty search text` appears, classify as
+`UNMAPPED`. Otherwise, a numeric `ambiguous (N matches)` or
+`Found N matches for old_string` with N >= 2 maps to `AMBIGUOUS` before any
+`not found` label. A plain `not found` with no count maps to `NOT_FOUND`;
+every other diagnostic is `UNMAPPED`. UNMAPPED is a finding, not either refusal
+code. Do not infer a count from the input to reinterpret a production error.
 
 For a successful whole-line replacement or deletion, `site` describes the
 consumed original lines (including their individual terminators). One input line
 is a `(content, terminator)` pair; terminator is LF, CRLF, or absent only on
-the final line. Untouched pairs are copied byte-for-byte. Deleted pairs vanish
+the final line. Decode a file canonically: each terminator closes exactly one
+physical line; only a nonempty suffix after the final terminator creates an
+unterminated line. In particular `b'a\n'` has one line, not a second empty
+unterminated line. The grammar rejects empty files and an empty unterminated
+suffix. Untouched pairs are copied byte-for-byte. Deleted pairs vanish
 including their terminator; each added replacement line has the file style's
 terminator, even when replacing an unterminated final line. This is the explicit
 contract for this narrow domain, not an observation about the baseline.
@@ -54,13 +59,14 @@ production substring cannot match unless the generator checks it too. Reject a
 file from this grammar if any non-equal content contains the search as a
 substring; for empty search, nonempty contents are not substring candidates.
 
-Each case has tags `rules` (a nonempty set drawn from 1,2,3,5,6, determined
-by which behavior is asserted, so a case may count for multiple rules),
-`style=LF|CRLF`, `final=terminated|unterminated`,
-`kind=replace|delete`, `target=blank|nonblank`,
+Each case has a deterministic `rules` set: `{1,2,3}` always, plus `5` iff
+the winning cardinality is zero or many, plus `6` iff kind is delete.
+Further tags are `style=LF|CRLF`, `final=terminated|unterminated`,
+`kind=replace|delete`, `target=blank|nonblank` (the search content),
 `tier=exact|normalized|none`, `position=final|nonfinal|none`, and
-`cardinality=zero|one|many`. `position=none` iff cardinality is not one;
-`tier=none` iff cardinality is zero. The feasibility list consists of all
+`cardinality=zero|one|many`. For a unique site, `position=final` iff its
+line index is the last physical input line, else `nonfinal`; otherwise it is
+`none`. `tier=none` iff cardinality is zero. The feasibility list consists of all
 combinations realizable under the grammar, determined by exhaustive enumeration
 of the bounded grammar before random sampling, and persisted with seed/counts. These tags are generator metadata, not advice to
 the oracle. Generator assertions validate the grammar and tags from actual
@@ -69,9 +75,13 @@ must not return `OUT_OF_DOMAIN`. Count cases per rule and tag combination;
 require nonzero count for every advertised feasible in-domain class and publish
 the seed and counts. Rule 4 has no generated in-domain class in this version;
 record its count as zero rather than fabricating coverage. Compare production outcome and exact resulting file bytes;
-compare a reported site when the planner's structured result or an unambiguous
-unified diff proves its location; otherwise record site comparison as unavailable,
-not as a pass. Repeated equal lines may make a diff non-unique. A production
+compare site from a unified diff only when it has exactly one removed line:
+initialize a zero-based original cursor from the hunk's `-start` minus one;
+advance it for context and removed lines, not additions. The removed line's
+cursor gives `(cursor,cursor+1)` only if that removed content occurs on exactly
+one original line. If the diff has multiple removals, omits the change, or the
+content repeats, report site comparison unavailable,
+not a pass. A production
 difference is a finding, never a
 reason to discard a generated input or alter its expected value. Validate oracle
 membership using separately constructed negative cases too.
@@ -133,7 +143,7 @@ refusal. Their units remain an open owner question.
 
 * F=`b'a\nold\n'`; P=`b'-old\n+new\n'` → W((1,2), `b'a\nnew\n'`).
 * F=`b'old\nold\n'`; same P → R(AMBIGUOUS), original `b'old\nold\n'`.
-* F=`b'old\n'`; hunk `b'@@ hint @@\n-old\n+new\n'` → OOD; original `b'old\n'`.
+* F=`b'old\n'`; replace the wrapper's bare hunk marker with `@@ hint @@` and use P=`b'-old\n+new\n'` → OOD; oracle does not write.
 
 ### 4. Consumed search versus already-applied replacement
 
@@ -180,8 +190,10 @@ compared. Rule 1's unterminated-final example writes `b'a\nnew'`, not
 `b'a\nnew\n'`. Rule 6's ordinary deletion writes `b'a\n\nb\n'`, not
 `b'a\nb\n'`; its unique blank deletion refuses with `empty search text`, and
 its duplicate blank deletion also refuses with `empty search text`, not the
-specified ambiguous category. In a separate missing-search probe using a unique
-marker, the baseline diagnostic did not echo that marker. These are baseline
+specified ambiguous category. A separate probe used input `b'a\n'`, search
+`SUPERUNIQUE`, replacement `new`; its baseline not-found diagnostic was
+`Could not find a match for old_string in the file` and did not echo the
+marker. These are baseline
 findings, not evidence that
 this proposed contract has already been implemented. The other in-domain
 examples above had the expected success/refusal and resulting bytes. Out-of-

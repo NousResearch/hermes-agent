@@ -226,9 +226,10 @@ than copying production credentials into the checkout.
 
 From the repository root, run `pnpm install --frozen-lockfile` for the desktop,
 TUI, dashboard, and shared JS workspaces. Root `package.json` pins pnpm in
-`devEngines` (`source ./activate` provides that exact version): any other pnpm
-version fails, and the root `preinstall` script refuses `npm install`. The website is a
-separate npm project:
+`devEngines` (`source ./activate` provides that exact version). Hermes's builds and
+`hermes update` refuse any other pnpm version; a direct `pnpm install` does not check
+it. The root `preinstall` script refuses `npm install`. The website is a separate npm
+project:
 
 ```bash
 npm ci --prefix website

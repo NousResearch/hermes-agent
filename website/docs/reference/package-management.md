@@ -439,7 +439,8 @@ pnpm --dir apps/desktop run dev
 ```
 
 Activation provides the pnpm version root `package.json` pins in `devEngines`.
-Installs refuse any other pnpm version, and the root `preinstall` script refuses
+Hermes's builds and `hermes update` refuse any other pnpm version (a direct
+`pnpm install` does not check it), and the root `preinstall` script refuses
 `npm install` (npx and other npm commands only warn).
 
 The website is a separate npm project: `npm ci --prefix website`, then

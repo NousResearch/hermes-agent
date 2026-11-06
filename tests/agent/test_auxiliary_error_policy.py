@@ -27,22 +27,25 @@ def _ok():
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="fallback"))])
 
 
-def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallback_error=None, **call_kw):
-    """``call_llm`` / ``async_call_llm`` on a client whose requests raise ``error`` (a list: one per request)."""
+def run_ladder(error, *, provider="openrouter", retries=1, is_async=False, fallback_error=None, pool=None, **call_kw):
+    """``call_llm`` / ``async_call_llm`` on a client whose requests raise ``error`` (a list: one per request).
+    ``pool``: a real ``CredentialPool`` that recovery rotates (its ``sk-primary`` key sent the request)."""
     create = AsyncMock if is_async else MagicMock
     primary = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
     primary.chat.completions.create = create(side_effect=error)
     fallback = MagicMock(base_url="https://api.example.com/v1")
     fallback.chat.completions.create = create(side_effect=fallback_error, return_value=_ok())
     marks, rotations, refreshes = [], [], []
+    recovery = (patch("agent.auxiliary_client.load_pool", lambda _p: pool) if pool is not None else
+                patch("agent.auxiliary_client._recover_provider_pool", side_effect=lambda _p, e, **_k: rotations.append(e)))
     with (
+        recovery,
         patch("agent.auxiliary_client._resolve_task_provider_model", return_value=(provider, "m", None, None, None)),
         patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "m")),
         patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
         patch("agent.auxiliary_client._transient_retry_count", return_value=retries),
         patch("agent.auxiliary_client._TRANSIENT_RETRY_BACKOFF_BASE", 0.0),
-        patch("agent.auxiliary_client._recoverable_pool_provider", return_value="openrouter"),
-        patch("agent.auxiliary_client._recover_provider_pool", side_effect=lambda _p, e, **_k: rotations.append(e)),
+        patch("agent.auxiliary_client._recoverable_pool_provider", return_value=pool.provider if pool else "openrouter"),
         patch("agent.auxiliary_client._mark_provider_unhealthy", side_effect=lambda *a, **kw: marks.append(a)),
         patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
         patch("agent.auxiliary_client._try_main_fallback_chain", return_value=(None, None, "")),
@@ -117,6 +120,35 @@ BEHAVIOUR = [
 def test_behaviour(case, error, provider, expected):
     outcome = run_ladder(error, provider=provider)
     assert {key: getattr(outcome, key) for key in expected} == expected, (case, outcome.result)
+
+
+_OUT_OF_EXTRA_USAGE = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+# (case id, error, route provider, pooled keys, the failed key's bench): sized from the verdict as the main loop's
+# credential recovery sizes it, as (stored status, pool failure reason, seconds) or the models cooled down.
+POOL_BENCH = [
+    # Anthropic's "out of extra usage" 400 can be a content filter on a healthy account (#82154).
+    ("unverified-billing-400-sole", sdk(400, _OUT_OF_EXTRA_USAGE), "anthropic", 1, (400, "billing_unverified", 60)),
+    ("unverified-billing-400-pool", sdk(400, _OUT_OF_EXTRA_USAGE), "anthropic", 2, (400, "billing_unverified", 60)),
+    ("billing-403-sole", sdk(403, "Key limit exceeded (total limit)."), "openrouter", 1, (403, "billing", 3600)),
+    ("billing-402-sole", sdk(402, "Insufficient credits"), "openrouter", 1, (402, "billing", 3600)),
+    ("anthropic-per-model-429", sdk(429, "Rate limit exceeded"), "anthropic", 1, ["m"]),
+]
+
+
+@pytest.mark.parametrize("case,error,provider,keys,bench", POOL_BENCH, ids=[c[0] for c in POOL_BENCH])
+def test_pool_bench(case, error, provider, keys, bench):
+    from agent.credential_pool import _exhausted_until
+
+    pool = CredentialPool(provider, [Key(provider, f"k{i}", f"k{i}", "api_key", i, "manual", f"sk-{i}" if i else "sk-primary")
+                                     for i in range(keys)])
+    run_ladder(error, provider=provider, pool=pool)
+    failed = pool.entries()[0]
+    until = _exhausted_until(failed, sole_credential=keys == 1)
+    if until is None:
+        benched = sorted(failed.model_cooldowns or {})
+    else:
+        benched = (failed.last_error_code, failed.failure_reason, round(until - (failed.last_status_at or 0)))
+    assert benched == bench, case
 
 
 @pytest.mark.parametrize("retry_error,fell_back", [  # a terminal verdict (no retry, no fallback) holds after a rung

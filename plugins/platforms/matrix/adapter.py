@@ -839,6 +839,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: dict[str, asyncio.Task] = {}
+        self._invite_decline_tasks: dict[str, asyncio.Task] = {}
+        self._declined_invites: set[str] = set()
         self._closing = False
         self._startup_ts: float = 0.0
         self._reset_clock_skew_detector()
@@ -1361,7 +1363,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
-        for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
+        for tasks in (
+            self._invite_join_tasks.values(),
+            self._invite_decline_tasks.values(),
+            self._reaction_redaction_tasks,
+        ):
             pending = list(tasks)
             for task in pending:
                 if not task.done():
@@ -1369,6 +1375,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
         self._invite_join_tasks.clear()
+        self._invite_decline_tasks.clear()
         self._reaction_redaction_tasks.clear()
         if getattr(self, "_crypto_db", None):
             try:
@@ -2318,6 +2325,10 @@ class MatrixAdapter(BasePlatformAdapter):
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.
         if not self._is_authorized_user(inviter, str(room_id)):
             logger.warning("Matrix: rejecting invite to %s from unauthorized user %s", room_id, inviter)
+            # Rejecting alone leaves the invite pending in rooms.invite, so every
+            # later sync and restart logs this again. Decline it instead, off the
+            # sync path.
+            self._schedule_invite_decline(str(room_id), inviter)
             return
         logger.info("Matrix: invited to %s — joining (is_direct=%s)", room_id, is_direct)
         # Join off the sync path; a declared DM is recorded in m.direct once the join lands.
@@ -2361,6 +2372,40 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._invite_join_tasks.pop(room_id, None)
         self._invite_join_tasks[room_id] = asyncio.create_task(_join_invite())
 
+    def _schedule_invite_decline(self, room_id: str, inviter: str = "") -> None:
+        """Decline an invite from an unauthorised user without blocking sync.
+
+        Rejecting without leaving leaves the invite in ``rooms.invite``, so the
+        same warning repeats on every sync and restart and the room never
+        settles. Leaving closes that loop. A failure only logs: the invite is
+        still there, so the next sync that sees it tries again.
+        """
+        room_id = str(room_id or "")
+        if not room_id or self._client is None or room_id in self._joined_rooms:
+            return
+        if room_id in self._declined_invites or room_id in self._invite_decline_tasks:
+            return
+
+        async def _decline_invite() -> None:
+            try:
+                await asyncio.wait_for(
+                    self._client.leave_room(RoomID(room_id)), timeout=30.0
+                )
+            except TimeoutError:
+                logger.warning("Matrix: timed out declining invite %s", room_id)
+            except Exception:
+                logger.exception("Matrix: could not decline invite %s", room_id)
+            else:
+                # Only remember successes, so a transient failure stays retryable.
+                self._declined_invites.add(room_id)
+                logger.info(
+                    "Matrix: declined invite to %s from unauthorized user %s", room_id, inviter
+                )
+            finally:
+                self._invite_decline_tasks.pop(room_id, None)
+
+        self._invite_decline_tasks[room_id] = asyncio.create_task(_decline_invite())
+
     def _schedule_pending_invite_joins(self, sync_data: dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""
         invites = (sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}).get("invite", {})
@@ -2389,6 +2434,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     room_id,
                     inviter,
                 )
+                # Same decline as the live path: a rejected invite that is left
+                # pending comes back through this pass on every sync.
+                self._schedule_invite_decline(str(room_id), inviter)
                 continue
             logger.info(
                 "Matrix: reconciling pending invite for %s (is_direct=%s)",

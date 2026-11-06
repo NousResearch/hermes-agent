@@ -180,13 +180,17 @@ def _scan(conn, deadline: float) -> tuple[list[str], bool]:
 
 @contextlib.contextmanager
 def _write_txn(conn):
+    """BEGIN IMMEDIATE ... COMMIT. A COMMIT that fails (a reader holding the file in DELETE journal mode)
+    leaves the transaction open, so it is rolled back too: the open's writer connection must come back
+    to its caller with no transaction, or every later write fails at BEGIN."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
+        conn.execute("COMMIT")
     except BaseException:
-        conn.execute("ROLLBACK")
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
-    conn.execute("COMMIT")
 
 
 def _pending(conn) -> list[str]:

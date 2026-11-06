@@ -25,6 +25,7 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported (mirrors
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
+from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
@@ -45,6 +46,20 @@ def _clear_clarify_state():
         cm._notify_cbs.clear()
 
 
+def _install_keyboard_fakes(monkeypatch):
+    class _Button:
+        def __init__(self, text, callback_data):
+            self.text = text
+            self.callback_data = callback_data
+
+    class _Markup:
+        def __init__(self, rows):
+            self.inline_keyboard = rows
+
+    monkeypatch.setattr(telegram_adapter, "InlineKeyboardButton", _Button)
+    monkeypatch.setattr(telegram_adapter, "InlineKeyboardMarkup", _Markup)
+
+
 # ===========================================================================
 # send_clarify — render
 # ===========================================================================
@@ -56,7 +71,8 @@ class TestTelegramSendClarify:
         _clear_clarify_state()
 
     @pytest.mark.asyncio
-    async def test_multi_choice_renders_buttons_and_other(self):
+    async def test_multi_choice_renders_buttons_and_other(self, monkeypatch):
+        _install_keyboard_fakes(monkeypatch)
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 100
@@ -83,15 +99,39 @@ class TestTelegramSendClarify:
         # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
         markup = kwargs["reply_markup"]
         assert markup is not None
-        # Mocked InlineKeyboardMarkup — just verify it was constructed
-        # with rows.  We check state instead of poking the mock structure.
+        assert [row[0].text for row in markup.inline_keyboard[:3]] == ["alpha", "beta", "gamma"]
+        assert [row[0].callback_data for row in markup.inline_keyboard[:3]] == [
+            "cl:cid1:0", "cl:cid1:1", "cl:cid1:2",
+        ]
         assert "cid1" in adapter._clarify_state
         assert adapter._clarify_state["cid1"] == "sk1"
 
+    @pytest.mark.asyncio
+    async def test_choice_button_labels_are_compact_human_text(self, monkeypatch):
+        _install_keyboard_fakes(monkeypatch)
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        await adapter.send_clarify(
+            chat_id="12345",
+            question="What next?",
+            choices=[
+                "  Merge   automatically when CI and independent review pass (Recommended)  ",
+                "Hold for James",
+            ],
+            clarify_id="cid2",
+            session_key="sk2",
+        )
+
+        markup = adapter._bot.send_message.call_args[1]["reply_markup"]
+        labels = [row[0].text for row in markup.inline_keyboard[:2]]
+        assert labels[0].startswith("Merge automatically")
+        assert labels[0].endswith("…")
+        assert "(Recommended)" not in labels[0]
+        assert len(labels[0]) <= 48
+        assert labels[1] == "Hold for James"
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

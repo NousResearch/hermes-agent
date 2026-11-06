@@ -413,7 +413,7 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
     stop_for_relaunch()
 
 
-def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
+def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool | None:
     """Restore through backup's authority reservation and pre-publication epoch floor.
 
     Use the single-database primitive, not whole-profile restore: post-update config
@@ -421,6 +421,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     """
     from hermes_cli.backup import verify_sqlite_integrity
     from hermes_cli.backup_restore import _safe_restore_db
+    from hermes_cli.update_state_integrity import verify_update_state_db
 
     snap_state.stat()  # Preserve the caller's OSError reporting for missing snapshots.
     if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
@@ -432,8 +433,14 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         print("    use `hermes sessions recover --source <snapshot> --output <separate-path>`")
         print("    to salvage transcripts into a separate output.")
         return False
-    restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    restored = verify_update_state_db(state_path)
+    if restored["valid"] is True:
+        return True
+    # The snapshot pages were already published; an unavailable post-restore
+    # probe cannot undo the write and must never be reported as "did not complete".
+    verdict = "indeterminate" if restored["valid"] is None else "failed"
+    print(f"  ⚠ Snapshot was applied, but post-restore verification is {verdict}: {restored['message']}")
+    return None
 
 
 def _verify_and_restore_one_state_db(home: Path, *, label: str, snapshot_id: str | None = None) -> None:
@@ -441,14 +448,19 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str, snapshot_id: str
     Never raises: a guard that crashes the update tail is worse than what it detects."""
     try:
         from hermes_cli.backup import quick_snapshot_dir, verify_sqlite_integrity
+        from hermes_cli.update_state_integrity import verify_update_state_db
         state_path = home / "state.db"
         if not state_path.exists():
             return
-        ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-        if ok.get("valid"):
+        ok = verify_update_state_db(state_path)
+        if ok["valid"] is True:
             logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
             return
         print()
+        if ok["valid"] is None:
+            print(f"⚠ state.db verification deferred after update ({label}): {ok['message']}")
+            print("  ⚠ Database left unchanged; retry after the runtime releases the file.")
+            return
         print(f"⚠ state.db verification failed after update ({label}): " + ok.get("message", "unknown error"))
         if not snapshot_id:
             print("  ⚠ No pre-update snapshot from this update for this home; state.db left unchanged.")
@@ -462,10 +474,18 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str, snapshot_id: str
             print(f"  ⚠ Pre-update snapshot {snapshot_id} failed state.db verification; live database left unchanged.")
             return
         try:
-            if _restore_state_db_from_snapshot(state_path, snap_state):
+            if snap_state.stat().st_mtime < state_path.stat().st_mtime:
+                from datetime import datetime, timezone
+                snap_time = datetime.fromtimestamp(snap_state.stat().st_mtime, timezone.utc).isoformat()
+                live_time = datetime.fromtimestamp(state_path.stat().st_mtime, timezone.utc).isoformat()
+                print(f"  ⚠ Snapshot predates live state.db: snapshot={snap_time}, live={live_time}")
+            outcome = _restore_state_db_from_snapshot(state_path, snap_state)
+            if outcome is True:
                 print(f"  ✓ Auto-restored from snapshot {snapshot_id} ({label})")
+            elif outcome is None:
+                print("  ⚠ Snapshot was applied; post-restore verification requires attention.")
             else:
-                print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
+                print("  ✗ Auto-restore refused or failed; inspect the diagnostic above.")
         except OSError as exc:
             print(f"  ✗ Auto-restore file copy failed: {exc}")
     except Exception as exc:

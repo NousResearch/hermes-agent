@@ -921,7 +921,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
-            server.shutdown()  # returns once the serve loop exits (≤ poll_interval) — the port is free after close
+            await asyncio.to_thread(server.shutdown)  # an idle socket must not stall the shared MCP event loop
             server.server_close()
         return _callback_outcome(result, cimd_url)
 

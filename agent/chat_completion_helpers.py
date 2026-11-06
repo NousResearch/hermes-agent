@@ -786,11 +786,16 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
-    # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
-    # request transform. No-op unless this really is the OpenAI SDK, so the
-    # MoA facade above and the suite's stand-in clients are unaffected.
-    api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
-    return _chat_completion_capturing_headers(agent, request_client, api_kwargs)
+    # Owner rule (fleet): one GLM-backed process at a time on the shared Z.ai
+    # GLM Coding Plan route. plan_admission is a no-op for every other route.
+    from agent.plan_admission import plan_admission
+
+    with plan_admission(getattr(agent, "base_url", None), model=getattr(agent, "model", None), purpose="chat_nonstream"):
+        # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
+        # request transform. No-op unless this really is the OpenAI SDK, so the
+        # MoA facade above and the suite's stand-in clients are unaffected.
+        api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+        return _chat_completion_capturing_headers(agent, request_client, api_kwargs)
 
 
 
@@ -3017,6 +3022,15 @@ class _StreamingCall(StreamingWaitMonitor):
         return False
 
     def _call_chat_completions(self, stream_attempt_id: int):
+        # Owner rule (fleet): one GLM-backed process at a time on the shared
+        # Z.ai GLM Coding Plan route; held across the whole stream attempt
+        # (open + consume). No-op for every other route.
+        from agent.plan_admission import plan_admission
+
+        with plan_admission(getattr(self.agent, "base_url", None), model=getattr(self.agent, "model", None), purpose="chat_stream"):
+            return self._call_chat_completions_ungated(stream_attempt_id)
+
+    def _call_chat_completions_ungated(self, stream_attempt_id: int):
         """Stream a chat completions response."""
         import httpx as _httpx
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()

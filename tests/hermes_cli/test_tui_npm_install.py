@@ -73,20 +73,83 @@ def test_source_compile_failure_stops_launch_without_reinstall(tui_source):
 @pytest.mark.platforms("posix")
 def test_failed_dependency_preparation_launches_the_previous_build(tui_source, monkeypatch, capsys):
     """#150031: after an update moved the TUI's inputs, an install that cannot run (here lazy
-    installs are disabled; offline, the registry is unreachable) still starts the previous bundle."""
+    installs are disabled; offline, the registry is unreachable) still starts the previous bundle,
+    and hands the caller the warning to show again after the TUI's screen clear."""
     root, _ = tui_source
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     with pytest.raises(subprocess.CalledProcessError):
         main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
     _touch_tui_entry(root / "ui-tui")
-    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+    notices = []
+    argv, cwd = main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False, notices=notices)
     assert argv[-1] == str(root / "ui-tui/dist/entry.js")
     assert subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip() == "tui"
-    assert "starting the previous TUI build" in capsys.readouterr().err
+    assert "previous TUI build was started" in capsys.readouterr().err
+    assert len(notices) == 1 and "hermes update" in notices[0]
     assert _events(root) == []
-    # --dev runs the sources, which need the dependencies.
+    # --dev runs the sources, and a forced build asks for them: both need the dependencies.
     with pytest.raises(subprocess.CalledProcessError):
         main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=True)
+    monkeypatch.setenv("HERMES_TUI_FORCE_BUILD", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        main_tui_launch._make_tui_argv(root / "ui-tui", tui_dev=False)
+
+
+# The TUI's first write (ui-tui/src/entry.tsx): clear the screen and the scrollback.
+_TUI_CLEAR = "\\x1b[2J\\x1b[H\\x1b[3J"
+_FALLBACK_LAUNCH = f"""
+import sys
+from hermes_cli import main_tui_launch
+def argv(tui_dir, tui_dev, notices=None):
+    print("fallback notice", file=sys.stderr)
+    if notices is not None:
+        notices.append("fallback notice")
+    return [sys.executable, "-c", "import sys; sys.stdout.write({_TUI_CLEAR!r} + 'TUI RAN')"], tui_dir.parent
+main_tui_launch._make_tui_argv = argv
+main_tui_launch._print_tui_exit_summary = lambda *_: None
+main_tui_launch._launch_tui()
+"""
+
+
+@pytest.mark.platforms("posix")
+def test_fallback_notice_survives_the_tui_screen_clear(monkeypatch):
+    """In a terminal the warning waits for Enter before the TUI clears the screen, and is printed
+    again once the TUI exits, below whatever it drew."""
+    import pty
+    import select
+    import sys
+
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    leader, follower = pty.openpty()
+    child = subprocess.Popen([sys.executable, "-c", _FALLBACK_LAUNCH], stdin=follower, stdout=follower,
+                             stderr=follower, close_fds=True, cwd=Path(__file__).resolve().parents[2])
+    os.close(follower)
+    seen = b""
+
+    def read_until(marker: bytes) -> None:
+        nonlocal seen
+        while marker not in seen:
+            ready, _, _ = select.select([leader], [], [], 30)
+            assert ready, f"timed out waiting for {marker!r}; got {seen!r}"
+            try:
+                chunk = os.read(leader, 4096)
+            except OSError:  # EIO: the child closed the terminal
+                chunk = b""
+            assert chunk, f"terminal closed before {marker!r}; got {seen!r}"
+            seen += chunk
+
+    try:
+        read_until(b"Press Enter")
+        assert b"TUI RAN" not in seen
+        seen = b""
+        os.write(leader, b"\r")
+        read_until(b"TUI RAN")
+        read_until(b"fallback notice")
+        assert child.wait(timeout=30) == 0
+    finally:
+        child.kill()
+        os.close(leader)
+    assert b"fallback notice" in seen.partition(b"TUI RAN")[2]
 
 
 @pytest.mark.platforms("posix")

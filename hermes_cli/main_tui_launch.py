@@ -125,11 +125,14 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     )
 
 
+def _tui_force_build() -> bool:
+    return (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _tui_need_rebuild(root: Path) -> bool:
     from hermes_cli.source_build import source_product_current
 
-    force = (os.environ.get("HERMES_TUI_FORCE_BUILD") or "").strip().lower()
-    return force in {"1", "true", "yes", "on"} or not source_product_current(root.parent, "tui", root / "dist")
+    return _tui_force_build() or not source_product_current(root.parent, "tui", root / "dist")
 
 
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
@@ -210,8 +213,11 @@ def _tui_node_bin(bin: str) -> str:
     return path
 
 
-def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
+def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None) -> tuple[list[str], Path]:
+    """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild).
+
+    *notices* collects warnings the caller must show again once the TUI exits: the TUI clears the
+    screen and scrollback on start, so a line printed before it is gone by the time anyone looks."""
 
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
     ext_dir = os.environ.get("HERMES_TUI_DIR")
@@ -257,14 +263,18 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         prepare_launch_dependencies(project_root, env=env)
     except (OSError, subprocess.SubprocessError, RuntimeError):
         previous = tui_dir / "dist/entry.js"
-        if tui_dev or not previous.is_file():
+        if tui_dev or _tui_force_build() or not previous.is_file():
             raise
         # An update whose install failed (an unreachable registry, #150031) keeps the previous
         # trees and bundle. Nothing pins a TUI build to its backend: like a TUI left open across
         # an update, it negotiates with the gateway (runtime.describe), so it usually still works.
-        print("⚠ Could not prepare the TUI's Node dependencies (see above); starting the previous TUI build,\n"
-              "  which predates the current code and may not support all of it. Run `hermes update` again\n"
-              "  once the package registry is reachable, or use `hermes --cli`.", file=sys.stderr)
+        notice = ("⚠ Could not prepare the TUI's Node dependencies, so the previous TUI build was started.\n"
+                  "  It predates the current code and may not support all of it. Run `hermes update` again\n"
+                  "  once the package registry is reachable, or use `hermes --cli`.")
+        print(f"{notice}\n  (The error is above.)", file=sys.stderr)
+        logger.warning("TUI launch fell back to the previous build: its Node dependencies could not be prepared")
+        if notices is not None:
+            notices.append(notice)
         return [_tui_node_bin("node"), "--expose-gc", str(previous)], tui_dir
     if tui_dev:
         # tsx imports @hermes/ink's built exports; the production bundle instead
@@ -465,6 +475,20 @@ def _refuse_unforwarded_tui_flags(args) -> None:
         raise SystemExit(2)
 
 
+def _run_tui(argv: list[str], cwd: Path, env: dict, notices: list[str]) -> int:
+    """Run the TUI. Its first write clears the screen and the scrollback, so in a terminal a launch
+    notice waits for Enter first, and every notice is printed again once the TUI exits."""
+    try:
+        if notices and sys.stdin.isatty() and sys.stderr.isatty():
+            input("  Press Enter to start it (Ctrl+C to cancel). ")
+        code = subprocess.call(argv, cwd=str(cwd), env=env)  # health: allow HX006 -- the interactive TUI runs until the user quits
+    except (KeyboardInterrupt, EOFError):
+        code = 130
+    for notice in notices:
+        print(notice, file=sys.stderr)
+    return code
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None, tui_dev: bool = False, native_mode: Optional[bool] = None,
     model: Optional[str] = None,
@@ -568,13 +592,11 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    notices: list[str] = []
+    argv, cwd = _make_tui_argv(tui_dir, tui_dev, notices)
     code: Optional[int] = None
     try:
-        try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
-        except KeyboardInterrupt:
-            code = 130
+        code = _run_tui(argv, cwd, env, notices)
 
         if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)

@@ -12,8 +12,9 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_backend as _kanban_backend
+kb = _kanban_backend.lazy_kanban_db()
+kbc = _kanban_backend.lazy_kanban_db_connect()
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json

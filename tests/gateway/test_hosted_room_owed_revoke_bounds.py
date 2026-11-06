@@ -40,12 +40,14 @@ def test_repeated_and_many_grants_for_one_member_keep_a_few_rows(tmp_path):
     for _ in range(5):
         _owe(db, same)
     assert len(_rows(db)) == 1
+    refused = 0
     for index in range(50):
-        _owe(db, _grant(now + 3600 + index, f"g{index}"))
-    rows = _rows(db)
-    assert len(rows) == hosted_rooms.MAX_OWED_REVOKES_PER_MEMBER
-    # The longest-lived grants are kept: revoking the scope at the member covers the older ones.
-    assert rows[-1][1] == now + 3600 + 49
+        try:
+            _owe(db, _grant(now + 3600 + index, f"g{index}"))
+        except hosted_rooms.OwedRevokesFullError:
+            refused += 1  # the caller revokes that grant at once (HostedRoomService.owe_grant_revoke)
+    assert len(_rows(db)) == hosted_rooms.MAX_OWED_REVOKES_PER_MEMBER
+    assert refused == 51 - hosted_rooms.MAX_OWED_REVOKES_PER_MEMBER
 
 
 def test_an_owed_revoke_is_retried_until_its_grant_expires(tmp_path):

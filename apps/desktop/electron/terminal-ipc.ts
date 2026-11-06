@@ -173,12 +173,10 @@ export function registerTerminalIpc({
 
     // Electron is commonly launched through `pnpm run dev`; do not leak the
     // package manager's settings into a user's interactive shell (nvm/proto warn
-    // loudly, and the user's own pnpm would inherit them). Windows env names are
-    // case-insensitive: NPM_CONFIG_* is the same setting.
+    // loudly, and the user's own pnpm would inherit them). Package managers inject
+    // lowercase names: a user's own NPM_CONFIG_REGISTRY stays.
     for (const key of Object.keys(env)) {
-      const name = key.toLowerCase()
-
-      if (name.startsWith('npm_config_') || name.startsWith('npm_package_') || name.startsWith('pnpm_config_')) {
+      if (key.startsWith('npm_config_') || key.startsWith('npm_package_') || key.startsWith('pnpm_config_')) {
         delete env[key]
       }
     }

@@ -16,7 +16,7 @@ import ast
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from scripts.code_health.py_ast import _call_name
+from scripts.code_health.py_ast import _FUNCS, _call_name
 
 MUTATORS = frozenset({
     "append", "extend", "insert", "remove", "pop", "popitem", "clear", "update", "setdefault",
@@ -199,6 +199,8 @@ def _node_writes(node: ast.AST) -> Iterator[Write]:
     elif (isinstance(node, ast.AnnAssign) and node.value is not None
           or isinstance(node, (ast.For, ast.AsyncFor))):
         yield from _targets(node.target, node.lineno)
+    elif isinstance(node, ast.NamedExpr):  # ``global X; (X := v)`` rebinds the module's X
+        yield Write(node.target, True, node.lineno)
     elif isinstance(node, (ast.With, ast.AsyncWith)):
         for item in node.items:
             if item.optional_vars is not None:
@@ -217,3 +219,19 @@ def runtime_writes(tree: ast.Module, bindings: Bindings) -> list[Write]:
     """Every write made inside a function: what runs per call, not while the module imports."""
     return [write for node in ast.walk(tree) for write in _node_writes(node)
             if bindings.in_function(node)]
+
+
+def import_time(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """*body* and every statement nested in its compound statements (``if``, ``for``,
+    ``while``, ``try``, ``with``, ``match``): what runs when *body* runs. Function and class
+    bodies are not entered."""
+    for node in body:
+        yield node
+        if isinstance(node, (*_FUNCS, ast.ClassDef)):
+            continue
+        for _, value in ast.iter_fields(node):
+            for item in value if isinstance(value, list) else []:
+                if isinstance(item, ast.stmt):
+                    yield from import_time([item])
+                elif isinstance(item, (ast.ExceptHandler, ast.match_case)):
+                    yield from import_time(item.body)

@@ -11,7 +11,11 @@ rule flags, in a module reachable from ``config.HOSTED_ENTRY`` (``hosted_graph``
   (``X["seed"].append(v)``, ``X.value = v``). A non-empty table the module never changes is a
   constant;
 - an ``lru_cache`` / ``cache`` on a module-level function or a method;
-- a class attribute changed at runtime (``py_rules_ambient_classes``).
+- a class attribute changed at runtime (``py_rules_ambient_classes``);
+- an object bound by ``from m import X`` that a function changes in place (``X[k] = v``,
+  ``X.append(v)``, ``X.attr = v``), on the import line: ``m`` cannot see that write, so the
+  importer answers for it. A write through the module itself (``m.X[k] = v``,
+  ``os.environ[k] = v``) is judged as ``m``'s.
 
 Every write is resolved to its lexical binding first (``py_rules_ambient_bindings``): a
 parameter, local, nested-scope, comprehension or class-body name that shares a module name is
@@ -33,7 +37,7 @@ import ast
 from collections.abc import Iterable, Iterator
 
 from scripts.code_health.py_ast import _FUNCS, Ctx, _call_name, _dotted
-from scripts.code_health.py_rules_ambient_bindings import Bindings, Write, runtime_writes
+from scripts.code_health.py_rules_ambient_bindings import Bindings, Write, import_time, runtime_writes
 from scripts.code_health.py_rules_ambient_classes import class_state
 
 _CONTAINER_CALLS = {
@@ -91,6 +95,25 @@ def _is_container(value: ast.AST | None) -> bool:
     return isinstance(value, ast.Call) and _call_name(value) in _CONTAINER_CALLS | _ALWAYS_STATE
 
 
+_COPIES = {"copy.copy", "copy.deepcopy"}
+
+
+def _fresh(value: ast.AST | None) -> bool:
+    """A value made new where it is assigned: a container literal, comprehension or constructor
+    (``dict(C.values)``), a copy (``copy.copy(v)``, ``v.copy()``), or a call to a capitalised
+    constructor (``Registry()``). A name or attribute (``C.values``) is an alias."""
+    if _is_container(value):
+        return True
+    if not isinstance(value, ast.Call):
+        return False
+    func = value.func
+    if _call_name(value) in _COPIES or (isinstance(func, ast.Attribute) and func.attr == "copy"
+                                        and not value.args):
+        return True
+    leaf = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+    return leaf[:1].isupper()
+
+
 def _mutable(value: ast.AST | None) -> bool:
     """A value that can change in place: a container, a tuple holding one, or an object a call
     built (an instance, a ``threading.local``)."""
@@ -107,22 +130,6 @@ def _is_empty(value: ast.AST | None) -> bool:
         return (not value.args and not value.keywords or name == "collections.defaultdict"
                 or name in _ALWAYS_STATE)
     return False  # a comprehension is filled, not empty
-
-
-def _import_time(body: list[ast.stmt]) -> Iterator[ast.stmt]:
-    """*body* and every statement nested in its compound statements (``if``, ``for``,
-    ``while``, ``try``, ``with``, ``match``): what runs when *body* runs. Function and class
-    bodies are not entered."""
-    for node in body:
-        yield node
-        if isinstance(node, (*_FUNCS, ast.ClassDef)):
-            continue
-        for _, value in ast.iter_fields(node):
-            for item in value if isinstance(value, list) else []:
-                if isinstance(item, ast.stmt):
-                    yield from _import_time([item])
-                elif isinstance(item, (ast.ExceptHandler, ast.match_case)):
-                    yield from _import_time(item.body)
 
 
 def _assigned(stmts: Iterable[ast.stmt]) -> Iterator[tuple[str, ast.AST | None, int]]:
@@ -174,6 +181,24 @@ def _namespace_keys(tree: ast.Module) -> dict[int, str]:
     return out
 
 
+def _imported_object_writes(writes: list[Write]) -> Iterator[int]:
+    """Import lines of names bound by ``from m import X`` that a function changes in place
+    (``X[k] = v``, ``X.append(v)``, ``X.attr = v``). ``m`` cannot see these writes, so they are
+    reported here, on the import line. A write through a module (``os.environ[k] = v``,
+    ``m.X[k] = v``) is that module's business, as before."""
+    for write in writes:
+        node = write.target
+        while True:
+            line = getattr(node, "from_import", None)
+            if line is not None:
+                if node is not write.target or not write.store or write.attr is not None:
+                    yield line
+                break
+            if not isinstance(node, (ast.Attribute, ast.Subscript)):
+                break
+            node = node.value
+
+
 def _module_changes(tree: ast.Module, writes: list[Write],
                     bindings: Bindings) -> tuple[dict[str, int], set[str]]:
     """Module names functions rebind (with the first line) and names they change in place. A
@@ -204,7 +229,7 @@ def _module_changes(tree: ast.Module, writes: list[Write],
 def _module_state(tree: ast.Module, writes: list[Write], bindings: Bindings) -> Iterator[int]:
     rebound, mutated = _module_changes(tree, writes, bindings)
     bound: set[str] = set()
-    for name, value, line in _assigned(_import_time(tree.body)):
+    for name, value, line in _assigned(import_time(tree.body)):
         bound.add(name)
         if _bad_declaration(value):
             yield line
@@ -227,17 +252,17 @@ def _decorated_cache(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 
 def _classes(tree: ast.Module) -> Iterator[ast.ClassDef]:
     """Classes defined while the module imports, nested classes included."""
-    stack = [n for n in _import_time(tree.body) if isinstance(n, ast.ClassDef)]
+    stack = [n for n in import_time(tree.body) if isinstance(n, ast.ClassDef)]
     while stack:
         cls = stack.pop(0)
         yield cls
-        stack.extend(n for n in _import_time(cls.body) if isinstance(n, ast.ClassDef))
+        stack.extend(n for n in import_time(cls.body) if isinstance(n, ast.ClassDef))
 
 
 def _cached_functions(tree: ast.Module) -> Iterator[int]:
     bodies = [tree.body, *(cls.body for cls in _classes(tree))]
     for body in bodies:
-        for node in _import_time(body):
+        for node in import_time(body):
             if isinstance(node, _FUNCS) and _decorated_cache(node):
                 yield node.lineno
 
@@ -246,7 +271,8 @@ def ambient_state(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     bindings = Bindings(tree)
     writes = runtime_writes(tree, bindings)
     yield from _module_state(tree, writes, bindings)
+    yield from _imported_object_writes(writes)
     yield from _cached_functions(tree)
     for cls in _classes(tree):
-        attrs = {name: (value, line) for name, value, line in _assigned(_import_time(cls.body))}
-        yield from class_state(cls, attrs, writes, bindings, _is_container, _mutable, _declared)
+        attrs = {name: (value, line) for name, value, line in _assigned(import_time(cls.body))}
+        yield from class_state(cls, attrs, writes, bindings, _is_container, _mutable, _declared, _fresh)

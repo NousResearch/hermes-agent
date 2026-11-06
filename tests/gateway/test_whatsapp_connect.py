@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import json
 import signal
 import sys
 import types
@@ -526,7 +527,13 @@ class TestNoCredsPreflight:
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
+        # A paired session's creds.json holds Baileys key material; preflight
+        # validates its shape (#138627), so "{}" no longer counts as paired.
+        (session_dir / "creds.json").write_text(json.dumps({
+            "noiseKey": {"private": "k" * 43, "public": "l" * 32},
+            "signedIdentityKey": {"private": "j" * 43, "public": "i" * 32},
+            "registrationId": 4029384,
+        }), encoding="utf-8")
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None
@@ -566,7 +573,9 @@ class TestNamedConnectFailures:
         adapter._acquire_platform_lock = MagicMock(return_value=False)
         ensure_import = MagicMock(side_effect=InstallError("venv", cause))
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch.object(Path, "exists", return_value=True), patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
+             patch.object(Path, "exists", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._has_valid_creds", return_value=True), \
+             patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
              patch("pm.extras.ensure_import", ensure_import), \
              patch("pm.install.lazy_installs_allowed", return_value=lazy_allowed), \
              patch("pm.environments.running_from_selected_environment", return_value=True):

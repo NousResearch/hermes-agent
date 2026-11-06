@@ -50,6 +50,10 @@ _CAPABILITY_ROWS = (
     ("llm.session_fork", (),
      "Run a background copy of your agent after a turn. It sees the whole session, including "
      "memory, can use the plugin's own tools, and spends your main model's tokens."),
+    ("llm.credential_scope", (),
+     "Receive the opaque credential-scope id of the credential selected for "
+     "each API request attempt (per-account quota/health attribution; never "
+     "credential material)"),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

@@ -160,7 +160,7 @@ raise SystemExit(mw.main())
 def _active_fd_count():
     """Handles this process holds: psutil counts descriptors off Windows; Windows has neither
     ``num_fds`` nor ``/proc/self/fd``, so it asks the kernel for the handle count."""
-    if sys.platform == 'win32':
+    if os.name == 'nt':
         import ctypes
         import ctypes.wintypes
         kernel32 = ctypes.windll.kernel32
@@ -245,7 +245,6 @@ def test_a_failed_claim_hands_its_handles_back(monkeypatch):
     so the dup and the NUL handle must be gone by then."""
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, 'stdin', _FakeStdin(read_fd))
-    monkeypatch.setattr(sys, 'platform', 'win32')
 
     real_dup2 = os.dup2
 
@@ -254,13 +253,19 @@ def test_a_failed_claim_hands_its_handles_back(monkeypatch):
             raise OSError('dup2 refused')
         return real_dup2(fd, target)  # pytest's capture restore between phases is not our target
 
-    monkeypatch.setattr(os, 'dup2', _refuse)
     before = _active_fd_count()
-    with pytest.raises(OSError):
-        _claim_stdin_control()
-    assert _active_fd_count() <= before, 'the failed claim leaked a handle'
-    os.close(read_fd)
-    os.close(write_fd)
+    try:
+        # Only the production claim sees Windows; host-native counters/imports must not.
+        with monkeypatch.context() as claim:
+            claim.setattr(sys, 'platform', 'win32')
+            claim.setattr(os, 'dup2', _refuse)
+            # Keep the traceback alive: refcount cleanup must not hide a leaked stream.
+            with pytest.raises(OSError, match='dup2 refused') as failure:
+                _claim_stdin_control()
+        assert _active_fd_count() == before, f'the failed claim leaked a handle: {failure.value}'
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 # Runs in a child whose stdin really is a pipe the parent never writes to: the end-to-end shape of

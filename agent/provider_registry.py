@@ -37,7 +37,7 @@ class ProviderRegistry(Generic[P]):
     def __init__(
         self, *, label: str, provider_cls: type, logger: logging.Logger,
         normalize: Callable[[str], str] = str.strip, builtin_names: frozenset[str] = frozenset(),
-        on_builtin_collision: Optional[Callable[[str], None]] = None,
+        on_builtin_collision: Optional[Callable[[str], None]] = None, lock: Any = None,
     ) -> None:
         self.label = label
         self.provider_cls = provider_cls
@@ -49,7 +49,8 @@ class ProviderRegistry(Generic[P]):
         self._scoped_providers: dict[str, dict[str, P]] = {}
         self._generation = 0
         self._scoped_generations: dict[str, int] = {}
-        self._lock = threading.Lock()
+        # A registry whose own code re-enters it while holding the lock passes an RLock.
+        self._lock = lock if lock is not None else threading.Lock()
         # "TTS provider" but "Registered browser provider": acronyms keep their case.
         self._log_label = label if label.isupper() else label[0].lower() + label[1:]
 

@@ -139,6 +139,8 @@ function refuseNonPlain(stat: fs.Stats) {
   refuseHardLinkedFile(stat)
 }
 
+// A second name for a file can live outside the grant. Directories can have
+// multiple links as part of their normal structure, so Trash still allows them.
 function refuseHardLinkedFile(stat: fs.Stats) {
   if (stat.isFile() && stat.nlink > 1) {
     refuse('protected', 'That file is hard-linked elsewhere, so the app cannot tell what it belongs to.')

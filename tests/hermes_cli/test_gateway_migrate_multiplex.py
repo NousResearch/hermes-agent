@@ -710,6 +710,20 @@ def test_unresolvable_system_unit_user_is_unknown_principal_not_directory_owner(
     assert fleet.ops == [] and _config_flag(fleet.root) is None
 
 
+def test_system_unit_uid_without_posix_pwd_database_is_unknown_or_root(tmp_path, monkeypatch):
+    """win32 has no ``pwd`` module: a unit's ``User=`` must degrade to unknown (root stays uid 0),
+    never crash the migration guard with ModuleNotFoundError (#137195)."""
+    import sys
+
+    from hermes_cli.gateway_migrate_guards import _system_unit_uid
+    unit = tmp_path / "hermes-gateway.service"
+    unit.write_text("[Service]\nUser=somebody-such-user\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "pwd", None)  # ``import pwd`` raises, exactly as on win32
+    assert _system_unit_uid(unit) is None
+    unit.write_text("[Service]\nUser=root\n", encoding="utf-8")
+    assert _system_unit_uid(unit) == 0
+
+
 def test_opt_out_reads_effective_config_managed_false_wins_and_string_false_is_false(fleet, tmp_path, monkeypatch):
     """The opt-out authorizes an unattended destructive action, so it reads the same effective config
     the CLI does: a managed ``false`` overrides the user's ``true``; a hand-written ``"false"`` string is

@@ -674,6 +674,44 @@ class TestA2AOrchestrate:
         assert "reply from researcher" in out
         assert "reply from generalist" in out
 
+    def test_orchestration_preserves_profile_secret_scope_in_workers(self, tmp_path, monkeypatch):
+        """Fan-out workers must never fall back to the launch profile's process environment."""
+        import agent.secret_scope as ss
+        import hermes_constants
+
+        home = tmp_path / "routed-profile"
+        home.mkdir()
+        (home / ".env").write_text("A2A_REMOTE_TOKEN=routed-profile-token\n", encoding="utf-8")
+        monkeypatch.setenv("A2A_REMOTE_TOKEN", "launch-profile-token")
+        monkeypatch.setattr(tools, "_load_config", lambda: {
+            "a2a_agents": {
+                "researcher": {
+                    "url": "http://localhost:9991",
+                    "capabilities": ["research"],
+                    "auth": {"type": "bearer", "token_env": "A2A_REMOTE_TOKEN"},
+                },
+            },
+        })
+        captured = []
+
+        def fake_call(name, entry, msg, ctx=""):
+            captured.append(tools._auth_header(entry["auth"]))
+            return name, "ok"
+
+        monkeypatch.setattr(tools, "_call_peer_sync", fake_call)
+        previous = ss._MULTIPLEX_ACTIVE
+        ss.set_multiplex_active(True)
+        home_token = hermes_constants.set_hermes_home_override(str(home))
+        scope_token = ss.set_secret_scope(ss.build_profile_secret_scope(home), profile_home=str(home))
+        try:
+            tools.a2a_orchestrate({"capability": "research", "message": "go"})
+        finally:
+            ss.reset_secret_scope(scope_token)
+            hermes_constants.reset_hermes_home_override(home_token)
+            ss.set_multiplex_active(previous)
+
+        assert captured == [{"Authorization": "Bearer routed-profile-token"}]
+
     def test_best_mode_picks_longest_success(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)
         replies = {

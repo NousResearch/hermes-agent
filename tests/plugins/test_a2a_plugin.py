@@ -506,6 +506,66 @@ class TestPersistence:
 
 class TestClientTools:
 
+    def test_auth_header_reads_bearer_token_from_scoped_env(self, monkeypatch):
+        """Outbound A2A credentials stay in the active profile's secret scope, not config.yaml."""
+        monkeypatch.setattr(
+            tools, "_get_scoped_secret",
+            lambda name: "profile-token" if name == "A2A_RESEARCHER_TOKEN" else None,
+        )
+
+        assert tools._auth_header({
+            "type": "bearer",
+            "token_env": "A2A_RESEARCHER_TOKEN",
+        }) == {"Authorization": "Bearer profile-token"}
+
+    def test_auth_header_token_env_is_profile_isolated(self, tmp_path):
+        import agent.secret_scope as ss
+        import hermes_constants
+
+        homes = []
+        for name, secret in (("a", "token-a"), ("b", "token-b"), ("a", "token-a")):
+            home = tmp_path / name
+            home.mkdir(exist_ok=True)
+            (home / ".env").write_text(f"A2A_REMOTE_TOKEN={secret}\n", encoding="utf-8")
+            homes.append(home)
+
+        previous = ss._MULTIPLEX_ACTIVE
+        ss.set_multiplex_active(True)
+        try:
+            headers = []
+            for home in homes:
+                home_token = hermes_constants.set_hermes_home_override(str(home))
+                scope_token = ss.set_secret_scope(ss.build_profile_secret_scope(home), profile_home=str(home))
+                try:
+                    headers.append(tools._auth_header({
+                        "type": "bearer",
+                        "token_env": "A2A_REMOTE_TOKEN",
+                    }))
+                finally:
+                    ss.reset_secret_scope(scope_token)
+                    hermes_constants.reset_hermes_home_override(home_token)
+        finally:
+            ss.set_multiplex_active(previous)
+
+        assert headers == [
+            {"Authorization": "Bearer token-a"},
+            {"Authorization": "Bearer token-b"},
+            {"Authorization": "Bearer token-a"},
+        ]
+
+    def test_auth_header_token_env_takes_precedence_and_missing_secret_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(tools, "_get_scoped_secret", lambda _name: None)
+
+        assert tools._auth_header({
+            "type": "bearer",
+            "token": "must-not-fall-back",
+            "token_env": "A2A_MISSING_TOKEN",
+        }) == {}
+
+    def test_auth_header_keeps_literal_token_compatibility(self):
+        assert tools._auth_header({"type": "bearer", "token": "legacy-token"}) == {
+            "Authorization": "Bearer legacy-token",
+        }
 
 
     def test_discover_summarizes_v1_card(self, monkeypatch):
@@ -521,14 +581,22 @@ class TestClientTools:
 
     def test_call_sends_v1_message(self, monkeypatch):
         """Outbound params: contextId inside the message, v1.0 role, no kind."""
-        monkeypatch.setattr(tools, "_load_config",
-                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
-        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
-
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {"r": {
+            "url": "http://localhost:9999",
+            "auth": {"type": "bearer", "token_env": "A2A_R_TOKEN"},
+        }}})
+        monkeypatch.setattr(tools, "_get_scoped_secret",
+                            lambda name: "profile-token" if name == "A2A_R_TOKEN" else None)
         captured = {}
+
+        def fake_get(url, headers, timeout):
+            captured["card_headers"] = headers
+
+        monkeypatch.setattr(tools, "_http_get_json", fake_get)
 
         def fake_post(url, body, headers, timeout):
             captured["body"] = body
+            captured["rpc_headers"] = headers
             ctx = body["params"]["message"].get("contextId", "c1")
             return protocol.jsonrpc_result(
                 body["id"],
@@ -538,6 +606,9 @@ class TestClientTools:
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
         out = tools.a2a_call({"agent": "r", "message": "my key sk-abcdefghij1234567890ABCD please"})
         assert "here is the answer" in out
+        expected_auth = {"Authorization": "Bearer profile-token"}
+        assert captured["card_headers"] == expected_auth
+        assert captured["rpc_headers"] == expected_auth
 
         params = captured["body"]["params"]
         msg = params["message"]

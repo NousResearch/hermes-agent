@@ -1,7 +1,7 @@
 name: hermes-receipts
 title: Hermes Receipts
 repo: https://github.com/iket72183-collab/hermes-receipts
-sha: 2ddaf4d2cc61348063bb8e4e7c6a8d2043e613ec
+sha: 35493cfb2464f8ec2a286700194cb35b5a0d7256
 version: "0.1.0"
 requires_hermes: ">=0.22.4"
 maintainer: iket72183-collab

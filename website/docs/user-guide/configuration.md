@@ -2674,8 +2674,8 @@ stt:
 
 **Long local recordings.** Hermes sets `condition_on_previous_text=False` for local
 faster-whisper to reduce silence hallucinations. On that path, `initial_prompt`
-seeds only the first decoding window (normally up to 30 seconds); the model resets
-its prompt before later windows. This applies to both `stt.prompt` and
+seeds the initial decoding context and is cleared when the model resets its prompt
+between windows (normally up to 30 seconds each). This applies to both `stt.prompt` and
 `stt.local.initial_prompt`, including prompts supplied by `pre_transcription`.
 Vocabulary hints can therefore help at the start of a recording without improving
 the same terms later in it. This limitation concerns local faster-whisper; hosted

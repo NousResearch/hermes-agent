@@ -112,6 +112,7 @@ def test_npm_registry_mirror_serves_pm_npm_download(inst):
         npmrc.unlink()
 
 
+@pytest.mark.allow_network  # S.prefetch seeds the mirror with the pinned pnpm tarballs
 def test_npm_registry_mirror_serves_both_pm_pnpm_downloads(inst):
     """pnpm is two npm-hosted archives (the native executable, then the launcher whose dist/ it
     needs): with ``~/.npmrc`` naming the mirror, `hermes pm install pnpm` fetches both from it,

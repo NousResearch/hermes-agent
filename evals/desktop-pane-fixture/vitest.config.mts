@@ -1,6 +1,11 @@
 // From apps/desktop: pnpm exec vitest run --config ../../evals/desktop-pane-fixture/vitest.config.mts
 // Replay a slow module evaluation without changing any pane behavior or deadlines.
-import { defineConfig, mergeConfig } from 'vitest/config'
+import { createRequire } from 'node:module'
+
+// pnpm links vitest only into apps/desktop, so resolve it from there, not from this directory.
+const { defineConfig, mergeConfig } = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))(
+  'vitest/config'
+) as typeof import('vitest/config')
 
 import desktopConfig from '../../apps/desktop/vite.config.ts'
 

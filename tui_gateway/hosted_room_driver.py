@@ -346,6 +346,24 @@ class HostedRoomRuntime:
             state.defer_unconfirmed_stop, None, task, lease, reason="member_unavailable"))
         return True
 
+    def deferred_stop_confirmed(self, room_id: str, task: Mapping[str, Any]) -> bool:
+        """Whether a deferred turn of a member on this gateway may be cancelled: always when this
+        process serves it. A turn deferred behind another profile's daemon's unconfirmed Stop may
+        still be running there, so that daemon must confirm it is not; unreachable keeps the turn."""
+        binding = self._binding_for_room(room_id)
+        if binding is None:
+            return False
+        if not self._served_elsewhere(binding, task):
+            return True
+        try:
+            transport, _profile, session_id = self._open_session(binding, task)
+            if session_id is None:
+                return transport is not None  # that daemon answered: no room session runs anything
+            return self._interrupt_stopping_task(binding, task)
+        except Exception as exc:  # health: allow BLE001 -- an unreachable daemon keeps the turn deferred
+            self._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
+            return False
+
     def _served_elsewhere(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> bool:
         """Whether another process serves this member, which can go away without taking this one."""
         if self._remote(task):

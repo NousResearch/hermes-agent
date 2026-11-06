@@ -289,9 +289,11 @@ def test_a_tui_poller_leaves_another_agents_event_for_it():
     assert deferred == [evt] and rendered == []
 
 
-def test_a_recovered_hosted_process_stays_its_agents(tmp_path, monkeypatch):
-    """The crash-recovery checkpoint keeps a hosted process's sandbox identity, so after a restart it
-    is still invisible to every other activity."""
+def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_agents(tmp_path, monkeypatch):
+    """The host crash-recovery checkpoint carries no hosted process (its command and cwd are the
+    tenant's). An entry that names a sandbox anyway (written by an older build) is still recovered
+    as that agent's only, invisible to every other activity."""
+    import json
     import os
     from unittest.mock import patch
     from agent.runtime_scope import bind_state
@@ -305,11 +307,16 @@ def test_a_recovered_hosted_process_stays_its_agents(tmp_path, monkeypatch):
     checkpoint = tmp_path / "procs.json"
     with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
         registry._write_checkpoint()
+        assert json.loads(checkpoint.read_text()) == []
+        checkpoint.write_text(json.dumps([{"session_id": "proc_hosted_ckpt", "command": "sleep 600",
+                                           "task_id": key, "sandbox_key": key, "pid": os.getpid(),
+                                           "pid_scope": "host", "host_start_time": 1.0}]))
         restarted = ProcessRegistry()
         monkeypatch.setattr(restarted, "_host_pid_is_ours", lambda *_a: True)
         monkeypatch.setattr(restarted, "_is_host_pid_alive", lambda *_a: True)
         monkeypatch.setattr(restarted, "_refresh_detached_session", lambda s: s)
         assert restarted.recover_from_checkpoint() == 1
+        assert "sleep 600" not in checkpoint.read_text()  # and the rewrite drops it from the host file
     assert restarted.get("proc_hosted_ckpt") is None
     with bind_state(B):
         assert restarted.get("proc_hosted_ckpt") is None

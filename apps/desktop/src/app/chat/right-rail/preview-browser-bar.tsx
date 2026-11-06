@@ -24,6 +24,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
+import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { PreviewVaultButton } from './preview-vault-picker'
 
@@ -98,6 +99,11 @@ export function normalizePreviewAddress(value: string): null | string {
   } catch {
     return null
   }
+}
+
+/** "Open in browser" for a window that can neither pop out nor pop in. */
+export function externalOpenerFor(url: string): (() => void) | undefined {
+  return !isBrowserWindow() && !canOpenBrowserWindow() ? () => void window.hermesDesktop?.openExternal(url) : undefined
 }
 
 export function PreviewBrowserBar({

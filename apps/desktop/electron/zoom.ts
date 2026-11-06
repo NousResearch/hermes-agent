@@ -48,8 +48,27 @@ export function percentToZoomLevel(percent) {
  */
 export function applyZoomLevel(webContents, level) {
   const clamped = clampZoomLevel(level)
-  webContents.setZoomLevel(clamped)
-  webContents.send('hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) })
+
+  // A re-assert can land after the render frame is already gone — on quit the
+  // settle chain (ZOOM_REASSERT_MAX_SETTLE_CHECKS below) keeps firing into a
+  // closing window. `isDestroyed()` is the wrong predicate for that race: the
+  // WebContents object is still alive and answers false while its frame is
+  // disposed, so both calls below throw "Render frame was disposed before
+  // WebFrameMain could be accessed" and Electron logs it as an unhandled send
+  // failure. A dead frame has nothing to zoom and nobody to notify, so this is
+  // a no-op rather than an error — but the clamped level is still returned so
+  // the caller persists the same value it would have on a live window. 🪟
+  // `isDestroyed?.()` — not every webContents-shaped caller exposes the predicate.
+  if (!webContents || webContents.isDestroyed?.()) {
+    return clamped
+  }
+
+  try {
+    webContents.setZoomLevel(clamped)
+    webContents.send('hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) })
+  } catch {
+    // Frame disposed between the check above and the send — see note above.
+  }
 
   return clamped
 }

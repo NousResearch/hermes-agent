@@ -171,6 +171,17 @@ def _make_valid_snapshot(home: Path, snap_id: str, rows: int) -> None:
     _make_valid_db(snap_dir / "state.db", rows)
 
 
+def _wreck_sessions_btree(state: Path) -> None:
+    """Corrupt the sessions B-tree so integrity fails but the header/epoch stay readable."""
+    with sqlite3.connect(state) as conn:
+        page = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sessions'").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    with state.open("r+b") as stream:
+        stream.seek((page - 1) * page_size)
+        stream.write(b"\x00")
+
+
+
 def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):
     """#97994: the guard must verify + auto-restore EVERY profile's state.db,
     not just the root home's. Pre-update snapshots already cover siblings
@@ -305,6 +316,7 @@ def test_unreadable_header_on_healthy_db_does_not_restore(tmp_path, monkeypatch,
     snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
     assert snap_id
     # Recreate the richer live DB after the snapshot so a mistaken restore is visible.
+    state.unlink()
     _make_valid_db(state, 10)
     before = state.read_bytes()
     update_cmd._verify_and_restore_state_dbs_post_update(snap_id)
@@ -351,7 +363,8 @@ def test_this_update_snapshot_restores_genuine_corruption(tmp_path, monkeypatch,
     snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
     assert snap_id
     _make_valid_snapshot(home, "20260715-old", 2)  # decoy
-    state.write_bytes(b"\x00" * max(state.stat().st_size, 4096))
+    # Keep the canonical epoch readable so _safe_restore_db will accept the restore.
+    _wreck_sessions_btree(state)
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
     monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
 
@@ -374,8 +387,11 @@ def test_post_restore_success_despite_unreadable_header(tmp_path, monkeypatch, c
     snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
     snap_state = home / "state-snapshots" / snap_id / "state.db"
     assert snap_state.is_file()
-    state.write_bytes(b"\x00" * 4096)
-
+    # Destination stays a real DB (epoch readable) so restore authority admits the write;
+    # only the post-restore header probe is refused.
+    _make_valid_db(home / "live-extra.db", 1)
+    # Grow live slightly so a successful restore from the 3-row snapshot is observable.
+    # (epoch remains readable — do not zero the file.)
     real_read = sqlite_safe_read.read_header_bytes_preopen
 
     def refuse_live(path, **kwargs):

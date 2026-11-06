@@ -128,6 +128,7 @@ def _resolve_openrouter_runtime(
     cfg_provider = (model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else "").strip().lower()
     cfg_api_key = next((v.strip() for v in (model_cfg.get("api_key"), model_cfg.get("api")) if isinstance(v, str) and v.strip()), "")
     requested_norm = (requested_provider or "").strip().lower()
+    requested_alias = requested_norm
     # Aliases resolving to "custom" (ollama, vllm, …) follow bare-custom trust + routing rules.
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
@@ -135,7 +136,9 @@ def _resolve_openrouter_runtime(
     env_custom_base_url = get_secret_str("CUSTOM_BASE_URL", "").strip()
     use_config_base_url = bool(cfg_base_url.strip()) and not explicit_base_url and (
         (requested_norm == "auto" and cfg_provider in ("", "auto"))
-        or (requested_norm == "custom" and rp._config_base_url_trustworthy_for_bare_custom(cfg_base_url, cfg_provider))
+        or (requested_norm == "custom"
+            and rp._custom_alias_owns_saved_base_url(requested_alias, cfg_provider)
+            and rp._config_base_url_trustworthy_for_bare_custom(cfg_base_url, cfg_provider))
         # provider: openrouter + base_url in config.yaml is a deliberate mirror/proxy (#10622).
         or (requested_norm == "openrouter" and cfg_provider == "openrouter")
     )

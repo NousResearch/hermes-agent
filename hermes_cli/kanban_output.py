@@ -22,11 +22,11 @@ _TASK_DICT_FIELDS = (
 )
 _SHOW_RUN_FIELDS = (
     "id", "profile", "step_key", "status", "outcome", "summary", "error",
-    "metadata", "worker_pid", "started_at", "ended_at",
+    "metadata", "worker_pid", "completion_source", "completion_actor", "started_at", "ended_at",
 )
 _RUNS_RUN_FIELDS = (
     "id", "profile", "status", "outcome", "started_at", "ended_at",
-    "summary", "error", "metadata", "worker_pid", "step_key",
+    "summary", "error", "metadata", "worker_pid", "step_key", "completion_source", "completion_actor",
 )
 _ATTACHMENT_FIELDS = ("id", "filename", "content_type", "size", "uploaded_by", "stored_path", "created_at")
 

@@ -562,7 +562,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
             elapsed = max(0, r.ended_at - r.started_at) if r.ended_at else None
             el = f"{elapsed}s" if elapsed is not None else "active"
             outcome = r.outcome or r.status or "active"
-            print(f"  #{r.id:<3} {outcome:<12} @{r.profile or '-'}  {el}  {_fmt_ts(r.started_at)}")
+            actor = r.completion_actor or r.profile or "-"
+            source = f" [{r.completion_source}]" if r.completion_source else ""
+            print(f"  #{r.id:<3} {outcome:<12} @{actor}{source}  {el}  {_fmt_ts(r.started_at)}")
             if r.summary:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
@@ -1227,14 +1229,15 @@ def _cmd_runs(args: argparse.Namespace) -> int:
     if not runs:
         print(f"(no runs yet for {args.task_id})")
         return 0
-    print(f"{'#':3s}  {'OUTCOME':12s}  {'PROFILE':16s}  {'ELAPSED':>8s}  STARTED")
+    print(f"{'#':3s}  {'OUTCOME':12s}  {'ACTOR':16s}  {'SOURCE':10s}  {'ELAPSED':>8s}  STARTED")
     for i, r in enumerate(runs, 1):
         end = r.ended_at or int(time.time())
         # Clamp to 0 so NTP backward-jumps don't print negative durations.
         elapsed = max(0, end - r.started_at)
         el = f"{elapsed}s" if elapsed < 60 else f"{elapsed // 60}m" if elapsed < 3600 else f"{elapsed / 3600:.1f}h"
         outcome = r.outcome or ("(running)" if not r.ended_at else r.status)
-        print(f"{i:3d}  {outcome:12s}  {(r.profile or '-'):16s}  {el:>8s}  {_fmt_ts(r.started_at)}")
+        actor = r.completion_actor or r.profile or "-"
+        print(f"{i:3d}  {outcome:12s}  {actor:16s}  {(r.completion_source or '-'):10s}  {el:>8s}  {_fmt_ts(r.started_at)}")
         if r.summary:
             print(f"     → {r.summary.splitlines()[0][:100]}")
         if r.error:

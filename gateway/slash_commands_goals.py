@@ -119,7 +119,9 @@ class GatewayGoalCommandsMixin:
             # eventual display once that's fixed; (3) never lie about resolution.
             if prompt_text.startswith(HEARTBEAT_FILE_MARKER):
                 p = heartbeat_file_path(prompt_text)
-                return f"orders file {p.name}" if p else "orders file (unresolved)"
+                # 11-06 wording (his ask): "File loaded: HEARTBEAT.md" reads better than
+                # "orders file HEARTBEAT.md" — still basename-only (bare-path uploads, 9g).
+                return f"File loaded: {p.name}" if p else "File loaded: (unresolved)"
             return prompt_text
 
         args = (event.get_command_args() or "").strip()

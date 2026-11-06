@@ -249,9 +249,9 @@ class HeartbeatManager:
             if path is None:  # defensive: marker present but resolver disagreed — default house file
                 path = Path(DEFAULT_HEARTBEAT_FILE)
             # BASENAME only: outbound replies containing absolute paths trigger the message
-            # pipeline's file-upload behavior (upstream bug, filing pending). Full path is the
-            # eventual display once addressed upstream.
-            body = f"orders: file {path.name}"
+            # pipeline's file-upload behavior (upstream 9g, argument pending). Full path is the
+            # eventual display once addressed upstream. 11-06 wording (his ask): "File loaded:".
+            body = f"File loaded: {path.name}"
             try:
                 if not path.read_text(encoding="utf-8").strip():
                     body += " (blank — idle)"

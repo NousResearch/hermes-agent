@@ -9,7 +9,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
-import { editorSeed, stripLastReplyBlock } from '../domain/editorContext.js'
+import { buildEditorSeed, stripLastReplyBlock } from '../domain/editorContext.js'
 import { collapsePasteSpan, expandPasteChip, insideSpan, type PasteSpan, shiftSpan } from '../domain/pasteExpand.js'
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
@@ -595,12 +595,12 @@ export function useComposerState({ getLastReply, gw, submitRef, sys }: UseCompos
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
-    // display.editor_include_last_reply: show the agent's previous reply above the draft as `#`
+    // display.editor_include_last_reply: show the agent's previous reply under the draft as `#`
     // comments, and strip the marker block again on save so it never reaches the model.
     const withReply = getUiState().editorIncludeLastReply
     const draft = [...inputBuf, input].join('\n')
 
-    writeFileSync(file, editorSeed(draft, withReply ? getLastReply() : '', withReply))
+    writeFileSync(file, withReply ? buildEditorSeed(draft, getLastReply()) : draft)
 
     let exitCode: null | number = null
 

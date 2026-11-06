@@ -115,7 +115,7 @@ class CLIModalMixin:
             # the editor-close text-change doesn't re-collapse it.
             self._inline_pastes(target_buffer)
             self._skip_paste_collapse = True
-            # Opt-in: show the agent's previous reply above the draft as `#` comments. The buffer
+            # Opt-in: show the agent's previous reply under the draft as `#` comments. The buffer
             # carries the block while the editor is open and `_submit_editor_buffer` strips it
             # again, so the marker never reaches the model.
             if getattr(self, "editor_include_last_reply", False):

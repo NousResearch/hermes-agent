@@ -804,7 +804,7 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "",
         "resume_display": "full",
-        # Opt-in: show the previous reply above the draft as `#` comments in $EDITOR (stripped on save).
+        # Opt-in: show the previous reply under the draft as `#` comments in $EDITOR (stripped on save).
         "editor_include_last_reply": False,
         # Recap tuning for /resume and startup resume.
         "resume_exchanges": 10,            # max user+assistant pairs to show

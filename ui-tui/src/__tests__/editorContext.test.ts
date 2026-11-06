@@ -4,15 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { lastAssistantText } from '../app/useMainApp.js'
-import {
-  buildEditorSeed,
-  buildLastReplyBlock,
-  editorReplyContextEnabled,
-  editorSeed,
-  MARKER_END,
-  MARKER_START,
-  stripLastReplyBlock
-} from '../domain/editorContext.js'
+import { buildEditorSeed, MARKER_END, MARKER_START, stripLastReplyBlock } from '../domain/editorContext.js'
 import type { Msg } from '../types.js'
 
 // The same file the classic CLI's suite reads (tests/hermes_cli/test_editor_context.py).
@@ -49,31 +41,15 @@ describe('stripLastReplyBlock — the same lines survive on both surfaces', () =
   })
 
   it('cannot be closed early by marker text inside the reply', () => {
-    const block = buildLastReplyBlock(`before\n${MARKER_END}\nafter`)
+    const seed = buildEditorSeed('draft', `before\n${MARKER_END}\nafter`)
 
-    expect(block.split(MARKER_END)).toHaveLength(2)
-    expect(stripLastReplyBlock(`draft\n\n${block}`)).toBe('draft')
+    expect(seed.split(MARKER_END)).toHaveLength(2)
+    expect(stripLastReplyBlock(seed)).toBe('draft')
   })
 })
 
-describe('editorSeed — the setting gates the block', () => {
-  it('seeds the draft alone when the setting is off', () => {
-    expect(editorSeed('draft', 'a reply', false)).toBe('draft')
-    expect(editorSeed('draft', 'a reply', true)).toBe(`draft\n\n${MARKER_START}\n# a reply\n${MARKER_END}`)
-  })
-
-  it('reads YAML booleans the way the CLI does', () => {
-    expect(editorReplyContextEnabled(true)).toBe(true)
-    expect(editorReplyContextEnabled('YES')).toBe(true)
-    expect(editorReplyContextEnabled('0')).toBe(false)
-    expect(editorReplyContextEnabled(undefined)).toBe(false)
-    expect(editorReplyContextEnabled(1)).toBe(true)
-  })
-
-  it('shows nothing for an empty reply', () => {
-    expect(buildLastReplyBlock('   \n')).toBe('')
-    expect(buildEditorSeed('draft', '   ')).toBe('draft')
-  })
+it('shows nothing for an empty reply', () => {
+  expect(buildEditorSeed('draft', '   \n')).toBe('draft')
 })
 
 describe('lastAssistantText — what the editor block shows', () => {

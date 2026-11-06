@@ -1,10 +1,7 @@
 /**
  * Last-reply context block for the external-editor composer — the Ink composer's half of
- * `display.editor_include_last_reply`.
- *
- * Mirrors `hermes_cli/editor_context.py` (the classic CLI calls that module directly). Both
- * suites read `tests/fixtures/editor_context_vectors.json`, so the two interfaces cannot drift on
- * what counts as the block or on which lines survive the strip.
+ * `display.editor_include_last_reply`. Mirrors `hermes_cli/editor_context.py`; both suites read
+ * `tests/fixtures/editor_context_vectors.json`, so the two interfaces cannot drift.
  *
  * Only the marked region is removed. A draft's own `#` lines — markdown headings, shell comments,
  * code fences — are the user's text and stay.
@@ -13,106 +10,46 @@
 export const MARKER_START = '# ── last reply (lines starting with # are removed) ──'
 export const MARKER_END = '# ── end of last reply ──'
 
-const TRUTHY = new Set(['1', 'yes', 'true', 'on'])
-
-/** One reply line as a comment; markers inside a reply are defanged so they cannot close early. */
+/** One reply line as a comment; a line spelling a marker is defanged so it cannot end the block. */
 function commentLine(line: string): string {
-  if (!line) {
-    return '#'
-  }
+  const text = [MARKER_START, MARKER_END].includes(line.trim()) ? line.trim().replace(/──/g, '--') : line
 
-  const stripped = line.trim()
-
-  if (stripped === MARKER_START || stripped === MARKER_END) {
-    return `# ${stripped.replace(/──/g, '--')}`
-  }
-
-  return `# ${line}`
+  return text ? `# ${text}` : '#'
 }
 
-/** The marker block for a reply, or '' when there is nothing to show. */
-export function buildLastReplyBlock(lastReply: string): string {
-  const text = (lastReply ?? '').replace(/^\n+|\n+$/g, '')
+/** What the editor opens with: the draft, then the reply block when there is a reply. */
+export function buildEditorSeed(draft: string, lastReply: string): string {
+  const reply = lastReply.replace(/^\n+|\n+$/g, '')
 
-  if (!text.trim()) {
-    return ''
+  if (!reply.trim()) {
+    return draft
   }
 
-  const body = text.split('\n').map(line => commentLine(line.replace(/\r$/, '')))
+  const body = reply.split('\n').map(line => commentLine(line.replace(/\r$/, '')))
+  const block = `${MARKER_START}\n${body.join('\n')}\n${MARKER_END}`
 
-  return `${MARKER_START}\n${body.join('\n')}\n${MARKER_END}`
-}
-
-/** What the editor opens with: the draft, then the reply block (when there is one). */
-export function buildEditorSeed(draft: string, lastReply = ''): string {
-  const block = buildLastReplyBlock(lastReply)
-  const body = draft ?? ''
-
-  if (!block) {
-    return body
-  }
-
-  if (!body.trim()) {
-    return block
-  }
-
-  return `${body.replace(/\n+$/, '')}\n\n${block}`
+  return draft.trim() ? `${draft.replace(/\n+$/, '')}\n\n${block}` : block
 }
 
 /**
- * Remove the marker block (and the blank separator above it) from an editor buffer.
- *
- * A user who deleted the end marker still gets the block stripped — to the end of the buffer —
- * because leaving it in would send the agent's own reply back to it as a prompt.
+ * Remove the marker block from an editor buffer (to the end, if the end marker was deleted). The
+ * blank separator above the block goes too, but only when the block runs to the end of the
+ * buffer: text typed below it keeps its spacing.
  */
 export function stripLastReplyBlock(text: string): string {
-  const lines = (text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  let start = lines.findIndex(line => line.trim() === MARKER_START)
 
-  const startIndex = lines.findIndex(line => line.trim() === MARKER_START)
-
-  if (startIndex === -1) {
-    return text ?? ''
+  if (start === -1) {
+    return text
   }
 
-  let endIndex = -1
+  const found = lines.findIndex((line, i) => i > start && line.trim() === MARKER_END)
+  const end = found === -1 ? lines.length - 1 : found
 
-  for (let i = startIndex + 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === MARKER_END) {
-      endIndex = i
-
-      break
-    }
-  }
-
-  if (endIndex === -1) {
-    endIndex = lines.length - 1
-  }
-
-  // Drop the single blank separator line the builder inserted above the block — but only when the
-  // block runs to the end of the buffer. Text the user typed below the block keeps its spacing.
-  let start = startIndex
-
-  if (endIndex === lines.length - 1 && start > 0 && !lines[start - 1]!.trim()) {
+  if (end === lines.length - 1 && start > 0 && !lines[start - 1]!.trim()) {
     start -= 1
   }
 
-  return [...lines.slice(0, start), ...lines.slice(endIndex + 1)].join('\n')
-}
-
-/** Seed text for `$EDITOR` under the `display.editor_include_last_reply` setting. */
-export function editorSeed(draft: string, lastReply: string, enabled: boolean): string {
-  return enabled ? buildEditorSeed(draft, lastReply) : (draft ?? '')
-}
-
-/** Read the setting the way the CLI reads YAML booleans. */
-export function editorReplyContextEnabled(value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return value
-  }
-
-  if (typeof value === 'number') {
-    return value !== 0
-  }
-
-  return typeof value === 'string' && TRUTHY.has(value.trim().toLowerCase())
+  return [...lines.slice(0, start), ...lines.slice(end + 1)].join('\n')
 }

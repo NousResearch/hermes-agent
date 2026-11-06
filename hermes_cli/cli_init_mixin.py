@@ -156,9 +156,8 @@ class CLIInitMixin:
         self.verbose = bool(verbose) if verbose is not None else False
 
         self.streaming_enabled = display.get("streaming", False)
-        # display.editor_include_last_reply: put the previous reply above the draft in $EDITOR.
-        from hermes_cli.editor_context import config_enabled as _editor_ctx_enabled
-        self.editor_include_last_reply = _editor_ctx_enabled(display.get("editor_include_last_reply", False))
+        # display.editor_include_last_reply: show the previous reply under the draft in $EDITOR.
+        self.editor_include_last_reply = bool(display.get("editor_include_last_reply", False))
         self.show_timestamps = display.get("timestamps", False)
         self.timestamp_format = display.get("timestamp_format", "%H:%M")
         _frm = str(display.get("final_response_markdown", "strip")).strip().lower()

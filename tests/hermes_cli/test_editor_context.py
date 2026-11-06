@@ -15,9 +15,6 @@ from hermes_cli.editor_context import (
     MARKER_END,
     MARKER_START,
     build_editor_seed,
-    build_last_reply_block,
-    config_enabled,
-    editor_seed,
     strip_last_reply_block,
 )
 
@@ -60,27 +57,13 @@ def test_only_the_marked_block_is_removed() -> None:
 
 
 def test_reply_text_cannot_close_the_block_early() -> None:
-    block = build_last_reply_block(f"before\n{MARKER_END}\nafter")
+    seed = build_editor_seed("draft", f"before\n{MARKER_END}\nafter")
 
     # The fake marker is neutralised, so the block still has exactly one real end marker.
-    assert block.count(MARKER_END) == 1
-    assert strip_last_reply_block("draft\n\n" + block) == "draft"
+    assert seed.count(MARKER_END) == 1
+    assert strip_last_reply_block(seed) == "draft"
 
 
 def test_blank_reply_produces_no_block() -> None:
-    assert build_last_reply_block("") == ""
-    assert build_last_reply_block("   \n\n") == ""
-    assert build_editor_seed("draft", "   ").endswith("draft")
-
-
-def test_disabled_setting_seeds_the_draft_alone() -> None:
-    assert editor_seed("draft", "a reply", enabled=False) == "draft"
-    assert editor_seed("draft", "a reply", enabled=True).startswith("draft\n\n" + MARKER_START)
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(True, True), (False, False), ("true", True), ("YES", True), ("0", False), (None, False), (1, True)],
-)
-def test_config_enabled_reads_yaml_booleans(raw: object, expected: bool) -> None:
-    assert config_enabled(raw) is expected
+    assert build_editor_seed("draft", "   \n\n") == "draft"
+    assert build_editor_seed("", "") == ""

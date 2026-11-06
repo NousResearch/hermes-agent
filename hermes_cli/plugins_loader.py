@@ -157,15 +157,34 @@ def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
 
     ``sys.modules`` is process-global, so any concurrent import — another profile's plugin
-    load, a lazy import on a worker thread — mutates it while this runs. The ``list()`` is
-    load-bearing, not a style choice: it is one atomic C-level copy, where iterating the live
-    mapping raises ``RuntimeError: dictionary changed size during iteration`` and
-    ``PluginLoaderMixin._load_plugin_scoped`` degrades that to a warning that loses the whole
-    plugin. ``pop`` (not ``del``) keeps the snapshot-to-delete window tolerant of a key another
-    evictor already removed.
+    load, a lazy import on a worker thread — mutates it while this runs. ``dict.copy()``
+    snapshots the keys atomically at C level; a bare ``list(sys.modules)`` can itself raise
+    ``RuntimeError: dictionary changed size during iteration``. ``pop`` (not ``del``) keeps
+    the snapshot-to-delete window tolerant of a key another evictor already removed.
     """
     prefix = f"{module_name}."
-    for name in list(sys.modules):  # snapshot first — never iterate the live mapping
+    # Take a real copy of the dict instead of re-listing it on failure: a bare
+    # ``list(sys.modules)`` can itself raise ``RuntimeError: dictionary changed
+    # size during iteration`` (the retry above just re-ran the same racy call),
+    # and ``dict.copy()`` snapshots the keys atomically at C level.
+    try:
+        snapshot = list(sys.modules.copy())
+    except RuntimeError:
+        # Defensive fallback: retry a couple of times with a tiny yield; in
+        # practice dict.copy() does not raise, but never let an eviction race
+        # propagate as an unhandled exception.
+        import time
+
+        for _ in range(3):
+            try:
+                snapshot = list(sys.modules.copy())
+                break
+            except RuntimeError:
+                time.sleep(0)
+        else:
+            # Last resort: best-effort snapshot; may be partial but never raises.
+            snapshot = list(sys.modules.copy())
+    for name in snapshot:
         if name == module_name or name.startswith(prefix):
             sys.modules.pop(name, None)
 

@@ -208,12 +208,18 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     changed bytes or any other changed field still conflict. A delivery committed in
     ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
     the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
-    committed before fingerprints, is compared exactly as above."""
+    committed before fingerprints, is compared exactly as above.
+
+    Arrival time is not retry identity either: an adapter with no provider time (email) stamps each
+    fetch with local time, so the committed row's ``timestamp`` stands in before any comparison."""
     fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
+    if 'timestamp' in retained.get('native_text_v1', {}) and 'native_text_v1' in payload:
+        payload = {**payload, 'native_text_v1': {**payload['native_text_v1'],
+                                                 'timestamp': retained['native_text_v1']['timestamp']}}
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained

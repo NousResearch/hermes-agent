@@ -70,6 +70,17 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('saves an optional SSH tunnel; the gateway port comes from the URL', async () => {
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Use SSH tunnel' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'SSH host' }), { target: { value: ' alice@gw-host ' } })
+    fireEvent.click(screen.getByText('Save connection'))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ sshTunnel: { host: 'alice@gw-host' } }))
+    )
+  })
+
   it('preserves, replaces and deletes stored headers through plaintext consent without selecting a source', async () => {
     const active = $connection.get()
 

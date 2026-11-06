@@ -23,6 +23,7 @@ import { dePluginUpdateAll } from './de_plugin_update_all'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deSshTunnel } from './de_ssh_tunnel'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -1413,9 +1414,7 @@ export const deOverrides = {
       stt: {
         enabled: 'Lokale oder anbieterbasierte Sprachtranskription aktivieren.',
         echoTranscripts: 'Das rohe 🎙️-Transkript von Sprachnachrichten zurück in den Chat posten.',
-        elevenlabs: {
-          languageCode: 'Optionaler ISO-639-3-Sprachcode. Leer lässt ElevenLabs automatisch erkennen.'
-        }
+        elevenlabs: { languageCode: 'Optionaler ISO-639-3-Sprachcode. Leer lässt ElevenLabs automatisch erkennen.' }
       },
       updates: {
         nonInteractiveLocalChanges:
@@ -1615,6 +1614,7 @@ export const deOverrides = {
       clear: 'Leeren'
     },
     connections: {
+      sshTunnel: deSshTunnel,
       title: 'Registrierte Gateways',
       intro:
         'Verwalten Sie dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',

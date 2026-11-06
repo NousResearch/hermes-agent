@@ -329,6 +329,38 @@ describe('DesktopInstallOverlay first-run setup', () => {
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
   })
 
+  it('first-run probes, tests and applies a Remote gateway through its SSH tunnel', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({ setupChoice: { platform: 'linux', activeRoot: '/opt/hermes/hermes-agent', local: 'none', bundled: false } })
+    )
+
+    desktop.probeConnectionConfig.mockResolvedValue({ authMode: 'token', providers: [], reachable: true })
+    desktop.testConnectionConfig.mockResolvedValue({ baseUrl: 'http://127.0.0.1:31000', ok: true })
+    desktop.applyConnectionConfig.mockResolvedValue({ mode: 'remote' })
+
+    render(<DesktopInstallOverlay />)
+    fireEvent.click(await screen.findByText('Connect to existing Hermes'))
+    fireEvent.change(await screen.findByPlaceholderText('https://gateway.example.com/hermes'), {
+      target: { value: 'http://127.0.0.1:9119' }
+    })
+    fireEvent.click(screen.getByRole('switch', { name: 'Use SSH tunnel' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'SSH host' }), { target: { value: 'alice@gw-host' } })
+    await act(async () => new Promise(resolve => setTimeout(resolve, 550)))
+    expect(desktop.probeConnectionConfig).toHaveBeenLastCalledWith('http://127.0.0.1:9119', {
+      sshTunnel: { host: 'alice@gw-host' }
+    })
+    fireEvent.change(await screen.findByPlaceholderText('Paste session token'), { target: { value: 'session-secret' } })
+    fireEvent.click(screen.getByText('Test connection'))
+    await waitFor(() => expect(desktop.testConnectionConfig).toHaveBeenCalledWith({
+      mode: 'remote', remoteAuthMode: 'token', remoteToken: 'session-secret', remoteUrl: 'http://127.0.0.1:9119',
+      sshTunnel: { host: 'alice@gw-host' }
+    }))
+    fireEvent.click(screen.getByText('Apply and reconnect'))
+    await waitFor(() => expect(desktop.applyConnectionConfig).toHaveBeenCalledWith(expect.objectContaining({
+      sshTunnel: { host: 'alice@gw-host' }
+    })))
+  })
+
   it('restores remote apply controls when applying the tested connection fails', async () => {
     const desktop = installDesktopMock(
       bootstrapState({

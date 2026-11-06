@@ -89,6 +89,53 @@ describe('remote setup owner', () => {
   })
 })
 
+it.each<RemoteSetupHost>(['first-run', 'settings'])(
+  'carries an SSH tunnel through probe, Test, and Sign in for %s',
+  async (host: RemoteSetupHost): Promise<void> => {
+    const probeConnectionConfig = vi.fn().mockResolvedValue(probeResult('oauth', 'password'))
+    const testConnectionConfig = vi.fn().mockResolvedValue({ ok: true, baseUrl: 'http://127.0.0.1:31000' })
+    const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true })
+    const saveConnectionConfig = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { probeConnectionConfig, testConnectionConfig, oauthLoginConnectionConfig, saveConnectionConfig }
+    })
+
+    const { result } = renderHook(() =>
+      useRemoteSetup({
+        host,
+        beforeOAuthLogin: value => saveConnectionConfig(value)
+      })
+    )
+
+    act(() => {
+      result.current.setAuthMode('oauth')
+      result.current.setUrl('http://127.0.0.1:9119')
+      result.current.setSshTunnel({ host: 'alice@gw-host' })
+    })
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(probeConnectionConfig).toHaveBeenLastCalledWith('http://127.0.0.1:9119', {
+      sshTunnel: { host: 'alice@gw-host' }
+    })
+
+    await act(async () => result.current.signIn())
+    expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('http://127.0.0.1:9119', {
+      sshTunnel: { host: 'alice@gw-host' }
+    })
+    await act(async () => result.current.test())
+    expect(testConnectionConfig).toHaveBeenCalledWith({
+      mode: 'remote',
+      remoteAuthMode: 'oauth',
+      remoteToken: undefined,
+      remoteUrl: 'http://127.0.0.1:9119',
+      sshTunnel: { host: 'alice@gw-host' }
+    })
+    expect(result.current.canCommit).toBe(true)
+    act(() => result.current.setSshTunnel({ host: 'alice@other-host' }))
+    expect(result.current.canCommit).toBe(false)
+  }
+)
+
 it.each<RemoteSetupHost>(['first-run', 'settings', 'registry'])(
   'stale probes and credential tests cannot authorize %s',
   async (host: RemoteSetupHost): Promise<void> => {

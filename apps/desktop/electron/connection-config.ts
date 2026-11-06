@@ -604,6 +604,7 @@ function profileRemoteOverride(config, profile) {
     authMode: normAuthMode(entry.authMode),
     token: entry.token,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(entry.mode === 'remote' && entry.sshTunnel ? { sshTunnel: entry.sshTunnel } : {}),
     // A URL-remote/cloud host serves every profile via ?profile=, so a Desktop
     // profile that is only a routing label (e.g. `gris` for the backend's
     // `main-gris`) can map its explicit self-profile scope into the backend's
@@ -1196,12 +1197,43 @@ function cookiesHaveLiveSession(cookies) {
   )
 }
 
+// Build an SSH connection block from a save payload, preserving an
+// already-adopted dashboard token from the existing block (the token is minted
+// + reconciled at bootstrap, never user-entered). `mode: 'ssh'` is stamped so
+// normalizeSshConfig/profileSshOverride recognize it.
+function buildSshBlock(input: any, existingBlock: any = {}) {
+  // `??` (not `||`) so an explicit '' (user CLEARED the field) wins over the
+  // saved value; only a truly absent (undefined) field inherits.
+  const merged = normalizeSshConfig({
+    mode: 'ssh',
+    host: input.sshHost ?? existingBlock.host,
+    user: input.sshUser ?? existingBlock.user,
+    port: input.sshPort ?? existingBlock.port,
+    keyPath: input.sshKeyPath ?? existingBlock.keyPath,
+    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
+    remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
+  })
+
+  if (!merged) {
+    throw new Error('SSH host is required.')
+  }
+
+  // Carry forward an already-adopted dashboard token unless the host changed
+  // (a different host invalidates the old dashboard's token).
+  if (existingBlock.token && existingBlock.host === merged.host) {
+    merged.token = existingBlock.token
+  }
+
+  return merged
+}
+
 export {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildSshBlock,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,

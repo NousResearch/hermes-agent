@@ -318,7 +318,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   sshConfigHosts: () => ipcRenderer.invoke('hermes:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('hermes:ssh-config:resolve', host),
-  probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
+  probeConnectionConfig: (remoteUrl, options) =>
+    options === undefined
+      ? ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl)
+      : ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl, options),
   // `options` lets a registry-editor draft sign in BEFORE it is saved: the
   // main process settles the draft's connection id up front so the login
   // window writes into the per-connection cookie jar the saved entry will

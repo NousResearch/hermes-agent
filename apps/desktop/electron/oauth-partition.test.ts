@@ -74,6 +74,26 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     )
   })
 
+  it('gives a tunnelled v1 primary its own jar even when its saved URL is the v1 URL', () => {
+    const reg = registry('gw-host', [remote('gw-host', 'http://127.0.0.1:9119', { sshTunnel: { host: 'gw-host' } })])
+
+    expect(
+      resolveOauthPartition('http://127.0.0.1:41733', {
+        connectionId: 'gw-host',
+        registry: reg,
+        v1RemoteUrl: 'http://127.0.0.1:9119'
+      })
+    ).not.toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('gives a tunnelled primary its own jar: every tunnel shares the 127.0.0.1 host', () => {
+    const reg = registry('gw-host', [remote('gw-host', 'http://127.0.0.1:9119', { sshTunnel: { host: 'gw-host' } })])
+
+    expect(resolveOauthPartition('http://127.0.0.1:41733', { connectionId: 'gw-host', registry: reg })).not.toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+  })
+
   it('keeps cloud connections on the legacy partition (silent portal cascade needs the shared jar)', () => {
     const reg = registry('local', [
       { id: 'cloud-1', kind: 'cloud', url: 'https://agent.nousresearch.com', authMode: 'oauth' }

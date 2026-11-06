@@ -14,9 +14,15 @@
 import { readFile, readdir } from "node:fs/promises"
 import { createRequire } from "node:module"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
-import {
+import { appIdentity } from "../../../scripts/msix-shared.mjs"
+
+const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
+const require = createRequire(import.meta.url)
+// Resolve the installed package's entry, wherever the install placed it.
+const builderDist = path.dirname(require.resolve("app-builder-lib"))
+const {
   buildCapabilitiesXml,
   buildExtensionsXml,
   defaultTileTag,
@@ -26,11 +32,7 @@ import {
   resourceLanguageTag,
   splashScreenTag,
   substituteManifestMacros,
-} from "../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js"
-import { appIdentity } from "../../../scripts/msix-shared.mjs"
-
-const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
-const repoRoot = path.resolve(desktop, "..", "..")
+} = await import(pathToFileURL(path.join(builderDist, "targets", "win", "winAppUtil.js")).href)
 const variant = process.argv[2] || "bundled"
 const arch = process.argv[3] || "x64"
 
@@ -40,14 +42,13 @@ if (!["bundled", "light", "store"].includes(variant)) {
 }
 
 process.env.HERMES_DESKTOP_VARIANT = variant
-const require = createRequire(import.meta.url)
 const config = require(path.join(desktop, "electron-builder.config.cjs"))
 const pkg = require(path.join(desktop, "package.json"))
 
 const options = config.msix
 // The main application launches Electron. CLI aliases have separate payload
 // entrypoints; use the same AppInfo derivation as MsixTarget and signing hooks.
-const { AppInfo } = require('../../../node_modules/app-builder-lib/dist/appInfo.js')
+const { AppInfo } = require("app-builder-lib")
 const appInfo = new AppInfo({ config, metadata: { ...pkg, ...config.extraMetadata } }, null, config.win)
 const executable = `app\\${appInfo.productFilename}.exe`
 const displayName = options.displayName || config.productName
@@ -77,7 +78,7 @@ const extensions = await buildExtensionsXml({
 const template = await readFile(
   options.customManifestPath
     ? path.resolve(desktop, options.customManifestPath)
-    : path.join(repoRoot, "node_modules", "app-builder-lib", "templates", "msix", "appxmanifest.xml"),
+    : path.join(builderDist, "..", "templates", "msix", "appxmanifest.xml"),
   "utf8"
 )
 

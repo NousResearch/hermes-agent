@@ -129,7 +129,7 @@ function packagedBuildOrSkip(): PackagedBuild {
   if (missing.length > 0) {
     const reason =
       `no packaged build (missing ${missing.join(', ')}): run ` +
-      "'npm run build && npm run builder -- --dir --publish never --linux' in apps/desktop"
+      "'pnpm run build && pnpm run builder --dir --publish never --linux' in apps/desktop"
 
     if (process.env.CI && process.env.HERMES_E2E_REQUIRE_PACKAGED === '1') {
       throw new Error(`HERMES_E2E_REQUIRE_PACKAGED=1 but ${reason}`)

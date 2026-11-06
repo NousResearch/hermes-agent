@@ -4306,3 +4306,8 @@ plan_usage:
   large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
   large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
   large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
+    more: "+{count} de plus"

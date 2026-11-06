@@ -932,6 +932,18 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    # Safety refusal, standalone tui_gateway owner: the agent flushed the refused turn to its durable
+    # transcript at turn start, but result["messages"] is already the clean pre-refusal history. This
+    # path owns the session's SessionDB directly and never reaches the gateway's owner cleanup, so drop
+    # the refused turn durably HERE too — else a /resume or reopen re-sends the blocked content and the
+    # deterministic filter re-locks the chat (#149708 review). Best-effort; the live refusal notice was
+    # already delivered.
+    if result.get("failure_reason") == "content_policy_blocked":
+        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        from hermes_state_rewind import retain_refused_turn_for_display
+        retain_refused_turn_for_display(
+            getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
+            notice=CONTENT_REFUSED_NOTICE, boundary_row_id=result.get("refused_turn_boundary_row_id"))
     # The receipt verifies the stored row's body, which keeps the model's text as written;
     # only the delivered copy drops a silence marker.
     receipt = _persisted_turn_receipt(st, raw, status)

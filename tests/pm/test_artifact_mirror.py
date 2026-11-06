@@ -72,3 +72,20 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://env.corp.example/npm/-/npm-10.9.2.tgz"
     other = "https://github.com/x/y/releases/download/v1/y.tgz"
     assert pinned_source(other, tmp_path / "y.tgz", digest).url == other
+
+
+def test_both_pnpm_archives_follow_the_users_npm_registry(tmp_path, monkeypatch):
+    """pnpm's executable (a scoped @pnpm/exe.* package) and its launcher both come from the mirror."""
+    from pm.artifact_mirror import pinned_source
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://npm.corp.example/npm/")
+    artifacts = [a for target in ("linux-x64", "win32-arm64") for a in Lockfile(lockfile_path()).artifacts("pnpm", target)]
+    assert artifacts
+    for artifact in artifacts:
+        path = artifact["url"].removeprefix("https://registry.npmjs.org/")
+        assert path != artifact["url"]
+        source = pinned_source(artifact["url"], tmp_path / "pnpm.tgz", artifact["sha256"])
+        assert source.url == "https://npm.corp.example/npm/" + path

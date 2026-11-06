@@ -447,6 +447,9 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        if not allow_removed:  # every install surface lands here, before any dependency is resolved
+            from hermes_cli.plugins_cmd_catalog import raise_if_removed
+            raise_if_removed(identifier, git_url, str(plugin_name), *((catalog["name"],) if catalog else ()))
         link = plugins_dir / str(plugin_name)
         from pm.filesystem import is_junction
         if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
@@ -895,7 +898,7 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     try:
         # _set_plugin_enabled serializes per home itself (parallel install-card rows).
         _pc()._set_plugin_enabled(installed_name, enable=True)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, _pc().PluginOperationError) as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None
 

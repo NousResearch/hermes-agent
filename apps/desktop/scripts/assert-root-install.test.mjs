@@ -7,21 +7,21 @@ import { test } from 'vitest'
 import { BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL, checkRootInstall, requiredPackages } from '../scripts/assert-root-install.mjs'
 
 // Build a throwaway repo shaped like this one: an app workspace whose
-// dependencies are hoisted to the repo root, which is what the guard walks.
-// `manifest` is merged into the app's package.json so tests can declare
+// dependencies pnpm links into its own node_modules, which is what the guard
+// walks. `manifest` is merged into the app's package.json so tests can declare
 // dependencies the guard is expected to read.
-function makeTree({ rootPackages = BUILD_CRITICAL, react = '19.2.7', reactDom = '19.2.7', manifest = {} } = {}) {
+function makeTree({ appPackages = BUILD_CRITICAL, react = '19.2.7', reactDom = '19.2.7', manifest = {} } = {}) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-root-'))
   const appDir = path.join(tempRoot, 'apps', 'desktop')
   fs.mkdirSync(appDir, { recursive: true })
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', ...manifest }), 'utf8')
 
   const writePackage = (name, version) => {
-    const dir = path.join(tempRoot, 'node_modules', name)
+    const dir = path.join(appDir, 'node_modules', name)
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version }), 'utf8')
   }
-  for (const name of rootPackages) writePackage(name, '1.0.0')
+  for (const name of appPackages) writePackage(name, '1.0.0')
   if (react !== null) writePackage('react', react)
   if (reactDom !== null) writePackage('react-dom', reactDom)
 
@@ -42,20 +42,20 @@ test('checkRootInstall passes on a complete root install', () => {
 // the build died on an unresolved `katex/dist/katex.min.css` (#86443).
 test('checkRootInstall fails when katex is missing but vite is present', () => {
   const { tempRoot, appDir } = makeTree({
-    rootPackages: BUILD_CRITICAL.filter(name => name !== 'katex')
+    appPackages: BUILD_CRITICAL.filter(name => name !== 'katex')
   })
   try {
     const result = checkRootInstall(appDir, tempRoot)
     assert.equal(result.ok, false)
     assert.match(result.error, /katex/)
-    assert.match(result.error, /npm ci/)
+    assert.match(result.error, /pnpm install --frozen-lockfile/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('checkRootInstall reports every missing package at once', () => {
-  const { tempRoot, appDir } = makeTree({ rootPackages: ['vite'] })
+  const { tempRoot, appDir } = makeTree({ appPackages: ['vite'] })
   try {
     const result = checkRootInstall(appDir, tempRoot)
     assert.equal(result.ok, false)
@@ -71,7 +71,7 @@ test('checkRootInstall reports every missing package at once', () => {
 // drop the case it already handled.
 test('checkRootInstall still fails when vite is missing', () => {
   const { tempRoot, appDir } = makeTree({
-    rootPackages: BUILD_CRITICAL.filter(name => name !== 'vite')
+    appPackages: BUILD_CRITICAL.filter(name => name !== 'vite')
   })
   try {
     const result = checkRootInstall(appDir, tempRoot)
@@ -93,16 +93,16 @@ test('checkRootInstall fails on a react/react-dom version split', () => {
   }
 })
 
-// A package installed into the app's own node_modules rather than hoisted to the
-// root is still installed. The guard walks upward like Node does, so it must not
-// insist on the hoisted location.
-test('checkRootInstall accepts a package nested in the app workspace', () => {
+// A package the repo root installs is still installed for the app: Node's lookup
+// walks upward, and so does the guard, so it must not insist on the app's own
+// node_modules.
+test('checkRootInstall accepts a package installed at the repo root', () => {
   const { tempRoot, appDir } = makeTree({
-    rootPackages: BUILD_CRITICAL.filter(name => name !== 'katex')
+    appPackages: BUILD_CRITICAL.filter(name => name !== 'katex')
   })
-  const nested = path.join(appDir, 'node_modules', 'katex')
-  fs.mkdirSync(nested, { recursive: true })
-  fs.writeFileSync(path.join(nested, 'package.json'), JSON.stringify({ name: 'katex' }), 'utf8')
+  const hoisted = path.join(tempRoot, 'node_modules', 'katex')
+  fs.mkdirSync(hoisted, { recursive: true })
+  fs.writeFileSync(path.join(hoisted, 'package.json'), JSON.stringify({ name: 'katex' }), 'utf8')
   try {
     assert.deepEqual(checkRootInstall(appDir, tempRoot), { ok: true })
   } finally {
@@ -118,7 +118,7 @@ test('checkRootInstall accepts a package nested in the app workspace', () => {
 test('checkRootInstall fails when a declared devDependency outside the floor is missing', () => {
   const { tempRoot, appDir } = makeTree({
     manifest: { devDependencies: { '@rolldown/plugin-babel': '1.0.0', esbuild: '1.0.0' } },
-    rootPackages: [...BUILD_CRITICAL, 'esbuild']
+    appPackages: [...BUILD_CRITICAL, 'esbuild']
   })
   try {
     const result = checkRootInstall(appDir, tempRoot)
@@ -143,7 +143,7 @@ test('checkRootInstall fails when a declared runtime dependency is missing', () 
   }
 })
 
-// npm skips optionalDependencies legitimately (platform-gated natives), so an
+// pnpm skips optionalDependencies legitimately (platform-gated natives), so an
 // absent optional package is not a partial install.
 test('checkRootInstall ignores missing optionalDependencies', () => {
   const { tempRoot, appDir } = makeTree({
@@ -159,7 +159,7 @@ test('checkRootInstall ignores missing optionalDependencies', () => {
 test('checkRootInstall passes when every declared package is installed', () => {
   const { tempRoot, appDir } = makeTree({
     manifest: { dependencies: { '@scope/pkg': '1.0.0' }, devDependencies: { esbuild: '1.0.0' } },
-    rootPackages: [...BUILD_CRITICAL, '@scope/pkg', 'esbuild']
+    appPackages: [...BUILD_CRITICAL, '@scope/pkg', 'esbuild']
   })
   try {
     assert.deepEqual(checkRootInstall(appDir, tempRoot), { ok: true })
@@ -171,7 +171,7 @@ test('checkRootInstall passes when every declared package is installed', () => {
 // The floor is unconditional: a manifest the guard cannot parse must not turn
 // the check off.
 test('checkRootInstall keeps the floor when the manifest is unreadable', () => {
-  const { tempRoot, appDir } = makeTree({ rootPackages: ['vite'] })
+  const { tempRoot, appDir } = makeTree({ appPackages: ['vite'] })
   fs.writeFileSync(path.join(appDir, 'package.json'), '{not json', 'utf8')
   try {
     assert.deepEqual(requiredPackages(appDir), [])

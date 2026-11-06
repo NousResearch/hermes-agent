@@ -269,6 +269,7 @@ export const arAssistant = {
       readAloud: 'قراءة بصوت عال',
       copyFullResponse: 'نسخ الرد الكامل',
       readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
+      contentRefusedNotice: 'رفض فلتر الأمان في النموذج هذه الرسالة — جرّب طلبًا مختلفًا.',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',
       stop: 'إيقاف',

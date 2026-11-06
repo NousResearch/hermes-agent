@@ -191,6 +191,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
@@ -793,7 +794,7 @@ let f12Blocked = false
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
-// Dev (`npm run dev`) and prod both load the esbuild output from dist/.
+// Dev (`pnpm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-preload.js')
 
@@ -866,7 +867,7 @@ if (IS_WINDOWS) {
   }
 }
 
-// Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
+// Renderer debugging port. On for dev-server runs (`hgui` / `pnpm run dev`) so
 // the CDP tooling in scripts/ can attach; never for a packaged build — see
 // electron/dev-cdp.ts. Must run before app `ready` like the switches above;
 // Chromium binds it at launch.
@@ -4852,7 +4853,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 2. Development source -- when running `npm run dev` from a checkout, the
+  // 2. Development source -- when running `pnpm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
@@ -14905,40 +14906,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               : []
 
             const profileMetadata = Array.isArray(body?.profiles)
-              ? Object.fromEntries(
-                  body.profiles
-                    .map(profile => {
-                      const name = String(profile?.name || '').trim()
-
-                      if (!name) {
-                        return null
-                      }
-
-                      const metadata: RosterProfileMetadata = {}
-
-                      if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
-                        metadata.display_name = profile.display_name.trim()
-                      }
-
-                      // `/api/profiles` names the Bot Mode title `bot_title`. Carried even
-                      // when empty: "this backend has no title" is what lets the renderer
-                      // drop a stale local one instead of painting it on this bot.
-                      if (typeof profile?.bot_title === 'string') {
-                        metadata.title = profile.bot_title.trim()
-                      }
-
-                      if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
-                        metadata.ui_meta = profile.ui_meta
-                      }
-
-                      if (typeof profile?.has_avatar === 'boolean') {
-                        metadata.has_avatar = profile.has_avatar
-                      }
-
-                      return [name, metadata] as const
-                    })
-                    .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
-                )
+              ? profileMetadataFromApiProfiles(body.profiles)
               : undefined
 
             // The root HERMES_HOME is an agent too; enumerations that omit it
@@ -17167,7 +17135,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // True when the bundle on disk is not the one this process loaded — a
     // plain app restart (no rebuild, no installer) clears the skew above.
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
+    // under a running `pnpm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
     bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
   }

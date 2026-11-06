@@ -3981,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Modelo grande: o seu limite {name} foi atingido ({resets})."
   large_notice_limit_stops: "Modelo grande: o seu limite {name} foi atingido ({resets}), por isso não funcionará até lá."
   large_notice_percent: "Modelo grande: usa mais do uso do seu plano por mensagem. Limite mensal de modelos grandes: {percent} usado."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Arquivos alterados nos turnos desfeitos: {files}. Execute /rollback para listar os checkpoints e restaurar um."
+    more: "+{count} mais"

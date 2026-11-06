@@ -28,11 +28,12 @@
   "scripts": {
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "fix": "npm run lint:fix",
+    "fix": "pnpm run lint:fix",
     "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck && npm run lint"
+    "check": "pnpm run typecheck && pnpm run lint"
   },
   "devDependencies": {
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
   }
 }

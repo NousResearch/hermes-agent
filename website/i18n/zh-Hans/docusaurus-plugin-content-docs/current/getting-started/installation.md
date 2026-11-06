@@ -28,7 +28,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-源码安装脚本克隆仓库，再由 PM 准备 Python 3.14、Node.js、npm、ripgrep、FFmpeg 和 Python 依赖。
+源码安装脚本克隆仓库，再由 PM 准备 Python 3.14、Node.js、npm、pnpm、ripgrep、FFmpeg 和 Python 依赖。
 缺少 Git 时，脚本下载经过 SHA-256 验证的 Git for Windows 到工具存储目录。
 它不替换系统 Git，也不再使用 MinGit 或 `hermes\node` 的旧布局。
 安装完成后，打开新终端以读取用户 PATH。

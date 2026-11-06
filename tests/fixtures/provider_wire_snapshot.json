@@ -11503,6 +11503,11 @@
   "api_mode": "chat_completions",
   "base_url": "https://api.xiaomimimo.com/v1",
   "high": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11562,6 +11567,11 @@
   },
   "model": "mimo-v2-pro",
   "off": {
+   "extra_body": {
+    "thinking": {
+     "type": "disabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",
@@ -11620,6 +11630,11 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
    "messages": [
     {
      "content": "You are a test agent.",

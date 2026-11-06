@@ -147,11 +147,11 @@ def register_provider(profile: ProviderProfile) -> None:
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
-    refuse_if_frozen("provider registry")
     collect = _COLLECT.get()
-    if collect is not None:
+    if collect is not None:  # a private catalog read (``bundled_profiles``), not a registration
         collect.append(profile)
         return
+    refuse_if_frozen("provider registry")
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return

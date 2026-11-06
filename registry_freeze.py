@@ -14,7 +14,13 @@ no thaw.
 
 from __future__ import annotations
 
+import weakref
+from typing import Callable
+
 _frozen = False
+# Registries that hold payloads callers can reach (the tool registry's schemas and entries) seal
+# them at the freeze; held weakly so a registry built in a test does not live for the process.
+_sealers: list[weakref.WeakMethod] = []
 
 
 class RegistryFrozen(RuntimeError):
@@ -25,7 +31,20 @@ def freeze_registries() -> None:
     """Make the tool, MCP, provider and plugin registries immutable for the rest of the process.
     Called once by the hosted boot after it has loaded everything it serves."""
     global _frozen
-    _frozen = True
+    _frozen = True  # first: a registration racing the freeze is refused, so sealing sees the final set
+    for ref in _sealers:
+        seal = ref()
+        if seal is not None:
+            seal()
+
+
+def seal_at_freeze(seal: Callable[[], None]) -> None:
+    """Have :func:`freeze_registries` call the bound method *seal*, which replaces the registry's
+    reachable payloads with read-only copies. Runs at once when the registries are already frozen."""
+    _sealers[:] = [ref for ref in _sealers if ref() is not None]
+    _sealers.append(weakref.WeakMethod(seal))
+    if _frozen:
+        seal()
 
 
 def registries_frozen() -> bool:

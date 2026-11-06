@@ -277,18 +277,25 @@ def forget_plugin_grants(plugin: str) -> None:
             _save_auth_store(store)
 
 
+def _write_grant_locked(key: str, row: Optional[dict]) -> None:
+    """Replace one grant while the caller holds the auth-store lock."""
+    from hermes_cli.auth import _load_auth_store, _save_auth_store, _store_section
+
+    store = _load_auth_store()
+    section = _store_section(store, _SECTION)
+    if row is None:
+        section.pop(key, None)
+    else:
+        section[key] = row
+    _save_auth_store(store)
+
+
 def _write_grant(key: str, row: Optional[dict]) -> None:
     """Replace one grant (``None`` removes it) under the auth-store lock; other sections stay as they are."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_section
+    from hermes_cli.auth import _auth_store_lock
 
     with _auth_store_lock():
-        store = _load_auth_store()
-        section = _store_section(store, _SECTION)
-        if row is None:
-            section.pop(key, None)
-        else:
-            section[key] = row
-        _save_auth_store(store)
+        _write_grant_locked(key, row)
 
 
 # ── Token endpoint ─────────────────────────────────────────────────────────────────────────────────
@@ -421,7 +428,7 @@ def _client_credentials_token(client: OAuthClient, key: str) -> str:
         expires_in = 0
     row = {"access_token": token, "expires_at_ms": int(time.time() * 1000) + expires_in * 1000,
            "fingerprint": client.fingerprint}
-    _write_grant(key, row)
+    _write_grant_locked(key, row)
     return token
 
 

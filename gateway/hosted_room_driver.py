@@ -36,7 +36,7 @@ TASK_STATUSES = frozenset(get_args(TaskStatus))
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
-_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments"})
+_TASK_PAYLOAD_OPTIONAL_FIELDS = frozenset({"target_member_id", "input_context", "attachments", "lead_routing"})
 _LEASE_COLUMNS = frozenset({
     "room_id", "gateway_id", "authority_epoch", "process_generation", "lease_generation", "expires_at", "acquired_at",
     "updated_at", "released_at"})
@@ -185,6 +185,11 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         normalized["target_member_id"] = _identifier(value["target_member_id"], label="target_member_id")
     if "attachments" in value:
         normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
+    if "lead_routing" in value:
+        # Present only on a lead's routing turn, and then exactly true: absence is an ordinary member turn.
+        if value["lead_routing"] is not True:
+            raise DriverValidationError("lead_routing must be true when present")
+        normalized["lead_routing"] = True
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

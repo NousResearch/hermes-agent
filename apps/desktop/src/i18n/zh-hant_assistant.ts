@@ -3,6 +3,12 @@ import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `將執行：${target}`,
+      launchRemote: target => `將連線：${target}`,
+      launchEnv: keys => `環境變數：${keys}`,
+      launchCwd: dir => `工作目錄：${dir}`
+    },
     catalogInstall: {
       preparing: '正在準備安裝…',
       install: '安裝',

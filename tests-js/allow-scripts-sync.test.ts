@@ -92,9 +92,7 @@ describe.each(MANIFESTS)('$name allowScripts', ({ dir }) => {
   const label = manifestLabel(dir)
 
   test('every versioned pin matches a version in the lockfile', () => {
-    if (!fs.existsSync(lockPath)) {
-      return
-    }
+    assert.ok(fs.existsSync(lockPath), `${label} has no lockfile beside it to check allowScripts against`)
 
     const allow = (readJson(manifestPath).allowScripts ?? {}) as Record<string, boolean>
     const versions = installedVersions(readJson(lockPath))
@@ -125,9 +123,7 @@ describe.each(MANIFESTS)('$name allowScripts', ({ dir }) => {
   })
 
   test('every package with an install script has an allowScripts decision', () => {
-    if (!fs.existsSync(lockPath)) {
-      return
-    }
+    assert.ok(fs.existsSync(lockPath), `${label} has no lockfile beside it to check allowScripts against`)
 
     const allow = (readJson(manifestPath).allowScripts ?? {}) as Record<string, boolean>
     const lock = readJson(lockPath)

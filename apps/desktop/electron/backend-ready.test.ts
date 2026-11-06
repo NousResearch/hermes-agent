@@ -347,10 +347,13 @@ test(
     // The banner says a repair is in progress but nothing ever resolves: the
     // wait must still fail (bounded), and the message must carry that the
     // completion was in progress — truthful and actionable instead of a bare
-    // 90s timeout that hides a multi-minute repair. The 5-minute grace is
-    // wall-clock, so this holds the wait past it with a long test budget.
+    // 90s timeout that hides a multi-minute repair. The grace is wall-clock;
+    // a 50ms grace stands in for production's 5 minutes.
     const child = makeFakeChild()
-    const wait = waitForDashboardPort(child, 20)
+    const timeoutMs = 20
+    const completionGraceMs = 50
+    // describeOutputTail and bufferedOutput keep their defaults (no output tail).
+    const wait = waitForDashboardPort(child, timeoutMs, undefined, undefined, completionGraceMs)
     wait.catch(() => {}) // mark handled; the assertion below re-awaits
 
     child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')
@@ -359,7 +362,7 @@ test(
       /Timed out waiting for Hermes backend port announcement .* while an update completion was in progress/
     )
   },
-  6 * 60_000
+  10_000
 )
 
 test('a banner already in the spawn-time tail also re-arms', async () => {

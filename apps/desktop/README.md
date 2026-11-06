@@ -11,8 +11,7 @@
 
 > **Intel Macs:** the `Hermes-Setup.dmg` bootstrap installer is built for
 > Apple Silicon (arm64) only, so on an Intel Mac it reports "not supported on
-> this Mac". Stable releases build the native `darwin-x64` bundle only when
-> cut with `--with macos-intel`; otherwise install the
+> this Mac". No release builds a native `darwin-x64` bundle; install the
 > [CLI](../../README.md) and run `hermes desktop`. See
 > [Platform Support](../../website/docs/getting-started/platform-support.md#build-targets-and-support-priority).
 

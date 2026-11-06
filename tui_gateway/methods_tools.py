@@ -1481,7 +1481,7 @@ def _(rid, params: dict) -> dict:
     configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
-    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
         {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
@@ -1891,6 +1891,25 @@ def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:
     return {name_for(key, server) for server in package.mcp_servers}
 
 
+def _plugins_update_all(rid, params):
+    """Check every installed plugin and update each one ``hermes plugins update`` would move. Nothing is
+    accepted on the user's behalf: a widened catalog pin or a caution scan of a git update comes back
+    ``needs_review``."""
+    _ensure_plugin_activation_listener()
+    return _ok(rid, _tools_mod("hermes_cli.plugins_auto_update").update_all_unattended())
+
+
+def _plugins_auto_update(rid, params):
+    """Read ``plugins.auto_apply`` for the scoped profile, or set it when ``enable`` is given."""
+    auto = _tools_mod("hermes_cli.plugins_auto_update")
+    if params.get("enable") is None:
+        return _ok(rid, auto.auto_update_state())
+    try:
+        return _ok(rid, auto.set_auto_update(bool(params.get("enable"))))
+    except _tools_mod("hermes_cli.plugins_cmd").PluginOperationError as e:
+        return _err(rid, 4021, str(e))
+
+
 def _plugins_onboarding(rid, params):
     """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
@@ -1904,7 +1923,8 @@ def _plugins_presence(rid, params):
 _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
                     "toggle": _plugins_toggle, "install": _plugins_install, "inspect": _plugins_inspect,
                     "install_desktop": _plugins_install_desktop, "remove_desktop": _plugins_remove_desktop,
-                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
+                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings,
+                    "update_all": _plugins_update_all, "auto_update": _plugins_auto_update}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1913,7 +1933,8 @@ def _(rid, params: dict) -> dict:
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
     default True); ``inspect`` reports which halves that source ships, installing nothing; ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
-    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
+    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``; ``update_all``
+    updates every plugin with an update; ``auto_update`` reads or (with ``enable``) sets ``plugins.auto_apply``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

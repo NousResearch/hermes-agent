@@ -22,7 +22,6 @@
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import { createServer } from 'node:net'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -37,6 +36,8 @@ import {
   createCoreSandbox,
   currentSessionId,
   DESKTOP_ROOT,
+  freePort,
+  hermesCli,
   launchCoreApp,
   recordWebSockets,
   REPO_ROOT,
@@ -44,6 +45,7 @@ import {
   send,
   storedSessionForMarker,
   waitForInteractive,
+  webappLaunchLink,
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler } from './oracle'
@@ -60,17 +62,6 @@ const PYTHON = process.env.HERMES_E2E_PYTHON || 'python3'
  * (`gateway/owner_identity.py`): sign-in decides who may open the Webapp, it names no second user. */
 const OWNER_SUBJECT = `uid:${process.getuid?.()}`
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      server.close(() => resolve(typeof address === 'object' && address ? address.port : 0))
-    })
-  })
-}
-
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -81,33 +72,9 @@ function alive(pid: number): boolean {
   }
 }
 
-/** `hermes <args>` in the sandbox, as an operator runs it. */
-function hermesCli(sandbox: CoreSandbox, args: string[]): { code: number | null; output: string } {
-  const result = spawnSync(PYTHON, ['-m', 'hermes_cli.main', ...args], {
-    cwd: REPO_ROOT,
-    env: coreAppEnv(sandbox),
-    encoding: 'utf8',
-    timeout: 180_000
-  })
-
-  return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
-}
-
 /** `hermes webapp <args>` in the sandbox. */
 function hermesWebapp(sandbox: CoreSandbox, ...args: string[]): { code: number | null; output: string } {
   return hermesCli(sandbox, ['webapp', ...args])
-}
-
-/** Starts the gateway if needed and returns a one-use launch link for it (`hermes -p <profile> webapp`
- * when a profile is named). */
-function launchLink(sandbox: CoreSandbox, profile?: string): string {
-  const profileArgs = profile ? ['-p', profile] : []
-  const { code, output } = hermesCli(sandbox, [...profileArgs, 'webapp', '--no-open', '--skip-build'])
-  const link = /^\s+(http:\/\/127\.0\.0\.1:\d+\/webapp\/launch#\S+)$/m.exec(output)?.[1]
-  expect(code, `hermes webapp --no-open\n${output.replace(/ticket=\S+/g, 'ticket=<redacted>')}`).toBe(0)
-  expect(link, 'hermes webapp printed a one-use launch link').toBeTruthy()
-
-  return link!
 }
 
 function admissionPrincipals(sandbox: CoreSandbox, sessionId: string): string[] {
@@ -145,7 +112,7 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
   let browser: Browser | null = null
 
   try {
-    const link = launchLink(sandbox)
+    const link = webappLaunchLink(sandbox)
     expect(new URL(link).port).toBe(String(port))
     browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
     const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
@@ -205,7 +172,7 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
     // uses): the same tab is still signed in and the next turn runs on the new gateway.
     process.kill(gateway.pid, 'SIGKILL')
     await expect.poll(() => alive(gateway.pid), { timeout: 30_000 }).toBe(false)
-    launchLink(sandbox)
+    webappLaunchLink(sandbox)
     await page.reload()
     await expect(composer(page)).toBeVisible({ timeout: 120_000 })
     provider.script(U(2), [{ text: [`${A(2)} `, 'after ', 'the ', 'gateway ', 'came ', 'back'] }])
@@ -263,8 +230,8 @@ test('a Webapp tab opened on a named profile runs and reads that profile', async
   let browser: Browser | null = null
 
   try {
-    launchLink(sandbox)
-    const link = launchLink(sandbox, 'p2')
+    webappLaunchLink(sandbox)
+    const link = webappLaunchLink(sandbox, 'p2')
     browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
     const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
     const ws = recordWebSockets(page)
@@ -347,7 +314,7 @@ test("the Webapp and Electron Desktop answer and stop each other's turns on one 
     browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
     const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
     const ws = recordWebSockets(page)
-    await page.goto(launchLink(sandbox))
+    await page.goto(webappLaunchLink(sandbox))
     await expect(composer(page)).toBeVisible({ timeout: 180_000 })
     await installDuplicateSampler(page)
     await expect.poll(() => backendProcesses(sandbox).length, { message: 'one gateway serves the sandbox' }).toBe(1)

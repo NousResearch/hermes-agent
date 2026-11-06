@@ -1,6 +1,6 @@
 name: advanced-delegation
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: e404b6816b20237a82f6fbe2749b5a576cf75dba
+sha: bedc9e74ef792864cd7198a8e43cedd5b585ace7
 subdir: advanced-delegation
 title: Advanced Delegation
 description: 'Two extra delegation modes for `delegate_task`, next to the built-in default. Model routes
@@ -11,9 +11,13 @@ description: 'Two extra delegation modes for `delegate_task`, next to the built-
   the mode and edit its routes; `--show` prints the setup) and the `/delegation` slash command (save a mode
   for the next session, or `--now` to apply it to the current chat). Needs Hermes 0.22.5 or newer, the
   first release with pluggable delegation providers; Hermes 0.22.0 to 0.22.4 refuses to install it, and on
-  a core older than 0.22.0 it installs, logs one warning and does nothing. Disclosure — no
-  Python dependencies and no network or model calls of its own; subagents run through core''s
-  `delegate_task` on the routes you configured. Writes only `delegation.backend` and
+  a core older than 0.22.0 it installs, logs one warning and does nothing. A model route can set
+  `daybreak: true` to run its model with OpenAI''s Daybreak trusted-access program; it is sent only
+  from your own CLI, TUI or Desktop chats, on `openai-codex`, for models your Codex catalog lists,
+  and a route that breaks a rule is refused. Disclosure — no Python dependencies and no network or
+  model calls of its own, except that a Daybreak route checks the Codex catalog through core''s
+  cached lookup with your existing Codex login; subagents run through core''s `delegate_task` on
+  the routes you configured. Writes only `delegation.backend` and
   `delegation.backends.*` (model_map / profile_routes) in the active profile''s config.yaml, through
   core''s config writer. A model route''s optional `api_key` is stored in config.yaml in plain text
   (`provider:` keeps keys in .env / auth.json). Listing a profile under profile routes lets this
@@ -22,8 +26,8 @@ maintainer: NousResearch
 tier: official
 category: tools
 requires_hermes: ">=0.22.5"
-version: "1.0.0"
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e404b6816b20237a82f6fbe2749b5a576cf75dba/assets/advanced-delegation.jpg
+version: "1.1.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/bedc9e74ef792864cd7198a8e43cedd5b585ace7/assets/advanced-delegation.jpg
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/advanced-delegation
 platforms: []
 capabilities:

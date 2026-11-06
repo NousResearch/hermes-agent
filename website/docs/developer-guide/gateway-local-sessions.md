@@ -61,7 +61,9 @@ The server issues `session:operator` only at these existing trusted boundaries:
   such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
   bearer token or a socket's `?token=`, and renews a refresh token, only when it gave that token to a
   native app's RFC 8252 sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
-  expire), so native apps stay signed in across a sign-out and a restart.
+  expire), so native apps stay signed in across a sign-out and a restart. The deployment session
+  token (`HERMES_DASHBOARD_SESSION_TOKEN`) also works there as a bearer token or `?token=` while the
+  session-token provider is enabled; it has no refresh token.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.
 

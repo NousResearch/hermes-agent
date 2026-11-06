@@ -19,6 +19,7 @@
     "fix": "npm run lint:fix"
   },
   "dependencies": {
+    "@nanostores/react": "1.1.0",
     "@nous-research/ui": "0.19.1",
     "@tailwindcss/typography": "0.5.20",
     "@tailwindcss/vite": "4.3.3",

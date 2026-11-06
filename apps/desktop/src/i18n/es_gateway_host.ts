@@ -31,6 +31,13 @@ export const esGatewayHost: GatewayHostTranslations = {
     restartFailedBecause: reason => `El gateway no pudo reiniciarse: ${reason}`,
     startTimedOut: 'El gateway no sirvió la aplicación web en 90 segundos.',
     stopTimedOut: 'El gateway no dejó de servir la aplicación web en 90 segundos.',
+    startStages: {
+      preparing: 'Preparando la aplicación web. Compilarla puede tardar unos minutos.',
+      building: 'Compilando la aplicación web. Puede tardar unos minutos.',
+      registering: 'Configurando el inicio de sesión de Nous para esta dirección.',
+      restarting: 'Reiniciando el gateway para servir la aplicación web.'
+    },
+    startElapsed: time => `Tiempo transcurrido: ${time}`,
     start: 'Iniciar',
     stop: 'Detener',
     restartGateway: 'Reiniciar gateway',

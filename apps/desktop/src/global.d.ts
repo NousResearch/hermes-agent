@@ -410,6 +410,9 @@ declare global {
       watchDirectory?: (dir: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setActiveWork?: (payload: HermesActiveWork) => void
+      /** Bounded functional stream deadlines; does not enable hidden-window painting. */
+      scheduleStreamWorkWake?: (token: string, delayMs: number | null) => void
+      onStreamWorkWake?: (callback: (token: string) => void) => () => void
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
@@ -449,6 +452,10 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
+      /** Wake only this window's preview guest while an automation script is pending. */
+      beginPreviewGuestActivity?: (webContentsId: number) => Promise<number>
+      endPreviewGuestActivity?: (token: number) => Promise<void>
+      executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load
@@ -1144,6 +1151,8 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+  /** Speech output still consumes the frame-published transcript while streaming. */
+  voiceActive?: boolean
 }
 
 export interface HermesWindowState {

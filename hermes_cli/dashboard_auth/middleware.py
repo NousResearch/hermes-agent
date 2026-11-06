@@ -7,7 +7,8 @@ everything else demands a bearer token or a valid session cookie and attaches
 the verified :class:`Session` to ``request.state.session``. On the gateway's
 Webapp a cookie session also needs its sign-in binding to the browser credential
 (``hermes_cli.webapp_sign_in``), and its cookie writes, sign-out included, must come
-from the Webapp's own origin. HTML routes are
+from the Webapp's own origin; elsewhere a cookie write the browser marks as another page's
+(``Sec-Fetch-Site``) is refused. HTML routes are
 redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 """
 from __future__ import annotations
@@ -83,11 +84,25 @@ def _safe_next_target(request: Request) -> str:
 _CROSS_ORIGIN_WRITE_DETAIL = ("Cookie-authenticated writes must come from the Webapp's own origin. "
                               "Behind a reverse proxy, set webapp.public_url to the URL the browser uses.")
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+#: The 403 detail for a cookie write the browser itself says another page made, on a surface
+#: without the Webapp's own-origin check.
+_OTHER_PAGE_WRITE_DETAIL = "Cookie-authenticated writes must come from this dashboard's own page."
+#: ``Sec-Fetch-Site`` verdicts naming a request another page made. ``same-site`` is a sibling
+#: (another port or subdomain) that ``SameSite=Lax`` still sends the session cookies from.
+_OTHER_PAGE_FETCH_SITES = frozenset({"same-site", "cross-site"})
 
 
 def _own_origin_writes(request: Request) -> bool:
     from hermes_cli.web_server_surface import policy
     return policy(request.app.state).own_origin_cookie_writes
+
+
+def _browser_says_other_page(request: Request) -> bool:
+    """The browser's own ``Sec-Fetch-Site`` verdict names another page. Pages cannot set the
+    header and the browser computes it against the URL it addressed, so it holds behind any proxy;
+    a request without Fetch Metadata (a plain-HTTP origin, a non-browser client) is not judged."""
+    return any(value.strip().lower() in _OTHER_PAGE_FETCH_SITES
+               for value in request.headers.getlist("sec-fetch-site"))
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
@@ -161,7 +176,7 @@ def peek_session(request: Request):
     decide how much to show; an expired or unverifiable session reads as signed out."""
     bearer = _extract_bearer(request)
     if bearer:
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return None
         access_token, provider_hint = bearer, None
     else:
@@ -216,10 +231,12 @@ async def gated_auth_middleware(
             or getattr(request.state, "native_http_principal", None)):
         return await call_next(request)
     # Login/callback routes have their own credentials/state checks. Logout is public so an
-    # expired session can leave; where cookie writes must come from the listener's own origin it
-    # still consumes cookies, so it goes through that check.
+    # expired session can leave; where cookie writes must come from the listener's own origin, or
+    # the browser says another page sent it, it still consumes cookies, so it goes through that
+    # check.
     own_origin = _own_origin_writes(request)
-    cookie_logout = own_origin and request.url.path == "/auth/logout"
+    other_page = not own_origin and _browser_says_other_page(request)
+    cookie_logout = (own_origin or other_page) and request.url.path == "/auth/logout"
     if _path_is_public(request.url.path) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
@@ -231,7 +248,7 @@ async def gated_auth_middleware(
     if bearer:
         if cookie_logout:
             return await call_next(request)
-        if not webapp_sign_in.token_works_alone(request, bearer):
+        if not webapp_sign_in.access_token_works_alone(request, bearer):
             return _unauth_response(request, reason="invalid_or_expired_session")
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
@@ -248,6 +265,10 @@ async def gated_auth_middleware(
     if (own_origin and (at or _rt) and request.method not in _SAFE_METHODS
             and not cookie_origin_is_allowed(request)):
         return JSONResponse(status_code=403, content={"detail": _CROSS_ORIGIN_WRITE_DETAIL})
+    # Elsewhere main's rule stands (a Host-rewriting plain-HTTP proxy's page sends no Fetch
+    # Metadata and still writes), but a write the browser itself says another page made is refused.
+    if other_page and (at or _rt) and request.method not in _SAFE_METHODS:
+        return JSONResponse(status_code=403, content={"detail": _OTHER_PAGE_WRITE_DETAIL})
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:

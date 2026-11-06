@@ -1121,6 +1121,9 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
+    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
+    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.

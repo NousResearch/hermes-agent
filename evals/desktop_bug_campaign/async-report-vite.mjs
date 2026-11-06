@@ -1,7 +1,10 @@
-import { createServer } from '../../node_modules/vite/dist/node/index.js'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+// Vite comes from the desktop workspace that declares it.
+const { createServer } = await import(pathToFileURL(createRequire(new URL('../../apps/desktop/package.json', import.meta.url)).resolve('vite')).href)
 const root = path.resolve(import.meta.dirname, '../../apps/desktop')
 const artifactDir = process.env.ASYNC_REPORT_ARTIFACT_DIR
 if (!artifactDir) throw new Error('Set ASYNC_REPORT_ARTIFACT_DIR to an offline artifact directory')

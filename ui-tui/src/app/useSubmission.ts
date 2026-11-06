@@ -14,6 +14,8 @@ import type { Msg } from '../types.js'
 
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
+import { stagePastes } from './pasteStore.js'
+import { applyQueuePlan, planQueueSlash } from './queueSlash.js'
 import { findSlashCommand } from './slash/registry.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -375,16 +377,33 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         const parsed = parseSlashCommand(full)
 
-        const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
-
-        if (queued) {
-          // Handled here, before the slash handler, so it is counted here.
+        if (parsed.name === 'queue' || parsed.name === 'q') {
+          // The catalog advertises list/edit/rm/move/clear. Enqueueing those words
+          // is what sent them to the model. Handle them before the slash handler.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
+          const plan = planQueueSlash(slash.display, slash.command)
 
-          const saved = journaled(() => composerActions.enqueue(queued.text, queued.display, destination, submission.attachments))
+          if (plan.kind === 'enqueue') {
+            const preview = plan.display.slice(0, 50)
 
-          if (saved) { sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`) }
+            const saved = journaled(() =>
+              composerActions.enqueue(plan.text, plan.display, destination, submission.attachments)
+            )
+
+            if (saved) {
+              sys(`queued: "${preview}${plan.display.length > 50 ? '…' : ''}"`)
+            }
+          } else {
+            composerActions.clearIn()
+            sys(
+              applyQueuePlan(plan, {
+                items: composerRefs.queueRef.current,
+                refresh: () => composerActions.setQueueEdit(null),
+                removeAt: index => composerActions.removeQueue(index),
+                rows: composerState.queuedDisplay
+              })
+            )
+          }
         } else {
           // Attachment commands capture the cleared composer's revision.
           composerActions.clearIn()
@@ -401,6 +420,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         return shellExec(full.slice(1).trim())
       }
+
+      // The user row shows each chip and expands it from these payloads.
+      stagePastes(full, submission.text, submissionTokens)
 
       const live = getUiState()
 
@@ -485,6 +507,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage,
       composerActions,
       composerRefs,
+      composerState.queuedDisplay,
       gw,
       handleBusyInput,
       interpolate,
@@ -537,6 +560,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       lastEmptyAt.current = 0
+      // An expanded paste goes out as a chip again: the transcript shows the
+      // chip, the model gets the text as edited.
+      value = composerActions.collapsePaste(value)
 
       if (value.endsWith('\\')) {
         composerActions.setInputBuf(prev => [...prev, value.slice(0, -1)])

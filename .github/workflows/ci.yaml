@@ -362,8 +362,12 @@ jobs:
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
     if: always()
+    # actions: read is for the timing report steps below (completed jobs' cache transfer logs).
+    permissions:
+      contents: read
+      actions: read
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
@@ -383,33 +387,27 @@ jobs:
           if [ "$RELEASE" = true ]; then args+=(--release); fi
           printf '%s' "$NEEDS" | python3 scripts/ci/required_results.py "${args[@]}"
 
-  # ─────────────────────────────────────────────────────────────────────
-  # CI timing report: collect per-job/step durations from the GitHub API,
-  # cache them on main (as a baseline), and on PRs generate an HTML diff
-  # report with a gantt chart + per-step breakdown. The report is uploaded
-  # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
-  #
-  # The live comment poller dynamically fetches all review-status-* artifacts
-  # across the orchestrator and sub-workflow runs every cycle, so its link
-  # points straight at that report.
-  # ─────────────────────────────────────────────────────────────────────
-  ci-timings:
-    name: CI timing report
-    permissions:
-      contents: read
-      actions: read # download completed jobs' cache transfer logs
-    needs: [all-checks-pass]
-    if: always()
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ inputs.commit }}
-
-      - name: Restore baseline cache (PR only)
-        if: github.event_name == 'pull_request'
+      # ───────────────────────────────────────────────────────────────────
+      # CI timing report: collect per-job/step durations from the GitHub API,
+      # cache them on main (as a baseline), and on PRs generate an HTML diff
+      # report with a gantt chart + per-step breakdown. The report is uploaded
+      # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
+      #
+      # These steps used to be a separate `ci-timings` job that started right
+      # after this one, on the same runner, with its own checkout: a second
+      # billed minute for ~15s of work. They are advisory: every one runs
+      # whatever the verdict above was (`always()`), never fails the gate
+      # (`continue-on-error`), and is time-boxed so a slow GitHub API cannot
+      # hold the required check open.
+      #
+      # The live comment poller dynamically fetches all review-status-* artifacts
+      # across the orchestrator and sub-workflow runs every cycle, so its link
+      # points straight at that report.
+      # ───────────────────────────────────────────────────────────────────
+      - name: Restore timing baseline cache (PR only)
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
@@ -420,6 +418,9 @@ jobs:
             ci-timings-baseline-
 
       - name: Collect timings and generate report
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -429,9 +430,11 @@ jobs:
             --json-out ci-timings.json \
             --summary-out ci-timings-summary.md
 
-      - name: Upload HTML report
+      - name: Upload HTML timing report
+        if: always() && hashFiles('ci-timings-report.html') != ''
         # Advisory report — artifact-service blips must not fail the job.
         continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: ci-timings-html
         with:
@@ -440,7 +443,9 @@ jobs:
           retention-days: 14
 
       - name: Build linked review status
-        if: hashFiles('ci-timings.json') != ''
+        if: always() && hashFiles('ci-timings.json') != ''
+        continue-on-error: true
+        timeout-minutes: 2
         env:
           CI_TIMINGS_REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url }}
         run: |
@@ -451,15 +456,18 @@ jobs:
             --review-status-only
 
       - name: Upload review status
-        if: hashFiles('review-status.json') != ''
+        if: always() && hashFiles('review-status.json') != ''
         continue-on-error: true
+        timeout-minutes: 2
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: review-status-ci-timings
           path: review-status.json
           retention-days: 14
 
-      - name: Output summary
+      - name: Output timing summary
+        if: always() && hashFiles('ci-timings-summary.md') != ''
+        continue-on-error: true
         env:
           REPORT_URL: ${{ steps.ci-timings-html.outputs.artifact-url}}
         run: |
@@ -469,8 +477,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save baseline cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Save timing baseline (main only)
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
         run: |
           # Degraded runs (API rate-limited) produce no ci-timings.json —
           # skip rather than fail, and never cache an empty baseline.
@@ -480,8 +489,10 @@ jobs:
             echo "No timings JSON this run — skipping baseline update"
           fi
 
-      - name: Upload baseline to cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
+      - name: Upload timing baseline to cache (main only)
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
+        continue-on-error: true
+        timeout-minutes: 2
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json

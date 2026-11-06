@@ -105,9 +105,17 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
             return None
         # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
         # normalize in place (dispatch re-coerces canonically).
+        from tools.arg_coercion import ToolArgUnparseableError, unparseable_container_message
         try:
             from model_tools import coerce_tool_args
             candidate_args = coerce_tool_args(name, dict(args))
+        except ToolArgUnparseableError as exc:
+            # A refused candidate cannot dispatch (dispatch would hit the same
+            # refusal): marking it invalid IS the correct validation outcome.
+            return _validation_error(
+                f"tool_call to '{name}': {unparseable_container_message(exc)} "
+                "The tool was NOT invoked.",
+                path=exc.param, constraint="unparseable-json-string", parameters=params)
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
             candidate_args = dict(args)

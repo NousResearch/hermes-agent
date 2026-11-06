@@ -18,7 +18,7 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
-import { removeWorktreePath } from '@/store/projects'
+import { $projectOwnerBySessionId, removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
@@ -26,6 +26,7 @@ import { ownedNewSessionHandlers, projectOwnerRoute } from './gateway-project-ro
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
+  liveSessionsForProject,
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
   type SidebarProjectTree,
@@ -56,6 +57,16 @@ export function EnteredProjectContent({
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
+  const owners = useStore($projectOwnerBySessionId)
+
+  // RepoFlatSection overlays again after adding visual worktree lanes. Do not
+  // re-inject a nested child project's rows from the unscoped live list (#134012).
+  // This map belongs to the window gateway; remote rows are already gateway-scoped.
+  const projectLive = useMemo(
+    () => (project.connectionId ? (liveSessions ?? []) : liveSessionsForProject(project, liveSessions ?? [], owners)),
+    [project, liveSessions, owners]
+  )
+
   if (!project.repos.length) {
     return null
   }
@@ -75,7 +86,7 @@ export function EnteredProjectContent({
         <RepoFlatSection
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
-          liveSessions={liveSessions}
+          liveSessions={projectLive}
           onNewSession={owned.onNewSession}
           onNewSessionSplit={owned.onNewSessionSplit}
           owner={projectOwnerRoute(project)}

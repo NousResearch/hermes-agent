@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 import { $dismissedWorktreeIds, $sidebarShowAllSessions, dismissWorktree, restoreWorktree } from '@/store/layout'
-import { listRepoBranches, removeWorktreePath, switchBranchInRepo } from '@/store/projects'
+import { $projectTree, listRepoBranches, removeWorktreePath, switchBranchInRepo } from '@/store/projects'
+import { makeCwdSession } from '@/test/session-info'
 
 import {
   EnteredProjectContent,
@@ -13,6 +14,7 @@ import {
   SidebarWorkspaceGroup
 } from './projects'
 import type * as ProjectsModel from './projects/model'
+import { overlayLiveLanes, projectOwnerBySessionId } from './projects/workspace-groups'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
@@ -165,9 +167,13 @@ function renderEnteredProjectWithLiveWorktree() {
   )
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $projectTree.set([])
+})
 
 beforeEach(() => {
+  $projectTree.set([])
   $dismissedWorktreeIds.set([])
   $sidebarShowAllSessions.set(false)
   workspaceOpen.value = false
@@ -176,6 +182,227 @@ beforeEach(() => {
   startNewSessionDrag.mockReset()
   vi.mocked(switchBranchInRepo).mockReset()
   vi.mocked(listRepoBranches).mockReset().mockResolvedValue([])
+})
+
+describe('entered project live ownership (#134012)', () => {
+  it.each(['feature/test', 'main', null])(
+    'does not re-inject a nested child row with branch %s at the leaf renderer',
+    git_branch => {
+      workspaceOpen.value = true
+      const parentSession = makeCwdSession('/work/ws', { id: 'parent-session' })
+
+      const childSession = makeCwdSession('/work/ws/child', {
+        git_branch,
+        git_repo_root: '/work/ws/child',
+        id: 'child-session'
+      })
+
+      const parent = project({
+        id: 'p_parent',
+        path: '/work/ws',
+        repos: [
+          {
+            id: '/work/ws',
+            label: 'workspace',
+            path: '/work/ws',
+            sessionCount: 1,
+            groups: [
+              group({
+                id: '/work/ws::branch::main',
+                isMain: true,
+                isGit: false,
+                label: 'workspace',
+                path: '/work/ws',
+                sessions: [parentSession]
+              })
+            ]
+          }
+        ],
+        sessionCount: 1,
+        sessionIds: [parentSession.id]
+      })
+
+      const child = project({ id: 'p_child', path: '/work/ws/child', sessionIds: [childSession.id] })
+      $projectTree.set([parent, child])
+      const live = [parentSession, childSession]
+      // The existing outer guard already passes; exercise the real second overlay.
+      const filtered = overlayLiveLanes(parent, live, new Set(), projectOwnerBySessionId([parent, child]))
+      expect(filtered.repos.flatMap(repo => repo.groups.flatMap(lane => lane.sessions))).not.toContain(childSession)
+
+      render(
+        <EnteredProjectContent
+          liveSessions={live}
+          project={filtered}
+          renderRows={rows => (
+            <>
+              {rows.map(row => (
+                <div key={row.id}>{row.id}</div>
+              ))}
+            </>
+          )}
+        />
+      )
+
+      expect(screen.getByText(parentSession.id)).toBeTruthy()
+      expect(screen.queryByText(childSession.id)).toBeNull()
+    }
+  )
+
+  it('uses lineage ownership when the live compression tip has a different id', () => {
+    workspaceOpen.value = true
+    const parentSession = makeCwdSession('/work/ws', { id: 'parent-session' })
+
+    const tip = makeCwdSession('/work/ws/child', {
+      _lineage_root_id: 'child-root',
+      git_branch: 'feature/test',
+      id: 'child-tip'
+    })
+
+    const parent = project({
+      id: 'p_parent',
+      path: '/work/ws',
+      sessionIds: [parentSession.id],
+      repos: [
+        {
+          id: '/work/ws',
+          label: 'workspace',
+          path: '/work/ws',
+          sessionCount: 1,
+          groups: [group({ isMain: true, label: 'workspace', path: '/work/ws', sessions: [parentSession] })]
+        }
+      ]
+    })
+
+    $projectTree.set([parent, project({ id: 'p_child', sessionIds: ['child-root'] })])
+
+    render(
+      <EnteredProjectContent
+        liveSessions={[tip]}
+        project={parent}
+        renderRows={rows => (
+          <>
+            {rows.map(row => (
+              <div key={row.id}>{row.id}</div>
+            ))}
+          </>
+        )}
+      />
+    )
+
+    expect(screen.getByText(parentSession.id)).toBeTruthy()
+    expect(screen.queryByText(tip.id)).toBeNull()
+  })
+
+  it('refreshes a remote row whose id is owned by a different project on the window gateway', () => {
+    workspaceOpen.value = true
+
+    const stale = makeCwdSession('/code/app', {
+      connection_id: 'studio',
+      id: 'same-id',
+      title: 'stale remote'
+    })
+
+    const fresh = { ...stale, title: 'fresh remote' }
+    const local = project({ id: 'local-project', sessionIds: [stale.id] })
+
+    const remote = project({
+      connectionId: 'studio',
+      id: 'remote-project',
+      path: '/code/app',
+      repos: [
+        {
+          id: '/code/app',
+          label: 'app',
+          path: '/code/app',
+          sessionCount: 1,
+          groups: [group({ isMain: true, path: '/code/app', sessions: [stale] })]
+        }
+      ],
+      sessionIds: [stale.id]
+    })
+
+    $projectTree.set([local])
+    const live = [fresh]
+
+    render(
+      <EnteredProjectContent
+        liveSessions={live}
+        project={remote}
+        renderRows={rows => rows.map(row => <div key={row.id}>{row.title}</div>)}
+      />
+    )
+
+    expect(screen.getByText('fresh remote')).toBeTruthy()
+    expect(screen.queryByText('stale remote')).toBeNull()
+  })
+
+  it('reacts to backend ownership changes without a new live-session list', () => {
+    workspaceOpen.value = true
+    const session = makeCwdSession('/work/ws/child', { id: 'moving-session' })
+
+    const parent = project({
+      id: 'p_parent',
+      path: '/work/ws',
+      repos: [{ id: '/work/ws', label: 'workspace', path: '/work/ws', sessionCount: 0, groups: [] }]
+    })
+
+    const live = [session]
+
+    render(
+      <EnteredProjectContent
+        liveSessions={live}
+        project={parent}
+        renderRows={rows => rows.map(row => <div key={row.id}>{row.id}</div>)}
+      />
+    )
+    expect(screen.getByText(session.id)).toBeTruthy()
+
+    act(() => $projectTree.set([parent, project({ id: 'p_child', sessionIds: [session.id] })]))
+    expect(screen.queryByText(session.id)).toBeNull()
+  })
+
+  it('keeps owned sibling-worktree rows after adding visual lanes and unclaimed new rows', () => {
+    workspaceOpen.value = true
+    const sibling = makeCwdSession('/work/child-wt', { id: 'sibling-session' })
+    const fresh = makeCwdSession('/work/ws/child', { id: 'fresh-session' })
+
+    const child = project({
+      id: 'p_child',
+      path: '/work/ws/child',
+      sessionIds: [sibling.id],
+      repos: [{ id: '/work/ws/child', label: 'child', path: '/work/ws/child', sessionCount: 0, groups: [] }]
+    })
+
+    $projectTree.set([child])
+
+    render(
+      <EnteredProjectContent
+        liveSessions={[sibling, fresh]}
+        project={child}
+        renderRows={rows => (
+          <>
+            {rows.map(row => (
+              <div key={row.id}>{row.id}</div>
+            ))}
+          </>
+        )}
+        repoWorktrees={{
+          '/work/ws/child': [
+            {
+              branch: 'feature/test',
+              detached: false,
+              isMain: false,
+              locked: false,
+              path: '/work/child-wt'
+            }
+          ]
+        }}
+      />
+    )
+
+    expect(screen.getByText(sibling.id)).toBeTruthy()
+    expect(screen.getByText(fresh.id)).toBeTruthy()
+  })
 })
 
 describe('Show all sessions', () => {

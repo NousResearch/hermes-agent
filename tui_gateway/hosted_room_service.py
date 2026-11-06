@@ -957,7 +957,7 @@ class HostedRoomService:
         fence = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
-        pending = unconfirmed = 0
+        pending, unconfirmed = 0, []
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
@@ -980,13 +980,19 @@ class HostedRoomService:
             if result["status"] == "stopping":
                 pending += 1
             elif result["status"] == "deferred":
-                unconfirmed += 1
+                unconfirmed.append(result)
         # Disband waits for every member's Stop, a member on another gateway included: a deferred
         # turn its gateway has not confirmed stopped holds it until confirmed or Discarded.
         if require_acknowledged and (pending or unconfirmed):
-            raise hosted_rooms.RoomStopPendingError("Group chat work is still stopping; retry deletion after Stop completes.")
+            raise self._stop_pending_refusal(room_id, unconfirmed) or hosted_rooms.RoomStopPendingError(
+                "Group chat work is still stopping; retry deletion after Stop completes.")
         self.runtime.wakeup()
-        return len(tasks) - unconfirmed
+        return len(tasks) - len(unconfirmed)
+
+    def _stop_pending_refusal(
+            self, room_id: str, deferred: list[dict[str, Any]]) -> hosted_rooms.RoomStopPendingError | None:
+        """A more specific refusal for Disband held by *deferred* turns (None: the generic one)."""
+        return None
 
     def peer_admission_receipt(self, room_id: str, task: Mapping[str, Any]) -> dict[str, Any] | None:
         """The durable run handle this home holds for a peer attempt, or None when its admission

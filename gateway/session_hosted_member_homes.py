@@ -21,7 +21,21 @@ follows the mapping (a moved profile's next reads go to its new home).
 import json
 from pathlib import Path
 
+from gateway.hosted_rooms import RoomStopPendingError
+
 _HOMES = 'gateway.hosted.member_homes.v1:'
+
+
+class MemberHomeUnknownError(RoomStopPendingError):
+    """Disband waits on a turn whose member profile is no longer configured and whose home was
+    never recorded: nothing here can reach its daemon, so only the user can unblock it."""
+    reason = 'member_home_unknown'
+
+    def __init__(self, profile):
+        super().__init__(
+            f"Group chat work for '{profile}' may still be running, but that profile is no longer "
+            "configured here. Add it back to hosted_rooms.profiles so its Stop can be confirmed, "
+            "or Discard the turn, then retry deletion.")
 
 
 def _key(room_id, member_id):
@@ -111,6 +125,22 @@ def _served_here(home):
     return home.is_dir() and not (named_profile_home(home) is not None and named_profile_is_deleted(home))
 
 
+def _home_unknown(service, room_id, task, served):
+    from tui_gateway.hosted_room_service import task_member_id
+    member = task_member_id(task)
+    return (served is None and not _recorded_homes(service.authority.db, room_id, member)
+            and stopping_attempt_home(service.authority.db, room_id, member, task) is None)
+
+
+def unknown_home_refusal(service, room_id, deferred):
+    """The refusal naming the first *deferred* turn whose member's home is unknown, or None."""
+    for task in deferred:
+        profile = task['payload']['target_profile']
+        if _home_unknown(service, room_id, task, service.profile_homes().get(profile)):
+            return MemberHomeUnknownError(profile)
+    return None
+
+
 def unserved_member_stopped(service, room_id, task):
     """True when *task*'s member profile is no longer served on this host and no gateway owns any
     home it was served from (its conventional home, each recorded one, and the roster's)."""
@@ -126,11 +156,11 @@ def unserved_member_stopped(service, room_id, task):
         return discover_gateway_endpoint(admitted).state == 'absent'
     if served is not None and _served_here(Path(served)):
         return False
-    recorded = _recorded_homes(service.authority.db, room_id, task_member_id(task))
-    if served is None and not recorded:
+    if _home_unknown(service, room_id, task, served):
         return False  # the home its daemon ran from is unknown: an absent default proves nothing
     own = Path(service.authority.profile_id)
     root = multiplexer_root_for(own) or own
+    recorded = _recorded_homes(service.authority.db, room_id, task_member_id(task))
     homes = {root if profile == 'default' else root / 'profiles' / profile, *recorded}
     if served is not None:
         homes.add(Path(served))

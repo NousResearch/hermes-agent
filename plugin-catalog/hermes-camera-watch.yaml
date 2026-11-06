@@ -1,0 +1,25 @@
+name: hermes-camera-watch
+title: Camera Watch
+repo: https://github.com/arcabotai/hermes-camera-watch
+sha: ba5f383d818b941bf74af2af4ec5c541ccf435a5
+version: "0.1.0"
+description: "Watch cameras you own (RTSP or an HTTP(S) snapshot URL) and alert with a saved still plus a one-line caption when the scene changes. Mock mode (the default) plays a scripted package-at-the-door scene with no camera and no network: front-door goes from a clear doorway to a package on the second look, and quiet-room never changes. Motion is local frame differencing. Captions are scripted in mock mode and a percentage line otherwise; model_invoked is false unless someone separately asks Hermes to describe the saved file. A pre_tool_call allowlist refuses unknown names, extra URL/host/scan arguments, TLS bypass, a missing CA file, and a grab whose hook did not run. Stopping a watch is always allowed. Ships a bundled camera-watch skill, a /cameras command, and an optional read-only dashboard tab. Disclosure — network: in live mode it fetches stills only from cameras you named (HTTP(S) snapshot or RTSP/RTSPS); mock mode makes no network connections. Redirects are not followed. TLS verification cannot be turned off, and a missing CA file refuses the connection. http and rtsp are often unencrypted. Files: stills and event records under the plugin data dir (or the configured output_dir). No credentials and no third-party vision API. The hook gates this plugin's tools only; a terminal, code execution, or an edit to config.yaml can still reach a camera or change the limits."
+maintainer: Arca Computer (arcabotai)
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/arcabotai/hermes-camera-watch#readme
+readme: true
+capabilities:
+  provides_tools:
+    - camera_list
+    - camera_status
+    - camera_snapshot
+    - camera_watch_start
+    - camera_watch_stop
+    - camera_watch_poll
+    - camera_events
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

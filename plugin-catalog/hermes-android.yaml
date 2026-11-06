@@ -1,0 +1,79 @@
+name: hermes-android
+repo: https://github.com/TechFlipsi/FlipsiBridge
+sha: 7ecca4ac7c63f8fda010ed21e53bebd825171e8c
+subdir: hermes-android-plugin
+description: "Remote Android device control for Hermes Agent: 58 android_* tools (read screen, tap/type/swipe, open apps, camera, screenshots & screen recording, files, notifications, microphone streaming, media, clipboard, SMS/calls, Health Connect) plus a companion Android bridge app (Kotlin/Compose). The phone dials out to a relay you host — works behind NAT, no port forwarding, no VPN — and chat plus device commands are end-to-end encrypted with a Double Ratchet, so the relay only ever sees ciphertext. Disclosure: tools act on the real, paired phone; the plugin is built for the Hermes Agent ecosystem and every device capability is an explicit opt-in switch (default denied)."
+maintainer: TechFlipsi
+tier: community
+category: tools
+requires_hermes: ">=0.3.0"
+docs_url: https://github.com/TechFlipsi/FlipsiBridge
+readme: true
+image: https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-chat.png
+screenshots:
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-home.png
+  - https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/7ecca4ac7c63f8fda010ed21e53bebd825171e8c/docs/img/fb-chat.png
+platforms: []
+capabilities:
+  provides_tools:
+    - android_alarm
+    - android_apk_install
+    - android_broadcast
+    - android_call
+    - android_clipboard_read
+    - android_clipboard_write
+    - android_current_app
+    - android_describe_node
+    - android_diff_screen
+    - android_drag
+    - android_event_stream
+    - android_events
+    - android_file_delete
+    - android_file_get
+    - android_file_put
+    - android_files_count
+    - android_files_list
+    - android_files_permission
+    - android_files_search
+    - android_find_nodes
+    - android_get_apps
+    - android_health
+    - android_location
+    - android_long_press
+    - android_macro
+    - android_media
+    - android_mic_fetch
+    - android_mic_record
+    - android_mic_status
+    - android_mic_stop
+    - android_network_status
+    - android_notifications
+    - android_notify_reply
+    - android_open_app
+    - android_photo
+    - android_pinch
+    - android_ping
+    - android_press_key
+    - android_read_screen
+    - android_read_widgets
+    - android_screen_hash
+    - android_screen_record
+    - android_screenshot
+    - android_scroll
+    - android_search_contacts
+    - android_send_intent
+    - android_send_sms
+    - android_setup
+    - android_speak
+    - android_speak_stop
+    - android_swipe
+    - android_tap
+    - android_tap_text
+    - android_timer
+    - android_torch
+    - android_type
+    - android_volume
+    - android_wait
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

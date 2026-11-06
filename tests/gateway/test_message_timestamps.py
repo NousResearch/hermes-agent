@@ -226,6 +226,56 @@ def test_regular_user_message_still_replays_with_timestamp():
     assert history[0]["content"] != message["content"]
 
 
+def test_steer_row_replays_without_timestamp():
+    """A mid-turn /steer row goes out live unstamped; replay must send the same bytes or the cached prefix breaks."""
+    from agent.prompt_builder import steer_user_row
+    from gateway.run import _build_gateway_agent_history
+
+    steer = {**steer_user_row("use the other branch"), "timestamp": 1_000_000_000.0}
+    asked = {"role": "user", "content": "fix the bug", "timestamp": 1_000_000_000.0}
+    history, _ = _build_gateway_agent_history([asked, steer], inject_timestamps=True)
+    assert history[1]["content"] == steer["content"]
+    # Over-reach guard: a message someone sent still replays stamped.
+    assert history[0]["content"] != asked["content"]
+    assert history[0]["content"].endswith(asked["content"])
+
+
+def test_steer_row_replays_unstamped_through_session_db(tmp_path):
+    """The steer row's provenance (display_kind) must survive the SessionDB reload and a prune that re-persists the
+    replayed view."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
+    from gateway.config import GatewayConfig
+    from gateway.run import _build_gateway_agent_history
+    from gateway.session import SessionStore
+    from hermes_state import SessionDB
+
+    sent_at = _epoch(2026, 4, 28, 13, 40, 53)
+    steer = steer_user_row("use the other branch")
+    call = [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    try:
+        db.create_session("room", source="matrix")
+        db.append_message("room", "user", "fix the bug", timestamp=sent_at)
+        db.append_message("room", "assistant", "", tool_calls=call, timestamp=sent_at)
+        db.append_message("room", "tool", "fixture", tool_call_id="c1", timestamp=sent_at)
+        db.append_message("room", "user", steer["content"], display_kind=STEER_DISPLAY_KIND, timestamp=sent_at)
+        db.append_message("room", "assistant", "switched", timestamp=sent_at)
+        first, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+        # A later in-session prune re-persists the replayed view; the next reload must still know the row.
+        db.archive_and_compact("room", first)
+        replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+    finally:
+        db.close()
+        store.close_all_db_handles()
+
+    for rows in (first, replay):
+        users = [m["content"] for m in rows if m["role"] == "user"]
+        assert users[1] == steer["content"]
+        assert users[0] != "fix the bug" and users[0].endswith("fix the bug")
+
+
 def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     """Compaction sends its restated in-flight task unstamped; every reload (also after a re-persist of the
     replayed view) must replay those exact bytes."""

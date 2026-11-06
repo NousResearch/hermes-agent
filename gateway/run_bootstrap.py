@@ -786,7 +786,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _start_gateway_configure_logging(verbosity)
 
         from gateway.run_startup import recover_left_core_at_gateway_start
-        await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
+        if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:
+            # A platform plugin was just installed: the config loaded above predates it.
+            reserved = getattr(resolved_config, "_runtime_profile_homes", None)
+            resolved_config = load_gateway_config_for_runner()
+            if reserved:
+                resolved_config._runtime_profile_homes = reserved
 
         from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
         _launch_store_pin = await asyncio.to_thread(pin_launch_store)

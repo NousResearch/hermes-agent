@@ -82,6 +82,7 @@ from hermes_cli.auth_codex import (
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
+from hermes_cli.auth_store_recovery import _ReadOnlyAuthStoreError, _recover_corrupt_auth_store
 from hermes_cli.guest_handoff import note_store_write
 from hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
@@ -501,7 +502,7 @@ def _global_auth_file_path() -> Optional[Path]:
     return None if _same_path(get_hermes_home(), global_root) else global_root / "auth.json"
 
 
-def _load_global_auth_store() -> dict[str, Any]:
+def _load_global_auth_store(*, read_only: bool = False) -> dict[str, Any]:
     """Load the global-root auth store (read-only fallback, mtime-memoised); ``{}`` when absent or
     unreadable — a malformed global store must never break profile reads."""
     global _global_auth_store_cache
@@ -526,7 +527,10 @@ def _load_global_auth_store() -> dict[str, Any]:
         except Exception:
             pass
     try:
-        store = _load_auth_store(global_path)
+        store = _load_auth_store(global_path, read_only=True) if read_only else _load_auth_store(global_path)
+    except _ReadOnlyAuthStoreError:
+        _global_auth_store_cache = None
+        raise
     except Exception:
         _global_auth_store_cache = None
         return {}
@@ -723,7 +727,7 @@ def _empty_auth_store() -> dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
+def _load_auth_store(auth_file: Optional[Path] = None, *, read_only: bool = False) -> dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return _empty_auth_store()
@@ -739,22 +743,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
             auth_file, exc_info=True)
         raise
     except Exception as exc:
-        # Genuine corruption: unparseable JSON or non-UTF-8 bytes. Preserve a copy, but never
-        # advertise a backup that was not written.
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
-        try:
-            shutil.copy2(auth_file, corrupt_path)
-            preserved = True
-        except Exception:
-            preserved = False
-            logger.debug("auth: could not preserve a copy of the corrupt store at %s", corrupt_path,
-                         exc_info=True)
-        logger.warning(
-            "auth: failed to parse %s (%s), starting with empty store. %s %s",
-            auth_file, exc,
-            "Corrupt file preserved at" if preserved else "A copy could NOT be preserved at",
-            corrupt_path)
-        return _empty_auth_store()
+        return _recover_corrupt_auth_store(auth_file, exc, read_only=read_only)
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict) or isinstance(raw.get("credential_pool"), dict)):
@@ -811,7 +800,7 @@ def _provider_state_in(store: dict[str, Any], provider_id: str) -> Optional[dict
 
 
 def _load_provider_state_with_source(
-    auth_store: dict[str, Any], provider_id: str,
+    auth_store: dict[str, Any], provider_id: str, *, read_only: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
     """Provider state plus the auth.json path it came from (profile first, then the global root).
 
@@ -820,14 +809,16 @@ def _load_provider_state_with_source(
     state = _provider_state_in(auth_store, provider_id)
     if state is not None:
         return state, _auth_file_path()
-    global_state = _provider_state_in(_load_global_auth_store(), provider_id)
+    global_state = _provider_state_in(_load_global_auth_store(read_only=read_only), provider_id)
     return (global_state, _global_auth_file_path()) if global_state is not None else (None, None)
 
 
-def _load_provider_state(auth_store: dict[str, Any], provider_id: str) -> Optional[dict[str, Any]]:
+def _load_provider_state(
+    auth_store: dict[str, Any], provider_id: str, *, read_only: bool = False,
+) -> Optional[dict[str, Any]]:
     """Provider state; in profile mode falls back to the global-root ``auth.json`` per provider (same
     shadowing as ``read_credential_pool``), so profile workers see globally-authed providers."""
-    return _load_provider_state_with_source(auth_store, provider_id)[0]
+    return _load_provider_state_with_source(auth_store, provider_id, read_only=read_only)[0]
 
 
 @contextmanager
@@ -931,14 +922,16 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> dict[str, Any]:
+def read_credential_pool(
+    provider_id: Optional[str] = None, *, read_only: bool = False,
+) -> dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
     when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
-    pool = _load_auth_store().get("credential_pool")
+    pool = _load_auth_store(read_only=read_only).get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
-    global_pool = _load_global_auth_store().get("credential_pool")
+    global_pool = _load_global_auth_store(read_only=read_only).get("credential_pool")
     global_pool = global_pool if isinstance(global_pool, dict) else {}
 
     if provider_id is None:

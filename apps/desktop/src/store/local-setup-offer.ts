@@ -1,15 +1,19 @@
 /**
  * Local-setup eligibility: whether this machine can run a model locally, read
- * once per backend connection from the local-models status + catalog.
+ * once per backend connection from the local-models status + catalog and from
+ * the configured providers' endpoints.
  *
  * Two surfaces read it: the "Run locally" row at the top of the model menu
  * (until setup is done) and the handoff tour's model-pill step. A machine with
- * a runtime and a staged model no longer qualifies, so both hide.
+ * a runtime and a staged model no longer qualifies, so both hide — and neither
+ * does a machine whose provider already points at a local endpoint, where the
+ * user runs their own server.
  */
 
 import { atom, computed } from 'nanostores'
 
-import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
+import { getGlobalModelOptions, getLocalCatalog, getLocalModelsStatus } from '@/hermes'
+import { isLoopbackEndpoint } from '@/lib/local-endpoint'
 import type { LocalCatalogModel, LocalModelsStatus } from '@/types/hermes'
 
 import { $localModelsEnabled } from './local-models-flag'
@@ -38,7 +42,8 @@ let eligibilityGeneration = 0
 function pickLocalSetupFit(
   connectionMode: null | string,
   status: LocalModelsStatus | null,
-  catalog: readonly LocalCatalogModel[] | null
+  catalog: readonly LocalCatalogModel[] | null,
+  localEndpointInUse: boolean
 ): Eligibility {
   const at = Date.now()
 
@@ -48,6 +53,12 @@ function pickLocalSetupFit(
 
   if (connectionMode !== 'local') {
     return { checkedAt: at, fit: null, reason: `connection is ${connectionMode}, not local` }
+  }
+
+  // A provider already pointed at this machine runs a model the user chose: the offer would ask
+  // them to replace it.
+  if (localEndpointInUse) {
+    return { checkedAt: at, fit: null, reason: 'a provider already points at a local endpoint' }
   }
 
   if (!status || !catalog) {
@@ -90,6 +101,17 @@ export function readConnectedLocalSetupEligibility(): Promise<Eligibility> {
   })
 }
 
+/**
+ * Whether a configured provider already points at this machine, so a local model is set up outside
+ * Hermes' own runtime. Fails open: a provider read that cannot answer is not evidence either way,
+ * and must not hide or un-hide the offer on its own.
+ */
+function readLocalEndpointInUse(): Promise<boolean> {
+  return getGlobalModelOptions()
+    .then(options => (options.providers ?? []).some(provider => isLoopbackEndpoint(provider.api_url)))
+    .catch(() => false)
+}
+
 /** Read again, keeping the current answer on screen until the new one lands. */
 export function refreshLocalSetupEligibility(): Promise<Eligibility> {
   const mode = $connection.get()?.mode ?? null
@@ -98,7 +120,7 @@ export function refreshLocalSetupEligibility(): Promise<Eligibility> {
   // backend (whose hardware is not this computer's) all answer "no" locally.
   if (!$localModelsEnabled.get() || mode !== 'local') {
     const settled = $localModelsEnabled.get()
-      ? pickLocalSetupFit(mode, null, null)
+      ? pickLocalSetupFit(mode, null, null, false)
       : { checkedAt: Date.now(), fit: null, reason: 'local models are off in this build' }
 
     $localSetupEligibility.set(settled)
@@ -108,8 +130,10 @@ export function refreshLocalSetupEligibility(): Promise<Eligibility> {
 
   const generation = eligibilityGeneration
 
-  eligibilityRead ??= Promise.all([getLocalModelsStatus(), getLocalCatalog()])
-    .then(([status, catalog]) => pickLocalSetupFit(mode, status, catalog.models))
+  eligibilityRead ??= Promise.all([getLocalModelsStatus(), getLocalCatalog(), readLocalEndpointInUse()])
+    .then(([status, catalog, localEndpointInUse]) =>
+      pickLocalSetupFit(mode, status, catalog.models, localEndpointInUse)
+    )
     .catch((error: Error) => ({
       checkedAt: Date.now(),
       fit: null,

@@ -18,6 +18,9 @@ from typing import Any, Callable, Optional
 Resolve = Callable[[str], Optional[dict]]
 # "does this directory still exist?"; always-True default keeps remote-host projects visible.
 Exists = Callable[[str], bool]
+# cwd -> the checkout's CURRENT branch (``""`` when it can't be probed); the live source for a
+# lane label, so a `git switch` in an open session doesn't leave the lane on its creation branch.
+BranchOf = Callable[[str], str]
 
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the id kanban_db mints)
 # collapse into one lane; user-named dirs under `.worktrees/` stay their own lanes.
@@ -202,14 +205,22 @@ def _place(
     return _place_by_heuristic(cwd)
 
 
-def _place_session(session: dict, resolve: Optional[Resolve]) -> Optional[dict]:
+def _place_session(
+        session: dict, resolve: Optional[Resolve],
+        branch_of: Optional[BranchOf] = None) -> Optional[dict]:
     """``_place`` for a session row, anchored on its cwd or else its persisted repo root;
-    ``None`` only when it has neither (the renderer's ``isDetachedSession``)."""
+    ``None`` only when it has neither (the renderer's ``isDetachedSession``).
+
+    The lane branch prefers ``branch_of`` (the checkout's LIVE branch) over the row's persisted
+    ``git_branch``: that column is only written when the cwd CHANGES
+    (``update_session_cwd``), so a ``git switch`` inside an open session left its lane labelled
+    with the branch the session was created on, and nothing ever healed it."""
     root = _field(session, "git_repo_root")
     anchor = _field(session, "cwd") or root
     if not anchor:
         return None
-    return _place(anchor, _field(session, "git_branch"), resolve, root)
+    live = (branch_of(anchor) or "").strip() if branch_of else ""
+    return _place(anchor, live or _field(session, "git_branch"), resolve, root)
 
 
 def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
@@ -257,11 +268,13 @@ def _repo_node(root: str, label: str) -> dict:
     return {"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}
 
 
-def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
+def _build_repos(
+        sessions: list[dict], resolve: Optional[Resolve], hydrate: bool,
+        branch_of: Optional[BranchOf] = None) -> list[dict]:
     """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
     lanes: dict[str, tuple[dict, dict]] = {}  # lane identity -> (group, placement)
     for session in sessions:
-        placement = _place_session(session, resolve)
+        placement = _place_session(session, resolve, branch_of)
         if not placement:
             continue
         lane_identity = _lane_key(placement["lane_key"])
@@ -371,7 +384,7 @@ def _project_node(
 
 def _auto_buckets(
     unowned: list[dict], resolve: Optional[Resolve], junk: Callable, junk_cwd: Callable,
-    exists: Callable) -> tuple[dict[str, dict], list[dict]]:
+    exists: Callable, branch_of: Optional[BranchOf] = None) -> tuple[dict[str, dict], list[dict]]:
     """Group leftover sessions by auto-project root (common git root, else the session cwd
     for non-git workspaces); the rest go to the Home bucket."""
     by_auto_root: dict[str, dict] = {}
@@ -386,7 +399,7 @@ def _auto_buckets(
         elif (cwd := _field(session, "cwd")) and not junk_cwd(cwd):
             # A path-only heuristic placement whose dir is gone from disk would mint a phantom
             # project that can only be dismissed by hand -> Home.
-            placement = _place_session(session, resolve)
+            placement = _place_session(session, resolve, branch_of)
             if placement and exists(placement["repo_key"]):
                 root = placement["repo_key"]
         key = _path_key(root) if root else ""
@@ -414,13 +427,15 @@ def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
-    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None) -> dict:
+    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None,
+    branch_of: Optional[BranchOf] = None) -> dict:
     """Build the authoritative project tree -> ``{"projects", "scoped_session_ids"}``.
 
     ``is_junk_root`` flags git roots that must never become an AUTO project; ``is_junk_cwd``
     is the narrower non-git policy (explicit projects are honored regardless); ``exists``
     keeps a DELETED workspace from becoming a phantom AUTO project (omit on remote backends).
-    ``hydrate`` False empties lane ``sessions`` but keeps counts + ``previewSessions``.
+    ``branch_of`` is the live branch probe for lane labels (omit to trust the persisted
+    ``git_branch``). ``hydrate`` False empties lane ``sessions`` but keeps counts + ``previewSessions``.
     """
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
@@ -447,7 +462,7 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         _scope(psessions)
-        repos = _build_repos(psessions, resolve, hydrate)
+        repos = _build_repos(psessions, resolve, hydrate, branch_of)
         repos = _seed_folder_repos(repos, project.get("folders") or [], resolve)
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
@@ -455,12 +470,13 @@ def build_tree(
             color=project.get("color"), icon=project.get("icon")))
 
     # Tier 2: auto projects from leftover sessions.
-    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)
+    by_auto_root, homeless = _auto_buckets(
+        unowned, resolve, _junk, _junk_cwd, _exists, branch_of)
     seen: set[str] = set()
     for bucket in by_auto_root.values():
         auto_root, auto_sessions = bucket["root"], bucket["sessions"]
         auto_key = _path_key(auto_root)
-        repos = _build_repos(auto_sessions, resolve, hydrate)
+        repos = _build_repos(auto_sessions, resolve, hydrate, branch_of)
         repo_node = next(
             (r for r in repos if _path_key(r.get("id") or r.get("path") or "") == auto_key), None)
         if repo_node is None:

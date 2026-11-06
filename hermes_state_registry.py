@@ -395,7 +395,21 @@ def close_all_under(directory: str | Path) -> int:
             if _generations.get(generation.path) is generation:
                 _generations.pop(generation.path, None)
             _retired.pop(id(generation.db), None)
-    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    swept = _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    # Barriers settled: no live connection under *root* remains, so the header-probe fds cached
+    # for those state.db files no longer guard any POSIX lock of this process — release them,
+    # otherwise an unserved or deleted profile keeps one read-only state.db fd until restart
+    # (#149274). Entries whose inode a surviving generation still has open at another path
+    # (hard link) stay cached: closing them would cancel that connection's locks.
+    from hermes_state_dbfile import release_header_probes_under
+    with _lock:
+        live_paths = [generation.path for generation in _generations.values() if not generation.retired]
+    protected = {
+        identity for identity in (_stat_db_file_identity(path) for path in live_paths)
+        if identity is not None
+    }
+    release_header_probes_under(root, protected_inodes=protected)
+    return swept
 
 
 def other_generations_for_path(

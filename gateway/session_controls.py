@@ -279,6 +279,8 @@ class AuthorityConnection:
         handlers['session.control'] = partial(control, self)
         from gateway.session_onboarding import handlers as onboarding_handlers
         handlers.update(onboarding_handlers(self))
+        from gateway.session_stored_reads import handlers as stored_read_handlers
+        handlers.update(stored_read_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -570,15 +572,17 @@ class AuthorityConnection:
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
-        limit = params.get('limit', 200)
-        if set(params) - {'limit', 'title', 'include_hidden', 'scope'} or type(limit) is not int or not 1 <= limit <= 200:
+        limit, workspace = params.get('limit', 200), params.get('workspace')
+        if (set(params) - {'limit', 'title', 'include_hidden', 'scope', 'workspace'} or type(limit) is not int
+                or not 1 <= limit <= 200 or (workspace is not None and not (isinstance(workspace, str) and workspace))):
             raise RuntimeStoreError('invalid_params')
-        if params.get('scope', 'live') not in {'live', 'stored'} or ('title' in params and 'scope' in params):
+        if (params.get('scope', 'live') not in {'live', 'stored'}
+                or ('title' in params and ('scope' in params or workspace is not None))):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope') == 'stored':
             from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
-                limit=limit, include_hidden=params.get('include_hidden', False))
+                limit=limit, include_hidden=params.get('include_hidden', False), workspace=workspace)
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
@@ -615,7 +619,9 @@ class AuthorityConnection:
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': entry.handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
-        return {'sessions': sessions[:limit], 'scope': 'live'}
+        from gateway.session_picker_fields import live_picker_page
+        return {'sessions': await asyncio.to_thread(live_picker_page, self.authority, sessions, limit, workspace),
+                'scope': 'live'}
 
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info

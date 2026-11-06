@@ -650,4 +650,4 @@ canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParam
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections
+from . import canonical_sessions, canonical_projections, canonical_stored_reads

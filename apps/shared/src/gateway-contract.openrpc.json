@@ -9211,6 +9211,18 @@
             "default": false,
             "title": "Include Hidden",
             "type": "boolean"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
           }
         },
         "title": "CanonicalListParams",
@@ -10708,6 +10720,90 @@
             ],
             "default": null,
             "title": "Root Title"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Reply"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "git_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Git Branch"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
+          "last_active_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Active At"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pinned"
           }
         },
         "required": [
@@ -10720,6 +10816,32 @@
           "running"
         ],
         "title": "CanonicalSessionListRow",
+        "type": "object"
+      },
+      "CanonicalSessionParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "CanonicalSessionParams",
         "type": "object"
       },
       "CanonicalSessionRef": {
@@ -43320,6 +43442,131 @@
         "title": "SteerStatus",
         "type": "string"
       },
+      "StoredCompaction": {
+        "additionalProperties": false,
+        "properties": {
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "summary"
+        ],
+        "title": "StoredCompaction",
+        "type": "object"
+      },
+      "StoredCompactionsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "compactions": {
+            "items": {
+              "$ref": "#/components/schemas/StoredCompaction"
+            },
+            "title": "Compactions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "compactions"
+        ],
+        "title": "StoredCompactionsResult",
+        "type": "object"
+      },
+      "StoredTranscriptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "StoredTranscriptParams",
+        "type": "object"
+      },
+      "StoredTranscriptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "session_id",
+          "rows",
+          "next_cursor"
+        ],
+        "title": "StoredTranscriptResult",
+        "type": "object"
+      },
       "StreamDeltaPayload": {
         "additionalProperties": false,
         "description": "``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),\n``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``\n(reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on.",
@@ -49617,6 +49864,24 @@
       }
     },
     {
+      "name": "session.compactions",
+      "summary": "The handoff summaries a stored conversation's compactions wrote, oldest first, across its compression lineage. The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSessionParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StoredCompactionsResult"
+        }
+      }
+    },
+    {
       "name": "session.create",
       "summary": "",
       "params": [
@@ -49847,6 +50112,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.transcript",
+      "summary": "One page of a stored conversation's display rows, oldest first, across its compression lineage (live rows and rows a compaction archived, each logical message once). Never attaches the caller. A page reads at most `limit` stored rows (1-500), so it can show fewer, even none; read on until `next_cursor` is null. A cursor stays valid across later compactions and new turns. Refusals: invalid_params (a cursor this owner did not issue), not_found, permission_denied, profile_mismatch.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/StoredTranscriptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StoredTranscriptResult"
         }
       }
     },

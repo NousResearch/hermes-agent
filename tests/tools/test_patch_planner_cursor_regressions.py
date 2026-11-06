@@ -147,3 +147,27 @@ def test_missing_hinted_site_after_prior_edit_does_not_target_distant_match():
     result, files = apply(source, body)
     assert not result.success
     assert files.source == source and not files.writes
+
+
+def test_displaced_hint_does_not_select_nearby_other_site():
+    source = 'prefix SECRET_A_EDIT\n' + 'y' * 100 + '\nprefix SECRET\n'
+    body = '@@\n-prefix SECRET_A\n+ZZSECRET_A\n@@ SECRET_A_EDIT @@\n-prefix SECRET\n+DONE'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_successive_hinted_hunks_do_not_fall_back_outside_window():
+    source = '# marker\nvalue = old\n' + 'z' * 3000 + '\nvalue = old\n'
+    body = '@@ marker @@\n-value = old\n+DONE\n@@ marker @@\n-value = old\n+OTHER'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_partial_consumption_does_not_fuzzy_write_a_different_block():
+    source = 'keep = hostish_d\nfoo = 1\nbar = 2\nfoo = 1\nbar = 9\n'
+    body = '@@\n-foo = 1\n+keep = hostish_d\n@@\n-foo = 1\n-bar = 2\n+keep = hostish_d'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes

@@ -296,6 +296,10 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         fuzzy, similar = _fuzzy_sites(content, pattern, cursor, free)
         whole, after = (sorted(whole + fuzzy), []) if similar else (whole, fuzzy)
     windows, hinted = _hint_pick(content, hunk, sites)
+    hint = hunk.context_hint or ''
+    if hint and any(_overlaps((pos, pos + len(hint)), w)
+                    for pos in _positions(content, hint) for w in written):
+        return None, 1, "its @@ hint overlaps text an earlier hunk wrote"
     if hinted:
         ranges = _edit_ranges(content, hinted, hunk)
         behind = ranges[0][0] < cursor and not (ranges == [hinted] and hinted[0] < cursor < hinted[1])
@@ -311,7 +315,9 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
             return None, len(after), "its @@ hint selects no site while another site follows the previous hunk"
     if windows and ordered:
         after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)]
-    if len(after) == 1 or (after and ordered and any(tiers) and (not windows or successive)):
+        if not after and whole:
+            return None, len(whole), "its @@ hint selects no remaining site"
+    if len(after) == 1 or (after and ordered and (any(tiers) or successive) and (not windows or successive)):
         return after[0], len(after), None
     pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
     return (pool[0], 1, None) if len(pool) == 1 else (None, len(pool), None)
@@ -368,7 +374,8 @@ def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str
     # is some other line. Refuse (the caller treats a re-sent hunk as already applied).
     consumed = (f"its search text matches text an earlier hunk of this patch replaced, and only an "
                 f"approximate match remains — {_v4a_advice(hunk)}")
-    if strategy_found in SIMILARITY_STRATEGIES and _consumed(pattern, removed):
+    if strategy_found in SIMILARITY_STRATEGIES and any(
+            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
         return content, None, consumed, None
     own = [s for s in spans if free(s)]
     if spans and not own:
@@ -386,7 +393,8 @@ def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str
         return new, (start, end, len(new) - (len(content) - end)), None, strategy
     chains = [(lo, hi, *_fuzzy_chain(content[lo:hi], pattern))
               for lo, hi in _hint_windows(content, hunk.context_hint)] if error else []
-    if any(name in SIMILARITY_STRATEGIES for *_w, name, _found in chains) and _consumed(pattern, removed):
+    if any(name in SIMILARITY_STRATEGIES for *_w, name, _found in chains) and any(
+            _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
         return content, None, consumed, None  # a window relaxes the similarity threshold
     windows = [(lo, hi, [s for s in found if free((lo + s[0], lo + s[1]))]) for lo, hi, _name, found in chains]
     targets = _distinct([(lo + s, lo + e) for lo, _hi, found in windows for s, e in found])

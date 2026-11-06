@@ -6,6 +6,8 @@ export const enConnectorAccounts: Translations['connectorsPage']['accounts'] = {
   addAnother: 'Add another account',
   aliasLabel: 'Account name',
   aliasHint: 'Lowercase letters, numbers and dashes, up to 32. For example work or home.',
+  localHint:
+    'Creates a separate direct MCP connection, not a hosted connector. This name labels its tools; choose the intended account or workspace in the provider’s sign-in page. If sign-in fails or is cancelled, the new entry remains available to retry or remove.',
   aliasInvalid: 'Use lowercase letters, numbers and dashes, starting with a letter or number.',
   aliasTaken: 'That name is already used.',
   add: 'Connect',

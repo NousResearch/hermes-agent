@@ -53,6 +53,7 @@ export interface ConnectorAccountsTranslations {
   addAnother: string
   aliasLabel: string
   aliasHint: string
+  localHint: string
   aliasInvalid: string
   aliasTaken: string
   add: string

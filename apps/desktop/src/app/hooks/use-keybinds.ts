@@ -120,9 +120,8 @@ export interface KeybindRuntimeDeps {
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Open/close the command center overlay (sessions / system / usage). */
   toggleCommandCenter: () => void
-  /** Drop to a fresh new-session draft. */
-  startFreshSession: () => void
-  /** Open a fresh session as a tab in the main zone (⌘T), leaving the primary. */
+  /** Open a fresh session as a tab in the main zone (⌘T and the unified
+   *  `session.new`: one creation path for every "new chat" gesture). */
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
   toggleSelectedPin: () => void
@@ -317,12 +316,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {
-      // Match the sidebar New Session button. A plain keyboard new chat should
-      // target the current live profile, not a stale per-profile quick-create
-      // selection from a prior action.
+      // Unified with the tab-strip "+" and ⌘T (openNewSessionTab): one creation
+      // path — a real, unlisted session that fronts the workspace as its own
+      // tab. Same profile-targeting rules as before: a plain keyboard new chat
+      // must target the current live profile, not a stale per-profile
+      // quick-create selection from a prior action.
       setWorkspaceScope('sessions')
       $newChatProfile.set(null)
-      deps.startFreshSession()
+      deps.openNewSessionTab()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),

@@ -918,7 +918,6 @@ describe('view.findInPage keybind gate', () => {
     const deps: KeybindRuntimeDeps = {
       requestGateway: vi.fn(),
       toggleCommandCenter: vi.fn(),
-      startFreshSession: vi.fn(),
       openNewSessionTab: vi.fn(),
       toggleSelectedPin: vi.fn(),
       archiveSelectedSession: vi.fn()

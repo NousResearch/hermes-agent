@@ -1697,31 +1697,13 @@ export function upsertOptimisticSession(
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
 }
 
-/**
- * Record the owner of an UNLISTED draft tile without touching the visible
- * sidebar list (see `openNewSessionTile` with `listed: false`, #102792). The
- * stub carries the same stamps an optimistic row would — ambient profile for
- * an unrouted create, exact connection tag for a routed one — and rides only
- * the owner-lookup path, never the sidebar render path. A later real row for
- * the same id shadows it; the first send replaces it outright.
- */
-export function upsertUnlistedSessionOwner(
-  created: SessionCreateResponse,
-  id: string,
-  owner?: null | SessionProfileRoute
-) {
-  const stub = buildOptimisticSession(created, id, null, null, null, undefined, owner)
-  setSessionOwnerHintForStub(id, owner)
-  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(s => s.id !== id)])
-}
+// upsertUnlistedSessionOwner + its stub-hint helper moved to
+// unlisted-owners.ts (topical sibling: this file sits on the FILE_LINES
+// ratchet and may only go down; moved code keeps its cap).
 
-function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRoute): void {
-  if (owner) {
-    setSessionOwnerHint(id, owner)
-  }
-}
-
-function buildOptimisticSession(
+// Exported for unlisted-owners.ts (draft stubs ride the same shape); the
+// visible-list path keeps its private wrapper below.
+export function buildOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,

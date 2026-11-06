@@ -178,6 +178,13 @@ class SessionInventoryFields(Result):
     usage: Usage | None = None
 
 
+class CanonicalClientLabel(Result):
+    """The client a session's creator declared itself as (``session.create`` ``client``)."""
+
+    name: str
+    version: str | None = None
+
+
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
@@ -191,6 +198,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
     edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # The creator's self-declared client; absent when it sent none. A label, never a grant.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None

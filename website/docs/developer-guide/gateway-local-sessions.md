@@ -26,6 +26,23 @@ Repeating the request ID for the same principal and profile reuses that identity
 policy, including after daemon death. Omit the ID for a new session; clients that need
 lost-ACK retry protection must retain it. A failed transaction publishes no live session.
 
+### Naming the client
+
+A client may say who it is with an optional `client` object on `session.create`, for example
+`"client": {"name": "my-client", "version": "1.2.0"}`. `name` is 1-64 characters of `a-z`, `0-9`,
+`.`, `_` and `-`, starting with a letter or digit; `version` is optional, 1-64 printable ASCII
+characters without spaces. Anything else is refused with `invalid_params` (field `client`). Send it
+only to an owner whose `runtime.describe` lists `client` in `session_create.parameters` (capability
+`session-client-v1`); an older owner refuses the unknown key.
+
+The name is stored with the frozen creation request, so it is part of the exact-retry identity
+and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
+plugins read it through `hermes_cli.plugin_session.session_client()` and the `client` /
+`client_version` keys of prompt-section session info. It is attribution only: `source` still
+picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
+approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
+so any client can claim any name: never grant anything based on it.
+
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable
 admission, not inference completion. Closing every viewer leaves the execution and its

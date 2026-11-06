@@ -18,6 +18,14 @@ class CanonicalSessionParams(ProfileParams):
     session_id: str
 
 
+class CanonicalClientIdentity(Params):
+    """A client naming itself: ``name`` matches ``[a-z0-9][a-z0-9._-]{0,63}``, ``version`` is 1-64
+    printable ASCII without spaces. Attribution only (owners advertising ``session-client-v1``)."""
+
+    name: str
+    version: str | None = None
+
+
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
     source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'
@@ -53,6 +61,8 @@ class CanonicalCreateParams(ProfileParams):
     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
     # applied to this session only; never echoed in ``launch_request``.
     client_env: dict[str, str] | None = None
+    # The creating client's self-declared label, echoed as ``session.info.client``; no policy reads it.
+    client: CanonicalClientIdentity | None = None
 
 
 class CanonicalResumeParams(ProfileParams):

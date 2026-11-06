@@ -93,6 +93,10 @@ def _plugin_session_info(agent: Any) -> dict[str, str]:
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
     info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd,
                 conversation_id=conversation_id(agent))
+    # The creating client's self-declared label ("" when none): plugin data only, never prompt text.
+    from hermes_cli.plugin_session import session_client
+    client = session_client() or {}
+    info.update(client=client.get("name", ""), client_version=client.get("version", ""))
     return info
 
 

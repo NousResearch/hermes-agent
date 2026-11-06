@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Future Video Render icon</title>
+  <desc id="desc">Rounded square icon with a play symbol and layered cinematic frames.</desc>
+  <defs>
+    <linearGradient id="bg" x1="16" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#0F8BFF"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="40" y1="36" x2="90" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DD3FC"/>
+      <stop offset="1" stop-color="#F8FAFC"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <rect x="28" y="28" width="72" height="72" rx="16" fill="#0B1220" opacity="0.92"/>
+  <rect x="34" y="34" width="60" height="60" rx="12" fill="none" stroke="#38BDF8" stroke-width="4"/>
+  <path d="M56 48.5 79 64 56 79.5Z" fill="url(#accent)"/>
+  <path d="M96 32h8M96 48h8M24 32h8M24 48h8M96 80h8M96 96h8M24 80h8M24 96h8" stroke="#E0F2FE" stroke-linecap="round" stroke-width="4"/>
+</svg>

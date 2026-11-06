@@ -7,14 +7,15 @@ history every poll.
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_room_task_input import validate_task_input
+from gateway.hosted_room_log_context import discussion_events, read_thread_messages
 from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 
@@ -23,11 +24,10 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
+# 5: rebuild threads an old settle closed under a newer message. 6: rebuild after active events moved to the log.
+_TRANSCRIPT_SCHEMA_VERSION = 6
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
-# What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
-_REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")
 
 _SCHEMA_DDL = (
     """CREATE TABLE IF NOT EXISTS hosted_room_policy_capacity (
@@ -80,11 +80,12 @@ _TRANSCRIPT_EVENTS_SQL = f"""WITH transcript_events(seq) AS (
 
 @dataclass(frozen=True)
 class PolicySnapshot:
-    """Bounded active policy input at one durable room-log cursor."""
+    """Active policy input and bounded task reads at one durable log cursor."""
     through_seq: int
     stopped_through_seq: int
     events: tuple[dict[str, Any], ...]
     watermarks: Mapping[tuple[str, str], int]
+    read_messages: Callable[..., Any] | None = field(default=None, compare=False, repr=False)
 
 
 _event_from_room_row = hosted_rooms._event_from_row
@@ -172,19 +173,9 @@ class HostedRoomPolicyCheckpoint:
                     (event["room_id"], thread_id, int(cutoff["seq"])))
 
     def _discussion_events(
-        self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str
+        self, conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str
     ) -> list[dict[str, Any]]:
-        """Merge the thread transcript with the active projection, ordered by seq."""
-        active_rows = []
-        for receipts, bound in ((0, self.max_active_events), (1, MAX_ACTIVE_RETRY_RECEIPTS)):
-            rows = conn.execute("""SELECT event_json FROM hosted_room_policy_events
-                   WHERE room_id=? AND discussion_event_id=?
-                     AND (json_extract(event_json, '$.kind') = 'turn.deferred') = ?
-                   ORDER BY seq LIMIT ?""",
-                (room_id, discussion_event_id, receipts, bound + 1)).fetchall()
-            if len(rows) > bound:
-                raise RuntimeError(bound_error)
-            active_rows.extend(rows)
+        """Merge recent context with active receipts read from the durable log."""
         rows = conn.execute(_TRANSCRIPT_EVENTS_SQL,
                             (room_id, thread_id, room_id, thread_id, room_id,
                              self.max_transcript_policy_events + 1)).fetchall()
@@ -192,7 +183,8 @@ class HostedRoomPolicyCheckpoint:
             raise RuntimeError("thread policy transcript exceeded its bound")
         events_by_seq = {
             int(event["seq"]): event
-            for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+            for event in (*map(_event_from_room_row, rows),
+                          *discussion_events(conn, room_id=room_id, discussion_event_id=discussion_event_id))}
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
@@ -218,10 +210,6 @@ class HostedRoomPolicyCheckpoint:
         """Index member messages and terminal turn outcomes of a known discussion."""
         room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
         thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-        if conn.execute(
-            "SELECT 1 FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? LIMIT 1",
-            (room_id, discussion_event_id)).fetchone() is not None:
-            self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
         # Late outcomes still need publication receipts and transcript commits,
         # but must not resurrect a completed discussion's active projection.
         if kind not in _TERMINAL_KINDS:
@@ -238,7 +226,18 @@ class HostedRoomPolicyCheckpoint:
         if kind == "turn.settled" and payload.get("message_event_id"):
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
-                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+                # The planner's rule (hosted_room_discussion._crosses_unseen_message): a reply covers
+                # the thread up to itself only when its turn skipped no message before it, so the
+                # rest of a file batch, or a peer's message it skipped, stays for the next turn.
+                skipped = conn.execute(
+                    """SELECT 1 FROM hosted_room_events
+                        WHERE room_id=? AND json_extract(payload_json, '$.thread_id')=? AND seq>? AND seq<?
+                          AND (kind='message.user' OR (kind='message.member'
+                               AND json_extract(payload_json, '$.member_id') IS NOT ?))
+                        LIMIT 1""",
+                    (room_id, thread_id, seen_through_seq, int(committed["seq"]), member_id)).fetchone()
+                if skipped is None:
+                    seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.
@@ -263,8 +262,7 @@ class HostedRoomPolicyCheckpoint:
 
     def _apply_continued(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
-        """Continue reopens a discussion its cap completed: restore its thread row and active projection
-        from the room log (the cap's ``room.activity`` dropped both)."""
+        """Continue restores the input anchor removed when the discussion paused."""
         room_id, discussion_event_id = str(event["room_id"]), _text(payload, "discussion_event_id")
         source = conn.execute(f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
                               (room_id, discussion_event_id)).fetchone()
@@ -286,14 +284,6 @@ class HostedRoomPolicyCheckpoint:
                    latest_user_seq=excluded.latest_user_seq, completed=0""",
             (room_id, thread_id, discussion_event_id, int(source_event["seq"])))
         self._store_active_event(conn, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-        for row in conn.execute(f"""SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events
-                WHERE room_id=? AND seq>? AND seq<=? AND kind IN ({",".join("?" * len(_REOPENED_KINDS))})
-                  AND json_extract(payload_json, '$.discussion_event_id')=? ORDER BY seq""",
-                (room_id, int(source_event["seq"]), int(event["seq"]), *_REOPENED_KINDS,
-                 discussion_event_id)).fetchall():
-            self._store_active_event(conn, event=_event_from_room_row(row), thread_id=thread_id,
-                                     discussion_event_id=discussion_event_id)
-
     def _apply_stop_requested(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
         conn.execute("""UPDATE hosted_room_policy_cursors
@@ -396,13 +386,13 @@ class HostedRoomPolicyCheckpoint:
                     through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=(), watermarks={})
             thread_id = str(thread["thread_id"])
             events = self._discussion_events(
-                conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(thread["discussion_event_id"]),
-                bound_error="active room policy projection exceeded its bound")
+                conn, room_id=room_id, thread_id=thread_id, discussion_event_id=str(thread["discussion_event_id"]))
             watermark_rows = conn.execute("""SELECT member_id, seen_through_seq FROM hosted_room_policy_watermarks
                    WHERE room_id=? AND thread_id=?""", (room_id, thread_id)).fetchall()
         return PolicySnapshot(
             through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events),
-            watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows})
+            watermarks={(thread_id, str(row["member_id"])): int(row["seen_through_seq"]) for row in watermark_rows},
+            read_messages=partial(read_thread_messages, self.db_path, room_id=room_id, through_seq=through_seq))
 
     def publication_exists(self, *, room_id: str, task_id: str, status: str, execution_generation: int) -> bool:
         """Return whether one exact driver outcome is already in the room log."""
@@ -453,8 +443,7 @@ class HostedRoomPolicyCheckpoint:
             source = _event_from_room_row(row)
             events = self._discussion_events(
                 conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
-                discussion_event_id=str(source["event_id"]),
-                bound_error="task policy projection exceeded its bound")
+                discussion_event_id=str(source["event_id"]))
             # The source can age out of BOTH bounded projections while a
             # deferred task remains retryable. Its frozen prompt lives in the task.
             by_seq = {event["seq"]: event for event in (*events, *published)}

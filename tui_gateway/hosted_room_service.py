@@ -759,7 +759,8 @@ class HostedRoomService:
                 (int(event["seq"]) for event in snapshot.events if event.get("kind") == "message.user"), default=None)
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
+                initial_watermarks=snapshot.watermarks, read_messages=snapshot.read_messages,
+                freeze_input_context=True, limits=self.discussion_limits,
                 room_context=None if source_seq is None else room_context(
                     self.db_path, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
@@ -820,7 +821,8 @@ class HostedRoomService:
                 snapshot = self._policy_snapshot(room)
                 current = discussion.plan_next_task(
                     room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                    initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
+                    initial_watermarks=snapshot.watermarks, read_messages=snapshot.read_messages,
+                    freeze_input_context=True, limits=self.discussion_limits,
                     room_context=room_context(self.db_path, room_id=binding.room_id,
                                               before_seq=asked.source_event_seq))
                 if (current.status, current.discussion_event_id) != ("route", asked.discussion_event_id):

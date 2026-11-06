@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections import Counter, deque
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from typing import Any, Literal
@@ -363,8 +364,13 @@ def resolve_mentions(
 
 
 def _unaddressed_member_mentions(
-    messages: Sequence[_ValidatedEvent], room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
-    """Return peers explicitly cited by a Bot and not heard from afterward."""
+    messages: Sequence[_ValidatedEvent], room: DiscussionRoom, *,
+    watermarks: Mapping[tuple[str, str], int] | None = None, thread_id: str = "",
+) -> tuple[DiscussionMember, ...]:
+    """Return peers explicitly cited by a Bot and not heard from afterward.
+
+    A reply answers a citation only if its turn saw it: a turn whose input stopped before the
+    citation (a full batch of files ahead of it) leaves the peer's watermark below it."""
     cited_at: dict[str, int] = {}
     last_post_at: dict[str, int] = {}
     for event in messages:
@@ -377,7 +383,10 @@ def _unaddressed_member_mentions(
                 cited_at[member.member_id] = event.seq
     return tuple(
         member for member in room.members
-        if member.member_id in cited_at and last_post_at.get(member.member_id, 0) <= cited_at[member.member_id])
+        if member.member_id in cited_at and (
+            last_post_at.get(member.member_id, 0) <= cited_at[member.member_id]
+            or (watermarks is not None
+                and watermarks.get((thread_id, member.member_id), 0) < cited_at[member.member_id])))
 
 
 def _require_gateway_actor(actor: Mapping[str, Any], room: DiscussionRoom, message: str) -> None:
@@ -522,6 +531,20 @@ def derive_member_watermarks(
         _validated_events(events, room=validate_room(room_value, local_profiles=local_profiles)))
 
 
+def _crosses_unseen_message(events: Sequence[_ValidatedEvent], *, thread_id: str, member_id: str,
+                           seen_through_seq: int, reply_seq: int) -> bool:
+    """Whether the thread holds a message this member did not see between its input and its reply.
+
+    A turn's input can stop short of the thread's newest message (a message whose files exceed the
+    turn's batch); a reply then covers the thread up to itself only when nothing it skipped lies
+    before it, so the skipped message stays in the member's next delta."""
+    return any(
+        seen_through_seq < event.seq < reply_seq and event.payload.get("thread_id") == thread_id
+        and (event.kind == "message.user"
+             or (event.kind == "message.member" and event.payload.get("member_id") != member_id))
+        for event in events)
+
+
 def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[str, str], int]:
     messages_by_id = {event.event_id: event for event in events if event.kind == "message.member"}
     terminal_by_task: dict[str, _ValidatedEvent] = {}
@@ -548,7 +571,8 @@ def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[s
                                    if candidate.event_id == event.payload["discussion_event_id"]), None)
             if discussion_seq is None:
                 raise DiscussionValidationError("turn.settled references no matching user discussion")
-            if watermark >= discussion_seq:
+            if not _crosses_unseen_message(events, thread_id=key[0], member_id=key[1], seen_through_seq=watermark,
+                                          reply_seq=message.seq):
                 watermark = max(watermark, message.seq)
         watermarks[key] = max(watermarks.get(key, 0), watermark)
     return watermarks
@@ -602,11 +626,40 @@ def _context_lines(context: Mapping[str, str] | None) -> list[str]:
     return [*lines, ""] if lines else []
 
 
+_OMITTED_NOTICE = "  [Earlier content omitted to fit this turn.]"
+_LINE_SEPARATORS = {0x85: "\\u0085", 0x2028: "\\u2028", 0x2029: "\\u2029"}
+
+
+def _attachment_prompt_lines(attachments: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per file the turn carries, in task order; names stay JSON-quoted, so inert, and
+    readable in any script."""
+    if not attachments:
+        return []
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    entries, media = [], False
+    for item in attachments:
+        name = compact_json(item["name"], ensure_ascii=False).translate(_LINE_SEPARATORS)
+        metadata = f"{name} ({item['mime']}, {item['size']} bytes)"
+        if item["mime"] in _ATTACHMENT_MIMES:
+            media = True
+            entries.append(f"- Queued image {metadata} for this turn.")
+        else:
+            entries.append(f"- Staged file {metadata}")
+    lines = ["", "Attachments available to you for this turn:", *entries]
+    if media:
+        lines.append("Queued images are attached to this turn; inspect them rather than treating "
+                     "the filename as content.")
+    return lines
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
-    addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False) -> str:
-    delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
+    addressed_by_job: str | None = None, assigned_by: DiscussionMember | None = None, routed: bool = False,
+    attachments: Sequence[Mapping[str, Any]] = ()) -> str:
+    delta = [event for event in messages if watermark < event.seq <= seen_through_seq
+             and not (event.kind == "message.member" and event.payload.get("member_id") == member.member_id)
+             ][-MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
@@ -626,20 +679,29 @@ def _build_prompt(
         "", "Rules for this Discussion:", *participation,
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
-    fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
+    # File lines are reserved before messages are chosen, so a long thread never crowds them out.
+    attachment_lines = _attachment_prompt_lines(attachments)
+    fixed_bytes = len("\n".join([*opening, *attachment_lines, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
         line = f"  {_format_message(event, room)}"
         if (line_bytes := len(line.encode("utf-8")) + 1) > available:
             if not selected and available > 32:
-                selected.append(_truncate_utf8_text(line, max_bytes=available))
-            selected.append("  [Earlier content omitted to fit this turn.]")
+                # The newest message itself is cut: it leaves room for the notice when it can.
+                room_left = available - 1 - (len(_OMITTED_NOTICE.encode("utf-8")) + 1)
+                truncated = _truncate_utf8_text(line, max_bytes=room_left if room_left > 32 else available)
+                selected.append(truncated)
+                available -= len(truncated.encode("utf-8")) + 1
+            # The notice is optional: it takes only room the kept messages left over.
+            if len(_OMITTED_NOTICE.encode("utf-8")) + 1 <= available:
+                selected.append(_OMITTED_NOTICE)
             break
         selected.append(line)
         available -= line_bytes
     selected.reverse()
-    if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
+    prompt = "\n".join([*opening, *selected, *attachment_lines, *rules])
+    if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
 
@@ -732,7 +794,9 @@ def _effective_watermarks(
     watermarks = {
         (str(thread_id), str(member_id)): int(value)
         for (thread_id, member_id), value in (initial_watermarks or {}).items() if int(value) >= 0}
-    for key, value in _derive_member_watermarks(validated).items():
+    # A synced checkpoint already derived these from the complete log. Its recent
+    # transcript may omit both old input and the source of a retained reply.
+    for key, value in ({} if initial_watermarks is not None else _derive_member_watermarks(validated)).items():
         watermarks[key] = max(watermarks.get(key, 0), value)
     return watermarks
 
@@ -747,11 +811,14 @@ def _event_attachments(event: _ValidatedEvent, member: DiscussionMember) -> list
     return [{**attachment, "event_id": event.event_id} for attachment in event.payload.get("attachments", [])]
 
 
-def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
+def _bounded_task_delta(messages: Iterable[_ValidatedEvent], *, watermark: int,
                         member: DiscussionMember) -> tuple[list[_ValidatedEvent], list[dict[str, Any]]]:
     from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES
 
-    selected: list[_ValidatedEvent] = []
+    from gateway.hosted_room_policy_checkpoint import MAX_THREAD_TRANSCRIPT_EVENTS
+
+    recent: deque[_ValidatedEvent] = deque(maxlen=MAX_THREAD_TRANSCRIPT_EVENTS)
+    selected: dict[int, _ValidatedEvent] = {}
     attachments: list[dict[str, Any]] = []
     size = 0
     for event in messages:
@@ -761,10 +828,13 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
         next_size = size + sum(item["size"] for item in entries)
         if len(attachments) + len(entries) > MAX_TASK_ATTACHMENTS or next_size > MAX_TASK_ATTACHMENT_BYTES:
             break  # Each validated message fits; consume only whole event prefixes.
-        selected.append(event)
+        recent.append(event)
+        if entries:
+            selected[event.seq] = event
         attachments.extend(entries)
         size = next_size
-    return selected, attachments
+    selected.update((event.seq, event) for event in recent)
+    return [selected[seq] for seq in sorted(selected)], attachments
 
 
 def _first_round_responders(discussion: _ValidatedEvent, room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
@@ -804,6 +874,7 @@ def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
     freeze_input_context: bool = False,
+    read_messages: Callable[..., Iterable[Mapping[str, Any]]] | None = None,
     limits: DiscussionLimits = DiscussionLimits(),
     room_context: Mapping[str, Any] | None = None,
 ) -> DiscussionDecision:
@@ -826,8 +897,17 @@ def plan_next_task(
         DiscussionDecision, discussion_event_id=discussion.event_id, source_event_seq=discussion.seq,
         thread_id=thread_id, continues=continues)
     thread_messages, discussion_messages, member_messages = _thread_messages(validated, discussion)
-    if len(member_messages) >= max_messages:
-        return decide("bounded", "max_messages")
+    completed = {str(event.payload["task_id"]): event for event in validated
+                 if event.kind in _TERMINAL_EVENT_KINDS and event.kind != "turn.deferred"
+                 and event.payload.get("discussion_event_id") == discussion.event_id}
+    # A partial input batch spends a strictly advancing prefix of the finite history before Send.
+    # Once a member reaches Send, every published reply spends the message budget. A pass or
+    # failure still consumes its input prefix, but keeps main's terminal-only reply-budget rule.
+    # Newly produced files are after Send and can never replenish either allowance. Receipts keep
+    # this accounting stable even when the transcript cache trims the original input messages.
+    budget_exhausted = sum(event.payload.get("message_event_id") is not None
+           and int(event.payload["seen_through_seq"]) >= discussion.seq
+           for event in completed.values()) >= max_messages
     routed = router.routed_responders(room, discussion, validated, context)
     if routed is router.ROUTE_PENDING:
         # The router's answer is recorded as ``room.routed`` before any turn is planned, so replay never re-asks.
@@ -840,6 +920,8 @@ def plan_next_task(
         (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id
         and event.payload.get("task_id") != routing_task_id}
+    turns = Counter((int(event.payload["round_index"]), str(event.payload["member_id"]))
+                    for event in completed.values())
     watermarks = _effective_watermarks(validated, initial_watermarks)
     resume_round = router.resume_round(validated, discussion.event_id, member_messages)
     for round_index in range(max_rounds):
@@ -851,19 +933,33 @@ def plan_next_task(
         responders = (
             (lead_round.responders if lead_round else routed if routed is not None
              else _first_round_responders(discussion, room)) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
+            else _unaddressed_member_mentions(
+                discussion_messages, room, watermarks=watermarks, thread_id=thread_id))
         if not responders and round_index == resume_round:
             # The round after the pause: with nobody cited, the whole room picks the discussion back up.
             responders = room.members
-        for member_index, member in enumerate(_rotate(responders, round_index)):
+        # Keep stable task coordinates, but let every addressed member run before a continuation.
+        ordered = sorted(enumerate(_rotate(responders, round_index)), key=lambda pair: (
+            watermarks.get((thread_id, pair[1].member_id), 0) >= discussion.seq,
+            turns[(round_index, pair[1].member_id)]))
+        for member_index, member in ordered:
             watermark = watermarks.get((thread_id, member.member_id), 0)
-            delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)
+            messages = (
+                (_validate_event(event, room=room, previous_seq=0) for event in
+                 read_messages(thread_id=thread_id, watermark=watermark))
+                if read_messages is not None else iter(thread_messages))
+            # Once replies exhaust the budget, only the finite input before Send remains.
+            delta, attachments = _bounded_task_delta(
+                (event for event in messages if not budget_exhausted or event.seq <= discussion.seq),
+                watermark=watermark, member=member)
             if not delta or ((round_index, member.member_id) in terminals and not attachments):
+                continue
+            if budget_exhausted and not attachments:
                 continue
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
-                room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq, context=context, addressed_by_job=_scheduled_job(discussion),
+                room=room, member=member, messages=delta, watermark=watermark,
+                seen_through_seq=seen_through_seq, attachments=attachments, context=context, addressed_by_job=_scheduled_job(discussion),
                 reply_required=_requires_direct_reply(room, discussion, member, round_index),
                 assigned_by=lead_round.lead if lead_round and round_index == 0 and member != lead_round.lead else None,
                 routed=round_index == 0 and routed is not None and len(routed) < len(room.members))
@@ -872,11 +968,13 @@ def plan_next_task(
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
                 input_context=(validate_task_input({"watermark": watermark, "event_seqs": [event.seq for event in delta]})
                     if freeze_input_context or attachments else None)))
+        if budget_exhausted:
+            continue
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == max_rounds - 1:
             return decide("bounded", "max_rounds")
-    raise AssertionError("bounded Discussion loop exhausted unexpectedly")
+    return decide("bounded", "max_messages")
 
 
 def _reconstructed_lead_routing(payload: Mapping[str, Any], match: re.Match[str], source_event_seq: int) -> bool:

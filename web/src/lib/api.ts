@@ -2191,10 +2191,10 @@ export interface TelegramOnboardingApplyResponse {
   restart_pid?: number | null;
   restart_error?: string;
 }
-
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
+  display_content?: string | null;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };

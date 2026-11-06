@@ -45,9 +45,9 @@ def test_non_envelopes_are_left_byte_identical():
     for text in (
         "plain message",
         '{"protocol": "something.else", "human_input": {"text": "x"}}',
-        '{"protocol": "%s"}' % PROTOCOL,
-        '{"protocol": "%s", "human_input": {"text": 5}}' % PROTOCOL,
-        '{"protocol": "%s", "human_input": "oops"}' % PROTOCOL,
+        json.dumps({"protocol": PROTOCOL}),
+        json.dumps({"protocol": PROTOCOL, "human_input": {"text": 5}}),
+        json.dumps({"protocol": PROTOCOL, "human_input": "oops"}),
         "look at this " + _envelope("quoted inside prose"),
         _envelope("cut off")[:60],
     ):

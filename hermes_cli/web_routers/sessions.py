@@ -687,6 +687,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     from agent.message_metadata import withheld_prompt_text
     from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import untyped_failed_turn_display_kind
+    from tui_gateway.session_history import _browser_turn_display_text
 
     # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
     # projection so a data-URI image part becomes ``[image]`` — the same branch session.resume's
@@ -721,6 +722,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             message = {**message, "display_content": steer_text}
         # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
         if message.get("role") == "user" and (typed := withheld_prompt_text(message)) is not None:
+            message = {**message, "display_content": typed}
+        # Heal browser envelopes on transcript reads without changing the model-facing row.
+        content = message.get("content")
+        if (message.get("role") == "user" and "display_content" not in message
+                and isinstance(content, str)
+                and (typed := _browser_turn_display_text(content)) is not None):
             message = {**message, "display_content": typed}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)

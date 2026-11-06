@@ -254,13 +254,7 @@ function MessageBubble({
     },
   };
 
-  // When a compaction handoff is merged into the front of the first
-  // tail message (the compressor's double-collision path —
-  // ``_merge_summary_into_tail`` in ``agent/context_compressor.py``),
-  // the message we received is ``[CONTEXT COMPACTION ...] + END_MARKER
-  // + <original assistant reply>``. We split it back into two visual
-  // rows here so the operator's actual answer survives as a readable
-  // bubble next to the (clearly-labelled) handoff metadata (#29824).
+  // Split merged handoffs so the original reply remains a separate bubble.
   const compactionSplit =
     typeof msg.content === "string"
       ? splitCompactionContent(msg.content)
@@ -277,11 +271,7 @@ function MessageBubble({
           msg={{
             ...msg,
             content: compactionSplit.remainder,
-            // The remainder is the original assistant reply that the
-            // compressor pre-pended the summary to — render with the
-            // normal assistant styling, NOT the muted handoff style.
-            // ``isCompactionMessage`` returns false on this stripped
-            // content because it no longer starts with the prefix.
+            // The remainder renders as the original assistant reply.
           }}
           highlight={highlight}
         />
@@ -381,7 +371,13 @@ function MessageList({
       className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
     >
       {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
+        <MessageBubble
+          key={i}
+          msg={msg.role === "user" && typeof msg.display_content === "string"
+            ? { ...msg, content: msg.display_content }
+            : msg}
+          highlight={highlight}
+        />
       ))}
     </div>
   );

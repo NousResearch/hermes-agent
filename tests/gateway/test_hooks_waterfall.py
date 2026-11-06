@@ -62,6 +62,92 @@ class TestEmitWaterfall:
         assert result == "rewritten"
 
     @pytest.mark.asyncio
+    async def test_delegating_handler_transforms_result_on_the_way_out(self):
+        """A delegating handler's non-None return replaces the value that
+        ``next_fn()`` returned (Cordis return propagation).
+
+        Contract question raised by kvnloo on #85370: A wraps the downstream
+        value, B rewrites it. Before the fix the chain returned
+        ``"rewritten"`` because A's return was discarded once it delegated;
+        around-middleware post-processing must yield ``"post:rewritten"``.
+        """
+        reg = HookRegistry()
+        seen = []
+
+        async def a(event_type, value, context, next_fn):
+            seen.append(("A", value))
+            downstream = await next_fn()
+            return f"post:{downstream}"
+
+        async def b(event_type, value, context, next_fn):
+            seen.append(("B", value))
+            return await next_fn(new_value="rewritten")
+
+        reg._handlers["chain"] = [a, b]
+
+        result = await reg.emit_waterfall("chain", "initial", {})
+        assert seen == [("A", "initial"), ("B", "initial")]
+        assert result == "post:rewritten"
+
+    @pytest.mark.asyncio
+    async def test_returning_next_fn_keeps_downstream_value(self):
+        """Negative control: ``return await next_fn()`` is identity — the
+        downstream value comes back unchanged, with no extra wrapping."""
+        reg = HookRegistry()
+
+        async def a(event_type, value, context, next_fn):
+            return await next_fn()
+
+        async def b(event_type, value, context, next_fn):
+            return await next_fn(new_value="rewritten")
+
+        reg._handlers["chain"] = [a, b]
+
+        assert await reg.emit_waterfall("chain", "initial", {}) == "rewritten"
+
+    @pytest.mark.asyncio
+    async def test_delegating_handler_returning_none_keeps_downstream_value(self):
+        """A side-effect-only handler that delegates and returns nothing must
+        not blank the downstream result (implicit ``None`` = no transform)."""
+        reg = HookRegistry()
+        seen = []
+
+        async def watcher(event_type, value, context, next_fn):
+            seen.append(value)
+            await next_fn()
+
+        async def owner(event_type, value, context, next_fn):
+            return await next_fn(new_value="final")
+
+        reg._handlers["chain"] = [watcher, owner]
+
+        assert await reg.emit_waterfall("chain", "initial", {}) == "final"
+        assert seen == ["initial"]
+
+    @pytest.mark.asyncio
+    async def test_nested_transformations_compose_outermost_first(self):
+        """Each delegating frame transforms on its own return path, so nested
+        around-middleware behaves like an onion: the innermost handler runs
+        first, then each outer handler wraps the value it got back."""
+        reg = HookRegistry()
+
+        async def outer(event_type, value, context, next_fn):
+            inner_result = await next_fn()
+            return f"outer({inner_result})"
+
+        async def mid(event_type, value, context, next_fn):
+            inner_result = await next_fn()
+            return f"mid({inner_result})"
+
+        def end(event_type, value, context, next_fn):
+            return "end"  # short-circuit: owns the decision, no delegation
+
+        reg._handlers["chain"] = [outer, mid, end]
+
+        result = await reg.emit_waterfall("chain", "initial", {})
+        assert result == "outer(mid(end))"
+
+    @pytest.mark.asyncio
     async def test_short_circuit_after_delegation_runs_once(self):
         """Regression (triage #85370): a downstream short-circuiting handler
         must execute exactly ONCE even when upstream handlers delegated to it.

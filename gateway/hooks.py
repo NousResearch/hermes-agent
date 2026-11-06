@@ -144,7 +144,15 @@ class HookRegistry:
           handler, optionally replacing the current value for downstream
           listeners;
         - return without calling ``next_fn`` to **short-circuit** the chain
-          — later handlers do not run and the current value is the result.
+          — later handlers do not run and a non-None return value becomes
+          the waterfall result;
+        - a delegating handler may **transform the result on the way back
+          out**: its non-None return value replaces the value returned by
+          ``next_fn()`` (Cordis return propagation), so around-middleware
+          post-processing (``result = await next_fn(); return wrap(result)``)
+          composes outermost-first. Returning ``None`` after delegating
+          keeps the downstream value — the common Python shape for
+          side-effect-only handlers.
 
         ``next_fn()`` is **one-shot**: delegate at most once per handler and
         always **await** it. A sync handler must ``return next_fn()`` — the
@@ -277,6 +285,17 @@ class HookRegistry:
                     # prior run's return value as their input).
                     index = len(handlers)
                     break
+
+                # Around-middleware return path: a participant that delegated
+                # may transform the downstream result on the way back out
+                # (Cordis semantics — the outermost handler's return value is
+                # the chain's return value). ``None`` means "no
+                # transformation": a handler that delegates purely for side
+                # effects keeps the downstream value instead of blanking it.
+                # Same rule as the short-circuit path above — a non-None
+                # return value becomes the waterfall value either way.
+                if result is not None:
+                    current = result
             return current
 
         return await _run_from(0)

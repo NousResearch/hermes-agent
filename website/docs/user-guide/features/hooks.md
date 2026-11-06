@@ -135,7 +135,8 @@ async def handle(event_type: str, value, context: dict, next_fn):
 Waterfall semantics:
 
 - **Delegate** — `await next_fn()` runs the rest of the chain; `await next_fn(new_value=...)` also replaces the value.
-- **Short-circuit** — return without calling `next_fn`; the chain stops and your return value is the final result.
+- **Return value** — a non-`None` return value becomes the waterfall value. A delegating handler can transform the result on the way back out: `downstream = await next_fn(); return decorate(downstream)` — transformations compose outermost-first. Return `None` after delegating (or fall off the end) to keep the downstream result, so side-effect-only handlers cannot blank it.
+- **Short-circuit** — return without calling `next_fn`; the chain stops and your non-`None` return value is the final result.
 - **One-shot** — `next_fn()` must be awaited and called **at most once** per handler. A sync handler must `return next_fn()` (the dispatcher awaits the returned coroutine). Calling it without awaiting — or dropping it from a sync handler's return — does NOT delegate: the handler is treated as a short-circuit and its return value becomes the result. A second call is ignored with a warning.
 - **Legacy compatibility** — existing two-argument handlers registered for the same event still run, in order, as observers: they cannot rewrite or short-circuit, their return values are ignored, and a throwing observer does not abort the chain.
 - **Fail-closed** — a throwing waterfall handler stops the chain (a policy handler that crashed did not delegate, so continuing would skip the remaining policy).

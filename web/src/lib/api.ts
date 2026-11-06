@@ -491,7 +491,10 @@ export const api = {
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(
-        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest`,
+        // include_compacted: in-place compaction archives earlier rows (active=0,
+        // compacted=1) instead of deleting them; without this the transcript starts
+        // at the summary. Matches the Desktop client (apps/desktop/src/api/sessions.ts).
+        `/api/sessions/${encodeURIComponent(id)}/messages?limit=500&order=latest&include_compacted=true`,
         profile,
       ),
     ),

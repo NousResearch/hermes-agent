@@ -1455,6 +1455,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         ``parent_session_id`` forward to the DEEPEST node with messages (a continuation may hold newer
         turns), skipping branch/delegate/reset/tool children. Unchanged when nothing has messages; depth cap 32.
 
+        ``source='subagent'`` children are skipped as well: a delegated run keeps its own transcript, and a
+        delegate row that lost its ``_delegate_from`` marker (older rows, marker rewritten away) would
+        otherwise stand in for the parent conversation — its few minutes of work replacing the whole chat.
+        A compression continuation of a subagent inherits that source, but it is already reached through
+        ``get_compression_tip`` above, so the skip costs nothing there.
+
         Context compression ends the current session and forks a new child session (linked via
         ``parent_session_id``). The flush cursor is reset, so the child is where new messages actually land
         — the parent ends up with ``message_count = 0`` rows unless messages had already been flushed to it
@@ -1480,7 +1486,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                         f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
                         f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
-                        "  AND COALESCE(child.source, '') != 'tool' "
+                        "  AND COALESCE(child.source, '') NOT IN ('tool', 'subagent') "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
                 except Exception:
                     return session_id

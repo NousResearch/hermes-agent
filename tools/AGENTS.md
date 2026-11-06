@@ -22,7 +22,8 @@ private vision check.
 
 **Hosted:** the hosted boot calls `registry_freeze.freeze_registries()`; registering after it raises.
 MCP removal paths (reconcile, restart, scoped/named shutdown, `_forget_lazy_server`,
-`_remove_server_scope`, `_deregister_mcp_tool_all_scopes`) raise too; reconnecting keeps the boot's
+`_remove_server_scope`, `_deregister_mcp_tool_all_scopes`, `register_connected_into_current_scope`)
+raise too (`shareable_connection` is the read-only adoption lookup); reconnecting keeps the boot's
 registrations and publishes nothing new.
 A per-agent toggle filters from the scope at read time (`developer-guide/multiplexing-gateway.md`).
 

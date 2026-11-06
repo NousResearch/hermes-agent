@@ -1,0 +1,45 @@
+name: chroma
+repo: https://github.com/TobiasDraven/chroma-for-hermes
+subdir: chroma
+sha: 1d7b5a420c42a1d60125a0e447270b4465c6c20a
+title: Chroma
+description: >-
+  Browse, import and manage 94 Hermes skins from a Desktop pane: filter by pack,
+  colour family or gallery, import TweakCN, VS Code, Base16 and Windows Terminal
+  themes, edit a skin's palette, and apply it to this profile or everywhere.
+  Optionally mints real gateway skins so the CLI and every connected Desktop
+  follow the change. Disclosure — one outbound GET to https://tweakcn.com/r/themes/<name>.json,
+  only when a preset is imported, with no credential, cookie or auth header, and
+  the reply parsed as JSON and never evaluated; it accepts only https on
+  tweakcn.com and refuses every other host and scheme. Writes the chosen skin
+  through config.set('skin', …), skins and overrides under the active profile's
+  HERMES_HOME when the optional backend is installed, and fourteen localStorage
+  keys (seven of them namespaced) plus the hermes-boot-* hints Desktop reads at
+  startup.
+  Sets native window chrome through the preload's own setTitleBarTheme and
+  setNativeTheme hooks, the same two the Desktop theme context calls. No agent
+  tools, hooks, middleware or environment variables, no credentials, no shells
+  or child processes started by the plugin (the repository also ships optional
+  install helper scripts that a user may run deliberately), no background
+  processes, no telemetry, no network calls beyond the import above, and no
+  self-updater — updates arrive only through a catalog re-pin. Built with
+  significant AI assistance; the maintainer is a hobby coder. Derived from
+  hermes-theme-picker by jdtimothy (MIT); the fork adds the importers, the skin
+  backend and the management actions.
+maintainer: TobiasDraven
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/TobiasDraven/chroma-for-hermes#readme
+version: "2.9.1"
+image: https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/screenshots/picker.png
+  - https://raw.githubusercontent.com/TobiasDraven/chroma-for-hermes/1d7b5a420c42a1d60125a0e447270b4465c6c20a/docs/hermes-chroma.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

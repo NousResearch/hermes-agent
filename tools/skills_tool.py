@@ -22,7 +22,7 @@ from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
 from tools.skills_tool_plugin import (
-    MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
+    MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _fail, _has_injection_pattern, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
 from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
@@ -604,7 +604,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
     warnings = []
     if not _under_any(skill_md, trusted_dirs):
         warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
-    if any(p in content.lower() for p in _INJECTION_PATTERNS):
+    if _has_injection_pattern(content):
         warnings.append("skill content contains patterns that may indicate prompt injection")
     if warnings:
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))

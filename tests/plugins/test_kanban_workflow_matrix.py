@@ -48,7 +48,7 @@ def client(tmp_path, monkeypatch):
 
 
 def _task_in(client, src: str) -> str:
-    tid = client.post("/k/tasks", json={"title": src, "assignee": "a", "triage": src == "triage"}).json()["task"]["id"]
+    tid = client.post("/k/tasks", json={"title": src, "assignee": "a", "triage": src in ("triage", kw.ARCHIVED)}).json()["task"]["id"]
     with kbc.connect_closing() as conn:
         if src == "todo":
             assert client.patch(f"/k/tasks/{tid}", json={"status": "todo"}).status_code == 200
@@ -59,7 +59,7 @@ def _task_in(client, src: str) -> str:
         elif src == "scheduled":
             assert kb.schedule_task(conn, tid, reason="x")
         elif src == "review":
-            assert kb.request_review(conn, tid, summary="s", force=True)
+            assert kb.request_review(conn, tid, reviewer="reviewer", summary="s", force=True)
         elif src == "done":
             assert kb.complete_task(conn, tid, summary="s", force=True)
         elif src == kw.ARCHIVED:
@@ -69,14 +69,18 @@ def _task_in(client, src: str) -> str:
 
 
 @pytest.mark.parametrize("src", (*W.keys(), kw.ARCHIVED))
-def test_manual_moves_match_server(client, src):
+def test_manual_moves_match_server(client, src, monkeypatch):
+    import hermes_cli.profiles as _profiles
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: name in ("default", "reviewer"))
     mismatches = []
     for dst in (*W.keys(), kw.ARCHIVED):
         if dst == src:
             continue
         tid = _task_in(client, src)
-        # ``done`` needs completion evidence; that is a verb gate, not a transition rule.
-        body = {"status": dst, **({"summary": "s"} if dst == "done" else {})}
+        # ``done`` needs completion evidence and ``review`` needs a reviewer: both are verb
+        # gates the dashboard supplies (summary / assignee=reviewer), not transition rules.
+        body = {"status": dst, **({"summary": "s"} if dst == "done" else {}),
+                **({"assignee": "reviewer"} if dst == "review" else {})}
         r = client.patch(f"/k/tasks/{tid}", json=body)
         with kbc.connect_closing() as conn:
             landed = kb.get_task(conn, tid).status

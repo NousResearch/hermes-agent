@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_workflow import ARCHIVE_PROTECTED_STATUSES
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -638,6 +639,17 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Review gate set at creation: profile every implementation run must hand
+    # off to via request_review. None = ungated (all historical cards).
+    required_reviewer: Optional[str] = None
+    # Review policy: optional | required | disabled. Always effective on read (see
+    # Task.from_row): a legacy NULL row reads ``required`` with a saved reviewer, else
+    # ``optional``.
+    review_policy: Optional[str] = None
+    # Not a column: stamped by the dispatcher on the claimed row it spawns, so
+    # the child's env can carry an authoritative run phase ("review" only when
+    # the review lane claimed the card out of the review column).
+    run_phase: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Task:
@@ -656,6 +668,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            review_policy=(g("review_policy") or None)
+            or ("required" if (g("required_reviewer") or "").strip() else "optional"),
         )
 
 
@@ -674,6 +688,7 @@ _TASK_OPTIONAL_COLUMNS = (
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "required_reviewer",
 )
 
 
@@ -874,7 +889,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Optional review gate: the profile every implementation run on this card
+    -- must hand off to before it may close. NULL = ungated (the historical
+    -- behaviour, unchanged for every existing card). Set once at creation from
+    -- kanban_create's ``reviewer`` and never silently rewritten afterwards:
+    -- request_review routes to it, and complete_task refuses an implementation
+    -- run on a gated card so tool hiding is a convenience, not the control.
+    required_reviewer    TEXT,
+    -- Review policy: optional | required | disabled. NULL = legacy row, read as
+    -- required with a saved reviewer, else optional (see Task.from_row).
+    review_policy        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -927,7 +952,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          spawn_refused | gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -1114,6 +1139,29 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
+def _require_task_skills(profile: str, skills: Optional[Iterable[str]]) -> None:
+    """Explicit forced skills must resolve in ``profile``'s effective library."""
+    from hermes_cli.kanban_validation import require_skills
+
+    require_skills(profile, skills)
+
+
+def _require_required_reviewer(profile: str) -> str:
+    """A saved reviewer must exist AND carry the dispatcher's review skill."""
+    from hermes_cli.kanban_validation import require_reviewer
+
+    return require_reviewer(profile)
+
+
+def _require_review_phase_skills(profile: str) -> None:
+    """Review routing may only land on a profile that already carries the skill
+    the dispatcher force-loads for a review-lane worker (existence of the
+    profile itself is the checking surface's job — this is capability)."""
+    from hermes_cli.kanban_validation import REVIEW_SKILLS, require_skills
+
+    require_skills(profile, REVIEW_SKILLS)
+
+
 def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
     """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
     not land in one argv slot); toolset names are rejected all at once because
@@ -1168,6 +1216,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    reviewer: Optional[str] = None,
+    review_policy: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1183,6 +1233,11 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``reviewer`` installs a review gate: the profile must exist and carry the
+    dispatcher's review skill, and every explicitly forced ``skills`` entry must
+    resolve in the assignee's effective skill library — both validated before
+    the idempotency probe so a rejected call leaves no task row, edge, event or
+    workspace behind.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1221,6 +1276,26 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+
+    # --- Validation BEFORE any side effect -------------------------------
+    # Explicit forced skills must resolve in the ASSIGNEE's effective skill
+    # library; a mixed valid/missing list is rejected as one unit so a task
+    # never lands with half its specialist context. Omitted skills keep their
+    # historical behaviour. A reviewer installs the review gate and must both
+    # exist and carry the dispatcher's review skill. Everything below is
+    # read-only: a refusal here leaves no task row, edge, event or workspace.
+    if skills_list and assignee:
+        _require_task_skills(assignee, skills_list)
+    # Policy verdict on the RAW inputs FIRST: a contradictory request is refused as a
+    # conflict (not as a reviewer-profile error) and before any profile lookup.
+    from hermes_cli.kanban_validation import check_review_policy
+
+    policy_gate = check_review_policy(review_policy, reviewer)
+    reviewer_gate: Optional[str] = None
+    if reviewer is not None:
+        if not str(reviewer).strip():
+            raise ValueError("reviewer must be a non-empty profile name")
+        reviewer_gate = _require_required_reviewer(reviewer)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1267,8 +1342,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        required_reviewer, review_policy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1278,6 +1354,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        reviewer_gate, policy_gate,
                     ),
                 )
                 for pid in parents:
@@ -1300,6 +1377,8 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "required_reviewer": reviewer_gate,
+                        "review_policy": policy_gate,
                     },
                 )
                 if task_status == "blocked":
@@ -1452,9 +1531,51 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
+def _validate_reassign_destination(
+    conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, gate_status: Optional[str] = None,
+) -> bool:
+    """Read-only half of a reassignment: resolve the card, then refuse a
+    destination that cannot honour what the card already promises — every
+    explicitly forced skill must resolve for the new assignee, and a card
+    sitting in the review phase keeps the reviewer the gate saved (moving it
+    would strand the gate on a profile that never agreed to it). Neither check
+    writes, so a refusal changes nothing. Returns False when ``task_id`` does
+    not resolve.
+
+    ``gate_status`` overrides the status the reviewer gate is judged against.
+    It exists for ``reassign_task(reclaim_first=True)``: releasing a claim is
+    precisely what can turn ``running`` back into ``review``, so that caller
+    passes the status the card WILL hold once the reclaim lands and gets the
+    same verdict BEFORE the reclaim mutates anything instead of after.
+    """
+    existing = get_task(conn, task_id)
+    if existing is None:
+        return False
+    status = existing.status if gate_status is None else gate_status
+    if existing.skills and profile:
+        _require_task_skills(profile, existing.skills)
+    if existing.required_reviewer and status == "review" and profile != existing.required_reviewer:
+        raise ValueError(
+            f"cannot reassign {task_id}: it is in the review phase with required "
+            f"reviewer {existing.required_reviewer!r}, which the gate preserves "
+            f"across retries/resume (got {profile!r}). Nothing changed."
+        )
+    return True
+
+
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
-    """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+    """Assign/reassign; raises RuntimeError while the task is running under a claim.
+
+    Reassignment must preserve what the card already promises its worker: every
+    explicitly forced skill has to resolve for the new assignee, and a card
+    sitting in the review phase keeps the reviewer the gate saved (moving it
+    would strand the gate on a profile that never agreed to it). Both checks are
+    read-only and run before the write transaction, so a refusal changes
+    nothing.
+    """
     profile = _canonical_assignee(profile)
+    if not _validate_reassign_destination(conn, task_id, profile):
+        return False
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
@@ -1608,7 +1729,19 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     return False
 
 
-def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+def unlink_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, *,
+    board_wide_recompute: bool = True,
+) -> bool:
+    """Drop the ``parent_id -> child_id`` edge; True when it actually existed.
+
+    ``board_wide_recompute=False`` scopes the post-unlink readiness recompute
+    to ``child_id`` alone. The task-scoped worker tool path passes it: a worker
+    unlinking its OWN edge must not promote an unrelated stale-but-eligible
+    task (or append that task's ``promoted`` events) as a side effect. The
+    default keeps the historical board-wide recompute the CLI, dashboard and
+    dispatcher callers expect.
+    """
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?", (parent_id, child_id),
@@ -1619,7 +1752,7 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     if removed:
         # Re-gate the child now (as complete_task/unblock_task do) instead of
         # leaving it in todo until the next tick.
-        recompute_ready(conn)
+        recompute_ready(conn, only_task_id=None if board_wide_recompute else child_id)
     return removed
 
 
@@ -2033,9 +2166,16 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection, failure_limit: int | None = None, *, only_task_id: Optional[str] = None,
+) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
+
+    ``only_task_id`` narrows the scan to that one task. Callers that are only
+    allowed to move a single card (the task-scoped worker's unlink) pass it so
+    re-evaluating eligibility cannot promote an unrelated stale-but-eligible
+    task or append ``promoted`` events to it. Default (None) = board-wide.
 
     ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
     ``consecutive_failures`` reached the limit (else the breaker could never
@@ -2049,10 +2189,15 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
+        sql = (
             "SELECT id, status, consecutive_failures, max_retries "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
-        ).fetchall()
+        )
+        params: tuple = ()
+        if only_task_id is not None:
+            sql += " AND id = ?"
+            params = (only_task_id,)
+        todo_rows = conn.execute(sql, params).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
@@ -2508,13 +2653,43 @@ def reclaim_task(
     return True
 
 
+def _post_reclaim_status(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Status the card WILL hold once ``reclaim_task`` releases its claim, or
+    its current status when there is nothing to reclaim (``reclaim_task`` is a
+    documented no-op then). Mirrors ``reclaim_task``'s own "nothing to
+    reclaim" predicate and reuses ``_retry_status_for_run``, so the prediction
+    is the same computation the reclaim itself applies. None for an unknown id.
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["status"] != "running" and row["claim_lock"] is None:
+        return str(row["status"])
+    return _retry_status_for_run(conn, task_id)
+
+
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+
+    With ``reclaim_first`` the destination is validated BEFORE ``reclaim_task``
+    writes anything, judged against the status the card will hold once the
+    reclaim lands. A refusal (unknown forced skill, saved-reviewer gate) is
+    therefore still a pure read: the claim, run, status and event history stay
+    exactly as they were, which is the promise ``assign_task`` and the CLI's
+    own error path make.
+    """
     if reclaim_first:
+        gate_status = _post_reclaim_status(conn, task_id)
+        if gate_status is not None:
+            _validate_reassign_destination(
+                conn, task_id, _canonical_assignee(profile), gate_status=gate_status,
+            )
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
@@ -2623,6 +2798,98 @@ class LiveClaimError(ValueError):
         )
 
 
+class ReviewerGateError(ValueError):
+    """``complete_task`` refused: the card carries a required reviewer and the
+    caller is not an approval from the review phase.
+
+    A ``ValueError`` so every surface (tool handler, CLI, dashboard API) treats
+    it as a recoverable, user-facing refusal rather than a crash. Raised before
+    the write transaction, so nothing changed.
+    """
+
+    def __init__(self, task_id: str, required_reviewer: str, *, reason: str):
+        self.task_id = task_id
+        self.required_reviewer = required_reviewer
+        self.reason = reason
+        super().__init__(
+            f"cannot complete {task_id}: it has a required reviewer "
+            f"{required_reviewer!r} ({reason}). Finish with request_review so "
+            f"the saved reviewer is selected automatically, or an operator can "
+            f"override the gate explicitly (CLI: --override-reviewer; API: "
+            f"review_gate_override=true). Nothing changed."
+        )
+
+
+def _required_reviewer_of(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Saved review gate for ``task_id``; None when the card is ungated."""
+    row = conn.execute(
+        "SELECT required_reviewer FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    value = (row["required_reviewer"] or "").strip()
+    return value or None
+
+
+def _live_run_phase(
+    conn: sqlite3.Connection, task_id: str, run_id: int,
+) -> tuple[Optional[str], Optional[str]]:
+    """``(claimed source_status, run profile)`` for a live run — the lifecycle
+    record the dispatcher wrote when it claimed the card, never an env string."""
+    run = get_run(conn, run_id)
+    claimed_event = _latest_event(conn, task_id, "claimed", run_id)
+    payload = _json_dict(_row_get(claimed_event, "payload"))
+    source_status = payload.get("source_status")
+    return (
+        source_status if isinstance(source_status, str) else None,
+        run.profile if run is not None else None,
+    )
+
+
+def _gate_reviewer_phase(
+    conn: sqlite3.Connection, task_id: str, *, review_gate_override: bool,
+) -> bool:
+    """Refuse an implementation completion on a gated card.
+
+    Returns True when an explicit ``review_gate_override`` was consumed (the
+    caller records the audit event), False otherwise. Raises
+    :class:`ReviewerGateError` when the gate holds.
+
+    The verdict comes from lifecycle/run state — which run is live, where that
+    run was claimed from, and which profile owns it — so neither a spoofed
+    ``expected_run_id`` nor an env/profile string can re-label a phase.
+    """
+    row = conn.execute(
+        "SELECT status, required_reviewer, claim_lock, current_run_id "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    gate = (row["required_reviewer"] or "").strip()
+    if not gate:
+        return False  # ungated card: behaviour unchanged
+    status = row["status"]
+    if status not in ("running", "ready", "blocked", "review"):
+        return False  # not completable anyway; let the transition report it
+
+    live = row["claim_lock"] is not None and row["current_run_id"] is not None
+    reason = "it is not in the review phase"
+    if live:
+        source_status, profile = _live_run_phase(conn, task_id, int(row["current_run_id"]))
+        if source_status == "review":
+            if (profile or "") == gate:
+                return False  # the saved reviewer's own review run
+            reason = "the live run is not the saved reviewer's review run"
+        # An implementation run holds the card: it may not close a gated card.
+    elif status == "review":
+        return False  # unclaimed review column: an explicit approval out of review
+
+    if review_gate_override:
+        return True
+    raise ReviewerGateError(task_id, gate, reason=reason)
+
+
 def _claim_is_live(trow) -> bool:
     """True when a ``running`` task's claim still protects a run: the worker process
     it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
@@ -2642,6 +2909,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    review_gate_override: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2659,8 +2927,21 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+
+    ``review_gate_override`` is the ONLY way past a card's required reviewer
+    outside the review phase, and it is deliberately not implied by ``force``
+    (which only governs a live claim): the CLI exposes it as
+    ``--override-reviewer`` and the dashboard API as ``review_gate_override``,
+    so agent-facing surfaces never receive it. A consumed override is recorded
+    as a ``reviewer_gate_overridden`` event.
     """
     now = int(time.time())
+    # Reviewer gate FIRST: on a gated card the phase decision is the most
+    # specific refusal there is, and it must fire before any other pre-check
+    # writes an audit event for a transition that can never happen.
+    gate_overridden = _gate_reviewer_phase(
+        conn, task_id, review_gate_override=review_gate_override,
+    )
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -2710,6 +2991,13 @@ def complete_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        if gate_overridden:
+            # Explicit operator/orchestrator recovery, always auditable: the
+            # gate was bypassed on purpose, so the record must say so.
+            _append_event(
+                conn, task_id, "reviewer_gate_overridden",
+                {"required_reviewer": _required_reviewer_of(conn, task_id)},
+            )
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -3125,13 +3413,32 @@ def edit_task(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
-) -> bool:
-    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
+    signal_fn=None, with_reason: bool = False,
+) -> Any:
+    """``running``/``ready``/``review`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
     promote it into a context-free respawn. ``transient`` still counts
     toward the loop breaker so a forever-flaky task escalates. True on any
     transition.
+
+    ``review`` is a first-class source: the card parks in ``blocked`` with
+    ``source_status='review'`` so :func:`unblock_task` / :func:`recompute_ready`
+    return it to the review lane — the supported, auditable stop-first path an
+    operator uses before archiving work under review. The review runs on THIS
+    card and only this card is stopped; a separate reviewer card is never
+    inferred from the graph or cascaded into.
+
+    Stopping the work is part of the transition. The worker identity
+    (``worker_pid`` + start-time fingerprint) is retained across the flip, the
+    worker is then stopped/reaped and re-checked, and only a proven-gone
+    identity is cleared; a survivor keeps its identity on the row with a
+    ``block_worker_termination`` event, which is what later refuses the
+    archive. A ``running -> blocked`` flip alone is never treated as proof the
+    work stopped.
+
+    ``with_reason=True`` returns ``(ok, blocker)``: ``blocker`` names a worker
+    whose stop could not be proven, so the caller can quote it.
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
@@ -3140,24 +3447,29 @@ def block_task(
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
     """
+
+    def _ret(ok: bool, why: Optional[str] = None):
+        return (ok, why) if with_reason else ok
+
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, claim_lock, worker_pid, "
+            "worker_started_at FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
-            return False
+            return _ret(False, f"no such task: {task_id}")
         # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
-        # matches running/ready, so that policy could never be attached later
+        # matches running/ready/review, so that policy could never be attached later
         # (#117363). Classify in place; never re-type or flap status. A caller
         # asserting run ownership (``expected_run_id``) cannot own a parked
         # card -- its run is over -- so it is refused like any stale worker.
         if cur_row["status"] == "blocked":
             if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
-                return False
+                return _ret(False, f"{task_id} is not in running/ready/review (or it is already typed blocked)")
             classified = conn.execute(
                 "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
                 "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
@@ -3165,12 +3477,22 @@ def block_task(
                 (kind, task_id),
             ).rowcount
             if classified != 1:
-                return False
+                return _ret(False, f"{task_id} changed concurrently; nothing was blocked")
             _append_event(conn, task_id, "blocked", {
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
-            return True
-        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+            return _ret(True, None)
+        if cur_row["status"] not in ("running", "ready", "review"):
+            return _ret(False, (
+                f"{task_id} is {cur_row['status']!r}; only 'running', 'ready' or "
+                f"'review' can be blocked"
+            ))
+        if cur_row["status"] == "review":
+            source_status = "review"
+        elif cur_row["status"] == "running":
+            source_status = _retry_status_for_run(conn, task_id)
+        else:
+            source_status = "ready"
         requested_kind = kind
         rekind_reason = None
         # ``dependency`` only waits on incomplete parents. A worker filing that
@@ -3187,29 +3509,40 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        # Identity snapshot taken in the same read as the flip: the stop below
+        # is contingent on THIS caller having won the transition.
+        prev_pid = _opt_int(_row_get(cur_row, "worker_pid"))
+        prev_lock = _row_get(cur_row, "claim_lock")
+        prev_started = _row_get(cur_row, "worker_started_at")
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
                        claim_lock    = NULL,
                        claim_expires = NULL,
-                       worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """
         params = (*params, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            return _ret(False, f"{task_id} changed concurrently; nothing was blocked")
         run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+            conn, task_id, outcome="blocked", status="blocked", summary=reason,
+            synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
     _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-    return True
+    blocker: Optional[str] = None
+    if prev_pid:
+        stop = _stop_task_worker(
+            conn, task_id, prev_pid, prev_lock, prev_started, signal_fn=signal_fn)
+        if not stop["stopped"]:
+            blocker = stop.get("blocker")
+    return _ret(True, blocker)
 
 
 def _route_block(
@@ -3284,6 +3617,75 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    # Resolve + validate the reviewer BEFORE the write txn so a refused handoff
+    # is a pure read: a gated card's saved reviewer wins over any caller-supplied
+    # name (review routing can never be silently re-pointed), and whoever lands
+    # in the review lane must already carry the dispatcher's review skill.
+    gate_row = conn.execute(
+        "SELECT status, required_reviewer, review_policy FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if gate_row is None:
+        return _ret(False, "task not found")
+    # Refused before any state, event, claim or assignment changes. A disabled card has
+    # no native review. The tool surface also hides kanban_request_review; this check is
+    # the control that holds on every route (tool, CLI, dashboard, forced handoff).
+    if (gate_row["review_policy"] or "").strip() == "disabled":
+        return _ret(
+            False,
+            f"native review is disabled for {task_id} (review_policy=disabled): finish with "
+            f"kanban_complete(summary=...) instead. Nothing changed.",
+        )
+    saved_reviewer = (gate_row["required_reviewer"] or "").strip()
+    if saved_reviewer:
+        if reviewer is not None:
+            supplied = _canonical_assignee(reviewer)
+            if supplied != saved_reviewer:
+                return _ret(
+                    False,
+                    f"reviewer override is not allowed: {task_id} has required reviewer "
+                    f"{saved_reviewer!r} and it is preserved across retries/resume; drop "
+                    f"reviewer= (got {supplied!r}). Nothing changed.",
+                )
+        reviewer = saved_reviewer
+    elif reviewer is None:
+        reviewer = _prior_reviewer(conn, task_id)
+        if reviewer is False:
+            return _ret(
+                False, "re-review has no durable reviewer provenance (the "
+                "latest changes_requested event is missing or "
+                "malformed); pass reviewer= explicitly",
+            )
+        if reviewer is None:
+            # First review with nothing saved or supplied: the card would stay
+            # assigned to its holder, so that holder must pass the same gates a
+            # named reviewer does. Read-only; refused before any write.
+            refusal = _unreviewed_holder_refusal(conn, task_id)
+            if refusal is not None:
+                return _ret(False, refusal)
+    if reviewer:
+        reviewer = _canonical_assignee(reviewer)
+        # Capability, not just existence: routing review to a profile without
+        # the skill the dispatcher force-loads would spawn a reviewer that
+        # cannot do the job (existence is checked on the surface that accepts
+        # a caller-supplied name).
+        try:
+            if saved_reviewer:
+                # Required gate: the saved reviewer must EXIST and carry the skill. A
+                # reviewer deleted after creation has no profile home, and the skill
+                # resolver then falls back to the bundled tree, which would wrongly
+                # report sdlc-review as present for a profile that can no longer spawn.
+                from hermes_cli.kanban_validation import require_reviewer
+
+                require_reviewer(reviewer)
+            else:
+                _require_review_phase_skills(reviewer)
+        except ValueError as exc:
+            hint = (
+                " Routing/capability issue for the orchestrator: the saved reviewer cannot run "
+                "review. The required gate never falls back to completion."
+                if saved_reviewer else ""
+            )
+            return _ret(False, f"{exc}{hint}")
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
@@ -3311,14 +3713,6 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
-            if reviewer is None:
-                reviewer = _prior_reviewer(conn, task_id)
-                if reviewer is False:
-                    return _ret(
-                        False, "re-review has no durable reviewer provenance (the "
-                        "latest changes_requested event is missing or "
-                        "malformed); pass reviewer= explicitly",
-                    )
             reviewer = _canonical_assignee(reviewer)
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
@@ -3383,6 +3777,51 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
+
+
+def _unreviewed_holder_refusal(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Why a reviewer-less first handoff would land on an unfit holder, else ``None``.
+
+    With no saved, supplied, or prior reviewer the review lane is the card's
+    current assignee. The gates a named reviewer gets apply to that holder:
+    it must carry the review skill, and it must not be the implementer that
+    did the work (the same derivation :func:`request_review` uses). Every
+    failing gate is named, so the retry knows the whole fix.
+    """
+    row = conn.execute(
+        "SELECT assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    holder = _canonical_assignee(row["assignee"]) if row and row["assignee"] else None
+    if not holder:
+        return None
+    implementer = None
+    if row["current_run_id"] is not None:
+        arow = conn.execute(
+            "SELECT profile FROM task_runs WHERE id = ?", (row["current_run_id"],),
+        ).fetchone()
+        implementer = arow["profile"] if arow else None
+    problems: list[str] = []
+    if implementer is not None and holder == implementer:
+        problems.append("cannot review its own work")
+    # Existence first: a holder that is not a profile would otherwise pass the skill
+    # check through the bundled-tree fallback and land a review nobody can run.
+    from hermes_cli.kanban_validation import profile_exists as _holder_exists
+
+    if not _holder_exists(holder):
+        problems.append("is not a profile")
+    else:
+        try:
+            _require_review_phase_skills(holder)
+        except ValueError:
+            problems.append("lacks sdlc-review")
+    if not problems:
+        return None
+    return (
+        f"cannot request review for {task_id}: no reviewer is saved, supplied, or previously "
+        f"used, and the card would stay assigned to {holder!r}, which {' and '.join(problems)}. "
+        f"Retry kanban_request_review with reviewer=<profile> (see kanban_discover). "
+        f"Nothing changed."
+    )
 
 
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
@@ -3524,6 +3963,49 @@ def promote_task(
     return True, None
 
 
+def promote_triage_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
+) -> tuple[bool, Optional[str], str]:
+    """Promote a ``triage`` task into the normal flow — and *only* a triage task.
+
+    Lands ``ready`` when every direct parent is already terminal, otherwise
+    ``todo`` with the unmet parents named in the error. The flip is a single
+    guarded ``UPDATE ... WHERE status = 'triage'`` inside one IMMEDIATE txn, so
+    a concurrent transition cannot be overwritten and no other status (in
+    particular never ``running``) is reachable from here.
+
+    Returns ``(ok, error, landed_status)``; ``landed_status`` is the status the
+    task was in when refused (so the caller can report it) or the status the
+    task actually landed in on success.
+    """
+    with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found", ""
+        current = row["status"]
+        if current != "triage":
+            return False, (
+                f"task {task_id} is {current!r}; kanban_promote only applies to "
+                f"'triage' — it is not an arbitrary status setter"
+            ), current
+        unmet = [pid for pid, _status in unsatisfied_parents(conn, task_id)]
+        landing = _landing_status_after_parents(conn, task_id)
+        upd = conn.execute(
+            "UPDATE tasks SET status = ? WHERE id = ? AND status = 'triage'",
+            (landing, task_id),
+        )
+        if upd.rowcount != 1:
+            return False, f"task {task_id} status changed during promotion", ""
+        _append_event(
+            conn, task_id, "promoted_manual",
+            {
+                "actor": actor, "reason": reason, "status": landing,
+                "source": "triage", "unsatisfied_parents": unmet,
+            },
+        )
+    return True, None, landing
+
+
 def _reclaim_dangling_run(
     conn: sqlite3.Connection, task_id: str, *, statuses, now: int, note: str,
 ) -> None:
@@ -3582,6 +4064,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            # A retained worker identity (block could not prove the worker gone)
+            # must not leak into the next run: unblocking starts a fresh claim.
+            "worker_pid = NULL, worker_started_at = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
         )
@@ -3786,51 +4271,229 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
-    """Archive a task; a *running* task's host-local worker is terminated.
+def archive_refusal_reason(task_id: str, status: Optional[str]) -> Optional[str]:
+    """Why a direct archive of ``status`` is refused, or ``None`` when allowed.
 
-    Clearing ``worker_pid`` in the DB alone left the OS process running past its
-    own archive — it kept executing (and pushing work) against a task nothing
-    tracked anymore (#76196). Snapshot pid+claim inside the archive txn so the
-    kill is contingent on THIS caller winning the archive transition (a losing
-    concurrent archiver must never signal the pid); the kill itself runs after
-    commit — ``_poll_worker_exit`` can wait ~5 s and must not hold the write
-    lock. Post-release kill is safe here because ``archived`` is terminal: no
-    dispatcher can spawn a duplicate worker off the released claim. The
-    termination outcome lands as its own ``archive_worker_termination`` event so
-    the ``archived`` event stays atomic with the status flip.
+    One shared sentence for every archive surface (DB lifecycle, operator CLI,
+    dashboard, agent tool) so the guard and its explanation cannot drift."""
+    if status not in ARCHIVE_PROTECTED_STATUSES:
+        return None
+    action = {
+        "ready": "fence it from the dispatcher",
+        "running": "stop the worker",
+        "review": "stop the review",
+    }[status]
+    return (
+        f"{task_id} is {status!r} — work in flight; {action} first by blocking it "
+        f"(`hermes kanban block {task_id} <reason>`, or kanban_block), then archive. "
+        f"Nothing changed."
+    )
+
+
+def review_association(conn: sqlite3.Connection, task_id: str) -> dict:
+    """Read-only evidence about the review lane on ``task_id`` (never mutates).
+
+    The review flow is SAME-CARD: ``request_review`` parks this card in
+    ``review`` and the dispatcher's ``claim_review_task`` claims the SAME card
+    into a new reviewer run, identified by that run's ``claimed`` event
+    carrying ``source_status='review'``. Nothing here is inferred into a second
+    card: blocking this card stops its own review run, and what an archive
+    affects is surfaced by the ordinary dependency graph (``linked``) plus the
+    archive impact receipt — dependents are reported, never mutated on this
+    card's behalf.
     """
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+    empty: dict = {
+        "task_id": task_id, "found": False, "lane": "same_card", "status": None,
+        "reviewer": None, "active_review_run": None, "review_runs": [], "linked": [],
+    }
+    trow = conn.execute(
+        "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if trow is None:
+        return empty
+    handoff = _json_dict(_row_get(_latest_event(conn, task_id, "review_requested"), "payload"))
+    reviewer = _nonblank_str(handoff.get("reviewer"))
+    claimed = {
+        int(r["run_id"]): _json_dict(r["payload"])
+        for r in conn.execute(
+            "SELECT run_id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'claimed' AND run_id IS NOT NULL",
             (task_id,),
-        ).fetchone()
+        ).fetchall()
+    }
+    review_runs = [
+        {"id": int(r["id"]), "profile": r["profile"], "status": r["status"],
+         "outcome": r["outcome"], "started_at": r["started_at"], "ended_at": r["ended_at"]}
+        for r in conn.execute(
+            "SELECT id, profile, status, outcome, started_at, ended_at "
+            "FROM task_runs WHERE task_id = ? ORDER BY id", (task_id,),
+        ).fetchall()
+        if claimed.get(int(r["id"]), {}).get("source_status") == "review"
+    ]
+    current = int(trow["current_run_id"] or 0)
+    linked = [
+        {"id": r["id"], "title": r["title"], "status": r["status"],
+         "assignee": r["assignee"], "current_run_id": r["current_run_id"]}
+        for r in conn.execute(
+            "SELECT t.id, t.title, t.status, t.assignee, t.current_run_id "
+            "FROM task_links l JOIN tasks t ON t.id = l.child_id "
+            "WHERE l.parent_id = ? ORDER BY t.id", (task_id,),
+        ).fetchall()
+    ]
+    return {
+        "task_id": task_id, "found": True, "lane": "same_card",
+        "status": trow["status"], "reviewer": reviewer,
+        "active_review_run": next((r for r in review_runs if r["id"] == current), None),
+        "review_runs": review_runs, "linked": linked,
+    }
+
+
+def _stop_task_worker(
+    conn: sqlite3.Connection, task_id: str, pid, lock, started_at, *, signal_fn=None,
+) -> dict:
+    """Stop/reap the worker recorded on ``task_id`` and verify it is gone.
+
+    ``stopped`` holds only when the canonical identity (``worker_pid`` plus the
+    start-time fingerprint) can no longer be observed alive — the evidence a
+    later archive requires — and the outcome is recorded as a
+    ``block_worker_termination`` event either way. Identity columns are cleared
+    ONLY when proven gone, so a survivor keeps its identity on the row instead
+    of becoming an untracked process (#76196). This process never signals
+    itself (a worker blocking its own card), and an identity we cannot manage
+    is reported as the blocker rather than quietly read as stopped.
+    """
+    info: dict[str, Any] = {
+        "worker_pid": int(pid) if pid else None, "stopped": False,
+        "termination_attempted": False, "terminated": False,
+    }
+    if not pid:
+        info["stopped"] = True
+        info["note"] = "no worker recorded on the card"
+    elif int(pid) == os.getpid():
+        info["self"] = True
+        info["stopped"] = not _worker_alive(pid, started_at)
+        if not info["stopped"]:
+            info["blocker"] = (
+                f"worker pid {pid} is this process; it must exit before this card "
+                f"can be archived"
+            )
+    else:
+        info.update(_terminate_reclaimed_worker(
+            pid, lock, signal_fn=signal_fn, started_at=started_at))
+        info["stopped"] = not _worker_alive(pid, started_at)
+        if not info["stopped"]:
+            info["blocker"] = (
+                f"worker pid {pid} (start fingerprint {started_at!r}) is still alive; "
+                f"its execution cannot be proven stopped"
+            )
+    with write_txn(conn):
+        if pid and info["stopped"]:
+            conn.execute(
+                "UPDATE tasks SET worker_pid = NULL, worker_started_at = NULL "
+                "WHERE id = ? AND worker_pid = ?", (task_id, int(pid)),
+            )
+        _append_event(conn, task_id, "block_worker_termination", info)
+    return info
+
+
+def _archive_row(conn: sqlite3.Connection, task_id: str):
+    """``archive_task``'s diagnostic pre-read: the whole row the refusal copy needs.
+
+    Deliberately separate from (and weaker than) the guard: a transition that
+    lands between this read and the guarded UPDATE makes the archive lose on
+    ``rowcount != 1`` instead of archiving from a stale row."""
+    return conn.execute(
+        "SELECT status, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+
+
+def archive_task(
+    conn: sqlite3.Connection, task_id: str, *, with_reason: bool = False,
+    event_payload: Optional[dict] = None,
+) -> Any:
+    """Archive a task under the shared archive policy.
+
+    One policy for every surface (DB lifecycle, operator CLI, dashboard, agent
+    tool), so none of them can drift or bypass the others:
+
+    * ``ready`` / ``running`` / ``review`` are work in flight and are refused
+      with the block/stop-first copy from :func:`archive_refusal_reason`;
+      nothing is written on refusal.
+    * every other status archives directly, including legacy/unrecognized raw
+      statuses (``completed`` and friends): unknown is not refused.
+    * ``archived`` keeps its already-archived refusal; no second event is written.
+    * a live worker identity (``worker_pid`` + start-time fingerprint) blocks the
+      archive until that process can be proven gone. A block whose stop could not
+      be verified leaves exactly this identity on the row, so the archive refuses.
+
+    The guard is the SAME statement as the flip, inside this IMMEDIATE txn, so a
+    concurrent transition cannot slip between the check and the archive: the
+    loser sees ``rowcount != 1`` and changes nothing. ``with_reason=True``
+    returns ``(ok, reason)`` for a caller that must quote the precise refusal.
+
+    ``event_payload`` is written as THIS event's payload in the same guarded
+    flip. The agent tool passes its provenance (``source``/``actor``/``reason``)
+    so the archive carries who/why for later audit; the operator CLI and the
+    dashboard pass none and keep the payload-less ``archived`` event.
+    """
+    if event_payload is not None and not isinstance(event_payload, dict):
+        raise ValueError(
+            f"event_payload must be a dict or None, got {type(event_payload).__name__}")
+
+    def _ret(ok: bool, reason: Optional[str] = None):
+        return (ok, reason) if with_reason else ok
+
+    with write_txn(conn):
+        row = _archive_row(conn, task_id)
         if not row:
-            return False
-        was_running = row["status"] == "running"
-        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+            return _ret(False, f"no such task: {task_id}")
+        status = row["status"]
+        if status == "archived":
+            return _ret(False, f"{task_id} is already archived; nothing changed")
+        refusal = archive_refusal_reason(task_id, status)
+        if refusal is not None:
+            return _ret(False, refusal)
+        # A status alone is not "no work in flight": a live worker identity keeps
+        # the card unarchivable until that process can be proven gone.
+        pid, started_at = row["worker_pid"], row["worker_started_at"]
+        if pid and _worker_alive(pid, started_at):
+            return _ret(False, (
+                f"{task_id} still has a live worker (pid {int(pid)}); its execution "
+                f"cannot be proven stopped, so nothing was archived. Stop the worker "
+                f"(blocking the card stops it) and retry."
+            ))
+        # The guard lives in the UPDATE predicate itself: the pre-read above is
+        # only for diagnostics/refusal copy, never the authority.
+        guard = "id = ? AND status NOT IN ('ready', 'running', 'review')"
+        params: list[Any] = [task_id]
+        if pid:
+            # The liveness probe above is authoritative: if the recorded identity
+            # moved underneath us, lose the race rather than archive blind.
+            guard += " AND (worker_pid IS NULL OR worker_pid = ?)"
+            params.append(pid)
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND status != 'archived'", (task_id,),
+            f"WHERE {guard}",
+            tuple(params),
         )
         if cur.rowcount != 1:
-            return False
-        # Archived mid-run (dashboard): close the run so history isn't orphaned.
+            return _ret(False, (
+                f"{task_id} changed concurrently; nothing was archived — re-read the "
+                f"card and retry"
+            ))
+        # Leaked run on a non-running card: close it so history isn't orphaned.
         run_id = _end_run(
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
-    if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
-        with write_txn(conn):
-            _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
+        _append_event(conn, task_id, "archived", event_payload, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
-    return True
+    return _ret(True, None)
 
 
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4223,6 +4886,7 @@ from hermes_cli.kanban_db_dispatch import (
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
+    _process_fingerprint,
     _record_task_failure,
     _terminate_reclaimed_worker,
     _worker_alive,

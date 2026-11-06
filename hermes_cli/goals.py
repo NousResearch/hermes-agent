@@ -1598,8 +1598,8 @@ KANBAN_GOAL_CONTINUATION_TEMPLATE = (
     "Reason: {reason}\n\n"
     "Take the next concrete step toward completing the task. When the work "
     "is genuinely finished, call kanban_complete with a summary. If it is a "
-    "code change that needs same-card review before counting as done, call "
-    "kanban_request_review with a summary instead. If you are blocked and "
+    "code change that needs same-card review before counting as done, {review_step}. "
+    "If you are blocked and "
     "need human input, call kanban_block with a reason. Do not stop without "
     "calling one of them."
 )
@@ -1611,9 +1611,19 @@ KANBAN_GOAL_FINALIZE_TEMPLATE = (
     "Reason: {reason}\n\n"
     "If the task is genuinely done, call kanban_complete now with a short "
     "summary of what you did. If it is a code change awaiting same-card review, "
-    "call kanban_request_review with that summary instead. If something still "
+    "{review_step}. If something still "
     "blocks completion, call kanban_block with the reason instead."
 )
+
+
+def _goal_review_step(*, finalize: bool = False) -> str:
+    """Review clause for a goal-mode worker. A disabled-policy card has no
+    kanban_request_review tool, so the prompt must not point at it."""
+    if (os.environ.get("HERMES_KANBAN_REVIEW_POLICY") or "").strip().lower() == "disabled":
+        return "call kanban_complete instead (this card has no native review)"
+    if finalize:
+        return "call kanban_request_review with that summary instead"
+    return "call kanban_request_review with a summary instead"
 
 
 # Worker-driven terminal task statuses → loop outcome. The card's own acceptance criteria are the
@@ -1718,10 +1728,12 @@ def run_kanban_goal_loop(
                     f"called kanban_complete after a finalize nudge ({reason})."
                 )
                 return _result("blocked_budget", "judged done, never finalized")
-            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
+            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(
+                reason=_truncate(reason, 400), review_step=_goal_review_step(finalize=True))
             nudged_to_finalize = True
         else:
-            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(
+                reason=_truncate(reason, 400), review_step=_goal_review_step())
 
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:

@@ -10,8 +10,10 @@ in ``kanban_watchers_common``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +37,220 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+
+
+# Bounded wait for a CONFIRMED instruction wake. The in-process transport, the
+# control-socket verb and the CLI/dashboard client all bound their wait here:
+# ``delivered`` (and therefore ``routed_to``) may only ever reflect a wake that
+# actually completed, never a task merely queued on the loop.
+INSTRUCTION_DELIVERY_TIMEOUT = 60.0
+
+
+def _instruction_owner_scope(runner, platform, chat_id: str, served: Optional[str]):
+    """Runtime scope of the subscription's profile under multiplex, else a no-op.
+
+    Mirrors ``_KanbanNotification._owner_scope``: a served profile's
+    raw-session wake must run in THAT profile's home, in-process.
+    """
+    if not served:
+        return contextlib.nullcontext()
+    from gateway.run import _async_profile_runtime_scope
+    from gateway.session import SessionSource
+    source = SessionSource(platform=platform, chat_id=chat_id, profile=served)
+    return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
+
+
+async def deliver_kanban_instruction_wake(runner, *, profile: str, task_id: str,
+                                          text: str, subs: list) -> tuple[bool, str]:
+    """Deliver the decompose instruction to ``profile`` as ONE wake — never a fan-out.
+
+    ``subs`` are every destination subscribed for that one profile (the routing
+    gate has already collapsed them to a single eligible profile). They are
+    delivery CANDIDATES, not a recipient list: delivery stops at the first
+    destination whose wake this gateway actually accepts, so a profile with
+    several chats or threads receives one instruction, never a broadcast
+    (the no-subscriber-fan-out contract).
+
+    Push-capable adapters get the internal ``SessionSource`` wake; stateless
+    (``supports_async_delivery=False``) adapters the raw-session self-post. The
+    subscription's ``delivery_mode`` is deliberately ignored: this is an
+    instruction to the agent, not an event notification, so a ``notify``-mode
+    row must wake too — a passive ``send()`` alone never reaches the agent.
+
+    Read-only for the board: no task, link, event or comment row is touched, so
+    delivering the instruction can never change the task graph by itself.
+    Returns ``(delivered, detail)``; ``detail`` names the single destination
+    woken, or exactly why none could be.
+    """
+    from gateway.config import Platform as _Platform
+    from gateway.kanban_watchers_notifier import _adapter_for_subscription, _wake_scope_id
+    from gateway.session import SessionSource
+    from gateway.wake import adapter_supports_push, deliver_wake
+
+    if not subs:
+        return False, f"no live subscription destination for profile {profile!r} on task {task_id}"
+    multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+    served = str(profile) if multiplex and profile else None
+    last_problem = "no destination was attempted"
+    for sub in subs:
+        try:
+            platform = _Platform(str(sub.get("platform") or ""))
+        except Exception:
+            last_problem = f"unknown platform {sub.get('platform')!r}"
+            continue
+        chat_id = str(sub.get("chat_id") or "")
+        try:
+            adapter = _adapter_for_subscription(runner, platform, sub, profile)
+        except Exception as exc:
+            last_problem = (f"adapter lookup failed for {platform.value}/{chat_id}: "
+                            f"{type(exc).__name__}: {exc}")
+            continue
+        if adapter is None:
+            last_problem = f"no live adapter for {platform.value}/{chat_id}"
+            continue
+        if served:
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(served):
+                last_problem = f"profile {served!r} no longer exists"
+                continue
+        try:
+            if adapter_supports_push(adapter):
+                meta = dict(sub.get("delivery_metadata") or {})
+                source = SessionSource(
+                    platform=platform, chat_id=chat_id,
+                    chat_type=(str(sub.get("chat_type") or meta.get("chat_type") or "").strip()
+                               or "group"),
+                    thread_id=sub.get("thread_id") or None,
+                    user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
+                    profile=profile or None, scope_id=_wake_scope_id(adapter, sub),
+                    parent_chat_id=meta.get("parent_chat_id"))
+                source._transport_adapter_ref = weakref.ref(adapter)
+                from gateway.run import _async_profile_runtime_scope
+                async with _async_profile_runtime_scope(
+                        runner._resolve_profile_home_for_source(source)):
+                    await deliver_wake(adapter, text=text, session_id=chat_id,
+                                       source=source, notification_category="diagnostic")
+                kind = "push wake"
+            else:
+                async with _instruction_owner_scope(runner, platform, chat_id, served):
+                    await deliver_wake(adapter, text=text, session_id=chat_id,
+                                       profile=served, notification_category="diagnostic")
+                kind = "session self-post wake"
+            return True, (
+                f"instruction delivered to {profile!r} as a single {kind} on "
+                f"{platform.value}/{chat_id}"
+                + (f" ({len(subs) - 1} other destination(s) of the same profile "
+                   f"deliberately not fanned out to)" if len(subs) > 1 else ""))
+        except Exception as exc:
+            last_problem = (f"wake to {platform.value}/{chat_id} failed: "
+                            f"{type(exc).__name__}: {exc}")
+            logger.debug("kanban decompose instruction: %s", last_problem)
+            continue
+    return False, (
+        f"the gateway could not wake {profile!r} on any of {len(subs)} subscription "
+        f"destination(s): {last_problem}")
+
+
+def install_kanban_instruction_transport(runner) -> None:
+    """Register the in-process wake transport ``decompose_task`` uses when auto-decompose is off.
+
+    With ``kanban.auto_decompose`` disabled the auxiliary model is never called;
+    instead the existing prompt is delivered to the task's single eligible
+    subscriber as a wake. Installed at gateway start (see
+    ``GatewayStartupMixin._start_spawn_background_watchers``), NOT from inside
+    the kanban dispatcher: a gateway running with ``kanban.dispatch_in_gateway``
+    disabled must still serve its own in-process callers, and callers outside
+    this process (CLI, out-of-process dashboard) reach the same delivery through
+    the ``deliver-decompose-instruction`` control-socket verb. Only a running
+    gateway holds adapters, so only it can confirm a wake; any process with
+    neither path answers honestly via
+    ``hermes_cli.kanban_decompose.deliver_decompose_instruction`` rather than
+    claiming a handoff. Registration is idempotent (last writer wins) and binds
+    THIS gateway's event loop at install time.
+    """
+    from hermes_cli import kanban_decompose as _decomp
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("kanban decompose instruction: no running loop; transport not installed")
+        return
+
+    def _transport(*, profile: str, task_id: str, text: str, subs: list) -> tuple[bool, str]:
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            # Confirming a wake means awaiting a coroutine ON this loop; blocking
+            # here would deadlock the gateway and create_task() cannot confirm
+            # anything. Report the truth (not delivered) so ``routed_to`` stays
+            # unset instead of being claimed for a queued task.
+            return False, (
+                "delivery was requested from the gateway's own event loop, where a "
+                "wake cannot be confirmed synchronously; retry from a worker or "
+                "CLI/dashboard context (which reaches this gateway over the "
+                "control socket) for a confirmed handoff")
+        try:
+            pending = asyncio.run_coroutine_threadsafe(
+                deliver_kanban_instruction_wake(runner, profile=profile, task_id=task_id,
+                                                text=text, subs=subs), loop)
+        except Exception as exc:
+            return False, f"gateway delivery unavailable: {type(exc).__name__}: {exc}"
+        try:
+            delivered, detail = pending.result(timeout=INSTRUCTION_DELIVERY_TIMEOUT)
+            return bool(delivered), str(detail)
+        except Exception as exc:
+            return False, f"gateway delivery not confirmed: {type(exc).__name__}: {exc}"
+
+    _decomp.set_instruction_transport(_transport)
+    logger.info("kanban: decompose instruction transport installed")
+
+
+def decompose_instruction_control_verb(runner, main_loop):
+    """Build the ``deliver-decompose-instruction`` control-socket handler.
+
+    This is the reachable delivery path for the shared CLI/dashboard backend: a
+    process that owns no adapters asks the gateway that DOES to push the wake.
+    The handler runs on the socket's executor thread, so the coroutine is
+    marshalled onto ``main_loop`` and the answer waits (bounded by
+    ``INSTRUCTION_DELIVERY_TIMEOUT``) for the CONFIRMED result — ``delivered``
+    is true only after the wake completed, never for a merely queued task and
+    never when delivery failed.
+    """
+    def _handler(params: dict) -> dict:
+        params = params if isinstance(params, dict) else {}
+        profile = str(params.get("profile") or "").strip()
+        task_id = str(params.get("task_id") or "").strip()
+        text = str(params.get("text") or "")
+        subs = params.get("subs")
+        if not profile or not task_id or not text or not isinstance(subs, list) or not subs:
+            return {
+                "delivered": False,
+                "detail": "profile, task_id, text and a non-empty subs list are required",
+            }
+        try:
+            pending = asyncio.run_coroutine_threadsafe(
+                deliver_kanban_instruction_wake(runner, profile=profile, task_id=task_id,
+                                                text=text, subs=list(subs)), main_loop)
+        except Exception as exc:
+            return {"delivered": False,
+                    "detail": f"gateway delivery unavailable: {type(exc).__name__}: {exc}"}
+        try:
+            delivered, detail = pending.result(timeout=INSTRUCTION_DELIVERY_TIMEOUT)
+        except Exception as exc:
+            # Timed out or the loop is gone. The wake may still be in flight,
+            # but it is NOT confirmed — and routed_to only ever reflects
+            # confirmation, so say exactly that instead of guessing.
+            return {
+                "delivered": False,
+                "detail": (f"wake not confirmed within {INSTRUCTION_DELIVERY_TIMEOUT:.0f}s "
+                           f"(it may still complete in the gateway): "
+                           f"{type(exc).__name__}: {exc}"),
+            }
+        return {"delivered": bool(delivered), "detail": str(detail)}
+
+    return _handler
 
 
 class GatewayKanbanWatchersMixin:

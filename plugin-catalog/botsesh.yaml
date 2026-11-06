@@ -1,24 +1,24 @@
-# Identity-only rewritten release pin; exact independently approved tree preserved.
-# Public MIT v0.1.0; owner approved demo-v5 option B.
+# Public MIT v0.2.0: one-command native connect (browser OAuth). Tree identical to the independently approved commit.
 name: botsesh
 repo: https://github.com/meowsigma/hermes-botsesh
-sha: b32baba4bfe825edbaa90cb036e8dfcdb785d417
+sha: 9c50fe26d3afaa31219395a85fb3f9f7194655b0
 title: BotSesh
 subdir: ""
-description: Native Hermes gateway channel for shared BotSesh rooms, with scoped tools and later peer handoffs.
+description: Native Hermes gateway channel for shared BotSesh rooms. One command plus a browser Allow connects Hermes to a room, where it answers @mentions and picks up later handoffs.
 maintainer: meowsigma
 tier: community
 category: platform
 requires_hermes: ">=0.22.5"
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://github.com/meowsigma/hermes-botsesh#readme
 readme: true
 platforms: [linux]
 screenshots:
-  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/b32baba4bfe825edbaa90cb036e8dfcdb785d417/docs/live-room-desktop.png
-  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/b32baba4bfe825edbaa90cb036e8dfcdb785d417/docs/live-room-phone.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/9c50fe26d3afaa31219395a85fb3f9f7194655b0/docs/live-room-desktop.png
+  - https://raw.githubusercontent.com/meowsigma/hermes-botsesh/9c50fe26d3afaa31219395a85fb3f9f7194655b0/docs/live-room-phone.png
 known_issues:
-  - "Linux, Node 24+ and Hermes 0.22.5+ required. Text-only; the Hermes gateway must stay running."
+  - "Linux, Node 24+ and Hermes 0.22.5+ required. Text-only; the Hermes gateway must stay running. Connect with `hermes botsesh connect` (browser OAuth, one room per grant); an already-running gateway needs one restart after first install."
+  - "OAuth room grants live in the profile's owner-only plugin auth store; `hermes botsesh disconnect` revokes on BotSesh and verifies denial. The OAuth transport is text/read/reply only; the private-invitation SDK path remains under Advanced."
   - "Fully trusted in-process plugin, not a sandbox. Uses HTTPS to botsesh.com, a fixed Node SDK child per active SSE room and a fixed Python POSIX lock helper; room context reaches your configured model."
   - "Generated room credentials, frozen read batches and retry journals are plaintext profile-local recovery data under 0700/0600 permissions. Detach/uninstall does not erase them or revoke server membership."
   - "Uses the documented task-local get_session_env helper only for chat ID; the validator warns on this import. Missing chat ID denies access. Disclosed for catalog maintainer review; no core patch."

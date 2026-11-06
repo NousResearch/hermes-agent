@@ -230,8 +230,9 @@ export interface SpeechStreamSession {
 // provider (config + key fetched from the connected gateway). Reply text is
 // already streaming to the renderer over the chat socket, so the gateway
 // link carries no audio at all: text → provider → speaker, one hop.
-// Sentence-cut like the server pipeline; sequential playback; barge-in via
-// the same stopVoicePlayback() sequence bump.
+// Sentence-cut like the server pipeline; playback prefetches the next sentence
+// while the current one plays (see MAX_PREFETCH); barge-in via the same
+// stopVoicePlayback() sequence bump.
 // ---------------------------------------------------------------------------
 
 function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlaybackOptions): SpeechStreamSession {
@@ -240,7 +241,27 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   let settled = false
   let started = false
   const queue: string[] = []
-  let synthesizing = false
+  // Sentence N+1 is synthesized while sentence N plays. Synthesizing inside the
+  // playback loop put one full synthesis of silence at every sentence boundary
+  // (0.7-1.1 s against a local CPU TTS server), which reads as a gap between
+  // sentences and a longer one between paragraphs.
+  const MAX_PREFETCH = 2 // sentences buffered ahead of the one playing
+  const ready: ArrayBuffer[] = []
+  let producing = false
+  let consuming = false
+  let waiters: Array<() => void> = []
+
+  const signal = () => {
+    const pending = waiters
+    waiters = []
+
+    for (const wake of pending) {
+      wake()
+    }
+  }
+
+  const waitForSignal = () => new Promise<void>(resolve => waiters.push(resolve))
+
   let playing: HTMLAudioElement | null = null
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
@@ -259,6 +280,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
       settled = true
       liveStops.delete(stop)
+      signal() // wake the producer/consumer loops so they exit
 
       if (playing) {
         playing.pause()
@@ -272,15 +294,26 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
   liveStops.add(stop)
 
-  const pump = async () => {
-    if (synthesizing || settled) {
+  /** Synthesize ahead of playback: keeps at most MAX_PREFETCH sentences buffered. */
+  const produce = async () => {
+    if (producing || settled) {
       return
     }
 
-    synthesizing = true
+    producing = true
 
     try {
-      while (queue.length > 0 && !settled) {
+      while (!settled) {
+        if (queue.length === 0) {
+          return // ingest() calls produce() again when more text arrives
+        }
+
+        if (ready.length >= MAX_PREFETCH) {
+          await waitForSignal() // the consumer frees a slot after starting a sentence
+
+          continue
+        }
+
         const sentence = queue.shift()!
 
         let bytes: ArrayBuffer
@@ -299,6 +332,41 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         if (settled) {
           return
         }
+
+        ready.push(bytes)
+        signal() // a waiting consumer can start (or continue) playing
+      }
+    } finally {
+      producing = false
+      signal()
+    }
+  }
+
+  /** Play buffered sentences in order; wait for the producer instead of synthesizing. */
+  const consume = async () => {
+    if (consuming || settled) {
+      return
+    }
+
+    consuming = true
+
+    try {
+      while (!settled) {
+        const bytes = ready.shift()
+
+        if (!bytes) {
+          if (finished && queue.length === 0 && !producing) {
+            settle(started ? 'done' : 'fallback')
+
+            return
+          }
+
+          await waitForSignal() // nothing buffered yet
+
+          continue
+        }
+
+        signal() // a prefetch slot just freed
 
         if (!started) {
           started = true
@@ -324,19 +392,9 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           URL.revokeObjectURL(url)
         }
       }
-
-      if (finished && queue.length === 0 && !settled) {
-        settle(started ? 'done' : 'fallback')
-      }
     } finally {
-      synthesizing = false
-
-      // Deltas that arrived while the last sentence was playing.
-      if (!settled && queue.length > 0) {
-        void pump()
-      } else if (!settled && finished && queue.length === 0) {
-        settle(started ? 'done' : 'fallback')
-      }
+      consuming = false
+      signal()
     }
   }
 
@@ -355,8 +413,9 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         }
       }
 
-      void pump()
-    } else if (flush && finished && queue.length === 0 && !synthesizing) {
+      void produce()
+      void consume()
+    } else if (flush && finished && queue.length === 0 && !producing) {
       settle(started ? 'done' : 'fallback')
     }
   }

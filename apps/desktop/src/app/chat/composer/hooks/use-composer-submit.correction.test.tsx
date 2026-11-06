@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import { Harness } from '@/app/session/hooks/use-prompt-actions/index-test-utils'
 import { notifyCorrectionRecovery } from '@/lib/correction-delivery'
-import { clearSessionDraft, mainComposerScope, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { clearSessionDraft, mainComposerScope, setComposerTerminalSelection, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { type ComposerDraftRetry, matchingDraftRetry } from '@/store/composer-draft-retry'
 import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -62,7 +62,7 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
   const submit = vi.fn(async () => true)
   const retry = { current: undefined as ComposerDraftRetry | undefined }
 
-  const queue = vi.fn((_id?: string) => {
+  const queue = vi.fn((_id?: string): boolean | Promise<boolean> => {
     const entry = enqueueQueuedPrompt(selected.current, {
       text: draft.current,
       attachments: mainComposerScope.$attachments.get()
@@ -153,6 +153,7 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
 
   return {
     hook,
+    retry,
     request,
     submit,
     queue,
@@ -160,6 +161,10 @@ function fixture(reply: unknown, held = false, busy = { current: true }) {
     selected,
     runtime,
     release: () => gate.resolve(),
+    setBusy(value: boolean) {
+      busy.current = value
+      hook.rerender()
+    },
     type(text: string) {
       draft.current = text
       editor.textContent = text
@@ -492,3 +497,39 @@ it.each([undefined, 'existing-correction-notice'])('Copy failure reuses notice %
   await act(async () => $notifications.get()[0].action!.onClick())
   expect(writeText.mock.calls.map(([payload]) => payload)).toEqual([text, text, text, text])
 })
+
+// Adolanium #6678917819: taking a retry identity does not finish its admission.
+it.each([true, false].flatMap(busy => [true, false].map(settle => ({ busy, settle }))))(
+  'retry admission holds Enter/Next/Steer while busy=$busy, settle=$settle',
+  async ({ busy, settle }) => {
+    $connection.set({ mode: 'remote', wsUrl: 'ws://fixture/?native_dial=browser' } as never)
+    const h = fixture({ status: 'rejected', delivered: false })
+    const original = 'look at @terminal:`zsh:23-58`'
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+    h.type(original)
+    h.submit.mockRejectedValueOnce(new Error('request timed out: prompt.submit'))
+    await act(async () => h.hook.result.current.submitDraft())
+    const retry = h.retry.current!
+    expect(retry).toMatchObject({ text: original, id: expect.any(String) })
+    const admission = deferred<boolean>()
+    h.queue.mockImplementationOnce(() => admission.promise)
+    await act(async () => h.hook.result.current.steerDraft('steer'))
+    expect(h.retry.current).toBeUndefined()
+    // The live turn can finish while the canonical retry is still waiting.
+    h.setBusy(busy)
+    await act(async () => {
+      h.hook.result.current.submitDraft()
+      h.hook.result.current.queueDraft()
+      h.hook.result.current.steerDraft('steer')
+    })
+    expect(h.request).toHaveBeenCalledTimes(1)
+    expect(h.submit).toHaveBeenCalledTimes(1)
+    expect(h.queue).toHaveBeenCalledExactlyOnceWith(retry.id)
+    await act(async () => admission.resolve(settle === true))
+    if (settle !== true) {
+      expect(h.retry.current).toEqual(retry)
+      await act(async () => h.hook.result.current.steerDraft('steer'))
+      expect(h.queue).toHaveBeenLastCalledWith(retry.id)
+    }
+  }
+)

@@ -282,6 +282,14 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     connection pool + SSL context. Async clients are never shared: an httpcore async pool is
     bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport.
 
+    ``follow_redirects=True``: several providers answer a valid request with an HTTP 307
+    pointing at their canonical endpoint (DeepSeek's CloudFront http->https redirect, and
+    gateways that move ``/v1/...`` to a signed ``/r/v1/...`` path). httpx does NOT follow
+    redirects by default, so the SDK surfaced the 307 as a hard failure. httpx already strips
+    the ``Authorization`` header on a cross-origin redirect, and keeps it for a same-origin
+    or http->https redirect, so following redirects does not leak credentials to a third
+    party.
+
     See #12952, #54049.
     See #10933.
     """
@@ -325,8 +333,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 }
                 # Default transport = the https view; otherwise httpx builds a third, never-used
                 # direct transport (pool + SSL context) per client.
-                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
-        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts, follow_redirects=True)
+        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify, follow_redirects=True)
     except Exception:
         return None
 

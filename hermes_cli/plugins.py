@@ -64,8 +64,8 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
-# PluginContext lives in plugin_context.py; this facade stays its public import path.
-from hermes_cli.plugin_context import PluginContext, _UNSET, _ignore_after_abandoned_load
+# PluginContext lives in plugins_context.py; this facade stays its public import path.
+from hermes_cli.plugins_context import PluginContext, _UNSET
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -690,7 +690,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
 
 # ``PluginContext.__init__`` annotates ``manager: PluginManager``; typing.get_type_hints resolves it in
-# plugin_context's namespace, which cannot import this module at load time.
+# plugins_context's namespace, which cannot import this module at load time.
 sys.modules[PluginContext.__module__].PluginManager = PluginManager
 
 

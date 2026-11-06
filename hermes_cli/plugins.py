@@ -22,7 +22,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -36,8 +36,7 @@ from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_rel
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
-    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
-    validate_config_schema,
+    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order, validate_config_schema,
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
@@ -58,8 +57,10 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_load_guard import ignore_registrars_after_abandoned_load
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -860,10 +861,10 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
-        configuration becomes the base for this one; it is resolved at read time, so the task tracks
-        the base's current config instead of snapshotting it (precedence: inherited base, then
-        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` names a picker task, ``background_review``, ``curator`` or a registered task;
+        its effective config becomes this one's base at read time (precedence: inherited base, then
+        ``defaults``, then user config in ``auxiliary.<key>``). A core base's route carries over only
+        with ``plugins.entries.<id>.llm.allow_task_override``. An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
@@ -1021,29 +1022,8 @@ for _row in _SCOPED_PROVIDER_REGISTRARS:
 del _row
 
 
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
-
-
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+# Every mutating entry point plugins reach through ``ctx`` during register(), mixins included.
+ignore_registrars_after_abandoned_load(PluginContext)
 
 
 def _resolve_hook_callback_timeout() -> float:

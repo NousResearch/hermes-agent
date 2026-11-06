@@ -31,6 +31,13 @@ from pathlib import Path
 STATUS_FILE_ENV = "HERMES_UPDATE_STATUS_FILE"
 UI_SPAWNED_ENV = "HERMES_UPDATE_UI_ACTIVE"
 MARKER_NAME = ".hermes-update-in-progress"
+#: Well-known tail progress file clients poll while a CLI-driven update runs.
+#: Unlike the shim's pid-suffixed file, the name is fixed so a client that was
+#: never handed a path (the Desktop overlay, `hermes update --status`) can
+#: still show the tail moving. Same atomic-replace discipline as the shim file.
+TAIL_STAGE_NAME = "update_stage.json"
+#: A tail that reports nothing for this long reads as stuck in the clients.
+TAIL_STAGE_STALE_SECONDS = 5 * 60
 
 
 def _process_home() -> Path:
@@ -88,6 +95,98 @@ def publish_stage(message: str) -> None:
         os.replace(tmp, path)
     except OSError:
         pass
+
+
+def tail_stage_file() -> Path | None:
+    """The well-known tail progress file, or None when the home is unwritable.
+
+    Same root as the update receipts (the ROOT home, never a profile's), so
+    every client knows where to look without being handed a path.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        logs = get_default_hermes_root() / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        return logs / TAIL_STAGE_NAME
+    except Exception:
+        # Never raises: exotic roots (None from a stubbed home, unmounted
+        # drives) mean no UI, not a failed update.
+        return None
+
+
+def _utcnow_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+
+
+def publish_tail_stage(message: str, *, status: str = "running") -> None:
+    """Report tail progress to polling clients. Best-effort, never raises.
+
+    Writes ``{status, message, at}`` with an atomic replace; the ``at``
+    timestamp is the heartbeat — a reader compares it against
+    :data:`TAIL_STAGE_STALE_SECONDS` to tell "working" from "wedged".
+    Terminal states (``status="done"``) carry no staleness warning.
+    A missing/unwritable file degrades to the pre-client behavior (a silent
+    tail), never to a failed update.
+    """
+    path = tail_stage_file()
+    if path is None:
+        return
+    payload = json.dumps({"status": status, "message": message, "at": _utcnow_iso()})
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".update-tail-stage-")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def clear_tail_stage() -> None:
+    """Remove the tail progress file at the end of a run. Best-effort, never raises."""
+    path = tail_stage_file()
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def read_tail_stage() -> dict | None:
+    """The last published tail stage with its age, or None.
+
+    Returns ``{"status", "message", "at", "age_seconds"}``; a missing or
+    unparseable file is None (a tail that never published, or a finished run
+    that cleared it). Never raises.
+    """
+    import datetime
+
+    path = tail_stage_file()
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    age: float | None = None
+    try:
+        at = datetime.datetime.fromisoformat(str(data.get("at", "")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=datetime.UTC)
+        age = (datetime.datetime.now(datetime.UTC) - at).total_seconds()
+    except ValueError:
+        pass
+    return {
+        "status": data.get("status", "running"),
+        "message": data.get("message", ""),
+        "at": data.get("at"),
+        "age_seconds": age,
+    }
 
 
 def _ui_present_in_log(log_text: str) -> bool:

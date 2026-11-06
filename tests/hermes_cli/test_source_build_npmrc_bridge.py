@@ -70,3 +70,77 @@ def test_without_a_userconfig_the_home_npmrc_is_bridged(bridge, tmp_path):
 
     assert "NPM_CONFIG_USERCONFIG" not in env
     assert env["npm_config_disturl"] == "https://mirror.invalid/node"
+
+
+# Each case below was checked against npm 12.0.2 (`npm config get`, `npm run` printing the
+# script environment): the registry lookup and the bridge read the file as npm does.
+
+def test_a_utf16_npmrc_reads_as_npm_reads_it_instead_of_failing_the_build(bridge):
+    """Windows PowerShell 5.1's ``>`` writes UTF-16. npm decodes the file as UTF-8 and finds no
+    usable setting in it; it never fails, and neither may a source build."""
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import NPM_PUBLIC_REGISTRY, npm_registry
+
+    npmrc = bridge / "npmrc"
+    npmrc.write_bytes("registry=https://utf16.invalid/\r\ndisturl=https://utf16.invalid/node\r\n".encode("utf-16"))
+
+    env = source_build_env()
+
+    assert not any(value.startswith("https://utf16.invalid") for value in env.values())
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == NPM_PUBLIC_REGISTRY
+
+
+def test_inline_comments_are_not_part_of_the_value(bridge):
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    npmrc = bridge / "npmrc"
+    npmrc.write_text("registry=https://mirror.invalid/npm/ # corp mirror\n"
+                     "disturl=https://mirror.invalid/node ; headers\nesc=a\\#b\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert env["npm_config_disturl"] == "https://mirror.invalid/node"
+    assert env["npm_config_esc"] == "a#b"
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == "https://mirror.invalid/npm/"
+
+
+def test_keys_under_an_ini_section_are_not_settings(bridge):
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    npmrc = bridge / "npmrc"
+    npmrc.write_text("registry=https://top.invalid/\n[corp]\nregistry=https://section.invalid/\n"
+                     "disturl=https://section.invalid/node\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert "npm_config_disturl" not in env and env["npm_config_registry"] == "https://top.invalid/"
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == "https://top.invalid/"
+
+
+def test_an_optional_variable_reference_expands_to_empty(bridge, monkeypatch):
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    monkeypatch.delenv("UNSET_NPMRC_VAR", raising=False)
+    monkeypatch.setenv("NPMRC_MIRROR", "https://env.invalid")
+    npmrc = bridge / "npmrc"
+    npmrc.write_text("registry=${NPMRC_MIRROR?}/npm/\nelectron-mirror=${UNSET_NPMRC_VAR?}\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert env["npm_config_electron_mirror"] == ""
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc), **os.environ}) == "https://env.invalid/npm/"
+
+
+def test_one_time_passwords_and_inline_tls_keys_never_reach_install_scripts(bridge):
+    from hermes_cli.source_build import source_build_env
+
+    (bridge / "npmrc").write_text("otp=123456\nkey=-----BEGIN PRIVATE KEY-----\ncert=CLIENT-CERT\n"
+                                  "OTP=654321\nfund=false\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert not {"NPM_CONFIG_OTP", "NPM_CONFIG_KEY", "NPM_CONFIG_CERT"} & {name.upper() for name in env}
+    assert env["npm_config_fund"] == ""  # npm exports a false setting as empty

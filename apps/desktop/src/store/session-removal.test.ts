@@ -8,6 +8,7 @@ import {
   captureSessionTombstoneGenerations,
   endSessionMutation,
   isSessionRemovalPending,
+  sessionRemovalArmed,
   tombstoneLifecycleChanged,
   tombstoneSessions,
   untombstoneSessions
@@ -90,6 +91,35 @@ describe('tombstone generations', () => {
     tombstoneSessions([null, '', '   '])
 
     expect(tombstoneLifecycleChanged(before, [null, '', '   '])).toBe(false)
+  })
+})
+
+describe('sessionRemovalArmed', () => {
+  it('arms on a tombstone and releases on an untombstone (a rolled-back removal)', () => {
+    expect(sessionRemovalArmed('armed-1')).toBe(false)
+
+    tombstoneSessions(['armed-1'])
+    expect(sessionRemovalArmed('armed-1')).toBe(true)
+
+    untombstoneSessions(['armed-1'])
+    expect(sessionRemovalArmed('armed-1')).toBe(false)
+  })
+
+  it('survives the membership prune that clears $removedSessionIds directly', () => {
+    tombstoneSessions(['pruned-1'])
+    // projects.ts prunes settled tombstones with a bare .set(), bypassing the
+    // lifecycle writer — the answer must outlive the membership (#137768).
+    $removedSessionIds.set(new Set())
+
+    expect(sessionRemovalArmed('pruned-1')).toBe(true)
+  })
+
+  it('ignores blank ids rather than treating them as armed', () => {
+    tombstoneSessions([''])
+
+    expect(sessionRemovalArmed('')).toBe(false)
+    expect(sessionRemovalArmed('   ')).toBe(false)
+    expect(sessionRemovalArmed(null)).toBe(false)
   })
 })
 

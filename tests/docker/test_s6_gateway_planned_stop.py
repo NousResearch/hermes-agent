@@ -16,7 +16,7 @@ import time
 
 from tests.docker.conftest import docker_exec_sh, start_container, wait_for_docker_logs
 
-SLOT = "/run/service/gateway-default"
+SLOT = "/run/hermes-service/gateway-default"
 
 
 def _svstat_field(container: str, field: str) -> str:

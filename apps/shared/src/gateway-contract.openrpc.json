@@ -1159,6 +1159,24 @@
       }
     },
     {
+      "name": "groups.continue",
+      "summary": "Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContinueParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContinueResult"
+        }
+      }
+    },
+    {
       "name": "groups.create",
       "summary": "Create a hosted room idempotently; authority is this gateway's stable install identity.",
       "params": [
@@ -13550,6 +13568,17 @@
             "default": null,
             "title": "Required Env"
           },
+          "launch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTargetLaunch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "anyOf": [
               {
@@ -14021,6 +14050,60 @@
           "skill"
         ],
         "title": "ConnectionTargetKind",
+        "type": "string"
+      },
+      "ConnectionTargetLaunch": {
+        "additionalProperties": false,
+        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never env values or headers.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionTargetLaunchKind"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "title": "ConnectionTargetLaunch",
+        "type": "object"
+      },
+      "ConnectionTargetLaunchKind": {
+        "enum": [
+          "remote",
+          "stdio"
+        ],
+        "title": "ConnectionTargetLaunchKind",
         "type": "string"
       },
       "ConnectionTargetState": {
@@ -19306,7 +19389,8 @@
               {
                 "enum": [
                   "everyone",
-                  "lead"
+                  "lead",
+                  "auto"
                 ],
                 "type": "string"
               },
@@ -19354,6 +19438,55 @@
           "event"
         ],
         "title": "GroupsContextResult",
+        "type": "object"
+      },
+      "GroupsContinueParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "discussion_event_id": {
+            "title": "Discussion Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "discussion_event_id"
+        ],
+        "title": "GroupsContinueParams",
+        "type": "object"
+      },
+      "GroupsContinueResult": {
+        "additionalProperties": false,
+        "properties": {
+          "continued": {
+            "default": true,
+            "title": "Continued",
+            "type": "boolean"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "GroupsContinueResult",
         "type": "object"
       },
       "GroupsCreateParams": {
@@ -28159,6 +28292,59 @@
         "title": "PluginToolsetRow",
         "type": "object"
       },
+      "PluginUpdateAllRow": {
+        "additionalProperties": false,
+        "description": "One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the\nplugin or its scan returned caution; the plugin's own ``update`` walks that review.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PluginUpdateAllStatus"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "title": "PluginUpdateAllRow",
+        "type": "object"
+      },
+      "PluginUpdateAllSkip": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "PluginUpdateAllSkip",
+        "type": "object"
+      },
+      "PluginUpdateAllStatus": {
+        "enum": [
+          "updated",
+          "current",
+          "failed",
+          "needs_review"
+        ],
+        "title": "PluginUpdateAllStatus",
+        "type": "string"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -28171,7 +28357,9 @@
           "remove",
           "settings",
           "onboarding",
-          "presence"
+          "presence",
+          "update_all",
+          "auto_update"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -28231,7 +28419,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;\n``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -28882,6 +29070,72 @@
             ],
             "default": null,
             "title": "Unpaired From"
+          },
+          "results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Results"
+          },
+          "skipped": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginUpdateAllSkip"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skipped"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Current"
+          },
+          "auto_apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Auto Apply"
+          },
+          "check_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Check Hours"
           }
         },
         "title": "PluginsManageResult",
@@ -34553,7 +34807,8 @@
             "default": "everyone",
             "enum": [
               "everyone",
-              "lead"
+              "lead",
+              "auto"
             ],
             "title": "Routing",
             "type": "string"
@@ -34632,6 +34887,33 @@
             ],
             "default": null,
             "title": "Max Rounds"
+          },
+          "max_continues": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Continues"
+          },
+          "routing_modes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing Modes"
           },
           "peer_routes": {
             "items": {

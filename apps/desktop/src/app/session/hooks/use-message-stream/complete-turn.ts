@@ -27,7 +27,7 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
-import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
+import { terminalCompletionState } from './completion-terminal-state'
 import { nextStreamMessageId, type UpdateSessionState } from './mutate-stream'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
@@ -227,31 +227,26 @@ export function useCompleteTurn(
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      failureReason?: string
     ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
-        // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble (kept the partial text, dropped it if
-        // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead — only
-        // extending the bubble to the partial the agent persisted (#121594).
-        if (state.interrupted) {
-          return {
-            ...state,
-            messages: bindStoppedTurnReceipt(
-              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
-              persistedTurn
-            ),
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            pendingBranchGroup: null,
-            streamId: null,
-            turnStartedAt: null,
-            turnLive: false
-          }
+        // A cancelled turn or a provider safety-filter refusal collapses the
+        // turn into a fully-formed terminal state instead of the dedupe/merge
+        // below (see terminalCompletionState for the two cases and the WHY).
+        const terminalState = terminalCompletionState(state, {
+          text,
+          occurredAt,
+          persistedTurn,
+          failure,
+          status,
+          failureReason
+        })
+
+        if (terminalState) {
+          return terminalState
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null

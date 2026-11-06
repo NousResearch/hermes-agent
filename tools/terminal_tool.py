@@ -1144,6 +1144,9 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
         )
     if approval.get("smart_approved"):
         return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+    if approval.get("pre_approved"):
+        from tools.approval_provenance import preapproval_note
+        return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]))
     return _ApprovalVerdict()
 
 

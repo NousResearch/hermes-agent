@@ -15,24 +15,24 @@ lint-all-js: lint-web lint-bootstrap-installer lint-desktop lint-tui lint-tests 
 
 [group('lint js')]
 lint-web:
-    @cd web && npx eslint ./
+    @cd web && pnpm exec eslint ./
 
 [group('lint js')]
 lint-bootstrap-installer:
-    @cd apps/bootstrap-installer && npx eslint ./
+    @cd apps/bootstrap-installer && pnpm exec eslint ./
 
 [group('lint js')]
 lint-desktop:
-    @cd apps/desktop && npx eslint ./
+    @cd apps/desktop && pnpm exec eslint ./
 
 [group('lint js')]
 lint-tui:
-    @cd ui-tui && npx eslint ./
+    @cd ui-tui && pnpm exec eslint ./
 
 [group('lint js')]
 lint-tests:
-    @cd tests-js && npx eslint ./
+    @cd tests-js && pnpm exec eslint ./
 
 [group('lint js')]
 lint-shared:
-    @cd apps/shared && npx eslint ./
+    @cd apps/shared && pnpm exec eslint ./

@@ -1196,7 +1196,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
         """Report unpaired WhatsApp or secondary-only Relay. Log the reason and remedy and stamp a
         ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
-        dashboard show *why* the channel is dead instead of nothing at all."""
+        dashboard show *why* the channel is dead instead of nothing at all.
+
+        A shared-ingress platform the default profile runs is not unserved: the secondary is reached
+        through the default's adapter, so it gets no status entry. An error entry there would read as
+        a broken platform to every health reader, though nothing is wrong and the owner has nothing to
+        fix (a hosted instance stamps ``GATEWAY_RELAY_URL`` into every profile's env)."""
         noted = getattr(self, "_unserved_secondary_platforms", None)
         if noted is None:
             noted = self._unserved_secondary_platforms = set()
@@ -1204,6 +1209,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             return
         noted.add((profile_name, platform))
         pv = platform.value
+        if platform is not Platform.WHATSAPP and self._default_owns_platform(platform):
+            logger.info(
+                "[MULTIPLEX] Profile '%s': %s is served through the default profile's shared adapter",
+                profile_name, pv,
+            )
+            return
         if platform is Platform.WHATSAPP:
             message = f"WhatsApp is not paired; pair it: hermes -p {profile_name} whatsapp"
             logger.info("[MULTIPLEX] Profile '%s': %s", profile_name, message)
@@ -1223,6 +1234,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             error_message="not served under multiplex (shared ingress owned by default)",
         )
 
+    def _default_owns_platform(self, platform: Platform) -> bool:
+        """The default profile runs ``platform`` (live, or queued for reconnect with its own status)."""
+        return platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {})
+
     def _unserved_shared_ingress_warnings(self) -> list:
         """Loud ``not being served`` lines for shared-ingress platforms secondaries enabled while
         NO profile (default included) actually runs them; empty when the default serves the platform."""
@@ -1231,7 +1246,7 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         for platform in sorted({p for _n, p in noted}, key=lambda p: p.value):
             if platform is Platform.WHATSAPP:
                 continue  # unpaired sessions have their own per-profile remedy
-            if platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {}):
+            if self._default_owns_platform(platform):
                 continue  # the default owns it: secondaries ARE served through the shared adapter
             profiles = sorted(n for n, p in noted if p is platform)
             lines.append(

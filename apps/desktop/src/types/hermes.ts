@@ -765,6 +765,9 @@ export interface SessionMessage {
   display_kind?:
     | 'async_delegation_complete'
     | 'auto_continue'
+    // A safety-refused turn the backend dropped from the model's context but
+    // retained for display (agent/turn_failure_copy.py CONTENT_REFUSED_DISPLAY_KIND).
+    | 'content_refused'
     | 'failed_turn'
     | 'hidden'
     | 'model_switch'
@@ -876,6 +879,10 @@ export interface SessionResumeResult {
   message_count: number
   messages: SessionMessage[]
   messages_omitted?: boolean
+  /** Canonical snapshot only: every admission the owner has not finished (queued, started, or `unknown` after a
+   *  crash). `info.pending_submissions` is derived from it, and a forwarding owner's `session.info` sends a partial
+   *  list under that name. */
+  pending?: unknown
   resumed: string
   running?: boolean
   session_id: string

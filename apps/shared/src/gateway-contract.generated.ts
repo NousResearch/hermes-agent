@@ -1107,6 +1107,7 @@ export interface ConnectionOperationTarget {
   alias?: string | null
   attempt?: string | null
   required_env?: ConnectionTargetEnvField[] | null
+  launch?: ConnectionTargetLaunch | null
   tools?: string[] | null
   hint?: string | null
   display?: string | null
@@ -1141,6 +1142,14 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
+/** What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed display text, never env values or headers. */
+export interface ConnectionTargetLaunch {
+  kind: ConnectionTargetLaunchKind
+  target: string
+  env?: string[] | null
+  cwd?: string | null
+}
+export type ConnectionTargetLaunchKind = 'remote' | 'stdio'
 export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {
@@ -1661,6 +1670,8 @@ export interface RoomDriverStatus {
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
   max_rounds?: number | null
+  max_continues?: number | null
+  routing_modes?: string[] | null
   peer_routes: PeerRouteStatus[]
 }
 /** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
@@ -1682,7 +1693,7 @@ export interface PeerRouteStatus {
 export interface RoomContext {
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead'
+  routing?: 'everyone' | 'lead' | 'auto'
   lead_member_id?: string
 }
 export interface GroupsSendParams {
@@ -1712,7 +1723,7 @@ export interface GroupsContextParams {
   event_id: string
   purpose: string
   notes: string
-  routing?: 'everyone' | 'lead' | null
+  routing?: 'everyone' | 'lead' | 'auto' | null
   lead_member_id?: string | null
 }
 export interface GroupsContextResult {
@@ -1760,6 +1771,15 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+}
+export interface GroupsContinueParams {
+  profile?: string | null
+  room_id: string
+  discussion_event_id: string
+}
+export interface GroupsContinueResult {
+  continued?: boolean
+  event: RoomEvent
 }
 export interface GroupsApproveParams {
   profile?: string | null
@@ -4446,7 +4466,7 @@ export interface PluginToolsetRow {
   label: string
   description: string
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto the host that serves this client; ``remove_desktop``: ``name`` (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto the host that serves this client; ``remove_desktop``: ``name`` (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields; ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4463,7 +4483,7 @@ export interface PluginsManageParams {
   values?: Record<string, unknown> | null
   names?: string[] | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'install_desktop' | 'remove_desktop' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'install_desktop' | 'remove_desktop' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence' | 'update_all' | 'auto_update'
 /** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
@@ -4503,6 +4523,11 @@ export interface PluginsManageResult {
   path?: string | null
   paired_with_agent?: boolean | null
   unpaired_from?: string | null
+  results?: PluginUpdateAllRow[] | null
+  skipped?: PluginUpdateAllSkip[] | null
+  current?: number | null
+  auto_apply?: boolean | null
+  check_hours?: number | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -4600,6 +4625,17 @@ export interface CatalogPluginPresence {
   state: CatalogAppState
   sentence: string
   disclosure: string
+}
+/** One plugin ``update_all`` tried. ``needs_review``: nothing changed because the update widens the plugin or its scan returned caution; the plugin's own ``update`` walks that review. */
+export interface PluginUpdateAllRow {
+  name: string
+  status: PluginUpdateAllStatus
+  detail?: string
+}
+export type PluginUpdateAllStatus = 'updated' | 'current' | 'failed' | 'needs_review'
+export interface PluginUpdateAllSkip {
+  name: string
+  reason: string
 }
 export interface PluginCatalogLookupParams {
   profile?: string | null
@@ -6239,6 +6275,8 @@ export interface RpcMethods {
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Set one hosted room's purpose and shared notes; members see them from the next message. */
   'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
+  /** Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued. */
+  'groups.continue': { params: GroupsContinueParams; result: GroupsContinueResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6698,6 +6736,7 @@ export const RPC_METHODS = [
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.context',
+  'groups.continue',
   'groups.create',
   'groups.demote',
   'groups.disband',

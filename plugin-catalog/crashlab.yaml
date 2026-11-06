@@ -1,20 +1,20 @@
 name: crashlab
 title: CrashLab
 repo: https://github.com/dolepee/crashlab
-sha: 85c83ee10649ff9c6c5fed8dd6afa7181c566656
+sha: 559462c5dd0fe1a0caf5eb94eea652da11d36e45
 description: Reproduce lost-response duplicate writes, verify repairs against persisted state, and run a last-unit capacity campaign.
 maintainer: dolepee
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 version: "0.2.0"
-docs_url: https://github.com/dolepee/crashlab/blob/85c83ee10649ff9c6c5fed8dd6afa7181c566656/README.md
+docs_url: https://github.com/dolepee/crashlab/blob/559462c5dd0fe1a0caf5eb94eea652da11d36e45/README.md
 platforms:
   - linux
 screenshots:
-  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/external/kist/evidence/buggy-after-retry.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/external/kist/evidence/repaired-after-retry.png
-  - https://raw.githubusercontent.com/dolepee/crashlab/85c83ee10649ff9c6c5fed8dd6afa7181c566656/docs/desktop-pane.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/559462c5dd0fe1a0caf5eb94eea652da11d36e45/external/kist/evidence/buggy-after-retry.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/559462c5dd0fe1a0caf5eb94eea652da11d36e45/external/kist/evidence/repaired-after-retry.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/559462c5dd0fe1a0caf5eb94eea652da11d36e45/docs/desktop-pane.png
 known_issues:
   - "The Kist external example is one app and one Hermes one-shot repair; this is not a general autonomous-repair claim."
   - "Browser campaigns are validation-only; the inventory campaign runs HTTP concurrency against a loopback fixture with a deliberate test-only scheduling gate."

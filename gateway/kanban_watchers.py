@@ -283,6 +283,7 @@ class GatewayKanbanWatchersMixin:
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
+            tick_started_at = time.monotonic()
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.
@@ -309,6 +310,13 @@ class GatewayKanbanWatchersMixin:
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    spawned_count = sum(
+                        len(getattr(res, "spawned", ()) or ()) for _slug, res in results if res is not None
+                    )
+                    logger.debug(
+                        "kanban dispatcher tick: boards=%d spawned=%d ready=%d duration=%.3fs",
+                        len(results), spawned_count, int(ready_pending), time.monotonic() - tick_started_at,
+                    )
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     held = _kbd.describe_suppression(res for _slug, res in (results or []))

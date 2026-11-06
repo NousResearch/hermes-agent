@@ -183,7 +183,9 @@ _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research,
 
 
 def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
-    if _plugins_listed(home, ("yuanbao",))[1]:  # core's adapter ignored it; the catalog plugin does not
+    # Core's adapter ignored a bare ``yuanbao`` there; the catalog plugin does not. The install's enable
+    # purges the entry from the user's list, so this fires only when it survived (a managed overlay pin).
+    if plugin_present("yuanbao", home) and _plugins_listed(home, ("yuanbao",))[1]:
         return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off; "
                 "remove it to keep using Yuanbao.")
     return _YUANBAO_NOTICE

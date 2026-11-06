@@ -24,6 +24,7 @@ from hermes_state_common import (
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, NOT_CLIENT_LABELS
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -922,6 +923,28 @@ class SessionSessionsMixin:
                   AND COALESCE(json_extract(model_config, '$.cwd'), '') != ''""",
             (),
         ) or 0)
+
+    def stamp_null_minted_session_keys(self) -> int:
+        """Give minted-id rows the session_key their minted shape asserts. Never overwrites a
+        non-blank key. Returns rows stamped.
+
+        Rows minted by the canonical authority carry the server key shape in ``id``
+        (``_MINTED_SESSION_KEY_RE``), and the authoritative lookup resolves by ``session_key``:
+        a row whose key never persisted answers ``not_found`` forever and nothing can remount it
+        (#149905). The blank-string arm is deliberate — a blank key is exactly as unresolvable as
+        a NULL one (the v1 heal guard let blanks through while its SQL said IS NULL). Legacy
+        local rows keep the adoption-by-resume contract (``validate_legacy_row`` refuses any row
+        holding a session_key) and the automation labels keep the keyless convention, so both
+        are excluded; the messaging platforms are the repair surface. Single idempotent UPDATE,
+        run on every start beside the owner backfill.
+        """
+        excluded = sorted(LEGACY_LOCAL_SOURCES | NOT_CLIENT_LABELS)
+        sql = f"""UPDATE sessions
+                     SET session_key = id
+                   WHERE (session_key IS NULL OR TRIM(session_key) = '')
+                     AND id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+                     AND COALESCE(source, '') NOT IN ({', '.join('?' * len(excluded))})"""
+        return int(self._write_rowcount(sql, tuple(excluded)) or 0)
 
     def _set_lineage_column(self, column: str, session_id: str, value: Any, *,
                             extra_set_sql: str = "") -> bool:

@@ -171,7 +171,8 @@ class GatewaySecondaryReconnectMixin:
         but the platform can still heal (no plugin registered it, so a later import can succeed). Caller
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
         from gateway.platform_registry import platform_registry
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        from gateway.run import _profile_runtime_scope
+        from gateway.run_adapter_credentials import _platform_has_bot_credential
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
         from hermes_cli.env_loader import hydrate_profile_secret_sources

@@ -5,6 +5,7 @@ import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices,
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, offersGroupSafetyMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
+import { CanonicalGroupFiles, latestFileSeq } from './canonical-group-files'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -518,7 +519,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
-        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
+        canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} files={<CanonicalGroupFiles binding={binding} latest={latestFileSeq(events)}
+        offered={methods?.has('groups.attachment.list') === true} roomName={state?.room.name} visible={visible} />} methods={methods} onBack={onBack}
         onChanged={() => void refresh().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />

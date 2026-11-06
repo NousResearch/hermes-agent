@@ -65,7 +65,8 @@ function requireRoute(route: CanonicalGroupRoute): void {
 export async function canonicalGroupRequest<T>(
   route: CanonicalGroupRoute,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
 ): Promise<T> {
   requireRoute(route)
 
@@ -74,12 +75,18 @@ export async function canonicalGroupRequest<T>(
   }
 
   // The descriptor overload never falls back to the foreground gateway.
-  return host.requestProfile<T>({
+  const descriptor = {
     connectionId: route.connectionId,
     profile: route.profile,
     targetProfile: route.profile,
-    mode: route.connectionId === 'local' ? 'local' : 'remote'
-  }, method, { ...params, profile: route.profile })
+    mode: route.connectionId === 'local' ? 'local' as const : 'remote' as const
+  }
+
+  const body = { ...params, profile: route.profile }
+
+  return timeoutMs === undefined
+    ? host.requestProfile<T>(descriptor, method, body)
+    : host.requestProfile<T>(descriptor, method, body, timeoutMs)
 }
 
 /** A resolved RPC alone does not prove this room ended; only its matching tombstone does. */

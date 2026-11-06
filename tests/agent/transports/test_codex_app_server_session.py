@@ -262,6 +262,37 @@ class TestLifecycle:
         assert s.ensure_started() == "fresh-2"
         assert [m for m, _ in client.requests] == ["thread/resume", "thread/start"]
 
+    def test_resume_timeout_retries_same_native_thread_with_longer_bound(self):
+        """A slow app-server resume is retryable and must not discard the stored native thread id."""
+        client = FakeClient()
+        attempts = 0
+
+        def handler(method, params):
+            nonlocal attempts
+            if method == "thread/resume":
+                attempts += 1
+                if attempts == 1:
+                    raise TimeoutError("thread/resume timed out")
+                return {"thread": {"id": params["threadId"]}}
+            return {"thread": {"id": "fresh"}}
+
+        client._request_handler = handler
+        timeouts = []
+        original_request = client.request
+
+        def record_request(method, params=None, timeout=30.0):
+            timeouts.append(timeout)
+            return original_request(method, params=params, timeout=timeout)
+
+        client.request = record_request
+        s = make_session(client, resume_thread_id="stored-native-thread")
+        with pytest.raises(TimeoutError):
+            s.ensure_started()
+        assert s._resume_thread_id == "stored-native-thread"
+        assert s.ensure_started() == "stored-native-thread"
+        assert [m for m, _ in client.requests] == ["thread/resume", "thread/resume"]
+        assert timeouts == [60, 60]
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

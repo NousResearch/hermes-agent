@@ -1382,6 +1382,8 @@ def disband_room(
             (now, now, disband_bytes, room_id, expected_gateway_id, expected_epoch),
             RoomConflictError("hosted room disband lost its fence"))
         conn.execute(_INSERT_RETIRED, (room_id, now))
+        from gateway.session_hosted_member_homes import forget_room_member_homes_locked
+        forget_room_member_homes_locked(conn, room_id)
         event = _reload(
             conn, _SELECT_EVENT, (room_id, "system:room-disbanded"), "room disband event could not be reloaded")
         _prune_disbanded_rooms_locked(conn, now=now, max_gateway_event_bytes=MAX_GATEWAY_EVENT_BYTES)

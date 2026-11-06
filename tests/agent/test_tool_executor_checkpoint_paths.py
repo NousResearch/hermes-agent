@@ -4,6 +4,7 @@ import json
 import os
 import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,6 +12,22 @@ from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_fil
 from agent.turn_explainers import TurnExplainersMixin
 from tools.checkpoint_manager import CheckpointManager
 from tools.terminal_tool import _active_environments, _env_lock
+
+
+def test_tool_progress_callback_receives_tool_call_identity():
+    """The gateway can reject a replay only when this callback carries its call ID."""
+    callback = MagicMock()
+    agent = SimpleNamespace(
+        _checkpoint_mgr=SimpleNamespace(enabled=False), _current_tool=None,
+        _touch_activity=lambda *_: None, quiet_mode=False, tool_progress_mode="all",
+        verbose_logging=False, log_prefix_chars=120, tool_progress_callback=callback,
+        tool_start_callback=None,
+    )
+    ref = _ToolCallRef("read_file", {"path": "README.md"}, "task", "tool-call-1", [])
+
+    _begin_tool_execution(agent, ref, None)
+
+    assert callback.call_args.kwargs["call_id"] == "tool-call-1"
 
 
 @pytest.fixture

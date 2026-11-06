@@ -270,3 +270,36 @@ def test_unavailable_member_leaves_stop_pending_until_control_recovers(mux, monk
     assert service.runtime._retry_stopping_tasks(binding, lease) is False
     assert tasks.get_task(service.db_path, identity)['status'] == 'cancelled'
     assert not rpc.callbacks
+
+
+@pytest.mark.platforms('linux')
+def test_saved_stop_publishes_a_retained_completed_answer_once_not_cancelled(mux):
+    """A lost attempt whose answer this owner still holds (its settlement write failed) is
+    resolved as that answer by Stop recovery: the room publishes it once, never a cancel."""
+    from gateway import hosted_room_driver as tasks, hosted_rooms
+    from gateway.session_settlement_recovery import _mark_unknown
+    from hermes_state_runtime import claim_session_input, list_session_admissions
+
+    service, binding, identity, rpc, sid = _seed_old_stopping_cross_profile_task(mux)
+    runner, homes, _, _ = mux
+    target = runner.session_authorities.require(homes['beta'])
+    row = claim_session_input(target.db, epoch=target.epoch, session_id=sid)
+    target.pending_results[row['admission_id']] = {
+        'result': {'final_response': 'The completed answer must survive.', 'completed': True}, 'usage': {}}
+    assert _mark_unknown(target, row) == 'unknown'
+    service.runtime.publish_terminal = service.publish_terminal
+
+    def published():
+        events = hosted_rooms.read_events(service.db_path, room_id=binding.room_id)['events']
+        return [e for e in events if e['kind'] == 'message.member'
+                and e['payload'].get('text') == 'The completed answer must survive.']
+
+    for _ in range(2):  # recovery runs every cycle: the second pass is a no-op
+        service.runtime._process_room(binding)
+        hosted = tasks.get_task(service.db_path, identity)
+        assert hosted['status'] == 'settled'
+        assert len(published()) == 1
+    canonical, = list_session_admissions(target.db, session_id=sid, pending_only=False)
+    assert (canonical['status'], canonical['outcome']) == ('terminal', 'completed')
+    assert service.status(binding.room_id)['working'] is False
+    assert not rpc.callbacks

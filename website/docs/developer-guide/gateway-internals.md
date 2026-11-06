@@ -248,12 +248,16 @@ queued: resolve the lost turn before continuing, rather than resending it.
 
 ## Private control request workers
 
-The POSIX control listener owns separate bounded executors for hosted producer
-requests and other control requests. A `hosted-producer` operation synchronously
-calls back through `hosted-attest` and `identify`, then waits for canonical session
-work on the owner loop. Those callbacks must not queue behind producers waiting
-for them, and neither pool occupies the loop's default executor used by session
-work. Request scheduling does not replace the existing peer and envelope checks.
+The POSIX control listener owns two executors of its own: one for hosted producer
+requests and one for every other control request. A `hosted-producer` operation
+synchronously calls back through `hosted-attest` and `identify`, then waits for
+canonical session work on the owner loop, so its callbacks must not queue behind
+the producers waiting for them, and neither pool occupies the loop's default
+executor used by session work. Each pool's worker count is the
+`ThreadPoolExecutor` default and its queue is unbounded: enough simultaneous
+slow requests of one kind still queue behind each other; the split only removes
+the producer-to-callback dependency cycle. Request scheduling does not replace
+the existing peer and envelope checks.
 
 Stopping the listener cancels queued work and retires both pools. Already-running
 handlers retain their existing RPC deadlines; a restarted listener gets fresh
@@ -264,6 +268,10 @@ uncertain canonical attempt is resolved only for a saved Stop naming the exact
 task and execution generation, and only when the member reports it inactive.
 The member's canonical queue must acknowledge cancellation before the room task
 is marked cancelled; an inactive `unknown` attempt is not itself an acknowledgement.
+Resolving it reports the outcome the member's queue actually committed: when that
+owner still held the turn's finished answer (only its settlement write failed),
+the answer is committed and the room settles and publishes it once instead of
+cancelling the task. Discard of an indeterminate attempt follows the same rule.
 This preserves history and lets the next group input proceed without replaying
 the lost turn.
 

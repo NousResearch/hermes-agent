@@ -64,7 +64,12 @@ test('a confirm that unmounts the dialog before it resolves never arms the close
   const onClose = vi.fn()
 
   let finish: () => void = () => {}
-  const onConfirm = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const onConfirm = vi.fn(
+    () =>
+      new Promise<void>(resolve => {
+        finish = resolve
+      })
+  )
 
   render(<ConfirmDialog confirmLabel="Delete" onClose={onClose} onConfirm={onConfirm} open title="Delete session" />)
   fireEvent.click(screen.getByRole('button', { name: 'Delete' }))

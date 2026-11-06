@@ -25,7 +25,11 @@ import type { RosterRow } from './types'
 // the active gateway owns only rooms of its own bots, so a selection spanning
 // connections becomes a Desktop-driven room instead of a refused groups.create.
 
-const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
+const { request, notify, openWorkspace } = vi.hoisted(() => ({
+  request: vi.fn(),
+  notify: vi.fn(),
+  openWorkspace: vi.fn()
+}))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
@@ -35,7 +39,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     gatewayActivationEpoch: () => 1,
     useGatewayActivationEpoch: () => 1,
     host: {
-      ...sdk.host, requestProfile: request, notify, openWorkspace,
+      ...sdk.host,
+      requestProfile: request,
+      notify,
+      openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
       connections: vi.fn(async () => []),
       state: {
@@ -52,10 +59,13 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 vi.mock('./group-chat', async importOriginal => {
   const actual = await importOriginal<typeof GroupChatModule>()
 
-  return { ...actual, updateGroupChat: vi.fn((group, mutate) => actual.updateGroupChat(group, mutate, { sync: false })) }
+  return {
+    ...actual,
+    updateGroupChat: vi.fn((group, mutate) => actual.updateGroupChat(group, mutate, { sync: false }))
+  }
 })
 vi.mock('./group-chat-parts', async importOriginal => ({
-  ...await importOriginal<typeof GroupChatParts>(),
+  ...(await importOriginal<typeof GroupChatParts>()),
   GroupImageControls: () => null
 }))
 
@@ -63,7 +73,12 @@ const connectionId = host.state.connectionId as WritableAtom<string | null>
 
 const alpha: RosterRow = { name: 'alpha', connectionId: 'local', connectionLabel: 'This device' }
 const beta: RosterRow = { name: 'beta', connectionId: 'local', connectionLabel: 'This device' }
-const remote: RosterRow = { name: 'remote', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
+const remote: RosterRow = {
+  name: 'remote',
+  connectionId: 'other-box',
+  connectionLabel: 'Other box',
+  remoteSource: true
+}
 const scout: RosterRow = { name: 'scout', connectionId: 'other-box', connectionLabel: 'Other box', remoteSource: true }
 const unreachable: RosterRow = { ...remote, name: 'offline', sourceReachable: false }
 
@@ -76,13 +91,21 @@ beforeEach(() => {
   $groupChatWorkspace.set(null)
   $botMeta.set({})
   request.mockReset().mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }}
+    if (method === 'groups.capabilities') {
+      return { driver: true, persistent_process: true, seatable_profiles: ['alpha', 'beta'] }
+    }
 
-    if (method === 'groups.create') {return { room: { room_id: params.room_id, name: params.name, members: params.members } }}
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
 
-    if (method === 'groups.list') {return { rooms: [], next_offset: null }}
+    if (method === 'groups.list') {
+      return { rooms: [], next_offset: null }
+    }
 
-    if (method === 'profiles.configure') {return {}}
+    if (method === 'profiles.configure') {
+      return {}
+    }
 
     return {}
   })
@@ -125,7 +148,9 @@ it('a selection spanning two connections creates a Desktop-driven room, never a 
   expect(screen.getByRole('note').textContent).toBe(desktopDriven)
   const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
   expect(submit.disabled).toBe(false)
-  await act(async () => { fireEvent.click(submit) })
+  await act(async () => {
+    fireEvent.click(submit)
+  })
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect($canonicalGroupBindings.get()).toEqual({})
@@ -142,7 +167,9 @@ it('a selection on this connection alone still creates the gateway-owned room (c
   const { onCreated } = await pick([alpha, beta, remote], ['alpha', 'beta'])
 
   expect(screen.queryByRole('note')).toBeNull()
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' }))
+  })
 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
   expect(onCreated.mock.calls[0][1]).toBe('key')
@@ -157,7 +184,9 @@ it('a selection wholly on another connection is not offered for creation from he
 })
 
 it('a room whose members span connections opens in the Desktop-driven view on a gateway-owned install', async () => {
-  await act(async () => { render(<GroupChatWorkspace group="Mixed" members={[alpha, remote]} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Mixed" members={[alpha, remote]} />)
+  })
 
   expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
@@ -166,14 +195,18 @@ it('a room whose members span connections opens in the Desktop-driven view on a 
 
 it('a room created across connections stays Desktop-driven after its remote member is removed', async () => {
   const { onCreated, view } = await pick([alpha, beta, remote], ['alpha', 'beta', 'remote'])
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (3)' })) })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group (3)' }))
+  })
   view.unmount()
   const [[group]] = onCreated.mock.calls
 
   expect($groupChats.get()[group].engine).toBe('desktop')
 
   // Manage groups removed the remote bot: every remaining member is on this connection.
-  await act(async () => { render(<GroupChatWorkspace group={group} members={[alpha, beta]} />) })
+  await act(async () => {
+    render(<GroupChatWorkspace group={group} members={[alpha, beta]} />)
+  })
 
   expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
@@ -181,7 +214,13 @@ it('a room created across connections stays Desktop-driven after its remote memb
 })
 
 it("a room's Desktop engine rides room sync, so another Desktop keeps driving it too", () => {
-  const room = { engine: 'desktop' as const, log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'm1', text: 'hi' }], members: [alpha, beta], roomId: 'r1', watermarks: {} }
+  const room = {
+    engine: 'desktop' as const,
+    log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'm1', text: 'hi' }],
+    members: [alpha, beta],
+    roomId: 'r1',
+    watermarks: {}
+  }
   const published = groupChatSyncSnapshot({ Mixed: room })
   const merged = mergeGroupChatSyncSnapshots({ version: 3, rooms: {} }, published)
 

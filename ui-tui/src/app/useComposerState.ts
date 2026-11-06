@@ -4,11 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
-import type {
-  ClipboardPasteResponse,
-  ImageAttachResponse,
-  InputDetectDropResponse
-} from '@hermes/shared/gateway-types'
+import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '@hermes/shared/gateway-types'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
@@ -151,17 +147,20 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     setPasteExpanded(Boolean(span))
   }, [])
 
-  const setInput = useCallback<StateSetter<string>>(next => {
-    composerRevision.current++
-    const prev = inputRef.current
-    inputRef.current = typeof next === 'function' ? next(prev) : next
+  const setInput = useCallback<StateSetter<string>>(
+    next => {
+      composerRevision.current++
+      const prev = inputRef.current
+      inputRef.current = typeof next === 'function' ? next(prev) : next
 
-    if (pasteSpanRef.current) {
-      setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
-    }
+      if (pasteSpanRef.current) {
+        setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
+      }
 
-    setInputState(inputRef.current)
-  }, [setPasteSpan])
+      setInputState(inputRef.current)
+    },
+    [setPasteSpan]
+  )
 
   const setComposerTokens = useCallback<StateSetter<ComposerToken[]>>(next => {
     tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next

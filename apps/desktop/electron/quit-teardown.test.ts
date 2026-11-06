@@ -40,7 +40,7 @@ test('a settled remote descriptor is not backend work that requires a deferred q
     assert.equal(
       backendQuitNeedsWait({
         connectionPending: false,
-          processAttached: false,
+        processAttached: false,
         shutdownPending: false,
         [key]: true
       }),

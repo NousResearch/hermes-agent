@@ -1,4 +1,8 @@
-import type { InputDetectDropResponse, PromptSubmitResponse, SessionActivateResponse } from '@hermes/shared/gateway-types'
+import type {
+  InputDetectDropResponse,
+  PromptSubmitResponse,
+  SessionActivateResponse
+} from '@hermes/shared/gateway-types'
 import { isUndeliveredCorrectionRefusal } from '@hermes/shared/json-rpc-channel'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -179,7 +183,11 @@ function settleControlReply(
     item.settle?.(true)
 
     if (deps.gw.isCanonical) {
-      deps.gw.publishLocalEvent({ payload: { stop_phrase: true, typed: true }, session_id: sid, type: 'voice.transcript' })
+      deps.gw.publishLocalEvent({
+        payload: { stop_phrase: true, typed: true },
+        session_id: sid,
+        type: 'voice.transcript'
+      })
     }
 
     return true

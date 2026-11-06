@@ -32871,6 +32871,16 @@
             "default": "",
             "title": "Text"
           },
+          "display_text": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Text"
+          },
           "display_kind": {
             "anyOf": [
               {

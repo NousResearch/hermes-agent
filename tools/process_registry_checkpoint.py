@@ -19,14 +19,15 @@ class ProcessCheckpointMixin:
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
-        from tools.environments.sandbox_scope import producer_fields
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if s.exited:
+                    # A hosted agent's process is not this host's to persist: its record (command,
+                    # cwd, owner) stays in memory, whoever triggers the write (scoped or not).
+                    if s.exited or s.sandbox_key:
                         continue
                     # Backfill the start time so recovery can detect PID recycling
                     # even for sessions spawned before this field existed.
@@ -39,7 +40,6 @@ class ProcessCheckpointMixin:
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    entry.update(producer_fields(s.sandbox_key))  # a recovered hosted process stays its agent's
                     entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}

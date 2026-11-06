@@ -780,6 +780,16 @@ def _run_agent_tool_execution_middleware(
 
     trace = middleware_trace if middleware_trace is not None else []
     state = _ManagedToolResult(result=None, args=function_args, middleware_trace=trace, blocked=False, dispatched=False)
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if hosted_tool_refusal(function_name) is not None:
+        # Refused in a hosted scope before Relay and every request/execution middleware: no
+        # host-side callback sees, rewrites or acts on a call that will not run.
+        state.dispatched = True
+        state.result = _dispatch_authorized_once(
+            agent, state, _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, trace),
+            execute=execute, scope_block=scope_block, display_index=display_index,
+            begin_execution=begin_execution, authorization_gate=authorization_gate)
+        return state
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:

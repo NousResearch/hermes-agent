@@ -55,8 +55,9 @@ Each case has tags `rule`, `style=LF|CRLF`, `final=terminated|unterminated`,
 the oracle. Generator assertions validate the grammar and tags from actual
 bytes; every generated case must be independently accepted by the oracle and
 must not return `OUT_OF_DOMAIN`. Count cases per rule and tag combination;
-require nonzero count for every advertised feasible class and publish the
-seed and counts. Compare production outcome and exact resulting file bytes;
+require nonzero count for every advertised feasible in-domain class and publish
+the seed and counts. Rule 4 has no generated in-domain class in this version;
+record its count as zero rather than fabricating coverage. Compare production outcome and exact resulting file bytes;
 compare a reported site only if it is observed directly from planner output,
 not guessed from final bytes. A production difference is a finding, never a
 reason to discard a generated input or alter its expected value. Validate oracle
@@ -99,6 +100,8 @@ fallback are not covered; the spec does not invent their general relation.
 * F=`b'old\ntail\n'`; P=`b'-old\n+new\n'` → W((0,1), `b'new\ntail\n'`).
 * F=`b'old\nold\n'`; same P → R(AMBIGUOUS), original `b'old\nold\n'`.
 * F=`b'a\nb\n'`; same P → R(NOT_FOUND), original `b'a\nb\n'`.
+* F=`b'a\tb\n'`; P=`b'-a b\n+new\n'` → W((0,1), `b'new\n'`).
+* F=`b'a\tb\na b\n'`; same P → W((1,2), `b'a\tb\nnew\n'`).
 
 ### 3. Uniqueness and hints
 
@@ -155,9 +158,9 @@ compared. Rule 1's unterminated-final example writes `b'a\nnew'`, not
 `b'a\nnew\n'`. Rule 6's ordinary deletion writes `b'a\n\nb\n'`, not
 `b'a\nb\n'`; its unique blank deletion refuses with `empty search text`, and
 its duplicate blank deletion also refuses with `empty search text`, not the
-specified ambiguous category. Rule 5's missing-search diagnostic contains the
-search string `old`, contrary to the no-source-text requirement, even though
-it does refuse without writing. These are baseline findings, not evidence that
+specified ambiguous category. In a separate missing-search probe using a unique
+marker, the baseline diagnostic did not echo that marker. These are baseline
+findings, not evidence that
 this proposed contract has already been implemented. The other in-domain
 examples above had the expected success/refusal and resulting bytes. Out-of-
 domain examples establish oracle membership only: real planner output cannot

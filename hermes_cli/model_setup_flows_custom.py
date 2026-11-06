@@ -287,7 +287,8 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
             from hermes_cli.model_switch_providers import _entry_credentials, _save_discovered_models_to_config
             _save_discovered_models_to_config(
                 base_url, live_models, api_mode=api_mode, headers=extra_headers or None,
-                credential_identity=_entry_credentials(provider_info, "key_env", "api_key_env")[2])
+                credential_identity=_entry_credentials(provider_info, "key_env", "api_key_env")[2],
+                provider_key=str(provider_info.get("provider_key") or ""))
     return models, native_catalog_empty
 
 

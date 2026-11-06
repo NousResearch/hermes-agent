@@ -109,7 +109,7 @@ class GatewayGoalCommandsMixin:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
+        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS, HEARTBEAT_FILE_MARKER
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -138,10 +138,20 @@ class GatewayGoalCommandsMixin:
                 self._unregister_heartbeat_watch(quick_key)
             return t("gateway.heartbeat.cleared") if had else t("gateway.heartbeat.none_set")
 
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`)
+        # File mode: `/heartbeat file 60m [path]` — orders read fresh from disk on every tick.
         tokens = args.split(None, 2)
         interval, prompt = None, ""
-        if tokens[0].lower() == "every" and len(tokens) >= 2:
+        if tokens[0].lower() == "file":
+            if len(tokens) < 2:
+                return t("gateway.heartbeat.file_usage")
+            interval = parse_interval(tokens[1])
+            if interval is None:
+                return t("gateway.heartbeat.file_usage")
+            if interval < 0:
+                return t("gateway.heartbeat.interval_too_small", min_seconds=MIN_INTERVAL_SECONDS)
+            prompt = f"{HEARTBEAT_FILE_MARKER}{tokens[2].strip() if len(tokens) > 2 else ''}"
+        elif tokens[0].lower() == "every" and len(tokens) >= 2:
             interval = parse_interval(f"every {tokens[1]}")
             prompt = tokens[2] if len(tokens) > 2 else ""
         else:

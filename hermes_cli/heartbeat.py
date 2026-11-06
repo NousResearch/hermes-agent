@@ -9,16 +9,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 MIN_INTERVAL_SECONDS = 60  # floor: re-entering more often than once a minute is a busy-loop, not a heartbeat
 POLL_SECONDS = 5.0  # how often drivers poll for due heartbeats; not user-facing
+
+# /heartbeat file mode: the stored prompt carries this marker instead of literal orders, and render
+# reads the orders file FRESH on every tick so the file is the live standing-orders document.
+HEARTBEAT_FILE_MARKER = "file:"
+DEFAULT_HEARTBEAT_FILE = "HEARTBEAT.md"  # relative to hermes home when the marker carries no path
+HEARTBEAT_FILE_MAX_BYTES = 32768  # render-time read cap: these are orders, not a manuscript
 
 HEARTBEAT_PROMPT_TEMPLATE = (
     "[Heartbeat — recurring instruction, fires every {interval}]\n{prompt}\n\n"
@@ -62,6 +70,43 @@ def format_interval(seconds: int) -> str:
     return next((f"{seconds // unit}{suffix}" for unit, suffix in units if seconds % unit == 0), f"{seconds}s")
 
 
+def heartbeat_file_path(stored_prompt: str) -> Optional[Path]:
+    """Resolve a file-mode stored prompt to its orders path; ``None`` when the prompt is not file-mode.
+
+    An empty path after the marker means the house default (``DEFAULT_HEARTBEAT_FILE`` in hermes home).
+    Relative paths anchor to hermes home so a restored heartbeat after restart resolves identically.
+    """
+    if not stored_prompt.startswith(HEARTBEAT_FILE_MARKER):
+        return None
+    raw = stored_prompt[len(HEARTBEAT_FILE_MARKER):].strip()
+    if not raw:
+        raw = DEFAULT_HEARTBEAT_FILE
+    path = Path(os.path.expanduser(raw))
+    if not path.is_absolute():
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / path
+    return path
+
+
+def read_heartbeat_file(path: Path) -> str:
+    """Read the orders file for render/validation; raise a descriptive ``ValueError`` on any failure."""
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ValueError(f"orders file unreadable: {path} ({exc.strerror or exc})") from exc
+    if not path.is_file():
+        raise ValueError(f"orders path is not a regular file: {path}") from None
+    if stat.st_size > HEARTBEAT_FILE_MAX_BYTES:
+        raise ValueError(
+            f"orders file too large ({stat.st_size}B > {HEARTBEAT_FILE_MAX_BYTES}B cap): {path}"
+        ) from None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"orders file read failed: {path} ({exc})") from exc
+
+
 @dataclass
 class HeartbeatState:
     """Serializable per-session heartbeat."""
@@ -87,7 +132,29 @@ class HeartbeatState:
         return (time.time() if now is None else now) - (self.last_fired_at or self.created_at) >= self.interval_seconds
 
     def render_prompt(self) -> str:
-        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=format_interval(self.interval_seconds), prompt=self.prompt)
+        orders = self.prompt
+        if orders.startswith(HEARTBEAT_FILE_MARKER):
+            path = heartbeat_file_path(orders)
+            if path is None:  # defensive: marker present but resolver disagreed — default house file
+                path = Path(DEFAULT_HEARTBEAT_FILE)
+            try:
+                orders = read_heartbeat_file(path)
+            except ValueError as exc:
+                # Fail loud: "reply nothing changed / stop" is the template's quiet mode, so an unreadable
+                # orders file must NEVER render as "nothing happened". Name the failure, tell the turn to
+                # report it and stop, keep the no-invent-work guardrail pointing at recovery.
+                orders = (
+                    "HEARTBEAT ORDERS FILE FAILED TO READ — report this failure briefly and stop.\n"
+                    f"file: {path}\nerror: {exc}\n"
+                    "Fix or delete the file, or re-issue the heartbeat. Do not invent work."
+                )
+            else:
+                if not orders.strip():
+                    orders = (
+                        "HEARTBEAT ORDERS FILE IS EMPTY — report that briefly and stop. Do not invent work.\n"
+                        f"file: {path}"
+                    )
+        return HEARTBEAT_PROMPT_TEMPLATE.format(interval=format_interval(self.interval_seconds), prompt=orders)
 
 
 def _get_session_db() -> Optional[Any]:
@@ -173,14 +240,27 @@ class HeartbeatManager:
     def status_line(self) -> str:
         s = self._state
         if s is None:
-            return "No heartbeat. Set one with /heartbeat every <interval> <prompt>."
+            return "No heartbeat. Set one with /heartbeat every <interval> <prompt> or /heartbeat file <interval> [path]."
         every = format_interval(s.interval_seconds)
         fired = f", fired {s.fire_count}×" if s.fire_count else ""
+        orders = s.prompt
+        if orders.startswith(HEARTBEAT_FILE_MARKER):
+            path = heartbeat_file_path(orders)
+            if path is None:  # defensive: marker present but resolver disagreed — default house file
+                path = Path(DEFAULT_HEARTBEAT_FILE)
+            body = f"orders: file {path}"
+            try:
+                mtime = time.strftime("%H:%M", time.localtime(path.stat().st_mtime))
+                body += f" (modified {mtime})"
+            except OSError:
+                pass
+        else:
+            body = orders
         if s.status == "active":
             next_in = max(0, int((s.last_fired_at or s.created_at) + s.interval_seconds - time.time()))
-            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}): {s.prompt}"
+            return f"♥ Heartbeat (every {every}, next in ~{next_in}s{fired}): {body}"
         icon = "⏸ " if s.status == "paused" else ""
-        return f"{icon}Heartbeat ({s.status}, every {every}{fired}): {s.prompt}"
+        return f"{icon}Heartbeat ({s.status}, every {every}{fired}): {body}"
 
     def set(self, prompt: str, interval_seconds: int) -> HeartbeatState:
         prompt = (prompt or "").strip()
@@ -189,6 +269,15 @@ class HeartbeatManager:
         interval_seconds = int(interval_seconds)
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
+        if prompt.startswith(HEARTBEAT_FILE_MARKER):
+            # Fail fast at set time: a typo'd path should surface NOW, not silently on tick 47.
+            path = heartbeat_file_path(prompt)
+            if path is None:  # defensive: marker present but resolver disagreed — default house file
+                path = Path(DEFAULT_HEARTBEAT_FILE)
+            try:
+                read_heartbeat_file(path)
+            except ValueError as exc:
+                raise ValueError(f"file-mode heartbeat check failed: {exc}") from exc
         self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
                                      created_at=time.time())
         save_heartbeat(self.session_id, self._state)

@@ -44,7 +44,7 @@ def register(ctx):
 '''
 
 
-def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
+def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host", source_context_grants=None):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     for name, body in plugins.items():
@@ -53,13 +53,139 @@ def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
         (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": name, "version": "1.0"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(body, encoding="utf-8")
     (home / "config.yaml").write_text(yaml.safe_dump(
-        {"plugins": {"enabled": list(plugins), "isolation": isolation}}), encoding="utf-8")
+        {"plugins": {"enabled": list(plugins), "isolation": isolation,
+                     "entries": source_context_grants or {}}}), encoding="utf-8")
     empty_bundled = tmp_path / "bundled"
     empty_bundled.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
     return home
+
+
+SOURCE_CONTEXT_PLUGIN = """
+import json
+
+def register(ctx):
+    def capture(args, trusted_gateway_source=None, **kw):
+        return json.dumps(trusted_gateway_source)
+    schema = {"name": "source_context_opted", "description": "d",
+              "parameters": {"type": "object", "properties": {}}}
+    ctx.register_tool(name="source_context_opted", toolset="sourcecontext", schema=schema,
+                      handler=capture, requires_gateway_source_context=True)
+    schema = dict(schema, name="source_context_default")
+    ctx.register_tool(name="source_context_default", toolset="sourcecontext", schema=schema,
+                      handler=capture)
+"""
+
+
+def test_host_ipc_delivers_gateway_source_only_with_exact_profile_grant(tmp_path, monkeypatch):
+    import contextvars
+    from model_tools import _CallIds, _execute_tool
+    from tools.registry import registry
+    from gateway import session_context as sc
+
+    plugin_id = "sourcecontext"
+    home = _home_with_plugins(tmp_path, monkeypatch, {plugin_id: SOURCE_CONTEXT_PLUGIN},
+                              source_context_grants={plugin_id: {"allow_gateway_source_context": True}})
+    manager = PluginManager()
+    manager.discover_and_load()
+    source = {"platform": "telegram", "chat_id": "c1", "thread_id": "t1", "message_id": "m1",
+              "user_id": "u1", "session_key": "k1", "session_id": "s1"}
+    vars_ = (sc._SESSION_PLATFORM, sc._SESSION_CHAT_ID, sc._SESSION_THREAD_ID, sc._SESSION_MESSAGE_ID,
+             sc._SESSION_USER_ID, sc._SESSION_KEY, sc._SESSION_ID)
+    ids = _CallIds(task_id="task", session_id="s1", tool_call_id="call", turn_id="turn")
+    def run(name):
+        ctx = contextvars.Context()
+        def invoke():
+            for var, key in zip(vars_, ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id")):
+                var.set(source[key])
+            return _execute_tool(name, {}, {}, ids, user_task=None, enabled_tools=None,
+                                 skip_tool_execution_middleware=True)
+        return ctx.run(invoke)
+    entry = registry.get_entry("source_context_opted", scope=manager.scope_key)
+    try:
+        assert entry is not None and entry.gateway_source_context_ack is not None
+        assert json.loads(run("source_context_opted")) == source
+        assert json.loads(run("source_context_default")) is None
+        (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [plugin_id],
+            "isolation": "host", "entries": {}}}), encoding="utf-8")
+        assert json.loads(run("source_context_opted")) is None
+        manager.unload(plugin_id)
+        assert entry.gateway_source_context_ack is None
+        assert registry.get_entry("source_context_opted", scope=manager.scope_key) is None
+    finally:
+        manager.unload(plugin_id)
+        manager._plugin_host().shutdown()
+
+
+def test_host_ipc_strips_malformed_source_before_child_callback(tmp_path, monkeypatch):
+    import contextvars
+    from gateway import session_context as sc
+    from tools.registry import registry
+
+    plugin_id = "sourcecontext"
+    _home_with_plugins(tmp_path, monkeypatch, {plugin_id: SOURCE_CONTEXT_PLUGIN},
+                       source_context_grants={plugin_id: {"allow_gateway_source_context": True}})
+    manager = PluginManager()
+    manager.discover_and_load()
+    source = {"platform": "telegram", "chat_id": "c1", "thread_id": "t1",
+              "message_id": "m1", "user_id": "u1", "session_key": "k1", "session_id": "s1"}
+    try:
+        entry = registry.get_entry("source_context_opted", scope=manager.scope_key)
+        default_entry = registry.get_entry("source_context_default", scope=manager.scope_key)
+        assert entry is not None
+        assert default_entry is not None
+        def permitted_call(handler, payload, session_id="s1"):
+            ctx = contextvars.Context()
+            def invoke():
+                for var, key in zip((sc._SESSION_PLATFORM, sc._SESSION_CHAT_ID, sc._SESSION_THREAD_ID,
+                                     sc._SESSION_MESSAGE_ID, sc._SESSION_USER_ID, sc._SESSION_KEY, sc._SESSION_ID),
+                                    ("platform", "chat_id", "thread_id", "message_id", "user_id", "session_key", "session_id")):
+                    var.set(source[key])
+                with sc._scoped_gateway_source_dispatch("s1"):
+                    return json.loads(handler({}, trusted_gateway_source=payload, session_id=session_id))
+            return ctx.run(invoke)
+        missing_required = dict(source); del missing_required["message_id"]
+        extra_field = dict(source, unexpected="value")
+        mismatched_session = dict(source, session_id="s2")
+        for malformed in (missing_required, extra_field, mismatched_session):
+            assert permitted_call(entry.handler, malformed) is None
+        assert permitted_call(default_entry.handler, source) is None
+        assert contextvars.Context().run(lambda: json.loads(entry.handler({}, trusted_gateway_source=source, session_id="s1"))) is None
+    finally:
+        manager.unload(plugin_id)
+        manager._plugin_host().shutdown()
+
+
+def test_host_source_binding_is_revoked_across_shutdown_and_generation_restart(tmp_path, monkeypatch):
+    from tools.registry import registry
+
+    plugin_id = "sourcecontext"
+    _home_with_plugins(tmp_path, monkeypatch, {plugin_id: SOURCE_CONTEXT_PLUGIN},
+                       source_context_grants={plugin_id: {"allow_gateway_source_context": True}})
+    manager = PluginManager()
+    manager.discover_and_load()
+    host = manager._plugin_host()
+    try:
+        entry = registry.get_entry("source_context_opted", scope=manager.scope_key)
+        assert entry is not None
+        binding = entry.gateway_source_context_ack
+        assert binding is not None
+        old_generation = host._generation
+        assert binding.gate.acquire()
+
+        host.shutdown()
+        assert entry.gateway_source_context_ack is None
+        assert not binding.gate.acquire()
+
+        host.ensure_started()
+        assert host._generation > old_generation
+        assert entry.gateway_source_context_ack is None
+        assert not binding.gate.acquire()
+    finally:
+        manager.unload(plugin_id)
+        host.shutdown()
 
 
 @pytest.mark.platforms("posix")  # os._exit / SIGKILL process semantics

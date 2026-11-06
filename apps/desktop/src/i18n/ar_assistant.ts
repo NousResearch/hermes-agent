@@ -360,7 +360,8 @@ export const arAssistant = {
         ran: 'تم التشغيل',
         running: 'جار التشغيل',
         ranCode: 'تم تشغيل الكود',
-        runningCode: 'جار البرمجة'
+        runningCode: 'جار البرمجة',
+        blocked: 'تم الحظر'
       },
       prefixes: {
         browser: 'المتصفح',

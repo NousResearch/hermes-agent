@@ -20,6 +20,7 @@ import {
   isRecord,
   numberValue,
   parseMaybeObject,
+  toolCallBlocked,
   unwrapToolPayload
 } from './format'
 import { findFirstUrl, hostnameOf, looksLikePath, looksLikeUrl } from './targets'
@@ -661,6 +662,15 @@ function extractSearchResults(result: unknown, limit = 6): SearchResultRow[] {
 }
 
 function toolErrorText(part: ToolPart, result: Record<string, unknown>): string {
+  // A refused approval carries one sentence for the person ("You denied this
+  // command — it did not run."); the model-facing "BLOCKED: … Do NOT retry"
+  // text stays in the raw payload, as in the CLI (agent/display.py).
+  const userSummary = typeof result.user_summary === 'string' ? result.user_summary.trim() : ''
+
+  if (userSummary) {
+    return userSummary
+  }
+
   const extractedError = extractToolErrorMessage(part.result)
 
   if (part.isError) {
@@ -1361,6 +1371,23 @@ function withoutLeadingAction(value: string, action: string): string {
   return text.slice(0, boundary).toLowerCase() === verb.toLowerCase() ? text.slice(boundary + 1).trimStart() : value
 }
 
+// The verb a terminal/execute_code row leads with. A call an approval or guard
+// refused never ran, so it never reads "Ran".
+function shellAction(part: ToolPart): string {
+  if (toolCallBlocked(part)) {
+    return translateNow('assistant.tool.actions.blocked')
+  }
+
+  const code = part.toolName === 'execute_code'
+  const pending = part.result === undefined
+
+  if (pending) {
+    return translateNow(code ? 'assistant.tool.actions.runningCode' : 'assistant.tool.actions.running')
+  }
+
+  return translateNow(code ? 'assistant.tool.actions.ranCode' : 'assistant.tool.actions.ran')
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
@@ -1440,10 +1467,7 @@ function dynamicTitle(
     const command = shellCommand(args)
 
     if (command) {
-      const action =
-        part.toolName === 'execute_code'
-          ? verb(translateNow('assistant.tool.actions.runningCode'), translateNow('assistant.tool.actions.ranCode'))
-          : verb(translateNow('assistant.tool.actions.running'), translateNow('assistant.tool.actions.ran'))
+      const action = shellAction(part)
 
       return titledAction(
         action,

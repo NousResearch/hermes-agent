@@ -22,7 +22,7 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
+import { parseMaybeObject, toolCallBlocked, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
@@ -135,11 +135,13 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
 // failure inside `result`, never as the top-level error that sets isError, so
 // this reads the body like the run summary does. A non-zero exit_code counts
 // too, matching the gateway's _tool_result_needs_user, which forwards terminal
-// {output, exit_code: 1, error: null} even with display.tool_progress off.
+// {output, exit_code: 1, error: null} even with display.tool_progress off. A
+// refused call is not a failure (it never ran), but the user still has to read
+// that it did not run, and a refused execute_code carries no exit_code.
 const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
   const exitCode = parseMaybeObject(part.result).exit_code
 
-  return toolCallFailed(part) || (typeof exitCode === 'number' && exitCode !== 0)
+  return toolCallFailed(part) || toolCallBlocked(part) || (typeof exitCode === 'number' && exitCode !== 0)
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {

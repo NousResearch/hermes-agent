@@ -9,6 +9,7 @@ import {
   hostnameOf,
   isFileEditTool,
   parseMaybeObject,
+  toolCallBlocked,
   toolCallFailed
 } from './fallback-model'
 import { skillActivityTitle } from './skill-activity'
@@ -32,7 +33,17 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
 }
 
 type RunCategory =
-  'analyze' | 'browse' | 'delegate' | 'edit' | 'explore' | 'interact' | 'other' | 'read' | 'run' | 'search'
+  | 'analyze'
+  | 'blocked'
+  | 'browse'
+  | 'delegate'
+  | 'edit'
+  | 'explore'
+  | 'interact'
+  | 'other'
+  | 'read'
+  | 'run'
+  | 'search'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
@@ -45,12 +56,23 @@ const CATEGORY_ORDER: readonly RunCategory[] = [
   'interact',
   'analyze',
   'run',
+  'blocked',
   'delegate',
   'other'
 ]
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
   analyze: { noun: ['image', 'images'], past: 'Analyzed', present: 'Analyzing' },
+  // A refused command never ran, so it is never counted under "Ran".
+  blocked: {
+    noun: ['command', 'commands'],
+    get past() {
+      return translateNow('assistant.tool.actions.blocked')
+    },
+    get present() {
+      return translateNow('assistant.tool.actions.blocked')
+    }
+  },
   browse: { noun: ['page', 'pages'], past: 'Opened', present: 'Opening' },
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
@@ -85,6 +107,12 @@ function toolCategory(toolName: string): RunCategory {
   }
 
   return TOOL_CATEGORY[toolName] ?? (toolName.startsWith('browser_') ? 'interact' : 'other')
+}
+
+function callCategory(tool: ToolCallLike): RunCategory {
+  const category = toolCategory(tool.toolName)
+
+  return category === 'run' && toolCallBlocked(tool) ? 'blocked' : category
 }
 
 /**
@@ -122,9 +150,9 @@ export function toolPresentVerb(toolName: string): string {
 /** The thing a tool acted on, as the header should name it. */
 function toolTarget(tool: ToolCallLike): string {
   const args = parseMaybeObject(tool.args)
-  const category = toolCategory(tool.toolName)
+  const category = callCategory(tool)
 
-  if (category === 'run') {
+  if (category === 'run' || category === 'blocked') {
     return summarizeShellCommand(firstStringField(args, ['command', 'code']))
   }
 
@@ -195,7 +223,7 @@ export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean):
   // pending. The most recent call covers these, and it's the one the ticker is
   // showing anyway.
   const narrating = live ? (tools.find(isPending) ?? tools.at(-1)) : undefined
-  const liveCategory = narrating ? toolCategory(narrating.toolName) : null
+  const liveCategory = narrating ? callCategory(narrating) : null
 
   const byCategory = new Map<RunCategory, ToolCallLike[]>()
   const skillClauses: string[] = []
@@ -209,7 +237,7 @@ export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean):
       continue
     }
 
-    const category = toolCategory(tool.toolName)
+    const category = callCategory(tool)
     const group = byCategory.get(category)
 
     if (group) {

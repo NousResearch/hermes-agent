@@ -5248,7 +5248,8 @@ export const deOverrides = {
         ran: 'Ausgeführt',
         running: 'Läuft',
         ranCode: 'Code ausgeführt',
-        runningCode: 'Skriptet'
+        runningCode: 'Skriptet',
+        blocked: 'Blockiert'
       },
       prefixes: {
         browser: 'Browser',

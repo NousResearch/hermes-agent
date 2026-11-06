@@ -28,7 +28,7 @@ const msix = await import('../../../scripts/msix-shared.mjs')
 const require = createRequire(import.meta.url)
 
 // The real helpers + template the build itself uses.
-const { substituteManifestMacros } = require('../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js')
+const { substituteManifestMacros } = require(path.join(path.dirname(require.resolve('app-builder-lib')), 'targets', 'win', 'winAppUtil.js'))
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url))
 const desktopDir = path.resolve(scriptsDir, '..')
 const template = fs.readFileSync(path.join(desktopDir, 'assets', 'msix-manifest.xml'), 'utf8')

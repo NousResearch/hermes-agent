@@ -1,0 +1,17 @@
+name: fatetell
+title: FateTell
+repo: https://github.com/RussGuo/fatetell-mcp
+sha: 5d81776071ddf897abaf3a65ed9f203ca87372a5
+description: "BaZi (Four Pillars) charts, the Chinese almanac and the charts saved in a FateTell account, computed by FateTell's hosted MCP server, plus a skill on reading the results. Portable Agent Plugins v1 package with a skill and hosted Streamable HTTP MCP; no local executable code. Disclosure — hosted MCP server at https://mcp.fatetell.com/mcp (remote tool list not covered by the pin); the server calls no language model; cast_bazi_chart and get_almanac work without an account and send a birth date and time, IANA time zone, gender, hemisphere and optional longitude (no place name); the other seven tools need a FateTell account (four of them an active membership) and Hermes native MCP OAuth (`mcp_servers.fatetell` on https://mcp.fatetell.com/login/mcp with `auth: oauth`, then `hermes mcp login fatetell`; through the bundled mcp.json alone those tools answer 401), authorization server https://auth.fatetell.com, Hermes stores the OAuth tokens; create_saved_chart is the only write tool: it adds a chart to the user's account from a display name, gender, birth date and time and a birthplace name, and cannot edit or delete charts; the package marks the server untrusted so Hermes asks before that call; birth data, saved charts and account details returned by the tools reach the model provider."
+maintainer: RussGuo
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/RussGuo/fatetell-mcp/blob/5d81776071ddf897abaf3a65ed9f203ca87372a5/README.md
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

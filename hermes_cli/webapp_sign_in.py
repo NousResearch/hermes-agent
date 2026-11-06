@@ -24,7 +24,10 @@ So on the gateway's Webapp behind the gate a provider token works on its own onl
 gave it to a native app's sign-in (RFC 8252: ``/auth/native/token``, then ``/auth/native/refresh``). The
 listener keeps a digest of each such token until it expires, in ``RECORD_PATH`` under the gateway home
 (``app.state.webapp_home``), so native apps stay signed in across a restart and a sign-out. A browser
-login's tokens therefore work only as that login's cookies and end with it.
+login's tokens therefore work only as that login's cookies and end with it. The deployment session
+token (``HERMES_DASHBOARD_SESSION_TOKEN``) also works as a bearer or ``?token=`` while the
+session-token provider is registered (:func:`access_token_works_alone`): no browser login holds it,
+and it has no refresh.
 """
 from __future__ import annotations
 
@@ -119,6 +122,23 @@ def token_works_alone(request: Request, token: str) -> bool:
     with _records_lock:
         expires = _loaded(_home(request)).get(_digest(token))
     return expires is not None and expires > time.time()
+
+
+def access_token_works_alone(request: Request, token: str) -> bool:
+    """Whether *token* may be used on its own as an access token (a bearer header, a socket's
+    ``?token=``): as :func:`token_works_alone` (looked up at call time, so a patch of it applies), or
+    when it is the deployment session token the registered session-token provider holds. The refresh
+    route keeps :func:`token_works_alone`: the deployment session token has no refresh."""
+    return token_works_alone(request, token) or _is_deployment_token(token)
+
+
+def _is_deployment_token(token: str) -> bool:
+    """Whether *token* is the deployment session token the registered session-token provider read at
+    startup. No browser login holds it: that provider has no sign-in."""
+    from hermes_cli.dashboard_auth import get_provider
+
+    matches = getattr(get_provider("session-token"), "matches_token", None) if token else None
+    return callable(matches) and bool(matches(token))
 
 
 def gave_native_app(request: Request, session) -> None:

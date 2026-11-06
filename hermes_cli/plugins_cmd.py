@@ -638,9 +638,12 @@ def _selection_lock() -> threading.Lock:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
-    """Submit the command's delta with the version of the selection it read."""
+    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled
+    plugin on the kill list raises :class:`PluginOperationError` (every enable surface lands here)."""
     from pm.plugins_state import read_home_selection
 
+    if enable:
+        _refuse_recalled_entry(_find_plugin_entry(name))
     with _selection_lock():
         expected_config = _plugin_selection_version()
         config = read_home_selection(get_hermes_home()) or {}
@@ -652,6 +655,16 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                    expected_config=expected_config, plugin=name if enable else None,
                                    settled=(name, *aliases))
+
+
+def _refuse_recalled_entry(entry: Optional[tuple]) -> None:
+    """``PluginOperationError`` when the kill list recalls the non-bundled plugin *entry* (a
+    :func:`_find_plugin_entry` tuple). Judged on the load-time gate's inputs, its manifest name and its own
+    directory: re-resolving the bare leaf could read another plugin's install record (a nested
+    ``obs/x`` beside a top-level ``x``)."""
+    if entry is not None and entry[3] != "bundled":
+        from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+        refuse_if_installed_removed(entry[0], entry[4])
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -735,9 +748,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(key)
     if source != "bundled":
         # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
-        from hermes_cli import plugins_cmd_catalog as catalog
         try:
-            catalog.refuse_if_installed_removed(key, _user_installed_plugin_dir(key.rsplit("/", 1)[-1]))
+            _refuse_recalled_entry(_find_plugin_entry(key))
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
@@ -1021,7 +1033,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, PluginOperationError) as exc:
         return {
             "ok": False,
             "error": str(exc),

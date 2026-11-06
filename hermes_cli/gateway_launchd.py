@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import contextlib
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -21,6 +22,8 @@ from hermes_cli import gateway_service_owner
 
 from agent.deadline import poll_until
 
+
+logger = logging.getLogger(__name__)
 
 LAUNCHD_WRAPPER = "/usr/bin/python3"
 """Alias for the gated wrapper: launchd spawns an Apple platform binary so the job carries a Local
@@ -243,10 +246,13 @@ def _launchd_wrapper_mode() -> str:
         from hermes_cli.config import load_config
         node = (load_config() or {}).get("gateway") or {}
         value = str(node.get("launchd_wrapper") or "")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- a broken config must not stop plist generation; logged with traceback
+        logger.warning("launchd_wrapper: config unreadable, falling back to the environment", exc_info=True)
         value = ""
     if not value:
-        value = os.environ.get("HERMES_LAUNCHD_WRAPPER", "")
+        # One-shot override for trying the shape without editing config; config.yaml is the durable
+        # setting and outranks this on purpose (see the docstring).
+        value = os.environ.get("HERMES_LAUNCHD_WRAPPER", "")  # health: allow HX002 -- one-shot experiment knob; config.yaml is the durable setting and wins
     return "python3" if value.strip().lower() == "python3" else "osascript"
 
 

@@ -48,6 +48,10 @@ describe('stripLastReplyBlock — the same lines survive on both surfaces', () =
   })
 })
 
+it('keeps text typed on line 1 of an empty draft, where every editor opens', () => {
+  expect(stripLastReplyBlock(`my question${buildEditorSeed('', 'a reply')}`)).toBe('my question')
+})
+
 it('shows nothing for an empty reply', () => {
   expect(buildEditorSeed('draft', '   \n')).toBe('draft')
 })

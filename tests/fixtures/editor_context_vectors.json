@@ -13,7 +13,7 @@
     {
       "draft": "",
       "last_reply": "Only a reply.",
-      "expected": "# ── last reply (lines starting with # are removed) ──\n# Only a reply.\n# ── end of last reply ──"
+      "expected": "\n\n# ── last reply (lines starting with # are removed) ──\n# Only a reply.\n# ── end of last reply ──"
     },
     {
       "draft": "draft only",

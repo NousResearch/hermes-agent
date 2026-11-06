@@ -25,13 +25,14 @@ def _comment_line(line: str) -> str:
 
 
 def build_editor_seed(draft: str, last_reply: str) -> str:
-    """What the editor opens with: the draft, then the reply block when there is a reply."""
+    """What the editor opens with: the draft, a blank line, then the reply block (if any)."""
     reply = (last_reply or "").strip("\n")
     if not reply.strip():
         return draft or ""
     body = "\n".join(_comment_line(line.rstrip("\r")) for line in reply.split("\n"))
-    block = f"{MARKER_START}\n{body}\n{MARKER_END}"
-    return f"{draft.rstrip(chr(10))}\n\n{block}" if (draft or "").strip() else block
+    # Always a blank line above the block, even with no draft: editors open on line 1, and text
+    # typed there must not land on the marker line (which would stop the block being found).
+    return f"{(draft or '').rstrip(chr(10))}\n\n{MARKER_START}\n{body}\n{MARKER_END}"
 
 
 def strip_last_reply_block(text: str) -> str:

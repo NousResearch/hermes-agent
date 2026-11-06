@@ -17,7 +17,7 @@ function commentLine(line: string): string {
   return text ? `# ${text}` : '#'
 }
 
-/** What the editor opens with: the draft, then the reply block when there is a reply. */
+/** What the editor opens with: the draft, a blank line, then the reply block (if any). */
 export function buildEditorSeed(draft: string, lastReply: string): string {
   const reply = lastReply.replace(/^\n+|\n+$/g, '')
 
@@ -26,9 +26,10 @@ export function buildEditorSeed(draft: string, lastReply: string): string {
   }
 
   const body = reply.split('\n').map(line => commentLine(line.replace(/\r$/, '')))
-  const block = `${MARKER_START}\n${body.join('\n')}\n${MARKER_END}`
 
-  return draft.trim() ? `${draft.replace(/\n+$/, '')}\n\n${block}` : block
+  // Always a blank line above the block, even with no draft: editors open on line 1, and text
+  // typed there must not land on the marker line (which would stop the block being found).
+  return `${draft.replace(/\n+$/, '')}\n\n${MARKER_START}\n${body.join('\n')}\n${MARKER_END}`
 }
 
 /**

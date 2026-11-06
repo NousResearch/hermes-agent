@@ -67,3 +67,12 @@ def test_reply_text_cannot_close_the_block_early() -> None:
 def test_blank_reply_produces_no_block() -> None:
     assert build_editor_seed("draft", "   \n\n") == "draft"
     assert build_editor_seed("", "") == ""
+
+
+def test_text_typed_on_line_one_of_an_empty_draft_survives() -> None:
+    """Editors open on line 1. With no draft the seed must start blank, or the user's first
+    keystrokes land on the marker line and the block can no longer be found and stripped."""
+    seed = build_editor_seed("", "a reply")
+    edited = "my question" + seed  # what typing at the very top of the file produces
+
+    assert strip_last_reply_block(edited) == "my question"

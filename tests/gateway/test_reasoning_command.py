@@ -31,7 +31,6 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -108,7 +107,7 @@ class TestReasoningCommand:
 
         await runner._handle_reasoning_command(event)
 
-        assert runner._session_reasoning_overrides[session_key] == {
+        assert runner._session_state(session_key).conversation.reasoning_override == {
             "enabled": True,
             "effort": effort,
         }
@@ -124,7 +123,7 @@ class TestReasoningCommand:
         runner = _make_runner()
         source = _make_event("/reasoning").source
         session_key = runner._session_key_for_source(source)
-        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
+        runner._session_state(session_key).conversation.reasoning_override = {"enabled": True, "effort": "xhigh"}
 
         assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
 

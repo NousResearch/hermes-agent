@@ -193,13 +193,9 @@ LEGACY_FIELD_SPECS: dict[str, _FieldSpec] = {
     "_running_agents_ts": _spec("turn", "started_ts", float),
     "_busy_ack_ts": _spec("turn", "busy_ack_ts", float),
     "_session_model_overrides": _spec("conversation", "model_override", None),
-    "_session_reasoning_overrides": _spec("conversation", "reasoning_override", None),
-    "_last_resolved_model": _spec("conversation", "last_resolved_model", str),
     "_queued_events": _spec("conversation", "queued_events", list),
     "_pending_approvals": _spec("persistent", "approvals", None),
-    "_update_prompt_pending": _spec("persistent", "update_prompt_pending", bool),
     "_pending_messages": _spec("persistent", "pending_command_text", None),
-    "_session_run_generation": _spec("persistent", "run_generation", int),
 }
 
 

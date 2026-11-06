@@ -52,7 +52,6 @@ def _make_runner(adapter=None):
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
-    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -104,7 +103,7 @@ class TestReasoningChoicePicker:
         reply = await on_choice(event.source.chat_id, "ultra")
 
         assert "ultra" in reply
-        override = runner._session_reasoning_overrides.get(session_key)
+        override = runner._session_state(session_key).conversation.reasoning_override
         assert override == {"enabled": True, "effort": "ultra"}
 
 

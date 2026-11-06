@@ -186,3 +186,44 @@ def test_empty_context_anchor_after_anchor_does_not_crash():
 
     plan = _plan_hunks('a\n\nb\n', [Hunk(lines=[HunkLine(' ', 'a')]), Hunk(lines=[HunkLine(' ', '')])])
     assert plan.errors == []
+
+
+def test_blank_anchor_preserves_hunk_order():
+    source = 'value = old\n\nvalue = old'
+    body = '@@\n \n@@\n-value = old\n+FIRST\n@@\n-value = old\n+SECOND'
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == 'SECOND\n\nFIRST'
+
+
+def test_ordered_partial_hunks_refuse_ambiguous_substrings():
+    source = 'NOTFOO\nreal = FOO\n'
+    body = '@@\n-FOO\n+BAR\n@@\n-FOO\n+BAZ'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_hint_occurrence_outside_prior_write_still_usable():
+    source = 'hostname = "edge-1"\nkeep = marker\nname = "edge-1"\n'
+    body = '@@\n-hostname = "edge-1"\n+host = "marker"\n@@ marker @@\n-name = "edge-1"\n+name = "edge-2"'
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == 'host = "marker"\nkeep = marker\nname = "edge-2"\n'
+
+
+def test_long_search_containing_hint_can_be_ordered():
+    line = 'line = ' + 'a' * 600
+    source = line + '\nHINT\ntail = 1\n'
+    body = '@@ HINT @@\n-' + line + '\n HINT\n+changed\n@@\n-tail = 1\n+tail = 2'
+    result, files = apply(source, body)
+    assert result.success, result.error
+    assert files.source == 'HINT\nchanged\ntail = 2\n'
+
+
+def test_partially_consumed_hinted_line_does_not_select_other_copy():
+    source = 'prefix SECRET_A_EDIT\n' + 'y' * 100 + '\nSECRET_A_EDIT\n'
+    body = '@@\n-prefix SECRET_A\n+ZZ\n@@ SECRET_A_EDIT @@\n-SECRET_A_EDIT\n+DONE'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes

@@ -289,7 +289,7 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         return None, 0, None
     # Inside a bounded scope (after the previous hunk, around an @@ hint @@) a whole-line site
     # must not shadow a site only a normalizing strategy finds, so those count there too.
-    if cursor or _hint_windows(content, hunk.context_hint):
+    if pattern and (cursor or _hint_windows(content, hunk.context_hint)):
         norm = _normalized_sites(content, pattern, free)
     whole = sites(0, len(content))
     after = sites(cursor, len(content)) if cursor else whole
@@ -298,8 +298,9 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         whole, after = (sorted(whole + fuzzy), []) if similar else (whole, fuzzy)
     windows, hinted = _hint_pick(content, hunk, sites)
     hint = hunk.context_hint or ''
-    if hint and any(_overlaps((pos, pos + len(hint)), w)
-                    for pos in _positions(content, hint) for w in written) and any(
+    hint_positions = _positions(content, hint)
+    if hint_positions and all(any(_overlaps((pos, pos + len(hint)), w) for w in written)
+                              for pos in hint_positions) and any(
             _consumed(line, removed) for line in pattern.split('\n') if line.strip()):
         return None, 1, "its @@ hint overlaps text an earlier hunk wrote"
     if hinted:
@@ -316,10 +317,11 @@ def _select_span(content: str, pattern: str, hunk: Hunk, cursor: int, *, ordered
         if cursor and not hinted_sites and after:
             return None, len(after), "its @@ hint selects no site while another site follows the previous hunk"
     if windows and ordered:
-        after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)]
+        after = [s for s in after if any(lo <= s[0] and s[1] <= hi for lo, hi in windows)
+                 or any(s[0] <= pos and pos + len(hint) <= s[1] for pos in hint_positions)]
         if not after and whole:
             return None, len(whole), "its @@ hint selects no remaining site"
-    if len(after) == 1 or (after and ordered and (any(tiers) or successive) and (not windows or successive)):
+    if len(after) == 1 or (after and ordered and any(tiers) and (not windows or successive)):
         return after[0], len(after), None
     pool = after or whole  # nothing after the previous hunk: a unique earlier site still counts
     return (pool[0], 1, None) if len(pool) == 1 else (None, len(pool), None)
@@ -460,6 +462,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
     written: list[Span] = []
     removed: list[str] = []  # source text earlier hunks replaced
     landed: list[tuple[str, str]] = []
+    damaged_hints: set[str] = set()
     changes = cursor = 0
     changed_patterns = ['\n'.join(s) if s and s != r else None for s, r in map(_split_hunk, hunks)]
     for index, hunk in enumerate(hunks, start=1):
@@ -470,7 +473,7 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             # Context-only anchor hunks (models emit these between changes) are inert; identical
             # -/+ lines are a no-op. An anchor that selects exactly one site moves the cursor.
             changes += any(line.prefix in '-+' for line in hunk.lines)
-            if search_lines and '\n'.join(search_lines):
+            if search_lines:
                 span, _n, _conflict = _select_span(content, '\n'.join(search_lines), hunk, cursor,
                                                    ordered=False, written=tuple(written))
                 cursor = span[1] if span else cursor
@@ -496,6 +499,9 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
         pattern = '\n'.join(search_lines)
         if not pattern:
             errors.append(f"{label} has empty search text — include surrounding context lines")
+            continue
+        if hunk.context_hint in damaged_hints:
+            errors.append(f"{label} is ambiguous: its @@ hint was changed by an earlier hunk")
             continue
         try:
             pattern, replacement, correction = maybe_correct_escape_drift(pattern, replacement, content)
@@ -531,6 +537,11 @@ def _plan_hunks(content: str, hunks: list[Hunk]) -> _Plan:
             errors.append(error)
         if edit:
             start, old_end, cursor = edit
+            for later in hunks[index:]:
+                hint = later.context_hint or ''
+                if hint and any(_overlaps((pos, pos + len(hint)), (start, old_end))
+                                for pos in _positions(content, hint)):
+                    damaged_hints.add(hint)
             removed.append(content[start:old_end])
             landed.append((content[start:old_end], replacement))
             content = new_content

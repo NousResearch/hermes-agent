@@ -1,6 +1,6 @@
 name: pdf-shrink
 repo: https://github.com/Hazem-Samak/hermes-pdf-shrink
-sha: 414270c8a4bef778ff49a9f74257af684e73af45
+sha: c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d
 description: >-
   Shrink a PDF to a size limit (2 MB, 500 KB, whatever the upload form says) with
   everything running locally — no upload, no API key, no third-party service. Two
@@ -39,9 +39,9 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Hazem-Samak/hermes-pdf-shrink#readme
 version: "1.0.2"
 title: PDF Shrink
-image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/414270c8a4bef778ff49a9f74257af684e73af45/assets/banner.png
+image: https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/414270c8a4bef778ff49a9f74257af684e73af45/assets/screenshot.jpg
+  - https://raw.githubusercontent.com/Hazem-Samak/hermes-pdf-shrink/c2d8a3f544bc9b0e704cd9e9cadbe5e34cd9c23d/assets/screenshot.jpg
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

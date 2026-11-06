@@ -131,6 +131,8 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
+    "apps/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)

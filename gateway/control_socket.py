@@ -1,5 +1,5 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
-versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
+versioned JSON verbs (``identify``, ``status``, ``resolve-profile``, ``session-ticket``, ...). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
 file when the home path exceeds ``sun_path`` or its filesystem refuses sockets); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
@@ -213,6 +213,8 @@ class GatewayControlServer:
         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
         self._home = Path(home).resolve()
         self.ticket_store = None
+        # ``resolve-profile`` (gateway.control_resolve); None keeps the unknown-verb answer.
+        self.resolve_handler: Optional[Callable[[dict, Path], dict[str, Any]]] = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
@@ -336,6 +338,8 @@ class GatewayControlServer:
                     raise PermissionError("authenticated private request required")
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self.private_handlers[verb](request["params"], peer_subject)}
+            elif verb == "resolve-profile" and self.resolve_handler is not None:
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": self.resolve_handler(request, self._home)}
             elif verb == "session-ticket":
                 response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
                             "result": self._session_ticket(request, peer_subject)}

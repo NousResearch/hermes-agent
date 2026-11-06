@@ -796,6 +796,8 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_session_active_id
+    ON messages(session_id, id) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
     ON messages(session_id, display_order, active DESC, id DESC)
     WHERE active = 1 OR compacted = 1;

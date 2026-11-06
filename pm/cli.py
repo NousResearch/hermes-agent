@@ -762,14 +762,23 @@ def _refresh_pnpm_lock() -> int:
     # Every workspace and the root, within the declared ranges: --no-save keeps the manifests'
     # specifiers as written, and the release-age policy applies to every new pick.
     command = [str(pnpm.binary), "update", "--recursive", "--lockfile-only", "--no-save"]
-    code, tail = _run_live(command, cwd=str(repo_root()), env=pnpm_env(env_for("pnpm")))
+    env = pnpm_env(env_for("pnpm"))
+    code, tail = _run_live(command, cwd=str(repo_root()), env=env)
     if code != 0:
         print(f"✗ pnpm update failed:\n{tail}")
         # --no-save turns the "only too-young versions match" case into the
         # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
         if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
             print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
-                  "wait for them to age, or add the package to minimumReleaseAgeExclude")
+                  "wait for them to age, or add the exact name@version to minimumReleaseAgeExclude")
+        return 1
+    # --no-save also skips minimumReleaseAgeExcludePrune; an install that settles the new lock
+    # drops the excludes it no longer holds, so they leave in the same commit as the lock change
+    # (a later install would rewrite pnpm-workspace.yaml on a user's checkout instead).
+    code, tail = _run_live([str(pnpm.binary), "install", "--frozen-lockfile", "--lockfile-only"],
+                           cwd=str(repo_root()), env=env)
+    if code != 0:
+        print(f"✗ pnpm install --frozen-lockfile failed after the update:\n{tail}")
         return 1
     print("✓ pnpm-lock.yaml refreshed")
     return 0

@@ -25,76 +25,12 @@ strictDepBuilds: true
 # Minutes (14 days). Checked whenever the lockfile is resolved; user-machine installs trust the
 # already-checked lockfile (--trust-lockfile).
 minimumReleaseAge: 20160
+# Exemptions are exact `name@version` entries, each with the reason it cannot wait. Every install
+# drops an entry once the lockfile no longer holds that version, so none needs a removal date.
+minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude:
-  # allow assistant-ui packages & a couple specific deps since they update a LOT.
-  # remove this when we stabilize (or we haven't updated in 2 wks)
-  - '@assistant-ui/*'
-  - assistant-cloud
-  - assistant-stream
-  - '@radix-ui/*'
-  - radix-ui
-  - safe-content-frame
-
-  # react-router 8.3.0 includes fixes for vulns. remove this when 8.3.0 is > 2wks old.
-  - react-router
-
-  # eslint 10.8.0 includes fixes for vulns. remove this when 10.8.0 is > 2wks old.
-  - eslint
-  - '@eslint/*'
-
-  # tar 7.5.21 includes fixes for vulns. remove this when 7.5.21 is > 2wks  old
-  - tar
-
-  # concurrently 10.0.4 includes fixes for vulns. remove this when 10.0.4 is > 2wks  old
-  - concurrently
-
-  # fast-uri 3.1.4 includes fixes for vulns. remove this when 3.1.4 is > 2wks  old
-  - fast-uri
-
-  # minimatch 10.2.6 includes fixes for vulns. remove this when 10.2.6 is > 2wks  old
-  - minimatch
-
-  # brace-expansion 5.0.9 includes fixes for vulns. remove this when 5.0.9 is > 2wks  old
-  - brace-expansion
-
-  # js-yaml 4.3.1 includes fixes for GHSA-5p4m-2wfm-xmqj. remove when > 2wks old (rel 2026-07-31)
-  - js-yaml
-
-  # nanoid 3.3.17 includes fixes for GHSA-2v37-7h3g-55p8. remove when > 2wks old (rel 2026-08-03)
-  - nanoid
-
-  # dompurify 3.4.17 fixes GHSA-55q2-fjhq-7xh7 follow-ups (low). remove when 3.4.17 is > 2wks old (rel 2026-10-12)
-  - dompurify
-
-  # ink needs
-  - lightningcss
-  - postcss
-
-  # source-map-js 1.2.2 fixes GHSA-68fv-2mgg-jv7q (high, event-loop DoS). remove when 1.2.2 is > 2wks old (rel 2026-09-30)
-  - source-map-js
-
-  # http-cache-semantics 4.3.0 fixes GHSA-ch52-4w7c-c8xp (high, cross-user cached data disclosure).
-  # remove when 4.3.0 is > 2wks old (rel 2026-10-04)
-  - http-cache-semantics
-
-  # ip-address 10.7.4 fixes GHSA-8xj3-p8x2-m3c7-family alerts (medium). remove when 10.7.4 is > 2wks old (rel 2026-10-11)
-  - ip-address
-
-  # sanitize-html 2.18.1 fixes GHSA-c9rx-x947-fp3h (medium), introduced by 2.18.0 which fixes
-  # GHSA-x3q4-9hxx-gx8m/GHSA-cv27-6wvh-8x7j/GHSA-374f-7chj-9948. remove when 2.18.1 is > 2wks old (rel 2026-10-14)
-  - sanitize-html
-
-  # vitest 4.1.12 is a patch bump (4.1.11 -> 4.1.12). remove when 4.1.12 is > 2wks old (rel 2026-10-15)
-  - vitest
-  - '@vitest/*'
-
-  # electron 44.9.3 backports upstream Chromium/V8 security fixes, and 44.9.1+ carries the
-  # eMudhra root distrust per #142533. remove when 44.9.3 is > 2wks old (rel 2026-10-21)
-  - electron
-
-  # pele 1.13.0 is the release the desktop diagram swap was measured and parity-checked on (math
-  # labels need 1.8.0+). remove when 1.13.0 is > 2wks old (rel 2026-10-31)
-  - pele
+  # The release the desktop diagram swap was measured and parity-checked on (math labels need 1.8.0+).
+  - pele@1.13.0
 
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7

@@ -659,9 +659,13 @@ without upload times, it stops with `has no publish time`; use
 `https://pypi.org/simple` for that step.
 
 JavaScript workspace dependencies follow the same rule through
-`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days),
-with exemptions listed in `minimumReleaseAgeExclude`. CI enforces it when it
-installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
+`minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days).
+An exemption goes in `minimumReleaseAgeExclude` as an exact `name@version`
+(never a bare name or a glob, which would exempt every future release) with a
+comment saying why it cannot wait. `minimumReleaseAgeExcludePrune` removes an
+entry once the lockfile no longer holds that version; `hermes pm update --pnpm`
+applies that removal together with the lock refresh. CI enforces the policy when
+it installs `pnpm-lock.yaml`; source, bundle and Docker installs trust the
 committed lock.
 
 ## Diagnostics

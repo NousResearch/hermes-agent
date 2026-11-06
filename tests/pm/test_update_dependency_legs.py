@@ -172,6 +172,10 @@ def test_pnpm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, ca
                      target=target, artifacts=['2' * 64])
         lock.save()
         (repo / 'package.json').write_text(json.dumps({'name': 'pm-leg-proof', 'version': '1.0.0', 'private': True}), encoding='utf-8')
+        # An exclude for a version the refreshed lock does not hold.
+        (repo / 'pnpm-workspace.yaml').write_text(
+            'minimumReleaseAge: 20160\nminimumReleaseAgeExcludePrune: true\n'
+            'minimumReleaseAgeExclude:\n  - unlocked-fixture@1.0.0\n', encoding='utf-8')
         monkeypatch.setenv('PATH', str(Path(os.environ.get('SYSTEMROOT', '/')) / 'System32') if os.name == 'nt' else '/usr/bin:/bin')
         monkeypatch.setenv('pnpm_config_store_dir', str(root / 'ambient-store'))
         before = dict(os.environ)
@@ -182,6 +186,8 @@ def test_pnpm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, ca
         args.check = False
         assert cli.cmd_update(args) == 0, capsys.readouterr().out
         assert "lockfileVersion: '9.0'" in (repo / 'pnpm-lock.yaml').read_text(encoding='utf-8')
+        # The refresh leaves no stale exclude for the next install to remove.
+        assert 'unlocked-fixture' not in (repo / 'pnpm-workspace.yaml').read_text(encoding='utf-8')
         assert not (caller / 'pnpm-lock.yaml').exists()
         assert dict(os.environ) == before
         assert lock.path.read_bytes() == before_lock

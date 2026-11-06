@@ -30,6 +30,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from agent.client_headers import user_agent_headers
 from agent.compression_marker import elide_middle
 from agent.retry_utils import jittered_backoff
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -320,7 +321,11 @@ class TrajectoryCompressor:
                 raise RuntimeError(f"Missing API key. Set {self.config.api_key_env} environment variable.")
             from openai import OpenAI
             from agent.auxiliary_client import _to_openai_base_url
-            self.client = OpenAI(api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
+            self.client = OpenAI(
+                api_key=api_key,
+                base_url=_to_openai_base_url(self.config.base_url),
+                default_headers=user_agent_headers(),
+            )
             # AsyncOpenAI is created lazily in _get_async_client() so it binds to the current event
             # loop — each process_directory() runs its own asyncio.run(); a shared client would hit
             # "Event loop is closed".
@@ -333,7 +338,11 @@ class TrajectoryCompressor:
         """Return a fresh AsyncOpenAI client bound to the running event loop."""
         from openai import AsyncOpenAI
         from agent.auxiliary_client import _to_openai_base_url
-        self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url))
+        self.async_client = AsyncOpenAI(
+            api_key=self._async_client_api_key,
+            base_url=_to_openai_base_url(self.config.base_url),
+            default_headers=user_agent_headers(),
+        )
         return self.async_client
 
     def _detect_provider(self) -> str:

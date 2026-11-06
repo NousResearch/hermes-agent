@@ -1,12 +1,3 @@
-/**
- * The two creation dialogs: New Bot, and the group-chat creation flow the
- * roster's group button opens (plus the per-bot group membership dialog it
- * sits beside).
- *
- * New Bot creates its profile LAZILY, so it owns the single-flight guard and
- * the name pattern that gates the draft.
- */
-
 import {
   Badge,
   Button,
@@ -37,6 +28,14 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+/**
+ * The two creation dialogs: New Bot, and the group-chat creation flow the
+ * roster's group button opens (plus the per-bot group membership dialog it
+ * sits beside).
+ *
+ * New Bot creates its profile LAZILY, so it owns the single-flight guard and
+ * the name pattern that gates the draft.
+ */
 import { useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
@@ -48,17 +47,17 @@ import {
   botOnConnection,
   connectionName,
   groupCreationEngine,
-  groupCreationSource,
-  groupExecutionMode,
   groupNeedsDesktopCourier,
+  groupSeatsPeers,
+  revalidateGroupCreation,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
-import type { GroupCapabilityState, GroupCreationEngine } from './canonical-group-capabilities'
+import type { GroupCreationEngine } from './canonical-group-capabilities'
+import { createGroupAcrossConnections, type GroupCreationIntent, peerJoinText, usePeerTargets } from './canonical-group-peers'
 import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupCreateError, canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
-import type { CanonicalGroupRoute } from './canonical-groups'
+import { canonicalGroupCreateError, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1344,51 +1343,30 @@ function persistDesktopDrivenGroup(
 interface GroupEngineNoteProps {
   connectionId: null | string
   engine: GroupCreationEngine | null
+  reason?: string
+  owner: string
+  ownerConnectionId?: string
   selected: RosterRow[]
 }
 
 /** Says, before creation, when a selection makes a Desktop-driven room or
  *  cannot be created from this connection at all. */
-function GroupEngineNote({ connectionId, engine, selected }: GroupEngineNoteProps) {
+function GroupEngineNote({ connectionId, engine, selected, reason, owner, ownerConnectionId }: GroupEngineNoteProps) {
   const b = useBots()
   const desktopDriven = engine === 'desktop' && groupNeedsDesktopCourier(selected, connectionId)
+  const localOwner = (ownerConnectionId ?? connectionId) === 'local'
 
-  if (engine !== 'elsewhere' && !desktopDriven) {
+  if (!['elsewhere', 'gateway-peer', 'checking', 'unavailable'].includes(engine ?? '') && !desktopDriven) {
     return null
   }
 
   return (
     <p className="text-xs text-(--ui-text-secondary)" data-group-engine={engine} role="note">
-      {engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
+      {engine === 'gateway-peer' ? b.crossGateway.gatewayPeer(owner, localOwner) : engine === 'checking' ? b.crossGateway.checkingPeers :
+        engine === 'unavailable' ? (reason === 'unreachable' ? b.crossGateway.peerCheckFailed(owner, localOwner) : b.canonical.driverUnavailable) : engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
+      {desktopDriven && reason && !['peer_owner_unavailable', 'default_profile_required'].includes(reason) && <span> {b.canonical.peerTargetSetup.replace('{connection}', localOwner ? b.bot.thisDevice : owner).replace('{reason}', reason)}</span>}
     </p>
   )
-}
-
-async function revalidateGroupCreationMode(
-  route: CanonicalGroupRoute,
-  capability: GroupCapabilityState | null,
-  source: string,
-  unavailableMessage: string
-) {
-  const sourceCurrent = groupCreationSource(route, capability?.activationEpoch ?? -1)
-
-  if (!capability || capability.source !== source || !sourceCurrent()) {
-    throw new Error(unavailableMessage)
-  }
-
-  const mode = capability.mode
-
-  if (mode !== 'canonical' && mode !== 'legacy') {
-    throw new Error(unavailableMessage)
-  }
-
-  const freshMode = groupExecutionMode(await canonicalGroupRequest<unknown>(route, 'groups.capabilities'))
-
-  if (!sourceCurrent() || freshMode !== mode) {
-    throw new Error(unavailableMessage)
-  }
-
-  return { mode, sourceCurrent }
 }
 
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
@@ -1400,18 +1378,22 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const { t } = useI18n()
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
-  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open)
+  const [peerCheck, setPeerCheck] = useState(0)
+  const { capability, connectionId, mode, observedRoute, seatable, source } = useGroupCapability(open, peerCheck)
 
+  const intent = useRef<GroupCreationIntent>({})
   const [query, setQuery] = useState('')
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
+  // eslint-disable-next-line no-restricted-syntax -- Clears a dialog-owned request intent; no reactive state is copied.
   useEffect(() => {
     if (open) {
       setQuery('')
       setChecked({})
+      intent.current = {}
       setName('')
       setImage(null)
     }
@@ -1421,10 +1403,17 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const selectableRoster = seatableGroupBots(roster, { connectionId, mode, seatable })
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
-  // A selection spanning connections cannot be owned by one gateway: the room
-  // runs on this Desktop, which carries each member's turn home. A selection
-  // wholly on ANOTHER connection can be owned by neither side from here.
-  const engine = mode === 'canonical' || mode === 'legacy' ? groupCreationEngine(mode, selected, connectionId) : null
+  const targets = usePeerTargets(selectableRoster, connectionId, open && groupSeatsPeers(capability?.snapshot), peerCheck)
+  const plan = groupCreationEngine(mode, selected, connectionId, capability?.snapshot, targets)
+  const engine = plan.engine
+
+  const membershipDescription: Partial<Record<GroupCreationEngine, string>> = {
+    desktop: b.crossGateway.desktopMembership, gateway: b.crossGateway.gatewayMembership, 'gateway-peer': b.crossGateway.gatewayMembership
+  }
+
+  const owner = selectableRoster.find(bot => botOnConnection(bot, connectionId))?.connectionLabel ||
+    (connectionId === 'local' ? b.bot.thisDevice : connectionId || b.bot.thisDevice)
+
   const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
@@ -1434,7 +1423,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    engine !== null && engine !== 'elsewhere'
+    ['gateway', 'gateway-peer', 'desktop'].includes(engine)
 
   const creating = useRef(false)
 
@@ -1455,24 +1444,31 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
+    const { plan: fresh, targets: freshTargets, sourceCurrent } = await revalidateGroupCreation(
+      route, capability, source, selected, engine, b.canonical.driverUnavailable).catch(error => {
+        setPeerCheck(value => value + 1)
+        throw error
+      })
 
-    if (!sourceCurrent()) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+    if (!sourceCurrent()) {throw new Error(b.canonical.driverUnavailable)}
 
-    const engine = groupCreationEngine(currentMode, selected, route.connectionId)
+    if (fresh.engine === 'gateway' || fresh.engine === 'gateway-peer') {
+      const members = durableGroupChatMembers(selected)
+      const groupName = uniqueGroupChatName(base, new Set(liveGroupChatNames()))
 
-    if (engine === 'elsewhere') {
-      throw new Error(b.crossGateway.selectionElsewhere(connectionName(selected[0])))
-    }
-
-    if (engine === 'gateway') {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      const created = fresh.engine === 'gateway-peer'
+        ? await createGroupAcrossConnections(route, base, members, freshTargets, intent.current)
+        : { ...await createCanonicalGroup(route, groupName, members), unjoined: [] }
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
-      const key = registerCanonicalGroup(route, created.room)
+      intent.current = {}
+
+      for (const { member, error } of created.unjoined) {
+        host.notify({ kind: 'error', message: peerJoinText(error, member.display_name || member.handle, b.canonical) })
+      }
+
+      const key = registerCanonicalGroup(route, created.room, { created: true })
       refreshGatewayGroupRooms()
       onClose()
       onCreated?.(key, 'key')
@@ -1504,10 +1500,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
+          <DialogDescription>{b.crossGateway.pickBots(GROUP_CHAT_MAX_MEMBERS)}{' '}
+            {membershipDescription[engine]}
+          </DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
-        <GroupEngineNote connectionId={connectionId} engine={engine} selected={selected} />
+        <GroupEngineNote connectionId={connectionId} engine={engine} owner={plan.connection || owner} ownerConnectionId={plan.connectionId} reason={plan.reason} selected={selected} />
+        {engine === 'unavailable' && ['unreachable', 'owner_unavailable'].includes(plan.reason ?? '') &&
+          <Button onClick={() => setPeerCheck(value => value + 1)} size="sm" variant="ghost">{t.common.retry}</Button>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

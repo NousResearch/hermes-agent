@@ -148,7 +148,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         key = binding.room_id, member, profile, owner, str(home)
         if key not in self.member_rpcs:
             if home != Path(self.authority.profile_id):
+                from gateway.session_hosted_member_homes import record_member_home
                 from gateway.session_hosted_transport import HostedRoomOwnerRPC
+                record_member_home(self.authority.db, binding.room_id, member, home)
                 self.member_rpcs[key] = HostedRoomOwnerRPC(home=home,
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
@@ -207,6 +209,16 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 room_id=binding.room_id, member_id=member, profile=profile, principal=principal, authorize=authorize,
                 authorize_write=authorize_write)
         return self.member_rpcs[key]
+
+    def _stop_deferred_peer(self, room_id, task):
+        """Also settle a local member's deferred turn once its profile is no longer served here and
+        nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
+        if super()._stop_deferred_peer(room_id, task):
+            return True
+        from gateway.session_hosted_member_homes import unserved_member_stopped
+        from tui_gateway.hosted_room_service import task_member_id
+        return (not self._member_is_peer(room_id, task_member_id(task))
+                and unserved_member_stopped(self, room_id, task))
 
     def check_admission(self, ref, row):
         """Reconstruct the private producer from durable task state before claim."""

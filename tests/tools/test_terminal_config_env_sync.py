@@ -105,6 +105,15 @@ _CLI_ONLY_OK = frozenset({
 })
 
 
+def test_local_memory_guard_is_bridged_everywhere():
+    assert _cli_env_map()["local_memory_max_mb"] == "TERMINAL_LOCAL_MEMORY_MAX_MB"
+    assert _gateway_env_map()["local_memory_max_mb"] == "TERMINAL_LOCAL_MEMORY_MAX_MB"
+    assert "local_memory_max_mb" in _save_config_env_sync_keys()
+    assert _cli_env_map()["local_memory_swap_max_mb"] == "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB"
+    assert _gateway_env_map()["local_memory_swap_max_mb"] == "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB"
+    assert "local_memory_swap_max_mb" in _save_config_env_sync_keys()
+
+
 def test_cli_and_gateway_env_maps_agree():
     """cli.py and gateway/run.py must bridge each terminal key to the same env var.
 

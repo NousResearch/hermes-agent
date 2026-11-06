@@ -2008,6 +2008,8 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "ssh_key": "TERMINAL_SSH_KEY",
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "local_memory_max_mb": "TERMINAL_LOCAL_MEMORY_MAX_MB",
+        "local_memory_swap_max_mb": "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB",
         "container_disk": "TERMINAL_CONTAINER_DISK",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",

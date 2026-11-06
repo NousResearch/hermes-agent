@@ -769,7 +769,6 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── bluebubbles/adapter.py  # Apple iMessage via BlueBubbles macOS server
 ├── weixin/adapter.py       # Weixin (personal WeChat) via iLink Bot API
 ├── qqbot/                  # QQ Bot (Tencent QQ) via Official API v2
-├── yuanbao/adapter.py      # Yuanbao (Tencent) DM/group WebSocket
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
 gateway/platforms/                  # core base + HTTP ingress adapters

@@ -974,9 +974,6 @@ platform:
     approved: "✅ Genehmigt."
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
-  yuanbao:
-    slow_response_notice: "Diese Aufgabe ist etwas aufwendiger — ich arbeite noch daran, bitte einen Moment Geduld..."
-    owner_command_denied: "⚠️ {command} ist im privaten Chatmodus nur für den Ersteller verfügbar"
   shared:
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"

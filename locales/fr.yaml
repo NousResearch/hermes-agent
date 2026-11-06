@@ -1165,9 +1165,6 @@ platform:
     approved: "✅ Approuvé."
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
-  yuanbao:
-    slow_response_notice: "Cette tâche est un peu complexe — je m'en occupe encore, merci de patienter..."
-    owner_command_denied: "⚠️ {command} n'est disponible que pour le créateur en mode discussion privée"
   shared:
     truncated_suffix: |2-
 

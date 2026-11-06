@@ -475,7 +475,7 @@ class GatewayAuthorizationMixin:
     def _adapter_flag(self, platform, name: str, profile) -> bool:
         """Adapter-declared boolean, False when unknown. ``authorization_is_upstream`` (relay: a trusted
         authenticated upstream decides) is honored directly; ``enforces_own_access_policy`` (WeCom, Weixin,
-        Yuanbao, QQBot, WhatsApp gate at intake) is NOT "already authorized" — those adapters default to
+        QQBot, WhatsApp and plugin adapters that gate at intake) is NOT "already authorized" — those adapters default to
         ``open``, so ``_is_user_authorized`` only trusts them under an actual ``allowlist`` policy."""
         if not platform:
             return False

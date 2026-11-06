@@ -974,9 +974,6 @@ platform:
     approved: "✅ Approvato."
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
-  yuanbao:
-    slow_response_notice: "Questa attività è un po' impegnativa — ci sto ancora lavorando, attendi un attimo..."
-    owner_command_denied: "⚠️ {command} è disponibile solo per il creatore in modalità chat privata"
   shared:
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"

@@ -695,6 +695,13 @@ class PluginContext(PluginCapabilityCtxMixin):
         _facade().logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
 
+    def redact_text(self, text: str, *, force: bool = False) -> str:
+        """Return *text* with credentials replaced by Hermes's non-reusable sentinel (``«redacted:sk-…»``,
+        no key characters) and credential assignments masked. Honours ``security.redact_secrets``
+        unless ``force``; use ``force=True`` for text that leaves the machine."""
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=force, file_read=True, secret_file=True)
+
     def register_locale(
         self, lang: str, source: str | Path | Mapping[str, Any], *, endonym: Optional[str] = None,
         rtl: bool = False, surface: str = "core",

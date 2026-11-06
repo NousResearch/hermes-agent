@@ -612,6 +612,55 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_topic_binding_heal_drops_binding_whose_target_row_is_gone(tmp_path, caplog):
+    """A binding naming a session id with no ``sessions`` row is stale, not a resume target.
+
+    Regression for #139283. The heal used to switch the route onto the rowless id
+    unconditionally; the next peer refresh then re-created that row and the topic silently
+    re-adopted its old transcript. It must instead stay on the current session, rebind, and
+    leave a WARNING breadcrumb.
+    """
+    import logging
+    import sqlite3
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(session_id="dead-session", source="telegram", user_id="208214988")
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988", thread_id="17585", user_id="208214988",
+        session_key=topic_key, session_id="dead-session",
+    )
+    # Production precondition from #139283: the sessions row was removed by a connection
+    # running with foreign_keys OFF, so the binding's ON DELETE CASCADE never fired.
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE id = 'dead-session'")
+    conn.commit()
+    conn.close()
+
+    runner = _make_runner(session_db=session_db)
+    snapshot = runner.session_store.get_or_create_session(topic_source)
+    assert snapshot.session_id != "dead-session"
+    # The current session's row exists in production (the route lives on it) — mirror that
+    # so the rebind below satisfies the binding's foreign key.
+    session_db.create_session(
+        session_id=snapshot.session_id, source="telegram", user_id="208214988",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        healed = await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
+
+    runner.session_store.switch_session.assert_not_called()
+    assert healed is snapshot
+    refreshed = session_db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585")
+    assert refreshed is not None
+    assert refreshed["session_id"] == snapshot.session_id
+    assert "no sessions row" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 

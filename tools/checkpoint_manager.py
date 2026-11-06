@@ -62,7 +62,7 @@ from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from utils import env_int, rmtree_readonly
 
@@ -385,6 +385,34 @@ def _uncaptured_note(nested_repos: list[str]) -> str:
     shown = ", ".join(nested_repos[:3])
     more = f" (+{len(nested_repos) - 3})" if len(nested_repos) > 3 else ""
     return f" [nested git repos not captured: {shown}{more}]"
+
+
+# A checkpoint taken for a user prompt names that prompt in the trailer paragraph of its commit
+# message, as opaque ids only: no prompt text is copied into the store (``/rollback`` reads a
+# preview from the session database when it lists).  Listings read the subject, and an older
+# checkpoint has no trailers, so a checkpoint without the link lists and restores as before.
+_LINK_SESSION_KEY = "Hermes-Session"
+_LINK_PROMPT_KEY = "Hermes-Prompt"
+_LINK_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
+
+def _link_trailers(link: Optional[tuple[str, str]]) -> str:
+    """Trailer paragraph for ``(session_id, prompt_uid)``; ``""`` when absent or not a plain id."""
+    if not link or not all(isinstance(v, str) and _LINK_VALUE.fullmatch(v) for v in link):
+        return ""
+    return f"{_LINK_SESSION_KEY}: {link[0]}\n{_LINK_PROMPT_KEY}: {link[1]}"
+
+
+def _parse_link(body: str) -> Optional[tuple[str, str]]:
+    """``(session_id, prompt_uid)`` from a commit body; ``None`` unless both trailers are present."""
+    found: dict[str, str] = {}
+    for line in body.splitlines():
+        key, _, value = line.partition(": ")
+        if key in (_LINK_SESSION_KEY, _LINK_PROMPT_KEY) and _LINK_VALUE.fullmatch(value.strip()):
+            found[key] = value.strip()
+    if len(found) == 2:
+        return found[_LINK_SESSION_KEY], found[_LINK_PROMPT_KEY]
+    return None
 
 
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
@@ -926,14 +954,21 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: set[str] = set()
+        self._prompt_link: Optional[tuple[str, str]] = None
 
     # ------------------------------------------------------------------
     # Turn lifecycle
     # ------------------------------------------------------------------
 
-    def new_turn(self) -> None:
-        """Reset per-turn dedup.  Call at the start of each agent iteration."""
+    def new_turn(self, session_id: Optional[str] = None, prompt_uid: Optional[str] = None) -> None:
+        """Reset per-turn dedup.  Call at the start of each agent iteration.
+
+        ``session_id`` and ``prompt_uid`` (the user message's durable ``message_uid``) name the
+        prompt this iteration answers: checkpoints taken until the next call carry that link.
+        Omitted, they clear it, so a caller that does not know the prompt records unlinked
+        checkpoints exactly as before."""
         self._checkpointed_dirs.clear()
+        self._prompt_link = (session_id, prompt_uid) if session_id and prompt_uid else None
 
     def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
         """Explain why host checkpoints are off limits for a container-backed session.
@@ -1072,7 +1107,7 @@ class CheckpointManager:
             from tools.checkpoint_pruning import store_lock
 
             with store_lock(_resolve_checkpoint_base()):
-                return self._take(abs_dir, reason)
+                return self._take(abs_dir, reason, link=self._prompt_link)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1086,8 +1121,9 @@ class CheckpointManager:
             return []
 
         ref = _ref_name(_project_hash(abs_dir))
+        # Record separators (\x1e) and unit separators (\x1f) because the body is multi-line.
         ok, stdout, _ = _run_git(
-            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+            ["log", ref, "--format=%H|%h|%aI|%s%x1f%b%x1e", "-n", str(self.max_snapshots)],
             store, abs_dir,
             allowed_returncodes={128, 129},
         )
@@ -1096,8 +1132,9 @@ class CheckpointManager:
             return []
 
         results: list[dict] = []
-        for line in stdout.splitlines():
-            parts = line.split("|", 3)
+        for record in stdout.split("\x1e"):
+            head, _, body = record.strip("\n").partition("\x1f")
+            parts = head.split("|", 3)
             if len(parts) == 4:
                 entry = {
                     "hash": parts[0],
@@ -1108,6 +1145,8 @@ class CheckpointManager:
                     "insertions": 0,
                     "deletions": 0,
                 }
+                if link := _parse_link(body):
+                    entry["session_id"], entry["prompt_uid"] = link
                 stat_ok, stat_out, _ = _run_git(
                     ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
                     store, abs_dir,
@@ -1140,6 +1179,68 @@ class CheckpointManager:
                 results.append(entry)
         results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return results
+
+    def checkpoints_for_prompts(self, session_id: str, prompt_uids: Iterable[str]) -> list[dict]:
+        """Checkpoints ``session_id`` took for ``prompt_uids`` or after them, per working directory.
+
+        ``prompt_uids`` is the picked prompt and every prompt that follows it; the caller reads
+        that order from the session transcript.  Per project this finds the earliest checkpoint
+        the session took for one of them (the files as they were just before the picked prompt's
+        first edit) and returns the session's checkpoints from there on, newest first.  Each
+        entry is a :meth:`list_checkpoints` entry plus ``workdir`` and ``files_changed_since``:
+        how many files differ between that checkpoint and the working tree now, i.e. what
+        restoring it would touch.  Checkpoints with no link, and other sessions', never match,
+        so two sessions in one directory do not cross-link.
+
+        Read-only: nothing is restored or taken.  The tree is compared the way ``/rollback diff``
+        compares it, which stages it into the scratch index inside the shadow store and resets
+        that index afterwards.  Never raises; ``[]`` when nothing matches.
+        """
+        from tools.checkpoint_pruning import PruneError, store_lock
+
+        wanted = {uid for uid in prompt_uids if isinstance(uid, str) and uid}
+        store = _store_path()
+        if not session_id or not wanted or not (store / "HEAD").exists():
+            return []
+        results: list[dict] = []
+        try:
+            with store_lock(_resolve_checkpoint_base()):
+                for meta in _list_projects(store):
+                    workdir = meta.get("workdir") or ""
+                    chain = self.list_checkpoints(workdir) if workdir else []
+                    hits = [i for i, cp in enumerate(chain)
+                            if cp.get("session_id") == session_id and cp.get("prompt_uid") in wanted]
+                    if not hits:
+                        continue
+                    taken = [cp for cp in chain[: max(hits) + 1] if cp.get("session_id") == session_id]
+                    counts = self._changed_file_counts(workdir, [cp["hash"] for cp in taken])
+                    for cp in taken:
+                        cp["workdir"] = workdir
+                        cp["files_changed_since"] = counts.get(cp["hash"], 0)
+                        results.append(cp)
+        except (PruneError, OSError) as exc:
+            logger.debug("checkpoints_for_prompts failed: %s", exc)
+            return []
+        results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return results
+
+    def _changed_file_counts(self, working_dir: str, hashes: list[str]) -> dict[str, int]:
+        """Files that differ between each checkpoint and the working tree, from one staging pass."""
+        abs_dir = str(_normalize_path(working_dir))
+        store = _store_path()
+        dir_hash = _project_hash(abs_dir)
+        index_file = _index_path(store, dir_hash)
+        _run_git(["add", "-A"], store, abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        counts: dict[str, int] = {}
+        for commit_hash in hashes:
+            ok, names, _ = _run_git(
+                ["diff", "--name-only", "-z", commit_hash, "--cached"], store, abs_dir, index_file=index_file,
+            )
+            counts[commit_hash] = len([p for p in names.split("\x00") if p]) if ok else 0
+        # Reset the scratch index to the project ref so it does not drift from it.
+        _run_git(["read-tree", _ref_name(dir_hash)], store, abs_dir,
+                 index_file=index_file, allowed_returncodes={128})
+        return counts
 
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: dict) -> None:
@@ -1552,8 +1653,12 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str, *, prune: bool = True) -> bool:
-        """Take a snapshot.  Returns True on success."""
+    def _take(
+        self, working_dir: str, reason: str, *, prune: bool = True, link: Optional[tuple[str, str]] = None,
+    ) -> bool:
+        """Take a snapshot.  Returns True on success.  ``link`` is the ``(session_id, prompt_uid)`` the
+        snapshot is recorded against; only ``ensure_checkpoint`` passes one, so a pre-rollback snapshot
+        is never attributed to whichever prompt ran last."""
         store = _store_path()
 
         err = _init_store(store, working_dir)
@@ -1668,10 +1773,14 @@ class CheckpointManager:
                 line.strip() for line in reason.splitlines() if line.strip()
             ) + _uncaptured_note(nested_repos)
 
-        # Build commit (parent = current ref tip, if any).
-        commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]
+        # Build commit (parent = current ref tip, if any).  The reason is the subject; the prompt
+        # link, when there is one, is a second paragraph (see _link_trailers).
+        message_args = ["-m", reason]
+        if trailers := _link_trailers(link):
+            message_args += ["-m", trailers]
+        commit_args = ["commit-tree", tree_sha, *message_args, "--no-gpg-sign"]
         if has_ref:
-            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, "-m", reason, "--no-gpg-sign"]
+            commit_args = ["commit-tree", tree_sha, "-p", ref_commit, *message_args, "--no-gpg-sign"]
         ok_commit, new_sha, err = _run_git(
             commit_args, store, working_dir,
             index_file=index_file,
@@ -1839,9 +1948,16 @@ class CheckpointManager:
 
 
 def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
-    """Format checkpoint list for display to user."""
+    """Format checkpoint list for display to user.
+
+    A linked checkpoint gets one extra line quoting its prompt: the entry's ``prompt_preview`` when the
+    sender resolved it, else read from the session database here. No quote when the prompt is gone."""
     if not checkpoints:
         return f"No checkpoints found for {directory}"
+
+    if any(cp.get("prompt_uid") and not cp.get("prompt_preview") for cp in checkpoints):
+        from tools.checkpoint_prompts import with_prompt_previews
+        checkpoints = with_prompt_previews(checkpoints)
 
     lines = [f"📸 Checkpoints for {directory}:\n"]
     for i, cp in enumerate(checkpoints, 1):
@@ -1869,6 +1985,8 @@ def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
             )
         else:
             lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+        if preview := cp.get("prompt_preview"):
+            lines.append(f"       ↳ prompt: “{preview}”")
 
     lines.append("\n  /rollback <N>             restore to checkpoint N")
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")

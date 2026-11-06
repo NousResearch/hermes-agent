@@ -241,10 +241,14 @@ async def rollback(connection, ref, params, *, kind):
         if not mgr.enabled and kind in ('list', 'session_diff'):
             return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
         if kind == 'list':
-            # The TUI renders ``message``; the manager calls it ``reason``.
+            # The TUI renders ``message``; the manager calls it ``reason``. ``prompt_preview`` (only when the
+            # checkpoint is linked to a prompt still in this process's session database) is the text a client
+            # that cannot open that database quotes under the checkpoint.
+            from tools.checkpoint_prompts import with_prompt_previews
             return {'enabled': True, 'checkpoints': [
-                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
-                for c in mgr.list_checkpoints(cwd)]}
+                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', ''),
+                 **({'prompt_preview': c['prompt_preview']} if c.get('prompt_preview') else {})}
+                for c in with_prompt_previews(mgr.list_checkpoints(cwd))]}
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
         from tools.terminal_scope import reset_terminal_scope, set_terminal_scope

@@ -3121,6 +3121,24 @@
       }
     },
     {
+      "name": "rollback.for_prompt",
+      "summary": "Read-only: the session's checkpoints taken for a user message or after it, per working directory.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackForPromptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackForPromptResult"
+        }
+      }
+    },
+    {
       "name": "rollback.list",
       "summary": "Checkpoints for the session's cwd; ``enabled: false`` when checkpointing is off.",
       "params": [
@@ -32682,6 +32700,48 @@
         "title": "PromptCancelParams",
         "type": "object"
       },
+      "PromptCheckpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "workdir": {
+            "default": "",
+            "title": "Workdir",
+            "type": "string"
+          },
+          "hash": {
+            "default": "",
+            "title": "Hash",
+            "type": "string"
+          },
+          "short_hash": {
+            "default": "",
+            "title": "Short Hash",
+            "type": "string"
+          },
+          "timestamp": {
+            "default": "",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "prompt_uid": {
+            "default": "",
+            "title": "Prompt Uid",
+            "type": "string"
+          },
+          "files_changed_since": {
+            "default": 0,
+            "title": "Files Changed Since",
+            "type": "integer"
+          }
+        },
+        "title": "PromptCheckpoint",
+        "type": "object"
+      },
       "PromptReceiptParams": {
         "additionalProperties": false,
         "properties": {
@@ -34050,6 +34110,11 @@
             "default": "",
             "title": "Message",
             "type": "string"
+          },
+          "prompt_preview": {
+            "default": "",
+            "title": "Prompt Preview",
+            "type": "string"
           }
         },
         "title": "RollbackCheckpoint",
@@ -34113,6 +34178,58 @@
           }
         },
         "title": "RollbackDiffResult",
+        "type": "object"
+      },
+      "RollbackForPromptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "integer"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "message_id"
+        ],
+        "title": "RollbackForPromptParams",
+        "type": "object"
+      },
+      "RollbackForPromptResult": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "checkpoints": {
+            "items": {
+              "$ref": "#/components/schemas/PromptCheckpoint"
+            },
+            "title": "Checkpoints",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackForPromptResult",
         "type": "object"
       },
       "RollbackListParams": {

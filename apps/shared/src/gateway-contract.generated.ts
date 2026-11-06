@@ -3969,6 +3969,7 @@ export interface RollbackCheckpoint {
   hash?: string
   timestamp?: string
   message?: string
+  prompt_preview?: string
 }
 export interface RollbackRestoreParams {
   session_id: string
@@ -4002,6 +4003,24 @@ export interface RollbackDiffResult {
   stat?: string
   diff?: string
   rendered?: string | null
+}
+export interface RollbackForPromptParams {
+  session_id: string
+  message_id: number
+  profile?: string | null
+}
+export interface RollbackForPromptResult {
+  enabled: boolean
+  checkpoints?: PromptCheckpoint[]
+}
+export interface PromptCheckpoint {
+  workdir?: string
+  hash?: string
+  short_hash?: string
+  timestamp?: string
+  message?: string
+  prompt_uid?: string
+  files_changed_since?: number
 }
 export interface CronManageParams {
   action?: CronAction
@@ -6493,6 +6512,8 @@ export interface RpcMethods {
   'request.answer': { params: RequestAnswerParams; result: RequestAnswerResult }
   /** Diff between a checkpoint and the working tree, with an ANSI rendering sized to the TUI. */
   'rollback.diff': { params: RollbackDiffParams; result: RollbackDiffResult }
+  /** Read-only: the session's checkpoints taken for a user message or after it, per working directory. */
+  'rollback.for_prompt': { params: RollbackForPromptParams; result: RollbackForPromptResult }
   /** Checkpoints for the session's cwd; ``enabled: false`` when checkpointing is off. */
   'rollback.list': { params: RollbackListParams; result: RollbackListResult }
   /** Restore the working tree (or one file) to a checkpoint by hash or 1-based index. */
@@ -6845,6 +6866,7 @@ export const RPC_METHODS = [
   'reload.mcp',
   'request.answer',
   'rollback.diff',
+  'rollback.for_prompt',
   'rollback.list',
   'rollback.restore',
   'session.activate',

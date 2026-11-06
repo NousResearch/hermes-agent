@@ -1125,9 +1125,12 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        # The TUI renders ``message``; the manager calls it ``reason``.
-        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
-                for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``. ``prompt_preview`` is present only for a
+        # checkpoint linked to a prompt still in the session database.
+        from tools.checkpoint_prompts import with_prompt_previews
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", ""),
+                 **({"prompt_preview": c["prompt_preview"]} if c.get("prompt_preview") else {})}
+                for c in with_prompt_previews(mgr.list_checkpoints(cwd))]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
@@ -1180,6 +1183,25 @@ def _(rid, params: dict, session) -> dict:
         if rendered := render_diff(raw, session.get("cols", 80)):
             payload["rendered"] = rendered
         return _ok(rid, payload)
+    return _with_checkpoints(session, go)
+
+
+@_rpc("rollback.for_prompt", live_session=True, fail_code=5023)
+def _(rid, params: dict, session) -> dict:
+    message_id = params.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int):
+        return _err(rid, 4014, "message_id required")
+
+    def go(mgr, cwd):
+        if not mgr.enabled:
+            return _ok(rid, {"enabled": False, "checkpoints": []})
+        if reason := _container_checkpoint_refusal(session, mgr, cwd):
+            return _err(rid, 5023, reason)
+        from tools.checkpoint_prompts import checkpoints_from_prompt
+        rows = checkpoints_from_prompt(mgr, session["agent"].session_id, message_id)
+        if rows is None:
+            return _err(rid, 4014, "message_id is not a user message of this session")
+        return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
 

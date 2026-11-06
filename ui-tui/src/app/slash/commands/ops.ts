@@ -271,7 +271,8 @@ export const opsCommands: SlashCommand[] = [
                 {
                   rows: checkpoints.map((c, idx) => [
                     `${idx + 1}. ${c.hash.slice(0, 10)}`,
-                    [c.timestamp, c.message].filter(Boolean).join(' · ') || t('slashCmd.ops.rollback.noMetadata')
+                    [c.timestamp, c.message, c.prompt_preview && `“${c.prompt_preview}”`].filter(Boolean).join(' · ') ||
+                      t('slashCmd.ops.rollback.noMetadata')
                   ])
                 }
               ])

@@ -3,6 +3,9 @@
 
 import {
   atom,
+  avatarColor,
+  botAppearance,
+  BotFace,
   coarseElapsed,
   Codicon,
   DropdownMenu,
@@ -19,6 +22,7 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import { fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
 import { columnLabel, useKanban } from './i18n'
+import { useKanbanAvatarImage, useKanbanBot } from './identity'
 import { columnMeta, type KanbanTask } from './types'
 
 // Plugin-scoped i18n lives in ./i18n; re-exported so components import strings
@@ -167,10 +171,18 @@ function initials(name: string): string {
   return `${parts[0]?.[0] ?? '?'}${parts[1]?.[0] ?? ''}`.toUpperCase()
 }
 
-export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string }) {
-  // Same identity hue the rest of the app uses (profileColor); default/empty
-  // profiles are neutral. Soft tag fill + colored glyph, per the app's tags.
-  const color = profileColor(name)
+/** First letter/number of a human label — 'Hepa (Engineer)' -> 'H'. Unlike
+ *  `initials` it skips punctuation, so a parenthetical role suffix never
+ *  becomes the second glyph of a one-word bot title. */
+function leadingGlyph(text: string): string {
+  return `${text.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? '?'}`.toUpperCase()
+}
+
+/** The slug-initial chip: the fallback for free-text assignees, uncustomized
+ *  profiles, and bots whose only identity is their title. Same identity hue as
+ *  the rest of the app (profileColor); default/empty profiles are neutral. */
+function InitialChip({ glyph, label, size, title }: { glyph: string; label: string; size: string; title: string }) {
+  const color = profileColor(label)
 
   return (
     <span
@@ -182,11 +194,56 @@ export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string
         height: size,
         width: size
       }}
-      title={name}
+      title={title}
     >
-      {initials(name)}
+      {glyph}
     </span>
   )
+}
+
+/** Rem-size prop -> px for the bot face renderer (root font is 16px; the app
+ *  never scales it). */
+const REM_PX = 16
+
+export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string }) {
+  const bot = useKanbanBot(name)
+  const image = useKanbanAvatarImage(bot, name)
+
+  // Rung 1+2 — the bot's chosen look, drawn by the very component the Bots
+  // roster uses (read-only import; hermes-bots behavior untouched). The
+  // appearance resolver owns the defaults, so a bot that picked only a color
+  // (or only a shape) gets exactly its Bots-tab face.
+  if (bot && (image || bot.shape || bot.color || bot.custom)) {
+    const appearance = botAppearance(name, {
+      color: bot.color ?? undefined,
+      custom: bot.custom,
+      image: image ?? bot.image ?? null,
+      shape: bot.shape ?? undefined
+    })
+
+    return (
+      <span className="shrink-0" style={{ height: size, width: size }} title={bot.title || name}>
+        <BotFace
+          color={avatarColor(appearance.color, name)}
+          image={appearance.image}
+          mood="idle"
+          name={name}
+          shape={appearance.shape}
+          size={Number.parseFloat(size) * REM_PX || 20}
+        />
+      </span>
+    )
+  }
+
+  // Rung 3 — a named bot whose look is unset keeps its Bot Mode title, as a
+  // colored initial (the face renderer's defaults would be noise at chip
+  // sizes; the title is the identity the user actually chose).
+  if (bot?.title) {
+    return <InitialChip glyph={leadingGlyph(bot.title)} label={name} size={size} title={bot.title} />
+  }
+
+  // Rung 4 — free-text assignees and uncustomized profiles: slug initials.
+  return <InitialChip glyph={initials(name)} label={name} size={size} title={name} />
 }
 
 // Jira-style status control: a colored button showing the current state, click

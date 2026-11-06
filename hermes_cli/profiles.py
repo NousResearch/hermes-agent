@@ -672,6 +672,11 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Bot Mode avatar identity — ``ui_meta['hermes-bots']`` ``shape``/``color``/
+    # ``image``/``custom``, the look the Bots roster renders. Presentation-only;
+    # ``None`` when the profile carries no look, so consumers fall back to their
+    # own defaults instead of guessing one here.
+    bot_identity: Optional[dict] = None
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -865,21 +870,30 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
-    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
-    corrupt file on one profile must not break ``hermes profile list``."""
+    bot_title, bot_identity, previous_names}`` (empty defaults when
+    missing/unreadable). Never raises — a corrupt file on one profile must not
+    break ``hermes profile list``."""
     def _read() -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
         ui_meta = data.get("ui_meta")
         bot_title = ""
+        bot_identity = None
         if isinstance(ui_meta, dict):
             hermes_bots = ui_meta.get("hermes-bots")
             if isinstance(hermes_bots, dict):
                 bot_title = str(hermes_bots.get("title") or "").strip()
+                # Avatar look, verbatim — the same fields the Bots roster's
+                # ui_meta row carries. Consumers (kanban assignee avatars)
+                # decide the fallbacks; this only reports what is stored.
+                identity = {key: hermes_bots.get(key) for key in ("shape", "color", "image", "custom")}
+                if any(value is not None for value in identity.values()):
+                    bot_identity = identity
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
+            "bot_identity": bot_identity,
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 
@@ -887,6 +901,8 @@ def read_profile_meta(profile_dir: Path) -> dict:
     # its result must not poison the next reader.
     meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
     meta["previous_names"] = list(meta["previous_names"])
+    if isinstance(meta["bot_identity"], dict):
+        meta["bot_identity"] = dict(meta["bot_identity"])
     return meta
 
 

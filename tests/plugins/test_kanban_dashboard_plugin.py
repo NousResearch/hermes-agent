@@ -1259,3 +1259,71 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
         "/api/plugins/kanban/events?token=secret-xyz&board=alive"
     ) as ws:
         assert ws is not None
+
+
+# ---------------------------------------------------------------------------
+# GET /profiles — the bot-identity projection the assignee avatars render
+# (profile.yaml ui_meta['hermes-bots'], the same source the Bots roster uses).
+# ---------------------------------------------------------------------------
+
+def _write_profile(home, name, body):
+    profile_dir = home / "profiles" / name
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "profile.yaml").write_text(body, encoding="utf-8")
+
+    return profile_dir
+
+
+def test_profiles_payload_carries_bot_identity(client, kanban_home):
+    _write_profile(
+        kanban_home,
+        "engineer1",
+        "description: eng\n"
+        "ui_meta:\n"
+        "  hermes-bots:\n"
+        "    title: Hepa (Engineer)\n"
+        "    shape: blobatar\n"
+        "    color: violet\n",
+    )
+    (kanban_home / "profiles" / "engineer1" / "assets").mkdir()
+    (kanban_home / "profiles" / "engineer1" / "assets" / "avatar.png").write_bytes(b"png")
+    _write_profile(kanban_home, "plain", "description: no bot here\n")
+
+    rows = {p["name"]: p for p in client.get("/api/plugins/kanban/profiles").json()["profiles"]}
+
+    # The look rides verbatim; absent ui_meta keys stay null, and the avatar
+    # asset flag is True because assets/avatar.png exists.
+    assert rows["engineer1"]["bot"] == {
+        "title": "Hepa (Engineer)",
+        "shape": "blobatar",
+        "color": "violet",
+        "image": None,
+        "custom": None,
+        "has_avatar": True,
+    }
+    # A profile never touched by Bot Mode carries no identity at all.
+    assert rows["plain"]["bot"] is None
+
+
+def test_profiles_bot_identity_title_only_and_webp_asset(client, kanban_home):
+    _write_profile(
+        kanban_home,
+        "engineer2",
+        "ui_meta:\n  hermes-bots:\n    title: Daro (Engineer)\n",
+    )
+    assets = kanban_home / "profiles" / "engineer2" / "assets"
+    assets.mkdir()
+    (assets / "avatar.webp").write_bytes(b"webp")
+
+    rows = {p["name"]: p for p in client.get("/api/plugins/kanban/profiles").json()["profiles"]}
+
+    # Title-only bot: no look keys, but the webp asset still counts.
+    assert rows["engineer2"]["bot"] == {"title": "Daro (Engineer)", "has_avatar": True}
+
+
+def test_profiles_bot_identity_absent_without_title_or_assets(client, kanban_home):
+    _write_profile(kanban_home, "bare", "description: empty ui_meta\nui_meta: {}\n")
+
+    rows = {p["name"]: p for p in client.get("/api/plugins/kanban/profiles").json()["profiles"]}
+
+    assert rows["bare"]["bot"] is None

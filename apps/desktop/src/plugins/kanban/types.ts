@@ -230,6 +230,24 @@ export interface KanbanProfile {
   is_default: boolean
   description: string
   description_auto: boolean
+  /** Bot Mode identity (`ui_meta['hermes-bots']` as the backend projects it —
+   *  the same fields the Bots roster renders). Null on profiles never touched
+   *  by Bot Mode; the Avatar falls back to slug initials for those. */
+  bot?: null | KanbanProfileBot
+}
+
+/** The avatar look of one profile's bot. Mirrors the hermes-bots `BotMeta`
+ *  projection the kanban backend lifts from `profile.yaml` — shape/color/image
+ *  verbatim, plus `has_avatar` (the `profiles.get_asset` asset exists) so the
+ *  client skips a per-row probe. */
+export interface KanbanProfileBot {
+  color?: null | string
+  custom?: boolean
+  has_avatar?: boolean
+  /** Legacy inline data URL; the asset store (`has_avatar`) is the real path. */
+  image?: null | string
+  shape?: null | string
+  title?: null | string
 }
 
 /** Column presentation — codicon + tone only. Labels + help live in i18n

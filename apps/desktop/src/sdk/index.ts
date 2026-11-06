@@ -1894,6 +1894,13 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+/** The Bot Mode identity renderer — the exact face the Bots roster paints
+ *  (shape/color/image + the appearance resolver's defaults) — for surfaces
+ *  that have to show a profile's bot look without owning one (kanban assignee
+ *  avatars). Pass-through: the components live in the hermes-bots plugin; the
+ *  SDK only makes them importable everywhere (plugins import the SDK, never a
+ *  sibling plugin). */
+export { avatarColor, botAppearance, BotFace } from '@/plugins/hermes-bots/avatar'
 export { gatewayActivationEpoch, useGatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen

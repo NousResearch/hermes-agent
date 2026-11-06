@@ -1560,8 +1560,28 @@ def list_profile_roster():
     return {"profiles": [
         {"name": p.name, "is_default": bool(p.is_default), "model": p.model or "", "provider": p.provider or "",
          "description": p.description or "", "description_auto": bool(p.description_auto),
-         "skill_count": int(p.skill_count or 0)}
+         "skill_count": int(p.skill_count or 0), "bot": _profile_bot_identity(p)}
         for p in profiles]}
+
+
+# Avatar asset extensions; mirrors ``tui_gateway/methods_profiles.py::_ASSET_EXTS``
+# (the roster's ``has_avatar`` flag uses the same set — keep them aligned).
+_AVATAR_ASSET_EXTS = ("png", "jpg", "webp")
+
+
+def _profile_bot_identity(profile) -> Optional[dict]:
+    """The profile's Bot Mode identity for assignee-avatar rendering: the
+    ``ui_meta['hermes-bots']`` look the Bots roster renders (via
+    ``ProfileInfo.bot_identity`` / ``bot_title`` — same source, no re-derivation)
+    plus the ``has_avatar`` asset flag so clients skip a per-row get_asset probe.
+    ``None`` when the profile carries no bot identity at all."""
+    identity = dict(profile.bot_identity or {})
+    title = str(getattr(profile, "bot_title", "") or "").strip()
+    has_avatar = any((Path(profile.path) / "assets" / f"avatar.{ext}").is_file()
+                     for ext in _AVATAR_ASSET_EXTS)
+    if not identity and not title and not has_avatar:
+        return None
+    return {"title": title, "has_avatar": has_avatar, **identity}
 
 
 @router.patch("/profiles/{profile_name}")

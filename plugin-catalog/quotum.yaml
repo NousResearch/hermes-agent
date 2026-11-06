@@ -1,11 +1,11 @@
 name: quotum
 repo: https://github.com/qvotvm/hermes-quotum
-sha: 493c749e0a02dc0357d062533e4a398b0d313ddb
+sha: 7f0d7a726b3a14ec0d97a1b5a1f5581be6a70da2
 description: "A quotum seat or prepaid PAYG project as a provider, with usage and dashboard records or balance and receipts. Seat 401/402 recovery hints, opt-in advisory preflight and shared meter caching. Disclosure: seat prompts and QUOTUM_SEAT_KEY go directly to api.venice.ai; seat usage, 402 guidance and optional preflight send only a 16-hex sha256 key handle to quotum.org; seat records and model catalogs are public. PAYG prompts and QUOTUM_PAYG_KEY go to quotum.org/api/payg/v1, whose gateway processes prompts and replies; authenticated meter reads return balance and receipt metadata, never the bearer to the browser. Both modes supply clients through create_client; seat X search is optional and billed per search. Credentials use only Hermes profile scope via agent.secret_scope.get_secret, without process environment or credential-file fallbacks. Seats are funded by the QUOTUM crypto token. No telemetry, shell commands, background processes or stored credentials"
 maintainer: quotum
 tier: community
 category: models
-version: "0.3.0"
+version: "0.3.1"
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/qvotvm/hermes-quotum#readme
 known_issues:

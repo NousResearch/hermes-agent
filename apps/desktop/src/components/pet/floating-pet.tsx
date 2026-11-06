@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
-import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
@@ -11,6 +10,7 @@ import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petInfo,
+  $petProfile,
   $petRoam,
   $petRoamDir,
   clearPetUnread,
@@ -78,6 +78,11 @@ function loadPosition(): Point {
   return clampPoint(24, (window.innerHeight || 600) - 220, NOMINAL_PET_PX, NOMINAL_PET_PX)
 }
 
+// Sprites already fetched for other profiles, so switching between chats of
+// different profiles swaps the mascot at once; the pull below still validates
+// the cached copy against `pet.info.meta` before trusting it.
+const petInfoByProfile = new Map<string, PetInfo>()
+
 /**
  * In-window floating petdex mascot. Always-on-top within the app, draggable,
  * and reactive to agent activity via `$petState`. Fetches the active pet via
@@ -102,6 +107,7 @@ function loadPosition(): Point {
  */
 export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
+  const petKey = useStore($petProfile)
   const { resolvedMode } = useTheme()
   const gatewayState = useStore($gatewayState)
   const info = useStore($petInfo)
@@ -267,15 +273,25 @@ export function FloatingPet() {
 
       window.clearInterval(timer)
     }
-  }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
+  }, [gatewayState, active, changeEventsAvailable, petChange, petKey, requestGateway])
 
-  // Pets are per-profile. When the active profile changes, drop the previous
-  // profile's mascot + gallery cache so the poll above refetches the new
-  // profile's pet (its config + pets dir resolve per-profile on the backend).
-  useOnProfileSwitch(() => {
-    setPetInfo({ enabled: false })
-    resetPetGallery()
-  })
+  // Pets are per-profile and follow the focused chat's profile. On a change,
+  // park the previous profile's mascot, show the new one's cached sprite (or
+  // nothing) and let the pull above, which re-runs on `petKey`, validate it.
+  useEffect(
+    () =>
+      $petProfile.listen((next, previous) => {
+        const held = $petInfo.get()
+
+        if (held.enabled && held.spritesheetBase64) {
+          petInfoByProfile.set(previous, held)
+        }
+
+        setPetInfo(petInfoByProfile.get(next) ?? { enabled: false })
+        resetPetGallery()
+      }),
+    []
+  )
 
   // Wire the overlay control channel once, only in the primary window — the
   // pop-out overlay belongs to it (main.ts positions it against the main

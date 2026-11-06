@@ -89,7 +89,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Approvals | `prompts.tsx` | server→client request `approval` → response `{choice}` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | server→client requests `clarify` / `sudo` / `secret` (`server_requests.py`) |
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
-| Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker`; `command.dispatch` |
+| Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker` (`slash_worker_client.py`); `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
@@ -189,14 +189,14 @@ remain session-scoped; composer model changes use `session.mutate`, never global
 
 ```bash
 cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run typecheck # tsc --noEmit
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+pnpm install       # first time
+pnpm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+pnpm start         # production
+pnpm run build     # full build (hermes-ink + tsc)
+pnpm run typecheck # tsc --noEmit
+pnpm run lint      # eslint
+pnpm run fmt       # prettier
+pnpm test          # vitest
 ```
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A

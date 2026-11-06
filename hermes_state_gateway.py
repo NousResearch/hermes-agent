@@ -267,6 +267,14 @@ class SessionGatewayMixin:
                 query_params,
             )
             if ancestors:
+                # An explicit repoint moved these rows to this lane: the local conversation whose receipt
+                # names one of them goes with it in the same write, or it would match neither lane (#143286).
+                from gateway.session_route_recovery import _messaging_platform
+                from hermes_state_local import hand_off_conversations, moved_receipts
+                moved = {row[0] for row in conn.execute(
+                    f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
+                hand_off_conversations(conn, {owner: found for owner, found in moved_receipts(conn, moved).items()
+                                              if _messaging_platform(found[1]) is not None})
                 return
             # The UPDATE silently no-ops on a missing row — insert it with full identity.
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
@@ -298,29 +306,33 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         self._write_sql(
-            """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?, ?, ?, ? WHERE NOT EXISTS (
-                   SELECT 1 FROM state_meta WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))
+            f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+               SELECT :scope, :key, :entry, :now WHERE NOT {ROUTE_RETIRED_SQL}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time(), entry_json),
+            {'scope': scope, 'key': session_key, **route_retired_params(session_key, entry_json, time.time())},
         )
 
-    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
+    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
-        are removed); other scopes untouched."""
+        are removed); other scopes untouched. Returns the keys skipped as retired routes, which
+        the sessions.json mirror must leave out too."""
+        from hermes_state_mutation_retirement import ROUTE_RETIRED_SQL, route_retired_params
         now = time.time()
+        rows = [{'scope': scope, 'key': k, **route_retired_params(k, v, now)} for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
-                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
-                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+                    "SELECT :scope, :key, :entry, :now WHERE NOT " + ROUTE_RETIRED_SQL,
+                    rows)
+            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
+            return {row['key'] for row in rows} - kept
+        return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -403,6 +415,22 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
+    def retire_gateway_routes(self, session_ids, *, namespace, expiring=()) -> None:
+        """Publish routing fences for *session_ids*, retired in the profile whose routing keys use
+        *namespace*, in THIS (routing) database and drop that profile's routes naming them, in one
+        transaction (``fence_shared_routes``). Routing saves skip a fenced route, so a whole-index
+        snapshot taken before a delete in another profile's store cannot restore it when it is
+        saved after it. The fence is not this store's own deletion marker: this profile's creates,
+        binds and generation walks stay free. *expiring* ids (a sweep's) age out at the horizon."""
+        ids = sorted({str(sid) for sid in session_ids if sid})
+        if not ids:
+            return
+
+        def _do(conn):
+            from hermes_state_mutation_retirement import fence_shared_routes
+            fence_shared_routes(conn, namespace, ids, expiring=expiring)
+        self._execute_write(_do)
+
     def prune_never_active_keyed_sessions(
         self, *, older_than_days: float, sessions_dir: Optional[Path] = None,
         deleted_ids: Optional[list] = None) -> tuple[int, int, int]:
@@ -445,7 +473,7 @@ class SessionGatewayMixin:
         """List gateway sessions (rows with a session_key): newest row per key, one live
         mapping per routing key. ``platform`` filters on ``source``."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
-        self.flush_token_counts()
+        self.flush_for_read()
         query = f"""
             SELECT sessions.*,
                    COALESCE(sp.prompt, sessions.system_prompt)
@@ -829,7 +857,9 @@ class SessionGatewayMixin:
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /
         CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), with
         ``billing_provider`` filling a missing provider so sessions that never ran ``/model``
-        still restore the provider that served them. Empty dict on parse failure — resume uses ambient config."""
+        still restore the provider that served them; a bare ``custom`` billing class falls back
+        to its ``billing_base_url`` endpoint for the readers' bare-custom heal (#136323).
+        Empty dict on parse failure — resume uses ambient config."""
         from hermes_state import _BARE_BILLING_PROVIDERS
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
@@ -847,10 +877,21 @@ class SessionGatewayMixin:
         top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode") if raw.get(key)}
         # billing_provider is COALESCE-written on the first accounted API call — the only durable
         # record for sessions that never ran /model. Bare buckets ("auto"/"custom") are not
-        # routable identities; filter them so resume falls back to the ambient default.
+        # routable identities; "auto" is filtered so resume falls back to the ambient default.
         billing_provider = str((session_meta or {}).get("billing_provider") or "").strip()
         if billing_provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
             top_level.setdefault("provider", billing_provider)
+        elif billing_provider.lower() == "custom" and not top_level.get("provider"):
+            # Plain CLI turns persist only the billing class — "custom" — plus the endpoint they
+            # served (billing_base_url, first-accounted overwrite on the row). Surface the pair so
+            # the readers' bare-custom heal (canonical_custom_identity) can recover custom:<name>
+            # from that endpoint instead of resume recombining the stored model with the ambient
+            # default (#136323); an endpoint no longer configured still heals to nothing. "auto"
+            # bills through the router with no attributable endpoint and stays filtered.
+            billing_base_url = str((session_meta or {}).get("billing_base_url") or "").strip()
+            if billing_base_url:
+                top_level.setdefault("base_url", billing_base_url)
+                top_level["provider"] = "custom"
         if top_level:
             return top_level
         if not isinstance(runtime, dict):

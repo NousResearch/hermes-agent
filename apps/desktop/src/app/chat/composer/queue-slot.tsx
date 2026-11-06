@@ -2,11 +2,14 @@ import type { ReactNode } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
-import { cancelQueuedPrompt, discardLostPrompt } from './discard-lost-prompt'
+import { cancelQueuedPrompt, discardLostPrompt, steerQueuedPrompt } from './discard-lost-prompt'
 import { QueuePanel } from './queue-panel'
 
 export interface ComposerQueueSlotInputs {
@@ -23,6 +26,41 @@ export interface ComposerQueueSlotInputs {
   sessionId: null | string | undefined
   steerQueuedNow: (id: string) => unknown
   t: Translations
+}
+
+/**
+ * The composer's draft/queue scope. A routed chat uses its durable key. Without
+ * one (a new-chat route) the runtime id stands in only while no stored session
+ * claims it: a claimed runtime there is the chat just left, still active for a
+ * frame after the switch, and its queue is not this chat's (#139190).
+ */
+function composerQueueScopeKey(
+  queueSessionKey: null | string | undefined,
+  sessionId: null | string | undefined,
+  freshDraftKey: null | string | undefined
+): null | string {
+  if (queueSessionKey) {
+    return queueSessionKey
+  }
+
+  if (sessionId && !storedSessionIdForRuntimeId(sessionId)) {
+    return sessionId
+  }
+
+  return freshDraftKey || null
+}
+
+/** `composerQueueScopeKey` subscribed to every store the runtime-claim lookup
+ *  reads: session.create publishes the runtime before its mirror, so a claim
+ *  can land while `sessionId` and the route stay put. */
+export function useComposerQueueScopeKey(
+  queueSessionKey: null | string | undefined,
+  sessionId: null | string | undefined,
+  freshDraftKey: null | string | undefined
+): null | string {
+  return useStoresSelector([$sessionTiles, $sessionStates, $activeSessionId, $selectedStoredSessionId], () =>
+    composerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
+  )
 }
 
 /**
@@ -94,7 +132,21 @@ export function renderComposerQueueSlot({
         }
       }}
       onSendNow={id => void sendQueuedNow(id)}
-      onSteerNow={id => void steerQueuedNow(id)}
+      onSteerNow={id => {
+        // A server row is steered by its owner, which consumes the admission so it never also runs;
+        // the pending fanout retires the card.
+        if (queuedPrompts.find(entry => entry.id === id)?.serverStatus) {
+          if (gateway) {
+            steerQueuedPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway)).catch(
+              (error: unknown) => notifyError(error, t.composer.queueStuckTitle)
+            )
+          }
+
+          return
+        }
+
+        void steerQueuedNow(id)
+      }}
       parked={queueParked}
     />
   ) : null

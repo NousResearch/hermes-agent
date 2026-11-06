@@ -46,6 +46,12 @@ def _run_hermes(args: list[str], timeout: int = 30) -> subprocess.CompletedProce
             "GIT_CONFIG_VALUE_0": "https://",
             "GIT_CONFIG_KEY_1": "url.file:///nonexistent-hermes-test-remote/.insteadOf",
             "GIT_CONFIG_VALUE_1": "git@",
+            # The channel resolver reads GitHub's API over urllib, which the git
+            # rewrite cannot reach: a dead local proxy fails it just as fast.
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "",
+            "no_proxy": "",
         }
     )
     return subprocess.run(

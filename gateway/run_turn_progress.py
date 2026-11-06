@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 import logging
 import queue
 import re
@@ -19,6 +18,7 @@ from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -29,6 +29,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _append_progress_repeat_count(message: str, occurrences: int) -> str:
+    """Put a repeat counter after a closing code fence on its own line: ```` ``` (×N) ```` is not a
+    valid closing fence, so Telegram/Markdown renderers would leave the block open."""
+    suffix = f"(×{occurrences})"
+    body = message.rstrip("\r\n")
+    if re.search(r"(?:^|\n)[ \t]*```[ \t]*\r?\Z", body):
+        line_end = "\r\n" if message.endswith("\r\n") else "\n"
+        return f"{body}{line_end}{suffix}"
+    return f"{message} {suffix}"
 
 
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
@@ -77,8 +88,17 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
         verbose = getattr(authority.sessions[session_id], "tool_progress_mode", None) == "verbose"
         payload = _tool_complete_payload(call_id, name, args, result, is_error=frame["is_error"], verbose=verbose)
     authority.publish_execution(session_id, generation, kind, payload)
-    from gateway.session_api_turn import publish_api_tool_event
+    from gateway.session_api_turn import publish_api_tool_event, publish_api_tool_progress
     publish_api_tool_event(authority, session_id, generation, kind, call_id, name, args, result)
+    # A worker sends no progress events: progress-only observers get the executor's preview of its
+    # args and the frame's own verdict, taken before the result was bounded.
+    if kind == "tool.start":
+        from agent.display import build_tool_preview
+        publish_api_tool_progress(authority, session_id, generation, "tool.started", name,
+                                  build_tool_preview(name, args), args)
+    else:
+        publish_api_tool_progress(authority, session_id, generation, "tool.completed", name, None, None,
+                                  is_error=frame["is_error"], result=result)
     return True
 
 
@@ -128,14 +148,18 @@ class GatewayTurnProgressMixin:
     def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        if local_viewer_turn(self):
+            try:
+                from gateway import local_viewer_events
+                local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
+            except Exception:
+                # Best-effort: a viewer frame never blocks the failure notice below, but a lost one is logged.
+                logger.debug("Local viewer progress publish failed for %s", event_type, exc_info=True)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
-        if local_viewer_turn(self):
-            from gateway import local_viewer_events
-            local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
@@ -280,13 +304,11 @@ class GatewayTurnProgressMixin:
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len
-                pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
+                from agent.display import get_tool_preview_max_len, verbose_tool_args_text
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
-                if pl > 0 and len(args_str) > pl:
-                    args_str = args_str[:pl - 3] + "..."
+                args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
+                                                  getattr(adapter, "supports_code_blocks", False))
                 code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
                 code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
@@ -316,7 +338,7 @@ class GatewayTurnProgressMixin:
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(_append_progress_repeat_count(msg, ctx.repeat_count[0] + 1))
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
@@ -654,7 +676,7 @@ class GatewayTurnProgressMixin:
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = _append_progress_repeat_count(base_msg, count + 1)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw
@@ -687,7 +709,9 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         await asyncio.sleep(0.3)
         if ctx._run_still_current():
-            await st.adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
+            # On this turn's own message, as its refresh: the chat's latest may be a newer one.
+            await st.adapter.send_typing(ctx.source.chat_id, metadata=typing_metadata_for_turn(
+                st.adapter, ctx.source.chat_id, ctx.event_message_id, ctx._progress_metadata))
 
     async def _progress_send_or_edit(self, st, msg) -> bool:
         """Deliver this tick's bubble. Returns False on a transient edit failure (retry next tick).
@@ -778,7 +802,8 @@ class GatewayTurnProgressMixin:
         if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
             return
         ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
+        # The bot whose call the guild was resolved on (#139345), not the default profile's.
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
             return
         try:
@@ -844,12 +869,15 @@ class GatewayTurnProgressMixin:
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
         if local_viewer_turn(self):
             from gateway import local_viewer_events
-            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result))
+            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))
         self._publish_execution("tool.complete", payload)
         if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.publish_control_if_changed(self)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 
@@ -907,7 +935,10 @@ class GatewayTurnProgressMixin:
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
 
     def _send_status_text(self, text: str, metadata, log_message: str) -> None:
+        from gateway.bot_peer_notices import automatic_notices_allowed
         ctx = self._ctx
+        if not automatic_notices_allowed(ctx.source):
+            return
         self._schedule(ctx._status_adapter.send(ctx._status_chat_id, text, metadata=metadata), log_message)
 
     def _attach_session_title_callback(self, agent, ctx) -> None:
@@ -959,6 +990,12 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
             return
+        # Lifecycle diagnostics (including provider fallback notices) are UI affordances for a
+        # human caller. Sending them to a known bot peer can create a new inbound turn and a loop.
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        if not automatic_notices_allowed(ctx.source):
+            logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
+            return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
             logger.debug(
@@ -984,9 +1021,11 @@ class GatewayTurnProgressMixin:
 
 def local_viewer_turn(runner) -> bool:
     """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
-    publishes nothing, so status and notices go to that stream instead."""
-    return (getattr(runner, "_approval_owner", None) is not None
-            and getattr(getattr(runner._ctx, "source", None), "platform", None) == Platform.LOCAL)
+    publishes nothing, so status and notices go to that stream instead. So does a conversation its
+    chat moved past (gateway/session_detached.py): it delivers through that same adapter."""
+    source = getattr(runner._ctx, "source", None) if getattr(runner, "_approval_owner", None) is not None else None
+    from gateway.session_detached import detached_route_of
+    return getattr(source, "platform", None) == Platform.LOCAL or detached_route_of(source) is not None
 
 
 def _viewer_status_kind(kind, text):

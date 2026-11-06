@@ -50,5 +50,11 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     projected = projected.copy()
     for key in _COMPACTION_INTERNAL_FIELDS:
         projected.pop(key, None)
-    projected.pop("display_kind", None)
+    # A safety-refused ask embedded in a composite carrier keeps its ``content_refused`` tag through
+    # the unwrap, or a reopened chat would redraw it as an ordinary user bubble with no refused notice
+    # (#149708 review): the model-facing handoff is gone, the user's live ask survives as a greyed
+    # refused block. Every other carrier drops its internal ``display_kind`` as before.
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
+    if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
+        projected.pop("display_kind", None)
     return projected

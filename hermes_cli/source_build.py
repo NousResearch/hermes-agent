@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
+    from pm.packages import pnpm_env
     from pm.paths import repo_root
     from hermes_constants import get_hermes_home
 
@@ -39,15 +41,56 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     python = str(project_python(root)) if running_from_selected_environment(root) else sys.executable
     env = {**os.environ, **(base_env or {}), "CI": "1", "HERMES_PYTHON": python,
            "PYTHON": python}
+    # Electron's installer unpacks its binary with a native module that imports
+    # VCRUNTIME140.dll, which a fresh Windows lacks. Our Python ships one, and
+    # scripts/build/electron-runtime.mjs copies it beside that module.
+    vc_runtime = Path(sys.base_prefix) / "vcruntime140.dll"
+    if vc_runtime.is_file():
+        env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
-    npmrc = get_hermes_home() / "npmrc"
+    hermes_npmrc = get_hermes_home() / "npmrc"
+    if hermes_npmrc.is_file():
+        env.setdefault("NPM_CONFIG_USERCONFIG", str(hermes_npmrc))
+    # The file npm itself would read: an explicit userconfig (any case), else Hermes's, else ~/.npmrc.
+    userconfig = next((value for name, value in env.items() if name.upper() == "NPM_CONFIG_USERCONFIG"), "")
+    npmrc = Path(userconfig).expanduser() if userconfig else Path.home() / ".npmrc"
     if npmrc.is_file():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
+        # pnpm reads that file only for its registry and auth. npm also handed every
+        # other key to dependency install scripts as npm_config_<key>, which is how
+        # node-pre-gyp finds a binary mirror (node_get_windows_binary_host_mirror).
+        inherited = {name.upper() for name in env}
+        for key, value in _npmrc_script_settings(npmrc, env):
+            name = f"npm_config_{key.replace('-', '_')}"
+            if name.upper() not in inherited:  # an explicit setting wins, in any case
+                env[name] = value
+    return ensure("pnpm", base_env=pnpm_env(env), explicit=explicit, verify=verify).env
+
+
+_NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_NPMRC_ENV_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
+    """``key=value`` lines of an npmrc that name a plain setting, with npm's ``${VAR}``
+    references expanded from ``env`` and surrounding quotes removed, as npm reads them.
+    Skipped: comments, credentials (``//host/:_authToken``, ``_auth``), scoped registries
+    (``@scope:registry``), array keys (``key[]``) and lines referring to an unset variable."""
+    settings = []
+    for line in npmrc.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")) or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if not _NPMRC_SETTING.fullmatch(key) or not all(ref in env for ref in _NPMRC_ENV_REF.findall(value)):
+            continue
+        settings.append((key, _NPMRC_ENV_REF.sub(lambda ref: env[ref.group(1)], value)))
+    return settings
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
-    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, pnpm):
     it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
     caller's process group, and every descendant killed when it exits; Windows: the owner's
     kill-on-close job), so the checkout is never handed to a contender while one of them still
@@ -61,19 +104,20 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
-    # npm's deprecation warnings are the loudest lines and never actionable
-    # here; they still land in the failure tail.
-    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
-                   indent="  ", cwd=project_root, env=env)
+    run_in_custody(project_root, command, label, indent="  ", cwd=project_root, env=env)
+
+
+def _install_args(explicit: bool) -> tuple[str, ...]:
+    from pm import lazy_installs_allowed
+
+    return () if explicit or lazy_installs_allowed() else ("--no-install",)
 
 
 def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
                                 explicit: bool = False) -> None:
-    from pm import lazy_installs_allowed
-
     run_source_script(
         project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
-        *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
+        *_install_args(explicit),
         *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
         label="Preparing Node dependencies",
     )
@@ -104,6 +148,12 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env,
                       label="Building the web UI")
+
+
+def build_source_webapp(project_root: Path, *, env: dict, explicit: bool = False) -> None:
+    """Browser renderer; its dependencies live in a private workspace, never the checkout's."""
+    run_source_script(project_root, "apps/desktop/scripts/build-webapp.mjs", *_install_args(explicit),
+                      env=env, label="Building the Webapp renderer")
 
 
 def source_frontends(project_root: Path) -> tuple[str, ...]:
@@ -143,6 +193,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     from hermes_cli.update_stage import publish_stage
 
     failures: list[tuple[str, BaseException]] = []
+    publish_stage("Building the apps")
 
     def attempt(name: str, step) -> bool:
         try:
@@ -162,8 +213,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         publish_stage("Updating Node dependencies")
 
         def node_dependencies(selected: tuple[str, ...]) -> None:
-            # Acquiring npm is part of this step: its failure must be reported like the install's.
-            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # Acquiring pnpm is part of this step: its failure must be reported like the install's.
+            # A recorded install is trusted as at startup (re-hashing the toolchain costs seconds per
             # tail); a missing one is still installed explicitly.
             env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, selected, env=env, explicit=True)
@@ -208,6 +259,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             # One whole line the Desktop hand-off scripts match: the follow-up text is truncated
             # and names whichever products failed first, so it cannot say if THIS app was rebuilt.
             print(f"  Desktop app build owed: {desktop_reason} failed")
+    if (project_root / "apps/desktop/scripts/build-webapp.mjs").is_file():
+        # Its dependencies live in a private workspace, so it never waits on the union above.
+        attempt("Webapp build", lambda: _rebuild_served_webapp(project_root, publish_stage))
     # A configured memory provider that no longer ships in core is installed from the
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.
@@ -229,13 +283,40 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         raise ProductBuildError(failures)
 
 
+def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
+    """The Webapp bundle (``apps/desktop/dist-webapp``), when a home sharing this install serves it
+    (``webapp.enabled``): its gateway serves the bundle as built, so one older than the updated
+    backend would talk to it with an outdated contract. Built with the function ``hermes webapp``
+    uses, which reuses a current bundle. A failed build leaves the previous bundle on disk, marked
+    out of date: its gateways report the Webapp unavailable until ``hermes webapp`` rebuilds it."""
+    from gateway.webapp_listener import webapp_settings
+    from hermes_cli.webapp import mark_webapp_stale, prepare_webapp_renderer
+    from pm.plugins_state import dependency_homes
+
+    if not any(webapp_settings(home).enabled for home in dependency_homes()):
+        return
+    publish_stage("Building the Webapp")
+    try:
+        prepare_webapp_renderer(project_root, explicit=True)
+    except BaseException:
+        try:
+            if mark_webapp_stale(project_root):
+                print("  ⓘ The Webapp stays unavailable until `hermes webapp` rebuilds it.")
+        except OSError as exc:
+            print(f"  ⚠ Could not mark the Webapp out of date: {exc}")
+        raise
+
+
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
+    from hermes_cli.desktop_build_reuse import packaged_desktop_reusable
     from hermes_cli.main_desktop import (
         _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
 
     desktop_dir = project_root / "apps/desktop"
     if _packaged_desktop_current_for_head(desktop_dir, project_root):
         print("  ✓ Desktop app is up to date")
+    elif built_from := packaged_desktop_reusable(desktop_dir, project_root, env):
+        print(f"  ✓ Desktop app is up to date: no desktop build input changed since {built_from[:12]}")
     else:
         publish_stage("Building the desktop app")
         # The desktop build mutates checkout-scoped node_modules and
@@ -250,7 +331,7 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         try:
             build_prepared_desktop(
                 desktop_dir, source_mode=False,
-                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                pnpm=shutil.which("pnpm", path=env["PATH"]), env=env, icons=project_root,
             )
         finally:
             build_lock.release()

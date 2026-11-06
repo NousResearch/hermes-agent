@@ -349,6 +349,36 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     assert not (root / ".update-incomplete").exists()
 
 
+def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch):
+    """A failed launch sync counts toward the retry bound, so relaunches stop redoing the same
+    failing repair (#139952); a corrected source update is a different repair and runs."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    syncs = []
+
+    def failing_sync(*args, **kwargs):
+        syncs.append(args)
+        raise RuntimeError("sync failed")
+
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(pm, "sync_venv", failing_sync)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    for _ in range(venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS):
+        with pytest.raises(RuntimeError, match="sync failed"):
+            venv_sync.prepare_launch(root, [])
+    assert venv_sync.completion_pending_path(root).is_file()
+
+    assert venv_sync.prepare_launch(root, []) is None, "a backed-off stale launch must not relaunch"
+    assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS, "the same failing repair re-ran"
+
+    (root / "uv.lock").write_text("# corrected source update\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="sync failed"):
+        venv_sync.prepare_launch(root, [])
+    assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS + 1, "changed inputs were not retried"
+
+
 def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, completion_tail):
     import pm
     from hermes_cli import _launchers
@@ -423,6 +453,19 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert venv_sync.prepare_launch(root, []) is None
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
+
+
+def test_gateway_status_skips_pending_source_update_completion(tmp_path, monkeypatch, completion_tail):
+    """`gateway status` remains a read-only recovery diagnostic while a tail is owed (#139133)."""
+    import pm
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    pending = venv_sync.arm_completion(root)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **_kw: pytest.fail("status started a dependency sync"))
+
+    assert venv_sync.prepare_launch(root, ["gateway", "status"]) is None
+    assert completion_tail == []
+    assert pending.is_file(), "a status query must leave the update tail for `hermes gateway restart`"
 
 
 @pytest.mark.parametrize("marker,value,owed_by_cli", [

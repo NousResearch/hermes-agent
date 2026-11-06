@@ -17,7 +17,8 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from functools import partial
+from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -27,7 +28,6 @@ from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
-from hermes_state_runtime import RuntimeStoreError
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 # Native admission refusals a redelivery cannot change (sender, route or payload).
 _PERMANENT_REFUSALS = frozenset({'permission_denied', 'invalid_params', 'admission_conflict',
                                  'profile_mismatch', 'not_found'})
+
+
+class _MediaNotDelivered(NamedTuple):
+    """The send_media lane was available but a local file never reached the platform."""
+    reason: str
+
 
 # The drain-path going-idle ACK budget must stay strictly under the runner's
 # default adapter disconnect timeout (5s) or cancellation fires before
@@ -153,6 +159,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self._auto_thread_waiters: dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: dict[str, None] = {}
+        # Discord chat labels the text lane carries and a forwarded interaction does not:
+        # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
+        self._discord_chat_labels: dict[tuple, tuple] = {}
+        self._discord_labels_recorded: dict[tuple, tuple] = {}
+        # (platform, chat_id) -> the chat's latest off-reader admission task (inbound_admission).
+        self._admission_lanes: dict[tuple[str, str], asyncio.Task] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -418,12 +430,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         subject: Any = None,
         platform: Optional[str] = None,
         surface_declines: bool = False,
+        surface_ambiguous: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Emit one best-effort, op-gated frame; None when the caller must fall back.
 
         None covers every unavailability: op not advertised (probe the descriptor
         instead of parsing a connector error), no transport, transport raised, or a
-        structured connector decline (logged at ``decline_level``; None = silent).
+        structured connector decline (logged at ``decline_level``; None = silent);
+        a lost ack too, unless ``surface_ambiguous`` (a fallback there would re-send).
         """
         op = action["op"]
         if self._transport is None or not self.descriptor.supports_op(op):
@@ -436,6 +450,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("relay %s transport failure", op, exc_info=True)
             return None
         if not result.get("success"):
+            if surface_ambiguous and result.get("ambiguous"):  # frame sent, outcome unknown
+                return result
             # P5(b): an AUTHORIZATION decline is not lane unavailability. This
             # helper's `None` means "lane absent — do your fallback", and the
             # fallbacks re-address the SAME chat by another route (media -> a
@@ -873,8 +889,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+    async def _on_inbound(self, event) -> Optional[asyncio.Task]:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path; a task when its
+        admission runs off the reader (``admit_relay_delivery``) and the transport ACKs on its end."""
         # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
@@ -888,41 +905,31 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 return
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
-            return
-        await self._localize_inbound_media(event)
+        try:
+            self._capture_ingress_scope(event)
+            await self._remember_discord_labels(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                return
+            await self._localize_inbound_media(event)
+        except asyncio.CancelledError:
+            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
+            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if dedupe_key is not None:
+                self._seen_inbound.pop(dedupe_key, None)
+            raise
         if native:
-            from datetime import datetime, timezone
-            from gateway.platforms.webhook_ingress import admit_producer
+            from datetime import datetime
+            from gateway.relay.inbound_admission import admit_relay_delivery
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
-            # Wait only for the SQLite receipt, never inference or outbound ACKs
-            # (those need this same WS reader). A permanent refusal returns, so the
-            # transport ACKs it (a replay would be refused again: main's runner dropped
-            # it too); any other failure withholds the ACK so the connector redelivers.
-            try:
-                receipt = await admit_producer(self, event)
-            except RuntimeStoreError as exc:
-                if exc.reason not in _PERMANENT_REFUSALS:
-                    raise
-                logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",
-                               exc.reason, event.source.platform.value, event.source.chat_id)
-                return
-            if receipt is None and getattr(event, '_consumer_reply', None):
-                # A post_gateway_admission plugin consumed it (never committed); its reply is
-                # sent off this reader, like an executed admission's.
-                from gateway.session_ingress import deliver_response
-                task = asyncio.create_task(deliver_response(
-                    self, event, runner._session_key_for_source(event.source), event._consumer_reply))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-        else:
-            await self.handle_message(event)
+            # Never wait for inference or outbound ACKs (those need this same WS reader).
+            return await admit_relay_delivery(self, runner, event)
+        await self.handle_message(event)
+        return None
 
     _SEEN_INBOUND_MAX = 512
 
@@ -1039,28 +1046,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             urls = list(getattr(event, "media_urls", None) or [])
             if not urls:
                 return
-            # media_types is INDEXED IN PARALLEL with media_urls by every downstream
-            # classifier: carry (url, mime) PAIRS through the loop or surviving
-            # attachments inherit a neighbour's type.
-            types = list(getattr(event, "media_types", None) or [])
-            pairs = [(u, types[i] if i < len(types) else "") for i, u in enumerate(urls)]
+            # media_types / media_filenames are INDEXED IN PARALLEL with media_urls downstream:
+            # carry (url, mime, name) TRIPLES or survivors inherit a neighbour's type or name.
+            types = list(getattr(event, "media_types", None) or []) + [""] * len(urls)
+            names = list(getattr(event, "media_filenames", None) or []) + [""] * len(urls)
             client = self._get_media_client()
-            localized: list[tuple[str, str]] = []
-            for url, mime in pairs:
+            localized: list[tuple[str, str, str]] = []
+            for url, mime, name in zip(urls, types, names):
                 if not isinstance(url, str) or not url:
                     continue
                 if client is None:
                     if "/relay/media/" not in url:
-                        localized.append((url, mime))
+                        localized.append((url, mime, name))
                     continue
-                path = await client.download(url)
-                if path:
-                    localized.append((path, mime))
+                # The path is a random temp name; the original name rides beside it.
+                got = await client.download_with_name(url, suggested_name=name or None)
+                if got:
+                    localized.append((got[0], mime, got[1]))
                 elif "/relay/media/" not in url:
                     # A public URL still has value as a URL; a dead re-host does not.
-                    localized.append((url, mime))
-            event.media_urls = [u for u, _ in localized]
-            event.media_types = [m for _, m in localized]
+                    localized.append((url, mime, name))
+            event.media_urls, event.media_types, event.media_filenames = (
+                [entry[i] for entry in localized] for i in range(3))
         except Exception:
             logger.debug("relay inbound media localization failed", exc_info=True)
 
@@ -1102,7 +1109,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 value = getattr(src, attr, None)
                 if value:
                     cache[chat] = str(value)
-            # Triggering message ts for the typing/status lane's synthetic thread anchor.
+            # Latest message ts: the status anchor for typing frames that carry no turn's own anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
                 self._last_inbound_ts_by_chat[chat] = str(message_id)
@@ -1146,31 +1153,6 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the per-session interrupt path."""
         await self.interrupt_session_activity(session_key, chat_id)
-
-    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
-        """Handle a connector-forwarded passthrough request. The connector answered the
-        provider's latency-critical ACK at the edge, verified the signature and vaulted
-        any shared-identity credential; the agent later acts via the token-less
-        ``send_follow_up`` path. A Discord interaction becomes a normalized
-        ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
-        try:
-            platform = getattr(forward, "platform", "") or ""
-            if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
-                if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
-                    await self.handle_message(event)
-                    return
-            logger.info(
-                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
-                platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
-            )
-        except Exception:
-            logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     async def disconnect(self) -> None:
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor
@@ -1512,23 +1494,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return effective_reply_to
 
     def _with_status_thread_anchor(
-        self, chat_id: str, metadata: Optional[dict[str, Any]]
+        self, chat_id: str, metadata: Optional[dict[str, Any]], anchor: Optional[str] = None
     ) -> dict[str, Any]:
-        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's
-        status line is THREAD-scoped and the typing lane's metadata carries no anchor
-        for a top-level DM, so synthesize it from the per-chat inbound-ts cache. Shared
-        by ``send_typing`` and ``stop_typing`` — the clear MUST target the same thread
-        the heartbeat set or the status sticks until Slack's timeout."""
+        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's status
+        line is THREAD-scoped and a top-level DM turn's metadata names no thread, so its
+        status sits on ``anchor``, the turn's own message. A turn fixes it at start
+        (``status_metadata_for_turn``) and its refreshes and clear reuse it: the clear MUST
+        target the thread the heartbeat set or the status sticks. Without one (event-less
+        callers) it falls back to the chat's latest inbound ts, which a later message moves."""
         md = dict(metadata or {})
         if (
             not (md.get("thread_id") or md.get("thread_ts"))
             and self._platform_by_chat.get(str(chat_id)) == _SLACK
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            anchor = anchor or self._last_inbound_ts_by_chat.get(str(chat_id))
             if anchor:
-                md["thread_id"] = anchor
+                md["thread_id"] = str(anchor)
         return md
+
+    def status_metadata_for_turn(self, chat_id: str, anchor: str, metadata: Optional[dict]) -> dict[str, Any]:
+        """``helpers.typing_metadata_for_turn`` hook: the turn's typing metadata, status anchor fixed."""
+        return self._with_status_thread_anchor(chat_id, metadata, anchor)
 
     async def edit_message(
         self,
@@ -1616,13 +1603,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         """One ``typing`` frame (``content`` None = omit; "" = Slack clear). Cosmetic: never raises."""
         # Thread anchor for the status surface. Slack's status line ("is thinking…" in the thread's replies
         # footer — works with plain chat:write, confirmed on native no-assistant bots) is THREAD-only: the
-        # connector's typing case no-ops without a thread_ts. But the typing lane's metadata (base.py
-        # _thread_metadata_for_source) has no anchor for a top-level DM — source.thread_id is None — so
-        # every heartbeat was silently dropped. In thread-per-message mode the turn's thread root IS the
-        # triggering message ts (run.py's synthetic root); synthesize it here from the per-chat inbound
-        # cache, exactly like native send_typing resolves thread_ts from metadata.message_id. Flat mode
-        # (reply_in_thread=false) keeps the no-anchor no-op: there is no thread and must not be one
-        # (#18859).
+        # connector's typing case no-ops without a thread_ts. A top-level DM turn's typing metadata already
+        # names its own message (fixed at turn start); see _with_status_thread_anchor for the fallback.
         md = self._with_status_thread_anchor(chat_id, metadata)
         frame: dict[str, Any] = {"op": "typing", "chat_id": chat_id, "metadata": self._with_scope(chat_id, md)}
         if content is not None:
@@ -1715,12 +1697,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         filename: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
-    ) -> Optional[SendResult]:
+    ) -> Optional[SendResult | _MediaNotDelivered]:
         """Egress one media object via the connector's ``send_media`` op. ``source`` is
         a LOCAL path (uploaded to /relay/media first — the connector cannot reach our
         filesystem) or an already-public URL (passed through). None when the lane is
-        unavailable (op not advertised, no transport, upload failed, connector
-        decline) so each caller falls back to its pre-media behaviour."""
+        unavailable (op not advertised, no transport, no media client) so each caller
+        falls back to its pre-media behaviour; ``_MediaNotDelivered`` when the lane was
+        there but a LOCAL file never reached the platform (upload failed after its
+        retries, connector decline/transport failure): the caller still falls back, but
+        reports the send failed (``_send_local_media``)."""
         if self._transport is None or not self.descriptor.supports_op("send_media"):
             return None
         source_url = source
@@ -1728,9 +1713,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             client = self._get_media_client()
             if client is None:
                 return None
-            uploaded = await client.upload(source, filename=filename)
+            uploaded, why = await client.upload_with_error(source, filename=filename)
             if not uploaded:
-                return None
+                return _MediaNotDelivered(f"relay media upload failed: {why}")
             source_url = uploaded
         # Same Slack thread-anchor contract as the text lane: media frames go through
         # the connector's Slack sender too (threadTs() reads metadata only).
@@ -1747,12 +1732,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         }
         if filename:
             action["filename"] = filename
-        # A capacity decline (size cap, platform rejection) is logged and the
-        # caller's fallback still delivers the caption/notice; an
-        # AUTHORIZATION decline must NOT degrade that way (surface_declines).
-        result = await self._gated_op(chat_id, action, surface_declines=True)
+        # Capacity decline -> caller's fallback notice; AUTHORIZATION decline never degrades.
+        result = await self._gated_op(chat_id, action, surface_declines=True, surface_ambiguous=True)
         if result is None:
-            return None
+            return _MediaNotDelivered("connector did not deliver the attachment") if source_is_path else None
+        if result.get("ambiguous"):  # ack lost: possibly delivered (as cron's live-send timeout); no notice/re-send
+            logger.warning("relay send_media to %s unconfirmed (ack lost): %s", chat_id, result.get("error"))
+            return SendResult(success=True, raw_response={"ambiguous": True, "error": result.get("error")})
         if not result.get("success"):
             # An AUTHORIZATION refusal, surfaced by _gated_op. Returning None
             # would hand the caller back to its fallback — a DIFFERENT op
@@ -1781,73 +1767,58 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata
         )
 
-    async def send_image_file(
-        self,
-        chat_id: str,
-        image_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="image", source=image_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_image_file(
-            chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    # The local-file overrides share ``_send_local_media`` (send_media lane, else the base
+    # fallback notice; a file the lane dropped is reported as a failed send).
+    async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
+                              reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                              **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "image", image_path, caption, reply_to, metadata, partial(
+            super().send_image_file, chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="voice", source=audio_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_voice(
-            chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "voice", audio_path, caption, reply_to, metadata, partial(
+            super().send_voice, chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_video(
-        self,
-        chat_id: str,
-        video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="video", source=video_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_video(
-            chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "video", video_path, caption, reply_to, metadata, partial(
+            super().send_video, chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "document", file_path, caption, reply_to, metadata, partial(
+            super().send_document, chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to,
+            metadata=metadata, **kwargs), filename=file_name)
+
+    async def _send_local_media(
+        self, chat_id: str, media_kind: str, path: str, caption: Optional[str], reply_to: Optional[str],
+        metadata: Optional[dict[str, Any]], fallback: Callable[[], Awaitable[SendResult]],
+        filename: Optional[str] = None,
     ) -> SendResult:
+        """One local file through the send_media lane, else ``fallback`` (the base caption +
+        "couldn't send" notice). When the lane was available but the file still never arrived,
+        the notice goes out exactly as before, yet the send is reported FAILED: cron, the
+        send_message tool and the turn tracker must not record a dropped attachment as sent.
+        ``failure_notice_sent`` stops the turn dispatcher from posting a second notice."""
         result = await self._send_media(
-            chat_id, media_kind="document", source=file_path, source_is_path=True,
-            caption=caption, filename=file_name, reply_to=reply_to, metadata=metadata,
+            chat_id, media_kind=media_kind, source=path, source_is_path=True, caption=caption,
+            filename=filename, reply_to=reply_to, metadata=metadata,
         )
-        return result if result is not None else await super().send_document(
-            chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to, metadata=metadata, **kwargs
+        if isinstance(result, SendResult):
+            return result
+        shown = await fallback()
+        if result is None:
+            return shown
+        return SendResult(
+            success=False, message_id=shown.message_id, error=f"attachment not delivered: {result.reason}",
+            raw_response={"failure_notice_sent": bool(shown.success), "fallback": shown.raw_response},
         )
 
     # ── Phase 3 interactive: prompt + react ──────────────────────────────
@@ -1967,7 +1938,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         options = [{"id": choice, "label": label, **({"style": style} if style else {})}
                    for label, choice, style in prompt.actions]
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
+            "exec_approval", {"session_key": prompt.session_key, "request_id": prompt.request_id},
+            prompt.chat_id, prompt_kind="approval",
             text=prompt.text, options=options, metadata=prompt.metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
@@ -2079,10 +2051,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return True
 
     async def _resolve_exec_approval(self, state, option_id, chat_id, ack_meta) -> None:
-        from tools.approval import resolve_gateway_approval
-
+        from tools.approval import resolve_gateway_approval_card
         choice = option_id if option_id in _EXEC_APPROVAL_LABELS else "deny"
-        count = resolve_gateway_approval(str(state.get("session_key") or ""), choice)
+        count = resolve_gateway_approval_card(str(state.get("session_key") or ""), choice, state.get("request_id"))
         label = _EXEC_APPROVAL_LABELS[choice] if count else "⌛ Approval expired — no command was waiting."
         # In-channel ack preserves the audit trail the native edit gives (the
         # connector's prompt message can't be edited cross-platform yet).

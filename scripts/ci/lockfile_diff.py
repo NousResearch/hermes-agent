@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Semantic diff of npm ``package-lock.json`` files for PR comments.
+"""Semantic diff of the repo's JS lockfiles for PR comments.
 
-``git diff`` on a lockfile is unreadable: npm reorders entries, rewrites
-integrity hashes, and moves packages between nesting levels, so a one-line
-``package.json`` bump can produce a thousand-line textual diff. This script
-ignores the text entirely — it parses the ``packages`` map out of both
-versions of each lockfile (lockfileVersion 2/3), reduces each to
-``{install path: version}``, and set-diffs the two dicts. Reordering and
-hash churn vanish; what's left is the actual dependency change.
+``git diff`` on a lockfile is unreadable: package managers reorder entries,
+rewrite integrity hashes, and (npm) move packages between nesting levels, so a
+one-line ``package.json`` bump can produce a thousand-line textual diff. This
+script ignores the text entirely — it reduces both versions of each lockfile
+to ``{package: version}`` and set-diffs the two dicts. Reordering and hash
+churn vanish; what's left is the actual dependency change.
+
+pnpm locks the workspace (``pnpm-lock.yaml``, lockfileVersion 9.0); the
+standalone npm projects (website/, the sidecars) keep a ``package-lock.json``
+(lockfileVersion 2/3).
 
 Usage (from a checkout that still has the base ref available):
 
     python scripts/ci/lockfile_diff.py --base <ref> --head <ref> \
         --output diff.md [--repo-root .]
 
-Reads every ``package-lock.json`` tracked at either ref (top-level and
-nested — the repo has several), diffs each, and writes a Markdown fragment
-to ``--output``. Exits 0 always; an empty output file means "no version
-changes" (the caller uses that to decide whether to include the section).
+Reads every ``pnpm-lock.yaml`` and ``package-lock.json`` tracked at either
+ref (top-level and nested — the repo has several), diffs each, and writes a
+Markdown fragment to ``--output``. Exits 0 unless a lockfile is unreadable
+(a pnpm-lock.yaml in a format this reader does not know fails loudly); an
+empty output file means "no version changes" (the caller uses that to decide
+whether to include the section).
 The fragment is consumed by ``scripts/ci/assemble_review_comment.py``,
 which wraps it in a section with a header and action note.
 """
@@ -26,12 +31,19 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import subprocess
 import sys
 
+# CI runs this file directly on the runner's Python, outside any package.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.ci.pnpm_lock import section_keys
+
 
 def parse_lockfile(text: str) -> dict[str, str]:
-    """Reduce lockfile JSON to ``{install path: version}``.
+    """Reduce package-lock.json to ``{install path: version}``.
 
     Keys are the ``packages`` map's keys (e.g. ``node_modules/react`` or
     ``node_modules/foo/node_modules/react``), so the same package deduped
@@ -48,6 +60,23 @@ def parse_lockfile(text: str) -> dict[str, str]:
         if version:
             out[path] = version
     return out
+
+
+def parse_pnpm_lockfile(text: str) -> dict[str, str]:
+    """Reduce pnpm-lock.yaml to ``{package name: versions}``.
+
+    pnpm has no install paths: ``packages`` holds one ``name@version`` entry
+    per locked version. A package locked at several versions maps to all of
+    them (``"17.0.2, 18.2.0"``), so moving any one of them updates that package.
+    """
+    versions: dict[str, list[str]] = {}
+    for key in section_keys(text, "packages"):
+        at = key.index("@", 1)  # past a scope's leading @
+        versions.setdefault(key[:at], []).append(key[at + 1:])
+    return {name: ", ".join(sorted(found)) for name, found in versions.items()}
+
+
+_PARSERS = {"package-lock.json": parse_lockfile, "pnpm-lock.yaml": parse_pnpm_lockfile}
 
 
 def diff_locks(base: dict[str, str], head: dict[str, str]) -> dict[str, list]:
@@ -133,19 +162,20 @@ def _tracked_lockfiles(ref: str, repo_root: str) -> set[str]:
     return {
         line
         for line in proc.stdout.splitlines()
-        if line.split("/")[-1] == "package-lock.json"
+        if line.split("/")[-1] in _PARSERS
     }
 
 
 def diff_refs(base: str, head: str, repo_root: str = ".") -> dict[str, dict[str, list]]:
-    """Diff every package-lock.json tracked at either ref."""
+    """Diff every JS lockfile tracked at either ref."""
     lockfiles = _tracked_lockfiles(base, repo_root) | _tracked_lockfiles(head, repo_root)
     diffs = {}
     for path in sorted(lockfiles):
+        parse = _PARSERS[path.split("/")[-1]]
         base_text = _git_show(base, path, repo_root)
         head_text = _git_show(head, path, repo_root)
-        base_map = parse_lockfile(base_text) if base_text else {}
-        head_map = parse_lockfile(head_text) if head_text else {}
+        base_map = parse(base_text) if base_text else {}
+        head_map = parse(head_text) if head_text else {}
         diffs[path] = diff_locks(base_map, head_map)
     return diffs
 

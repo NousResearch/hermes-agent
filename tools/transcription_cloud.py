@@ -23,7 +23,7 @@ from tools.transcription_common import (
     GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, RETIRED_GROQ_MODELS, STTResponseError,
     XAI_STT_BASE_URL,
     _error_result, _get_stt_section, _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result,
-    normalize_xai_stt_model)
+    normalize_xai_stt_model, stt_response_format)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -152,7 +152,7 @@ def _transcribe_openai(
 
         def _create_transcription(path: str):
             create_kwargs: dict[str, Any] = {
-                "model": model_name, "response_format": "text" if model_name == "whisper-1" else "json",
+                "model": model_name, "response_format": stt_response_format(model_name),
             }
             if language:
                 # gpt-transcribe takes a ``languages`` list and rejects the legacy field.

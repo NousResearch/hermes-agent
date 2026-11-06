@@ -79,12 +79,15 @@ class _Session:
 
     def __init__(self, *, read_only: bool) -> None:
         self.read_only = read_only
+        self._scanning = False
         self._dbs: dict[tuple[Path, bool], Any] = {}
 
     def db(self, store: Store, *, inventory_only: bool = False):
         """The store's SessionDB. Read-only runs never create a file: a live profile that has no
         ``state.db`` yet reads as empty; an apply run opens it for real when a move lands there."""
         path = store.db_path
+        if self._scanning and not path.exists() and not path.is_symlink():
+            return _EMPTY_STORE
         read_only = self.read_only or inventory_only
         key = (path, read_only)
         if key not in self._dbs:
@@ -210,16 +213,20 @@ class RepairPlan:
 
     # -- scan --
     def scan(self, session: _Session) -> RepairPlan:
-        self._scan_dual_home(session)
-        for store in self.stores:
-            self._scan_sessions(session, store)
-            self._scan_topics(session, store)
-        for store in self.stores:
-            self._scan_routing(session, store)
-        if self.routing_store is not None:
-            self._scan_voice_modes(session, self.routing_store)
-            self._scan_sessions_json(self.routing_store)
-        return self
+        session._scanning = True
+        try:
+            self._scan_dual_home(session)
+            for store in self.stores:
+                self._scan_sessions(session, store)
+                self._scan_topics(session, store)
+            for store in self.stores:
+                self._scan_routing(session, store)
+            if self.routing_store is not None:
+                self._scan_voice_modes(session, self.routing_store)
+                self._scan_sessions_json(self.routing_store)
+            return self
+        finally:
+            session._scanning = False
 
     def _scan_dual_home(self, session: _Session) -> None:
         """Report cross-store copies before ordinary repair planning; never auto-move them.
@@ -486,13 +493,52 @@ class _MoveBatch:
     def run(self, session: _Session) -> dict[str, dict[str, int]]:
         if self._result is not None:
             return self._result
-        src_db, dst_db = session.db(self.src), session.db(self.dst)
-        return _guarded_component_action(src_db, self.ids, lambda: self._run_locked(session, src_db, dst_db))
+        src_db = session.db(self.src)
+        dst_path = self.dst.db_path
+        dst_db = session.db(self.dst) if dst_path.exists() or dst_path.is_symlink() else None
+        groups = _connected_lineages(src_db.list_session_lineage_rows())
+        wanted = set(self.ids)
+        component_ids = set().union(*(groups.get(sid, {sid}) for sid in wanted))
+        blocked = _foreign_repair_copies(src_db, dst_db, component_ids)
+        held = {sid for sid in wanted if groups.get(sid, {sid}) & blocked}
+        self._hold_copies(held)
+        active = [sid for sid in self.ids if sid not in held]
+        if not active:
+            self._result = {}
+            return self._result
+        if not _drain_repair_accounting(src_db, dst_db):
+            self._errors.update({sid: TimeoutError("queued accounting could not be flushed; source row kept")
+                                 for sid in active})
+            self._result = {}
+            return self._result
+        return _guarded_component_action(
+            src_db, active, lambda snapshot: self._run_locked(session, src_db, dst_db, active, snapshot))
 
-    def _run_locked(self, session: _Session, src_db: Any, dst_db: Any) -> dict[str, dict[str, int]]:
+    def _hold_copies(self, ids):
+        for sid in ids:
+            self._errors.setdefault(sid, RuntimeError("a linked repair member is blocked; rescan and adjudicate"))
+
+    def _run_locked(self, session: _Session, src_db: Any, dst_db: Any, active, snapshot) -> dict[str, dict[str, int]]:
         from hermes_state_profile_repair import SessionLedgeredError
+        from hermes_state_lineage import _same_file
+        if _pending_repair_accounting(src_db, dst_db):
+            self._errors.update({sid: RuntimeError("queued accounting is busy; source row kept") for sid in active})
+            self._result = {}
+            return self._result
+        try:
+            dst_db = _repair_destination(session, self.dst, dst_db)
+        except RuntimeError as exc:
+            self._errors.update({sid: exc for sid in active})
+            self._result = {}
+            return self._result
+        groups = _connected_lineages(src_db.list_session_lineage_rows())
+        blocked = ({sid for sid, rows in snapshot.rows_by_id.items()
+                    if any(not _same_file(row.store_path, src_db.db_path) for row in rows)} if snapshot else set())
+        self._hold_copies(sid for sid in active if groups.get(sid, {sid}) & blocked)
         payloads: dict[str, Optional[dict[str, Any]]] = {}
-        for sid in self.ids:
+        for sid in active:
+            if sid in self._errors:
+                continue
             try:
                 payloads[sid] = src_db.export_session_for_move(sid)
             except SessionLedgeredError as exc:  # gained ledger rows since the scan: never copied
@@ -515,18 +561,38 @@ class _MoveBatch:
                                sid, self.dst.profile, exc_info=True)
                 self._errors[sid] = exc
                 continue
-            if dst_db.count_messages_all(sid) < len(payload["messages"]):
-                logger.warning("repair-profiles: %s copied into %s with fewer messages than the source; "
-                               "source row kept", sid, self.dst.profile)
-                result[sid] = {"copied_incomplete": 1}
+            if outcome != "imported":
+                self._errors[sid] = RuntimeError("target copy appeared during repair; source row kept")
+                continue
+            try:
+                _verify_repair_copy(src_db, dst_db, sid, payload)
+            except Exception as exc:
+                logger.warning("repair-profiles: verifying copied %s failed; source row kept", sid, exc_info=True)
+                self._errors[sid] = exc
                 continue
             result[sid] = {outcome: 1}
+        # Re-read every copied source before deleting any member. Session accounting,
+        # prompts, sidecars or transcript changes after export invalidate the copy.
+        for payload in ordered:
+            sid = payload["session"]["id"]
+            if sid not in result:
+                continue
+            try:
+                current = src_db.export_session_for_move(sid)
+                if current != payload:
+                    raise RuntimeError("source changed after copy; source row kept")
+            except Exception as exc:
+                logger.warning("repair-profiles: rechecking source %s failed; source row kept", sid, exc_info=True)
+                self._errors[sid] = exc
+        changed = set(self._errors)
+        if changed:
+            self._hold_copies(sid for sid in active if groups.get(sid, {sid}) & changed)
         # Deleting a row detaches its children still in the source; a child that did not move
         # must find its parent there on the next run.
         awaited = {p["session"].get("parent_session_id") for p in ordered if p["session"]["id"] in self._errors}
         for payload in ordered:
             sid = payload["session"]["id"]
-            if sid not in result or sid in awaited or "copied_incomplete" in result[sid]:
+            if sid not in result or sid in self._errors or sid in awaited:
                 continue
             try:
                 if src_db.delete_moved_session(sid):
@@ -539,7 +605,52 @@ class _MoveBatch:
         return result
 
 
-def _guarded_component_action(db: Any, ids: Iterable[str], action: Callable[[], Any]) -> Any:
+def _repair_destination(session, store, existing):
+    if existing is not None:
+        return existing
+    # A newly appeared store needs another scan before it can be opened or mutated.
+    if store.db_path.exists() or store.db_path.is_symlink():
+        raise RuntimeError("target store appeared; rescan before repair")
+    return session.db(store)
+
+
+def _drain_repair_accounting(source, target):
+    return source.flush_token_counts() and (target is None or target.flush_token_counts())
+
+
+def _pending_repair_accounting(source, target):
+    return source.has_pending_token_counts() or (target is not None and target.has_pending_token_counts())
+
+
+def _verify_repair_copy(src_db, dst_db, sid, payload):
+    from hermes_state_portability import _adoption_history_covers
+    with src_db._read_ctx() as source, dst_db._read_ctx() as destination:
+        preserved = _adoption_history_covers(source, destination, sid)
+    target = dst_db.export_session_for_move(sid)
+    if (not preserved or target is None or target["usage"] != payload["usage"]
+            or target["system_prompt"] != payload["system_prompt"] or target["tool_pin"] != payload["tool_pin"]):
+        raise RuntimeError("copied history differs from source; source row kept")
+
+
+def _foreign_repair_copies(src_db, dst_db, ids):
+    """Discover competing physical copies, including ended rows, before selecting a batch."""
+    from hermes_state_lineage import _managed_root_and_current, _rows_for_ids, _same_file, _store_candidates
+    ids = tuple(ids)
+    managed = _managed_root_and_current(src_db.db_path)
+    if managed is None:
+        if dst_db is None:
+            return set()
+        with dst_db._read_ctx() as conn:
+            return {sid for sid in ids if conn.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone()}
+    root, current_path = managed
+    blocked = set()
+    for path, profile in _store_candidates(root, current_path):
+        if not _same_file(path, current_path):
+            blocked.update(_rows_for_ids(path, profile, ids))
+    return blocked
+
+
+def _guarded_component_action(db: Any, ids: Iterable[str], action: Callable[[Any], Any]) -> Any:
     from hermes_state_lineage import SessionLineageInventoryError, session_lineage_guard
     wanted = set(ids)
     guarded = set(wanted)
@@ -549,18 +660,18 @@ def _guarded_component_action(db: Any, ids: Iterable[str], action: Callable[[], 
         for sid in wanted:
             guarded.update(groups.get(sid, ()))
         with session_lineage_guard(db.db_path, guarded,
-                                   timeout_s=max(0.0, deadline - time.monotonic())):
+                                   timeout_s=max(0.0, deadline - time.monotonic())) as snapshot:
             current = _connected_lineages(db.list_session_lineage_rows())
             if any(current.get(sid, {sid}) - guarded for sid in wanted):
                 continue
-            return action()
+            return action(snapshot)
     raise SessionLineageInventoryError("Repair lineage changed during ownership discovery")
 
 
 def _session_fix(store: Store, sid: str, write: Callable[[Any], dict[str, int]]) -> Callable[[_Session], dict[str, int]]:
     def fix(session: _Session) -> dict[str, int]:
         db = session.db(store)
-        return _guarded_component_action(db, [sid], lambda: write(db))
+        return _guarded_component_action(db, [sid], lambda _snapshot: write(db))
     return fix
 
 

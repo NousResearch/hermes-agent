@@ -462,6 +462,11 @@ class SessionPortabilityMixin:
         Existing rows are skipped and donor-ahead copies are never retired.
         """
         from hermes_state_adoption_records import AdoptionConflict
+        # A queued writer may need the same lineage lock. Drain before acquiring it;
+        # a timeout cannot authorize moving a stale accounting snapshot.
+        if not donor_db.flush_token_counts() or not self.flush_token_counts():
+            return {"ok": False, "adopted": False, "donor_retired": False,
+                    "error": "Queued accounting is busy; retry adoption after it settles"}
         pair_error = self._validate_adoption_store_pair(donor_db.db_path)
         if pair_error:
             return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
@@ -503,6 +508,10 @@ class SessionPortabilityMixin:
             authority = ownership(record, donor_db.db_path, self.db_path)
         with session_lineage_guard(self.db_path, ids, transfer_from=donor_db.db_path,
                                    adoption=authority, timeout_s=self._WRITE_PATIENCE_S) as snapshot:
+            # Never wait under this guard for a writer that may be waiting for it.
+            if donor_db.has_pending_token_counts() or self.has_pending_token_counts():
+                return {"ok": False, "adopted": False, "donor_retired": False,
+                        "error": "Queued accounting is busy; retry adoption after it settles"}
             # Reload authority under the complete lock set. Returning releases it before
             # the bounded outer loop discovers/reacquires any expanded membership.
             validate_handles(self, donor_db)

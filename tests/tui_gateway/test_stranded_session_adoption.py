@@ -365,10 +365,14 @@ def test_divergent_donor_is_not_retired(stores):
     default_db.append_message(STRANDED_ID, "user", "late question")
     default_db.append_message(STRANDED_ID, "assistant", "late answer")
 
+    donor_before = default_db.get_session(STRANDED_ID), default_db.get_messages(STRANDED_ID, include_inactive=True)
+    target_before = profile_db.get_session(STRANDED_ID), profile_db.get_messages(STRANDED_ID, include_inactive=True)
     second = profile_db.adopt_session_lineage_from(default_db, STRANDED_ID)
 
-    assert second["adopted"] is True  # profile copy still serves
+    assert second["adopted"] is False and second["conflict"] is True
     assert second["donor_retired"] is False
+    assert (default_db.get_session(STRANDED_ID), default_db.get_messages(STRANDED_ID, include_inactive=True)) == donor_before
+    assert (profile_db.get_session(STRANDED_ID), profile_db.get_messages(STRANDED_ID, include_inactive=True)) == target_before
     donor = default_db.get_session(STRANDED_ID)
     assert not donor["archived"], "diverged donor must stay reachable"
     assert len(default_db.get_messages(STRANDED_ID)) == 8

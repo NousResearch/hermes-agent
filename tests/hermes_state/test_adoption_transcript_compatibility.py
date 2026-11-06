@@ -127,3 +127,59 @@ def test_equivalent_structured_content_encoding_is_compatible(stores):
     target._conn.commit()
     result = target.adopt_session_lineage_from(donor, "same")
     assert result["donor_retired"], result
+
+
+@pytest.mark.parametrize("busy_owner", ["donor", "target"])
+def test_adoption_refuses_queued_writer_that_is_busy_before_guard(stores, monkeypatch, busy_owner):
+    import threading
+    import time
+    from contextlib import contextmanager
+    import hermes_state_portability as portability
+    donor, target = stores
+    donor.create_session("same", "cli")
+    donor.append_message("same", "user", "kept")
+    if busy_owner == "target":
+        target.create_session("other", "cli")
+    owner = donor if busy_owner == "donor" else target
+    owner_sid = "same" if busy_owner == "donor" else "other"
+    before = snapshot(donor), snapshot(target)
+    started, release = threading.Event(), threading.Event()
+    original_apply = owner._apply_token_batch
+    original_guard = portability.session_lineage_guard
+    def delayed_batch(batch):
+        started.set()
+        assert release.wait(15), "adoption did not release the waiting writer"
+        return original_apply(batch)
+    @contextmanager
+    def queue_before_guard(path, ids, **kwargs):
+        owner.queue_token_counts(owner_sid, input_tokens=7, model="m")
+        assert started.wait(5)
+        with original_guard(path, ids, **kwargs) as observed:
+            yield observed
+    monkeypatch.setattr(owner, "_apply_token_batch", delayed_batch)
+    monkeypatch.setattr(portability, "session_lineage_guard", queue_before_guard)
+    try:
+        start = time.monotonic()
+        result = target.adopt_session_lineage_from(donor, "same")
+        elapsed = time.monotonic() - start
+        assert elapsed < 3, elapsed
+        assert not result.get("donor_retired"), result
+        assert not result.get("adopted"), result
+        assert (snapshot(donor), snapshot(target)) == before
+    finally:
+        release.set()
+        assert owner.flush_token_counts(timeout=10)
+    assert owner.get_session(owner_sid)["input_tokens"] == 7
+
+
+@pytest.mark.parametrize("busy_owner", ["donor", "target"])
+def test_adoption_refuses_unflushed_accounting_before_guard(stores, monkeypatch, busy_owner):
+    donor, target = stores
+    donor.create_session("same", "cli")
+    donor.append_message("same", "user", "kept")
+    before = snapshot(donor), snapshot(target)
+    owner = donor if busy_owner == "donor" else target
+    monkeypatch.setattr(owner, "flush_token_counts", lambda *a, **k: False)
+    result = target.adopt_session_lineage_from(donor, "same")
+    assert not result.get("adopted") and not result.get("donor_retired"), result
+    assert (snapshot(donor), snapshot(target)) == before

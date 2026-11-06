@@ -521,3 +521,32 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+def test_same_model_provider_restores_saved_endpoint_and_wire(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {"api_key": "resolved"})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://ambient.invalid/v1", api_mode="chat_completions")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert (stub.model, stub.provider, stub.base_url, stub.api_mode) == (
+        "same", "custom:feather", "https://saved.invalid/v1", "anthropic_messages")
+    assert calls and stub.api_key == "resolved"
+
+
+def test_same_provider_explicit_launch_endpoint_still_wins(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://explicit.invalid/v1", api_mode="chat_completions",
+                      _explicit_base_url="https://explicit.invalid/v1")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert stub.base_url == "https://explicit.invalid/v1"
+    assert stub.api_mode == "chat_completions"
+    assert calls == []

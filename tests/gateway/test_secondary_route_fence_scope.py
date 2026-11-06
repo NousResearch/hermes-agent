@@ -165,16 +165,21 @@ async def test_a_secondary_retirement_leaves_the_id_free_in_the_launch_profile(t
 async def test_a_launch_delete_fences_only_the_launch_profiles_routes(tmp_path, monkeypatch):
     """The launch profile deleting its ``user-42`` fences its own routes to that id in the shared
     index, not ``alpha``'s route to alpha's own ``user-42``."""
+    from hermes_state_lineage import SessionIdOwnedElsewhereError
     async with _served(tmp_path, monkeypatch) as served:
         store = served.store
-        for db in (served.launch.db, served.alpha.db):
-            db.create_session('user-42', source='cli')
+        served.launch.db.create_session('user-42', source='cli')
+        with pytest.raises(SessionIdOwnedElsewhereError):
+            served.alpha.db.create_session('user-42', source='cli')
+        assert served.alpha.db.get_session('user-42') is None
         launch_key, alpha_key = 'agent:main:telegram:1', 'agent:alpha:telegram:1'
         store._entries[launch_key] = _entry(launch_key, 'user-42')
         store._entries[alpha_key] = _entry(alpha_key, 'user-42')
         with store._lock:
             stale = store._snapshot_routing_locked()
         served.launch.db.delete_session('user-42')
+        # The id can move to alpha only after the launch owner is gone.
+        served.alpha.db.create_session('user-42', source='cli')
         store._persist_routing_data(*stale)
         assert launch_key not in _durable(store), "a stale save restored the launch profile's deleted route"
         assert alpha_key in _durable(store), "alpha's route to its own session was refused"
@@ -487,11 +492,12 @@ async def test_deleting_the_launch_session_writes_a_launch_only_marker(tmp_path,
     from hermes_state_mutation_retirement import RETIRED_PREFIX
     async with _served(tmp_path, monkeypatch) as served:
         store, key = served.store, 'agent:alpha:telegram:42'
-        for db in (served.launch.db, served.alpha.db):
-            db.create_session('user-42', source='cli')
+        served.launch.db.create_session('user-42', source='cli')
         if earlier is not None:
             served.launch.db.set_meta(RETIRED_PREFIX + 'user-42', json.dumps({'retired_at': time.time(), **earlier}))
         served.launch.db.delete_session('user-42')
+        # The id can move to alpha only after the launch owner is gone.
+        served.alpha.db.create_session('user-42', source='cli')
         marker = json.loads(served.launch.db.get_meta(RETIRED_PREFIX + 'user-42'))
         assert marker.get('own') is True and 'expires' not in marker, marker
         entry = _entry(key, 'user-42').to_dict()

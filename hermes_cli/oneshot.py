@@ -487,12 +487,15 @@ def _apply_stored_session_runtime(
         return choice
     from hermes_cli.cli_model_switch_mixin import stored_session_route
 
-    route = stored_session_route(session_meta, current_model=choice.model, current_provider=choice.provider)
+    route = stored_session_route(session_meta, current_model=choice.model, current_provider=choice.provider,
+                                 current_base_url=choice.base_url, current_api_mode=choice.api_mode)
     if route is None:
         return choice
     choice.model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+    endpoint_changed = bool(stored_base_url and stored_base_url != choice.base_url)
     if provider_changed:
         choice.provider = stored_provider
+    if provider_changed or endpoint_changed:
         choice.base_url = stored_base_url
         choice.api_key = None
     if stored_api_mode:

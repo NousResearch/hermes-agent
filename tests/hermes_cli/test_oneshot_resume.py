@@ -277,3 +277,42 @@ class TestRunOneshotForwardsResume:
         assert rc == 0
         assert captured["prompt"] == "hello"
         assert captured["resume"] == "sess-1"
+
+
+def test_oneshot_same_model_provider_restores_endpoint_and_reresolves(tmp_path, monkeypatch):
+    import hermes_cli.oneshot as oneshot_mod
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", "cli")
+    db.update_session_model("s", "same", provider="custom:feather",
+                            base_url="https://saved.invalid/v1", api_mode="anthropic_messages")
+    captured = {}
+    class Agent:
+        def __init__(self, **kwargs):
+            captured["agent"] = kwargs
+        def __setattr__(self, name, value):
+            pass
+        def run_conversation(self, _prompt, conversation_history=None):
+            return {"final_response": "ok"}
+        def close(self):
+            pass
+    def resolve(_cfg, **kwargs):
+        captured["resolution"] = kwargs
+        return ({"api_key": "fresh", "base_url": kwargs["explicit_base_url"], "provider": "custom",
+                 "requested_provider": "custom:feather", "api_mode": "chat_completions"}, None)
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+    monkeypatch.setattr(oneshot_mod, "_resolve_model_and_provider", lambda *a: _ModelChoice(
+        "same", "custom:feather", base_url="https://ambient.invalid/v1", api_key="ambient-secret",
+        api_mode="chat_completions"))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "same"}})
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_with_fallback", resolve)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: [])
+    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_: None)
+    monkeypatch.setattr("run_agent.AIAgent", Agent)
+    try:
+        oneshot_mod._run_agent("hello", resume="s")
+        assert captured["resolution"]["explicit_base_url"] == "https://saved.invalid/v1"
+        assert captured["resolution"]["explicit_api_key"] is None
+        assert captured["agent"]["api_mode"] == "anthropic_messages"
+    finally:
+        db.close()

@@ -165,7 +165,8 @@ async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_pa
                 snapshot = local_snapshot(authority.db, conn, sid)
                 prepared = {'snapshot': snapshot, 'in_place': False,
                             'messages': [{'role': 'user', 'content': 'hi'}]}
-                return compress_in_transaction(authority.db, conn, sid, {}, prepared)
+                return compress_in_transaction(authority.db, conn, sid, {}, prepared,
+                                               reserved={'child': f'compressed-{sid}'})
             return authority.db._execute_write(write)[1]['target_session_id']
 
         for parent_created, expected in (('desktop', 'desktop'), (None, 'cli'), ('local', 'cli')):

@@ -165,17 +165,20 @@ def _select_owner(session_id: str, rows: tuple[SessionStoreRow, ...]) -> Session
 
 
 @contextmanager
-def _advisory_lock_file(path: Path, timeout_s: float) -> Iterator[int]:
+def _advisory_lock_file(path: Path, timeout_s: float, *, create: bool = True) -> Iterator[int]:
     """Acquire an advisory lock; every opened descriptor closes on every exit path."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
         try:
             before = path.lstat()
             if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
                 raise SessionLineageInventoryError(f"Unsafe lineage lock path: {path}")
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
+            if not create:
+                raise SessionLineageInventoryError("Advisory lock disappeared during inventory") from exc
             before = None
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        flags = (os.O_CREAT if create else 0) | os.O_RDWR | getattr(os, "O_BINARY", 0)
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open(path, flags, 0o600)

@@ -644,6 +644,12 @@ class SessionDB(
         self._token_queue_cond = threading.Condition(threading.Lock())
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = self._token_writer_busy = False
+        self._token_writer_uncertain = []
+        self._token_writer_claim = None
+        self._token_writer_claim_owner = None
+        self._token_pending_marker = None
+        self._token_pending_marker_path = None
+        self._token_pending_marker_identity = None
         self._token_atexit_hook: Optional[Callable[[], None]] = None
         # Opened via hermes_state_registry.acquire(): close() releases a refcount instead.
         # Set True when this instance is opened via hermes_state_registry.acquire(). Makes close() a no-op so the
@@ -1537,7 +1543,8 @@ class SessionDB(
             from hermes_state_registry import release
             release(self)
             return
-        self._stop_token_writer()
+        if self._stop_token_writer() is False:
+            raise TimeoutError("cannot close session database with pending token accounting")
         hook, self._token_atexit_hook = self._token_atexit_hook, None
         if hook is not None:
             atexit.unregister(hook)

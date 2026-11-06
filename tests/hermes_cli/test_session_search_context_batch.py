@@ -42,3 +42,25 @@ def test_context_batches_keep_tied_timestamp_order_and_duplicate_hits(tmp_path):
             assert [r["content"] for r in row["context"]] == expected
         duplicate = db._finalize_search_matches([dict(by_id[250]), dict(by_id[250])])
         assert duplicate[0]["context"] == duplicate[1]["context"] == by_id[250]["context"]
+
+
+def test_search_context_uses_the_same_visibility_as_hits(tmp_path):
+    with SessionDB(db_path=tmp_path / "visibility.db") as db:
+        db.create_session("s", "cli")
+        archived_id = db.append_message("s", "user", "archived neighbor")
+        db._conn.execute("UPDATE messages SET active = 0, compacted = 1 WHERE id = ?", (archived_id,))
+        db._conn.commit()
+        db.append_message("s", "user", "hidden neighbor", display_kind="hidden")
+        db.append_message("s", "user", "visible needle")
+        rewound_id = db.append_message("s", "user", "rewound neighbor")
+        db.rewind_to_message("s", rewound_id)
+        db.append_message("s", "user", "visible next")
+
+        visible = db.search_messages("visible needle")[0]
+        assert [m["content"] for m in visible["context"]] == [
+            "archived neighbor", "visible needle", "visible next",
+        ]
+        inactive = db.search_messages("visible needle", include_inactive=True)[0]
+        assert [m["content"] for m in inactive["context"]] == [
+            "archived neighbor", "visible needle", "rewound neighbor",
+        ]

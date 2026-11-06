@@ -577,6 +577,26 @@ class TestUpdate:
         with pytest.raises(DistributionError, match="Could not merge cron jobs"):
             update_distribution("cron_merge")
 
+    @pytest.mark.platforms("linux")
+    def test_shipped_cron_workdir_tilde_resolves_for_the_installer(self, profile_env, monkeypatch):
+        """An author can only name a workdir relative to the installer's home."""
+        from cron.jobs import list_jobs, use_cron_store
+        from cron.scheduler import _resolve_job_workdir
+
+        staged = _make_staging_dir(profile_env, "cron_tilde")
+        store = staged / "cron" / "jobs.json"
+        data = json.loads(store.read_text(encoding="utf-8"))
+        data["jobs"][0]["workdir"] = "~/project"
+        store.write_text(json.dumps(data), encoding="utf-8")
+        (profile_env / "project").mkdir()
+        monkeypatch.setenv("HOME", str(profile_env))
+
+        plan = install_distribution(str(staged), name="cron_tilde")
+
+        with use_cron_store(plan.target_dir):
+            job = list_jobs(include_disabled=True)[0]
+        assert _resolve_job_workdir(job, job["id"]) == str(profile_env / "project")
+
 
     def test_update_refuses_symlinked_owned_container(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")

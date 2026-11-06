@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.anthropic_endpoints import _KIMI_FAMILY_EXACT_SLUGS
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -49,6 +50,9 @@ def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
     model_lower = (model or "").lower()
     if isinstance(setting, list):
         return any(p.lower() in model_lower for p in setting if isinstance(p, str))
+    tail = model_lower.rsplit("/", 1)[-1].strip()
+    if tail in _KIMI_FAMILY_EXACT_SLUGS:
+        return True
     return any(p in model_lower for p in default_models)
 
 

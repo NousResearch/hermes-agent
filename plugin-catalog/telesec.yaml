@@ -1,20 +1,21 @@
 name: telesec
 title: Telesec
 repo: https://github.com/neoromantic/telesec
-sha: b23cd63358e1a66518106c485402a9033f6b31d9
-description: "Telegram Business secretary: transcribes voice notes, round videos, and speech attachments right in the chat, with Settings and per-chat controls in Telegram's Manage Bot panel, plus opt-in text history (with import from a Telegram export), correspondence stats, and contact dossiers. Disclosure — audio goes to the STT backend Hermes is configured with (local or external); transcript cleanup sends chat text through the host ctx.llm; opt-in dossiers send chat text through the Hermes model task telesec_dossier (default Vercel AI Gateway to Google with zero data retention; an optional message check on the same gateway and optional Cloudflare fact extraction are off by default); an owner-sent /dossier posts that contact's stored dossier (without the owner note, but written with it) into the Business chat for the contact to read; runs local ffprobe/ffmpeg (argument lists, no shell) on attached audio; opt-in dossiers run a gateway background thread; modes, opt-in history, and dossiers are stored 0600 under HERMES_HOME/data/telesec; reads only the numeric bot id prefix of TELEGRAM_BOT_TOKEN; no telemetry."
+sha: 74d2d97ad4023aefcd49b287cd9778659111ddf0
+description: "Telegram Business secretary: transcribes voice notes, round videos, and speech attachments right in the chat (raw text first, then cleaned up in place), with Settings and per-chat controls in Telegram's Manage Bot panel, plus opt-in text history (with import from a Telegram export) and deletion alerts, correspondence stats, and contact dossiers. Not affiliated with Nous Research. Disclosure — audio goes to the STT backend Hermes is configured with (local or external); transcript cleanup sends chat text through the host ctx.llm and the bot edits the posted transcript in place; opt-in dossiers send chat text through the Hermes model task telesec_dossier (default Vercel AI Gateway to Google with zero data retention; Hermes may retry with its fallback chain or main model); an optional message check (TypeSafe Jev through Vercel AI Gateway) and optional fact extraction (Cloudflare Workers AI) are off by default, call those services directly over https, and read AI_GATEWAY_API_KEY, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN through the Hermes secret scope; an owner-sent /dossier posts that contact's stored dossier (without the owner note, but written with it) and an owner-sent /stats posts a stats card into the Business chat for the contact to read; with history on, deletion alerts go only to the owner's private chat with the bot, and the deleted text shows only after the owner taps Show text; runs local ffprobe/ffmpeg (argument lists, no shell) on attached audio; a gateway background thread checks the dossier switch every minute and runs dossier cycles only once dossiers are on; switches, modes, opt-in history, and dossiers are stored 0600 under HERMES_HOME/data/telesec; reads only the numeric bot id prefix of TELEGRAM_BOT_TOKEN; opt-out usage stats (event and feature names from a fixed list, error types, version and OS, a random install ID; never message content, names, or IDs) go over https to usage.sergeybaus.com only after the owner has seen a notice in the private chat with the bot (Settings, hermes telesec telemetry off, TELESEC_TELEMETRY=0, or DO_NOT_TRACK=1 turns them off); no self-updater."
 maintainer: neoromantic
 tier: community
 category: voice
 requires_hermes: ">=0.21.6"
 docs_url: https://telesec.sergeybaus.com
-version: "0.16.1"
-image: https://raw.githubusercontent.com/neoromantic/telesec/b23cd63358e1a66518106c485402a9033f6b31d9/docs/images/banner.png
+version: "0.17.0"
+image: https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/neoromantic/telesec/b23cd63358e1a66518106c485402a9033f6b31d9/docs/images/voice-transcript.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/b23cd63358e1a66518106c485402a9033f6b31d9/docs/images/owner-panel.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/b23cd63358e1a66518106c485402a9033f6b31d9/docs/images/stats-panel-en@2x.png
-  - https://raw.githubusercontent.com/neoromantic/telesec/b23cd63358e1a66518106c485402a9033f6b31d9/docs/images/dossier-panel-en@2x.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/voice-transcript.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/owner-panel.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/settings.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/stats-panel-en.png
+  - https://raw.githubusercontent.com/neoromantic/telesec/74d2d97ad4023aefcd49b287cd9778659111ddf0/docs/images/dossier-panel-en.png
 readme: true
 known_issues:
   - Needs in-process plugin mode for native Telegram handlers.

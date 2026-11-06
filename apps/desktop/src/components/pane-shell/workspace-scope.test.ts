@@ -12,6 +12,7 @@ import {
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
   workspaceOwnerTitle,
+  workspaceSessionBaseTitle,
   workspaceSessionRenameable
 } from './workspace-scope'
 
@@ -67,6 +68,42 @@ describe('workspace owner title', () => {
     expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
+  })
+})
+
+describe('workspace session base title', () => {
+  it('resolves a hidden bot chat to its canonical title so the caption can name the bot (#99152 follow-up)', () => {
+    setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
+
+    // A canonical Bot Chat is hidden: it is in no sidebar slice, so the row
+    // lookup returns nothing even while the chat is on screen.
+    const base = workspaceSessionBaseTitle(undefined, botChat, 'New session')
+
+    expect(base).toBe('Bot Chat')
+    // The composed caption is what the main tab registers — the bug was that
+    // this path fell straight through to "New session".
+    expect(workspaceOwnerTitle(base, botChat)).toBe('Alpha')
+  })
+
+  it('lets a loaded row title win over the scope, and treats a blank one as absent', () => {
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
+
+    expect(workspaceSessionBaseTitle('Verify hermes profile session', botChat, 'New session')).toBe(
+      'Verify hermes profile session'
+    )
+    expect(workspaceSessionBaseTitle('   ', botChat, 'New session')).toBe('Bot Chat')
+    expect(workspaceSessionBaseTitle(null, botChat, 'New session')).toBe('Bot Chat')
+  })
+
+  it('keeps the placeholder for a session tab and for a bot side thread', () => {
+    // A Sessions tab has no canonical bot title to inherit.
+    expect(workspaceSessionBaseTitle(undefined, { workspaceMode: 'sessions' }, 'New session')).toBe('New session')
+    expect(workspaceSessionBaseTitle(undefined, undefined, 'New session')).toBe('New session')
+    // A `+` side thread under the same bot is not the canonical chat.
+    expect(
+      workspaceSessionBaseTitle(undefined, { workspaceMode: 'bots', workspaceOwnerKey: 'bot:alpha' }, 'New session')
+    ).toBe('New session')
   })
 })
 

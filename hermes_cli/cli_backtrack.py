@@ -352,13 +352,15 @@ class CLIBacktrackMixin:
         picker = Condition(lambda: bool(self._backtrack_state))
         primable = Condition(lambda: not self._backtrack_state and not modal_prompt_active(self)
                              and not self._prompt_stash.panel_open) & ~vi_insert_mode
-        lone_esc = Condition(lambda: not get_app().key_processor.input_queue
-                             and self._backtrack_composer_empty(get_app()) and not self._backtrack_blocked())
+        idle_empty = Condition(lambda: self._backtrack_composer_empty(get_app()) and not self._backtrack_blocked())
+        lone_esc = idle_empty & Condition(lambda: not get_app().key_processor.input_queue)
         kb.add("escape", filter=primable, eager=lone_esc)(self._backtrack_handle_escape)
         # A browse key typed within the escape timeout of the second Esc reaches us as an Alt chord
         # (the parser holds a lone Esc for 0.5 s). While primed on an empty composer that chord is
-        # the gesture: open browse, then apply the key. Unprimed or with a draft, Alt keys are unchanged.
-        primed_chord = primable & Condition(lambda: bool(self._backtrack_primed)) & lone_esc
+        # the gesture: open browse, then apply the key; keys queued behind it run after, in order.
+        # The empty-queue test is only for lone-Esc eagerness. Unprimed or with a draft, Alt keys
+        # are unchanged.
+        primed_chord = primable & Condition(lambda: bool(self._backtrack_primed)) & idle_empty
         for key in _BROWSE_KEYS:
             kb.add("escape", key, filter=primed_chord)(self._backtrack_primed_chord)
         kb.add(Keys.Any, filter=picker)(self._backtrack_close_and_replay)

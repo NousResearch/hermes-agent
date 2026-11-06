@@ -1,9 +1,9 @@
-# Catalog entry for the Hermes plugin catalog. The sha is the v0.1.0 release commit.
+# Catalog entry for the Hermes plugin catalog. The sha is the v0.1.1 release commit.
 name: faxforagents
 title: Fax for Agents
 repo: https://github.com/faxforagents/hermes-integration
-sha: "af0aa44b1fe1e28a2016165818d528efd4072da4"
-version: "0.1.0"
+sha: "7e84172450bda636d655de6b50bfb75a0f35641f"
+version: "0.1.1"
 description: >-
   Fax preparation, quotes, approved sending, delivery status, cancellation, and inbox reading.
   The portable package starts faxforagents-mcp 0.4.1 through npx and sends data to api.faxforagents.com.

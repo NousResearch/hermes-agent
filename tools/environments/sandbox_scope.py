@@ -294,32 +294,76 @@ def _scoped_call(fn: Callable[..., Any], identity: SandboxIdentity, what: str) -
 
 
 class ScopedPipe:
-    """One stdio pipe of a hosted long-lived process. Every operation (read, write, flush, close,
-    fileno, iteration, ...) is refused unless the bound scope is the sandbox's own agent."""
+    """One stdio pipe of a hosted long-lived process, behind a closed byte-pipe interface: read,
+    read1, readline, readlines, readinto, write, writelines, flush, close, closed, readable,
+    writable, iteration and the context manager. Every operation is refused unless the bound scope
+    is the sandbox's own agent. Nothing else is reachable: no ``raw``/``buffer``/``fileno``/
+    ``detach`` and no attribute passthrough, so no object or descriptor that bypasses the check
+    ever leaves the proxy. (An accidental cross-agent guard, not containment of in-process code.)"""
 
-    def __init__(self, raw: Any, identity: SandboxIdentity) -> None:
-        object.__setattr__(self, "_raw", raw)
+    __slots__ = ("_identity", "_pipe")
+
+    def __init__(self, pipe: Any, identity: SandboxIdentity) -> None:
+        object.__setattr__(self, "_pipe", pipe)
         object.__setattr__(self, "_identity", identity)
 
-    def __getattr__(self, name: str) -> Any:
-        require_identity(self._identity, f"stream {name}")
-        value = getattr(self._raw, name)
-        return _scoped_call(value, self._identity, f"stream {name}") if callable(value) else value
+    def _op(self, what: str) -> Any:
+        require_identity(self._identity, f"stream {what}")
+        return self._pipe
+
+    def read(self, size: int = -1) -> bytes:
+        return self._op("read").read(size)
+
+    def read1(self, size: int = -1) -> bytes:
+        pipe = self._op("read1")
+        return pipe.read1(size) if hasattr(pipe, "read1") else pipe.read(size)
+
+    def readline(self, size: int = -1) -> bytes:
+        return self._op("readline").readline(size)
+
+    def readlines(self, hint: int = -1) -> list[bytes]:
+        return self._op("readlines").readlines(hint)
+
+    def readinto(self, buffer: Any) -> Optional[int]:
+        return self._op("readinto").readinto(buffer)
+
+    def write(self, data: bytes) -> Optional[int]:
+        return self._op("write").write(data)
+
+    def writelines(self, lines: Any) -> None:
+        self._op("writelines").writelines(lines)
+
+    def flush(self) -> None:
+        self._op("flush").flush()
+
+    def close(self) -> None:
+        self._op("close").close()
+
+    @property
+    def closed(self) -> bool:
+        return bool(self._op("closed").closed)
+
+    def readable(self) -> bool:
+        return bool(self._op("readable").readable())
+
+    def writable(self) -> bool:
+        return bool(self._op("writable").writable())
 
     def __setattr__(self, name: str, value: Any) -> None:
-        require_identity(self._identity, f"stream {name}")
-        setattr(self._raw, name, value)
+        raise AttributeError(f"a hosted process pipe has no settable attribute {name!r}")
 
-    def __iter__(self) -> Any:
-        require_identity(self._identity, "stream iteration")
+    def __iter__(self) -> ScopedPipe:
+        self._op("iteration")
         return self
 
-    def __next__(self) -> Any:
-        require_identity(self._identity, "stream iteration")
-        return next(self._raw)
+    def __next__(self) -> bytes:
+        line = self._op("iteration").readline()
+        if not line:
+            raise StopIteration
+        return line
 
     def __enter__(self) -> ScopedPipe:
-        require_identity(self._identity, "stream")
+        self._op("context")
         return self
 
     def __exit__(self, *exc: object) -> None:

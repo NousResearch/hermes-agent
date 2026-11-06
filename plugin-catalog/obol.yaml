@@ -1,0 +1,31 @@
+name: obol
+title: Obol
+repo: https://github.com/UEddy/Obol
+sha: d21df0241a3c88d0def0f12ef7ffa581e6e0b59f
+description: "Safe invoicing for freelancers, consultants and agencies who bill clients, from any chat Hermes runs in (tested: Telegram, WhatsApp, Slack, email and the terminal). Hermes drafts invoices (also from forwarded messages via ctx.llm), sends them as Stripe payment links or as bank-transfer PDF invoices with no provider account, tracks who has paid, and adds Invoices and Security dashboard views plus /invoices in every chat. Every invoice write needs approval, with deterministic checks for prompt injection (a message can never choose the recipient), lookalike and impersonated client addresses, duplicates, unusual amounts and changed payout details; live keys are refused unless allowed, writes are refused in unattended runs, and the activity and security logs are hash-chained. Disclosure: Stripe mode makes HTTPS calls to api.stripe.com only; bank-transfer mode makes no network calls; forwarded messages go to the user's configured model through ctx.llm; Stripe emails clients when invoices are sent or reminded; STRIPE_API_KEY is optional (Stripe mode only, not asked for at install) and read via get_secret only; data stays in plugin-data/obol/ (data.db and bank-transfer PDFs); polling, no webhooks; no telemetry, shell commands or background processes."
+maintainer: UEddy
+tier: community
+category: tools
+requires_hermes: ">=0.22"
+version: "0.1.0"
+docs_url: https://github.com/UEddy/Obol#readme
+screenshots:
+  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/dashboard-invoices.png
+  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/dashboard-security.png
+  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/approval.png
+  - https://raw.githubusercontent.com/UEddy/Obol/d21df0241a3c88d0def0f12ef7ffa581e6e0b59f/docs/screenshots/approval-scam.png
+platforms: []
+capabilities:
+  provides_tools:
+    - obol_create_invoice
+    - obol_send_invoice
+    - obol_get_invoice
+    - obol_list_invoices
+    - obol_send_reminder
+    - obol_void_invoice
+    - obol_mark_paid
+    - obol_draft_from_message
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []   # STRIPE_API_KEY is optional_env in plugin.yaml: Stripe mode only, never asked for at install

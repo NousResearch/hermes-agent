@@ -125,9 +125,14 @@ def _profile_cron_scope(home):
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
     # unsuccessful (#32612).
+    from hermes_cli.plugin_isolation import require_plugin_host
+
     home_token = set_hermes_home_override(str(home))
     try:
-        with use_cron_store(home):
+        # A foreign tick may discover plugins indirectly through config or delivery. Reuse the
+        # profile's host for the whole operation, not only its explicit discovery call sites.
+        isolation = require_plugin_host() if routed_profile_fire(home) else contextlib.nullcontext()
+        with use_cron_store(home), isolation:
             yield
     finally:
         reset_hermes_home_override(home_token)

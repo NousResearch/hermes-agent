@@ -1033,6 +1033,12 @@ memory:
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
 
+  # Multi-user gateways (a Slack/Discord/Telegram bot several people talk to): give each
+  # authenticated speaker their own USER.md at memories/users/<platform>-<user_id>/USER.md,
+  # so one person's preferences never reach another's chat. Local CLI/TUI sessions keep the
+  # shared USER.md; MEMORY.md is always shared.
+  per_user_profiles: false
+
   # External prefetch only: opt in to head/tail previews using hooks.output_spill.
   # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
   prefetch_spill_enabled: false

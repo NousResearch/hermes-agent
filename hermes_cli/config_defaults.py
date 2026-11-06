@@ -1296,10 +1296,10 @@ DEFAULT_CONFIG = {
     "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,
+        "per_user_profiles": False,  # Gateways: memories/users/<platform>-<id>/USER.md per speaker.
         "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
-        # Approval gate for memory writes on BOTH foreground turns and the background review fork.
-        # true = foreground writes prompt inline; background writes are staged (/memory
-        # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
+        # Approval gate for memory writes on BOTH foreground turns and the background review fork. true =
+        # foreground prompts inline; background is staged (/memory pending|approve|reject <id>). To disable: memory_enabled.
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token

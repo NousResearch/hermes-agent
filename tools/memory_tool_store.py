@@ -25,6 +25,12 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
+# A per-user USER.md scope is one path component under ``memories/users/``: lowercase ASCII
+# (case-insensitive filesystems cannot alias two scopes), never a separator or a dot-name.
+# ``tools.memory_tool.resolve_user_scope`` is the only producer; this re-check guards a scope
+# read back from a staged approval payload.
+USER_SCOPE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,159}")
+
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Error string if *content* matches injection/exfil patterns. Strict scope:
@@ -186,7 +192,13 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 user_scope: Optional[str] = None):
+        # user_scope (memory.per_user_profiles): USER.md lives at memories/users/<scope>/USER.md;
+        # None keeps the shared memories/USER.md. MEMORY.md is always shared.
+        if user_scope is not None and not USER_SCOPE_RE.fullmatch(user_scope):
+            raise ValueError(f"invalid memory user scope: {user_scope!r}")
+        self.user_scope = user_scope
         self.memory_entries: list[str] = []
         self.user_entries: list[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
@@ -297,10 +309,14 @@ class MemoryStore:
                 with suppress(OSError):
                     _flock(True)
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
+    def _path_for(self, target: str) -> Path:
         from tools import memory_tool  # get_memory_dir is monkeypatched there
-        return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
+        mem_dir = memory_tool.get_memory_dir()
+        if target != "user":
+            return mem_dir / "MEMORY.md"
+        # A scoped user with no file yet starts empty: falling back to the shared USER.md would
+        # show (and let them overwrite) the operator's profile.
+        return mem_dir / "users" / self.user_scope / "USER.md" if self.user_scope else mem_dir / "USER.md"
 
     def _entries_for(self, target: str) -> list[str]:
         return self.user_entries if target == "user" else self.memory_entries

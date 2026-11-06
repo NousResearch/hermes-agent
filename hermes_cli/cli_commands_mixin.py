@@ -874,6 +874,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         self._restore_session_cwd(session_meta)
         self._restore_session_yolo(session_meta)
         self._restore_session_model(session_meta)
+        # A same-model resume returns from _restore_session_model before its re-resolve; the
+        # attachment's own effort still has to replace the profile value in the CLI fields.
+        from hermes_cli.cli_model_switch_mixin import _sync_cli_reasoning_from_session
+        _sync_cli_reasoning_from_session(self)
 
     def _resolve_resume_target(self, target: str):
         """``(session_id, meta)`` for a numbered selection, title, or id (an empty compression-chain head

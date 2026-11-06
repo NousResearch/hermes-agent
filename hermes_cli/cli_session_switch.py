@@ -41,3 +41,5 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
         if _mm is not None:
             _mm.on_session_switch(
                 session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)
+    from hermes_cli.cli_model_switch_mixin import _sync_cli_reasoning_from_session
+    _sync_cli_reasoning_from_session(cli)

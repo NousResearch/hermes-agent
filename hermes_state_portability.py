@@ -130,6 +130,114 @@ def _adoption_history_covers(donor_conn, target_conn, session_id):
     return True
 
 
+# Accounting is an aggregate rather than an event log. An existing target covers
+# a donor attribution only when the original first_seen witness is retained and
+# every nonnegative cumulative amount and last_seen includes the donor's range.
+_ADOPTION_TOTALS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                    "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd", "api_call_count")
+_ADOPTION_USAGE_KEY = ("session_id", "model", "billing_provider", "billing_base_url", "billing_mode", "task")
+_ADOPTION_BILLING_CONTEXT = ("billing_provider", "billing_base_url", "billing_mode",
+                             "cost_status", "cost_source", "pricing_version")
+
+
+def _adoption_context(conn, session_id):
+    row = conn.execute(
+        "SELECT s.*, sp.prompt AS resolved_prompt, tp.prompt AS resolved_tools "
+        "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash=s.system_prompt_hash "
+        "LEFT JOIN system_prompts tp ON tp.hash=s.tool_names WHERE s.id=?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    if data["system_prompt_hash"] is not None and data["resolved_prompt"] is None:
+        raise ValueError("Donor or target prompt reference cannot be resolved")
+    pin = data["tool_names"]
+    if pin is not None and not isinstance(pin, str):
+        raise ValueError("Donor or target tool pin has an invalid representation")
+    if pin and len(pin) == 64 and all(ch in "0123456789abcdef" for ch in pin) and data["resolved_tools"] is None:
+        raise ValueError("Donor or target tool pin cannot be resolved")
+    data["prompt_body"] = data["resolved_prompt"] if data["system_prompt_hash"] is not None else data["system_prompt"]
+    data["tool_body"] = data["resolved_tools"] if data["resolved_tools"] is not None else pin
+    return data
+
+
+def _adoption_amount_covers(source, target):
+    if source is None:
+        return True
+    if type(source) not in (int, float) or type(target) not in (int, float):
+        return False
+    if not math.isfinite(source) or not math.isfinite(target):
+        return False
+    # A negative total can be a correction/credit; a larger number does not prove it survived.
+    return target == source if source < 0 else target >= source
+
+
+def _adoption_accounting_covers(donor_conn, target_conn, session_id):
+    source, target = _adoption_context(donor_conn, session_id), _adoption_context(target_conn, session_id)
+    if source is None or target is None:
+        return False
+    for field in ("prompt_body", "tool_body", "created_source", *_ADOPTION_BILLING_CONTEXT):
+        if source[field] is not None and source[field] != target[field]:
+            return False
+    # A changed chosen title cannot prove that the donor's title/provenance survived.
+    if source["title"] is not None:
+        if source["title"] != target["title"]:
+            return False
+        # Legacy NULL provenance carries user-level protection, never a derived title.
+        source_title = "user" if source["title_source"] is None else source["title_source"]
+        target_title = "user" if target["title_source"] is None else target["title_source"]
+        if source_title != target_title:
+            return False
+    if any(not _adoption_amount_covers(source[field], target[field]) for field in _ADOPTION_TOTALS):
+        return False
+    source_rows = donor_conn.execute("SELECT * FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    target_rows = target_conn.execute("SELECT * FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    by_key = {tuple(row[k] for k in _ADOPTION_USAGE_KEY): dict(row) for row in target_rows}
+    for row in source_rows:
+        donor = dict(row)
+        local = by_key.get(tuple(donor[k] for k in _ADOPTION_USAGE_KEY))
+        if local is None or donor["first_seen"] != local["first_seen"]:
+            return False
+        origin = donor["first_seen"]
+        if origin is not None and (type(origin) not in (int, float) or not math.isfinite(origin)):
+            return False
+        if any(not _adoption_amount_covers(donor[field], local[field]) for field in _ADOPTION_TOTALS):
+            return False
+        # Without an origin witness, larger aggregates cannot prove they extend this donor.
+        if origin is None and any(donor[field] != local[field] for field in _ADOPTION_TOTALS):
+            return False
+        end = donor["last_seen"]
+        if end is not None and not _adoption_amount_covers(end, local["last_seen"]):
+            return False
+        if any(donor[field] is not None and donor[field] != local[field] for field in ("cost_status", "cost_source")):
+            return False
+    return True
+
+
+def _copy_adoption_portable_state(db, donor_conn, target_conn, session_id):
+    """Copy attribution and the resolved tool pin only for a newly inserted target."""
+    context = _adoption_context(donor_conn, session_id)
+    if context is None:
+        raise ValueError("Donor session disappeared during adoption")
+    # These are trusted, guarded donor provenance, not fields accepted from
+    # generic external JSON imports; neither transfers routing or authority.
+    target_conn.execute("UPDATE sessions SET created_source=?,title_source=? WHERE id=?",
+                        (context["created_source"], context["title_source"], session_id))
+    pin = context["tool_body"]
+    if pin is not None:
+        target_conn.execute("UPDATE sessions SET tool_names=? WHERE id=?",
+                            (db._store_system_prompt(target_conn, pin), session_id))
+    source_columns = [row[1] for row in donor_conn.execute("PRAGMA table_info(session_model_usage)")]
+    target_columns = [row[1] for row in target_conn.execute("PRAGMA table_info(session_model_usage)")]
+    if set(source_columns) != set(target_columns):
+        raise ValueError("Usage schemas differ; adoption cannot preserve attribution")
+    columns = ", ".join(source_columns)
+    rows = donor_conn.execute(f"SELECT {columns} FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    if rows:
+        placeholders = ", ".join("?" for _ in source_columns)
+        target_conn.executemany(f"INSERT INTO session_model_usage({columns}) VALUES ({placeholders})",
+                                [tuple(row) for row in rows])
+
+
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
     """``list_sessions_rich``-shaped SELECT: resolved prompt (``prompt_select`` fragment;
     None omits prompt columns AND the join), preview, last_active. Whitespace matches
@@ -572,13 +680,26 @@ class SessionPortabilityMixin:
                     with donor_db._read_ctx() as donor_conn:
                         if not _adoption_history_covers(donor_conn, conn, sid):
                             raise AdoptionConflict("Target transcript differs from donor; recover the history before adoption")
+                        try:
+                            portable = _adoption_accounting_covers(donor_conn, conn, sid)
+                        except ValueError as exc:
+                            raise AdoptionConflict(str(exc)) from exc
+                        if not portable:
+                            raise AdoptionConflict("Target accounting or context differs from donor; inspect before adoption")
             result = self._import_sessions_locked(conn, normalized)
             if result.get("ok"):
                 # A fresh import can normalize or omit legacy sidecars; do not commit
                 # a copy that cannot prove it preserves the donor's complete history.
                 with donor_db._read_ctx() as donor_conn:
-                    if any(not _adoption_history_covers(donor_conn, conn, segment["id"]) for segment in segments):
-                        raise AdoptionConflict("Imported transcript differs from donor; recover the history before adoption")
+                    try:
+                        for sid in result["imported_ids"]:
+                            _copy_adoption_portable_state(self, donor_conn, conn, sid)
+                        if any(not _adoption_history_covers(donor_conn, conn, segment["id"])
+                               or not _adoption_accounting_covers(donor_conn, conn, segment["id"])
+                               for segment in segments):
+                            raise AdoptionConflict("Imported history or accounting differs from donor; inspect before adoption")
+                    except ValueError as exc:
+                        raise AdoptionConflict(str(exc)) from exc
                 if current is None:
                     insert(conn, build_manifest(self, donor_db, segments, conn), retire_donor=retire_donor)
                 else:
@@ -616,7 +737,8 @@ class SessionPortabilityMixin:
         """Archive a copied member only while its complete donor history remains on target."""
         try:
             with donor_db._read_ctx() as donor_conn, self._read_ctx() as target_conn:
-                if not _adoption_history_covers(donor_conn, target_conn, seg_id):
+                if (not _adoption_history_covers(donor_conn, target_conn, seg_id)
+                        or not _adoption_accounting_covers(donor_conn, target_conn, seg_id)):
                     logger.warning("adoption divergence at retirement for segment %s; leaving donor unretired", seg_id)
                     return False
             # Stamp the adoption boundary without reopening the donor: a concurrent target

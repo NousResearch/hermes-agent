@@ -62,7 +62,7 @@ async def _pick_model(authority, owner, live, payload, row):
             runner._channel_default_route, live.source, ctx.config_path)
         note = await runner._handle_model_reset(None, ctx, picker=True, persist_db=False)
         return ({'model': (await asyncio.to_thread(messaging_route_info, runner, live))['model'], 'note': note},
-                {'model': default_model, 'provider': default_provider or None})
+                {'model': default_model, 'provider': default_provider or 'auto'})
     # After a restart the chat's saved provider/base_url is only on disk: resolve against it, not
     # config.yaml's provider, or the record step overwrites it (as run_turn_prepare rehydrates).
     runner._rehydrate_session_model_override(live.route)

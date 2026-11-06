@@ -680,7 +680,7 @@ class GatewayModelCommandsMixin:
             try:
                 entry = await self.async_session_store.get_or_create_session(source)
                 await _sess_db.update_session_model(
-                    entry.session_id, default_model, provider=default_provider or "", resolve_tip=True)
+                    entry.session_id, default_model, provider=default_provider or "auto", resolve_tip=True)
             except Exception:
                 logger.debug("Failed to persist model reset to DB", exc_info=True)
         if not hasattr(self, "_pending_model_notes"):

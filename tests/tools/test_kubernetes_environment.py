@@ -20,6 +20,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 import time
+import tracemalloc
 import sys
 import tarfile
 import threading
@@ -1452,13 +1453,9 @@ def _recording_sync_stream(commands, clients, returncodes):
 
 
 def test_bulk_upload_streams_the_payload_over_stdin_never_argv(monkeypatch, tmp_path):
-    """ws_client.get_websocket_url appends every argv element to the exec
-    request URL, and kube-apiserver records requestURI in the audit log at
-    Metadata level and above. iter_sync_files() starts with the agent's
-    credential files, so an argv transport writes them into the cluster audit
-    log. The chunked-argv fallback that did this is gone."""
+    """Large credential archives stay bounded in memory and out of API audit logs."""
     secret = tmp_path / "creds.json"
-    secret.write_bytes(b'{"api_key": "SUPER-SECRET-TOKEN"}' * 400)  # > one argv chunk
+    secret.write_bytes(b'{"api_key": "SUPER-SECRET-TOKEN"}' * 40000)
 
     env = _make_k8s_env(monkeypatch, [("", 0)])
     commands, clients = [], []
@@ -1466,7 +1463,11 @@ def test_bulk_upload_streams_the_payload_over_stdin_never_argv(monkeypatch, tmp_
         "kubernetes.stream.stream", _recording_sync_stream(commands, clients, [0])
     )
 
+    tracemalloc.start()
     env._bulk_upload([(str(secret), "/workspace/.hermes/creds.json")])
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert peak < secret.stat().st_size * 4  # Includes the fake socket retaining all writes.
 
     argv = " ".join(" ".join(command) for command in commands)
     assert "SUPER-SECRET-TOKEN" not in argv
@@ -1480,10 +1481,6 @@ def test_bulk_upload_streams_the_payload_over_stdin_never_argv(monkeypatch, tmp_
     with tarfile.open(fileobj=io.BytesIO(payload)) as tar:
         member = tar.getmember("workspace/.hermes/creds.json")
         assert tar.extractfile(member).read() == secret.read_bytes()
-
-
-def test_no_argv_chunking_fallback_remains():
-    assert not hasattr(KubernetesEnvironment, "_upload_tar_base64")
 
 
 def test_stdin_upload_half_closes_when_v5_is_available(monkeypatch):

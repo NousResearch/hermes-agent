@@ -3,7 +3,6 @@ stateless pod, one per Hermes process. See website/docs/user-guide/kubernetes.md
 
 import base64
 import hashlib
-import io
 import logging
 import os
 import posixpath
@@ -11,10 +10,12 @@ import re
 import shlex
 import socket
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -1639,31 +1640,28 @@ class KubernetesEnvironment(BaseEnvironment):
         channel and never over argv (see _stdin_upload)."""
         if not files:
             return
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            for host_path, remote_path in files:
-                try:
-                    tar.add(host_path, arcname=remote_path.lstrip("/"))
-                except OSError as exc:
-                    logger.debug("skipping %s: %s", host_path, exc)
-        payload = buf.getvalue()
-        if not payload:
-            return
+        # Cache histories can exceed the gateway's memory limit. Spool privately
+        # to disk and encode bounded blocks instead of copying the whole archive.
+        with tempfile.TemporaryFile() as archive:
+            with tarfile.open(fileobj=archive, mode="w") as tar:
+                for host_path, remote_path in files:
+                    try:
+                        tar.add(host_path, arcname=remote_path.lstrip("/"))
+                    except OSError as exc:
+                        logger.debug("skipping %s: %s", host_path, exc)
+            dirs = unique_parent_dirs(files)
+            if dirs:
+                out, rc = self._exec_capture(["sh", "-c", quoted_mkdir_command(dirs)])
+                if rc != 0:
+                    raise RuntimeError(
+                        "kubernetes file sync: could not create target directories "
+                        f"(exit {rc if rc is not None else 'unknown'}): {out.strip()}"
+                    )
+            archive.seek(0)
+            blocks = iter(lambda: archive.read(48 * 1024), b"")
+            self._stdin_upload(base64.encodebytes(block).decode("ascii") for block in blocks)
 
-        dirs = unique_parent_dirs(files)
-        if dirs:
-            out, rc = self._exec_capture(["sh", "-c", quoted_mkdir_command(dirs)])
-            if rc != 0:
-                raise RuntimeError(
-                    "kubernetes file sync: could not create target directories "
-                    f"(exit {rc if rc is not None else 'unknown'}): {out.strip()}"
-                )
-
-        # encodebytes() wraps at 76 columns, so the remote sed reads short
-        # lines instead of one multi-MB line.
-        self._stdin_upload(base64.encodebytes(payload).decode("ascii"))
-
-    def _stdin_upload(self, encoded: str, *, timeout: int = 120) -> None:
+    def _stdin_upload(self, encoded: str | Iterable[str], *, timeout: int = 120) -> None:
         """Stream a base64 tar over exec stdin, never argv: exec argv lands in
         the apiserver audit log, and this payload includes credential files."""
         from kubernetes.stream.ws_client import STDIN_CHANNEL, V5_CHANNEL_PROTOCOL
@@ -1680,15 +1678,17 @@ class KubernetesEnvironment(BaseEnvironment):
         # Set before the write loop: writes are the phase most likely to hang.
         deadline = time.monotonic() + max(1, timeout)
         try:
-            if not encoded.endswith("\n"):
-                encoded += "\n"
-            for offset in range(0, len(encoded), _STDIN_CHUNK_BYTES):
-                if time.monotonic() >= deadline:
-                    timed_out = True
+            for block in (encoded,) if isinstance(encoded, str) else encoded:
+                if not block.endswith("\n"):
+                    block += "\n"
+                for offset in range(0, len(block), _STDIN_CHUNK_BYTES):
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
+                    resp.write_stdin(block[offset:offset + _STDIN_CHUNK_BYTES])
+                    self._drain(resp, chunks)
+                if timed_out:
                     break
-                resp.write_stdin(encoded[offset:offset + _STDIN_CHUNK_BYTES])
-                # Pump the read side so remote output cannot deadlock writes.
-                self._drain(resp, chunks)
             if not timed_out:
                 resp.write_stdin(f"{_SYNC_SENTINEL}\n")
             if getattr(resp, "subprotocol", None) == V5_CHANNEL_PROTOCOL:

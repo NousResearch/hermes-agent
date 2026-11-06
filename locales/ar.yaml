@@ -42,6 +42,7 @@ approval:
     second_one: "{count} ثانية"
     second_other: "{count} ثوانٍ"
 gateway:
+  redelivered_due: "[أُعيد التسليم · كان مستحقًّا في {when}]"
   approval_expired: "⚠️ انتهت صلاحية الموافقة (لم يعد الوكيل ينتظر). اطلب من الوكيل المحاولة مرة أخرى."
   draining: "⏳ جارٍ إنهاء {count} وكيل نشط قبل إعادة التشغيل..."
   goal_cleared: "✓ تم مسح الهدف."

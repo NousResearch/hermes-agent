@@ -351,6 +351,7 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
+                 created_at: Optional[float] = None,
                  last_error: Optional[str] = None) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
@@ -360,6 +361,7 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
     marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
+            "created_at": created_at,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
             **({"runtime_recovery": True} if runtime else {}),
             **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
@@ -393,7 +395,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                       content, state, attempts, created_at,
                       owner_pid, owner_started_at, adapter_profile, last_error, updated_at
                FROM delivery_obligations
-               WHERE state IN ('pending', 'attempting', 'failed')"""
+               WHERE state IN ('pending', 'attempting', 'failed')
+               ORDER BY created_at"""
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
              owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
@@ -441,7 +444,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # accepted, or a pending row an older build already claimed and may have sent) carries
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default",
+                                            adapter_profile or "default", created_at=created_at,
                                             needs_marker=state != "pending" or attempts > 0, flood=flood_row))
     return claimed
 
@@ -469,7 +472,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                       content, attempts, created_at, owner_pid,
                       owner_started_at, last_error, adapter_profile, updated_at
                FROM delivery_obligations
-               WHERE state='failed' AND platform=?""", (platform,)).fetchall()
+               WHERE state='failed' AND platform=?
+               ORDER BY created_at""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
              owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
@@ -501,6 +505,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                 # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
+                                            created_at=created_at,
                                             flood=is_flood_error(last_error), last_error=last_error))
     return claimed
 

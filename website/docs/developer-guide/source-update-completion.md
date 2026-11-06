@@ -154,7 +154,11 @@ Intended differences from the pre-transactional updater, for release notes:
   compiled at the target commit before the move, by an interpreter the target's
   `requires-python` admits (`uv python find`, then `python3.N`). With none
   installed the refusal names the Python to install. The preflight is one
-  `git cat-file --batch`.
+  `git cat-file --batch`. The target names its startup files in
+  `pyproject.toml` (`[tool.hermes] update-startup-files`), so a commit that
+  moves one is judged by its new path, and a listed file the target lacks
+  refuses the update. A target without that list is judged by the running
+  updater's `_UPDATE_CRITICAL_FILES`, absent files skipped (older releases).
 - Every move names the resolved commit id, not a ref, and its marker is dropped
   only once HEAD is that commit. A branch that moves during the switch is
   reported as a failed switch. The restart is owed for the HEAD the switch

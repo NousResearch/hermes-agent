@@ -595,6 +595,19 @@ hermes-acp = "acp_adapter.entry:main"
 # misaki[en]: installed when the user picks it, not preinstalled.
 opt-in-extras = ["kittentts"]
 
+# What `hermes update` compiles before it moves the checkout to this tree, and again after: the
+# launcher and `hermes_bootstrap` import closure plus the CLI entry modules. Every file listed here
+# must exist; an update to a tree that lacks one is refused. A change that moves one of these
+# files updates its path here.
+update-startup-files = [
+  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
+  "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
+  "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
+  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
+  "hermes_constants.py",
+]
+
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
 # table (pm.extras.extra_supported) — ensure_import/sync_venv refuse a

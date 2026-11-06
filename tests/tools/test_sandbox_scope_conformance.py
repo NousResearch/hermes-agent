@@ -404,3 +404,40 @@ def test_an_acquired_stream_is_refused_under_another_scope():
             s.stdout.read()
     with bind_state(A):
         assert stream.stdout.read() == b"A-PRIVATE" and stream.poll() is None
+
+
+def _buffered_stream_env():
+    import io
+    from tools.environments.sandbox_scope import ProcessRef, ProcessStream
+
+    class Backend:
+        def start_process(self, *a, **k):
+            return ProcessStream(ProcessRef("", "service"), io.BufferedWriter(io.BytesIO()),
+                                 io.BufferedReader(io.BytesIO(b"A-PRIVATE\nsecond\n")), lambda: None)
+
+    return ScopedEnvironment(Backend(), sandbox_identity(A), owner=A)
+
+
+def test_foreign_buffered_stream_raw_io_is_refused():
+    """A standard BufferedReader's ``raw`` (or any nested I/O object / descriptor) is not reachable
+    through the proxy, so nothing acquired under A can be read under B."""
+    from agent.runtime_scope import bind_state
+    env = _buffered_stream_env()
+    with bind_state(A):
+        stream = env.start_process("service", ["cat"])
+        for pipe in (stream.stdin, stream.stdout):
+            for escape in ("raw", "buffer", "fileno", "detach", "peek", "seek", "_raw", "name", "mode"):
+                assert not hasattr(pipe, escape), escape
+            with pytest.raises(AttributeError):
+                pipe.raw = None
+        read1, readline = stream.stdout.read1, stream.stdout.readline  # bound methods, kept for later
+    with bind_state(B):
+        for op in (read1, readline, lambda: stream.stdout.readinto(bytearray(4)), lambda: stream.stdout.readlines(),
+                   lambda: stream.stdin.writelines([b"x"]), lambda: stream.stdin.flush(),
+                   lambda: stream.stdout.readable(), lambda: stream.stdin.writable(),
+                   lambda: stream.stdout.closed, lambda: iter(stream.stdout)):
+            with pytest.raises(CrossAgentHandleRefused):
+                op()
+    with bind_state(A):
+        assert stream.stdout.readline() == b"A-PRIVATE\n" and list(stream.stdout) == [b"second\n"]
+        assert stream.stdin.write(b"ok") == 2 and stream.stdin.writable() and not stream.stdout.closed

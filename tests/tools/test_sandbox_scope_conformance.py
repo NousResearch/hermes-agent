@@ -339,3 +339,40 @@ def test_media_is_never_read_on_host_with_a_host_backend_configured(provider, mo
         _, _, error = _confine_source_images(str(image), [str(image)], "t")
         assert error is not None
     assert not touched, f"media resolution touched the host: {touched}"
+
+
+def test_local_scopes_build_byte_identical_environments(monkeypatch):
+    """Unscoped and with the local scope bound, the subprocess environment map and the built-in
+    backends' constructor arguments are byte-identical to the same calls with the hosted-scope
+    machinery switched off entirely, and the environment is the backend's own object (no guard)."""
+    import types
+    from contextlib import nullcontext
+    from agent.runtime_scope import bind_state
+    from tools import terminal_tool_backends as backends
+    from tools.environments import local, sandbox_scope
+
+    attrs = {"local": "_LocalEnvironment", "docker": "_DockerEnvironment", "ssh": "_SSHEnvironment"}
+
+    def build() -> bytes:
+        maps = []
+        for options in ({}, {"scrub_secrets": False}, {"inherit_profile_home": False, "extra": {"FOO": "x"}}):
+            base = {"PATH": "/usr/bin", "FOO": "bar", "LANG": "C", "OPENAI_API_KEY": "synthetic-not-secret"}
+            maps.append(sorted(local.build_subprocess_env(base, **options).items()))
+        built = []
+        for backend, attr in attrs.items():
+            captured, sentinel = [], types.SimpleNamespace()
+            monkeypatch.setattr(backends, attr, lambda *a, _c=captured, _s=sentinel, **k: _c.append((a, k)) or _s)
+            env = backends._create_environment(backend, "image", "/workspace", 10, task_id="t",
+                                               ssh_config={"host": "test", "user": "user"})
+            built.append((captured, env is sentinel))
+        return repr((maps, built)).encode()
+
+    real_hosted_scope = sandbox_scope.hosted_scope
+    for scope in (None, Scope("local", "default", Principal("local"))):
+        with bind_state(scope) if scope else nullcontext():
+            with_machinery = build()
+            monkeypatch.setattr(sandbox_scope, "hosted_scope", lambda: None)
+            without = build()
+            monkeypatch.setattr(sandbox_scope, "hosted_scope", real_hosted_scope)
+        assert with_machinery == without, f"local behaviour changed under scope {scope}"
+        assert b"False)" not in with_machinery, "a local backend came back wrapped"

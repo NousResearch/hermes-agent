@@ -203,6 +203,9 @@ def _stage_one(client: Any, plan: PlannedCall, raw: str, task_id: Optional[str])
 
 def _readable_file(raw: str, task_id: Optional[str]) -> str:
     """The host path of a file the model may send, by the media-delivery rule; else ``FileInputError``."""
+    from tools.hosted_tool_policy import host_refusal
+    if refusal := host_refusal("A connector file input", "it uploads a file from this host"):
+        raise FileInputError("FILE_NOT_ALLOWED", refusal)
     from gateway.platforms.base import validate_media_delivery_path
     from gateway.session_context import get_session_env
 

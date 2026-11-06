@@ -976,6 +976,9 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        from tools.hosted_tool_policy import hosted_refusal
+        if refusal := hosted_refusal(name, entry.toolset):  # before the handler: no setup, no host effect
+            return tool_error(refusal)
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``

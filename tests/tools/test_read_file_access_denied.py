@@ -43,6 +43,39 @@ def locked_file(tmp_path):
     locked.chmod(0o600)
 
 
+@pytest.fixture
+def sealed_link(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "secret.txt").write_text("secret\n")
+    link = tmp_path / "link.txt"
+    link.symlink_to(sealed / "secret.txt")
+    sealed.chmod(0o000)
+    yield link
+    sealed.chmod(0o700)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("op", READ_OPS)
+def test_symlink_into_unsearchable_dir_is_permission_denied(file_ops, sealed_link, op):
+    result = getattr(file_ops, op)(str(sealed_link))
+    assert result.error and "Permission denied" in result.error
+    assert "not a regular file" not in result.error
+    assert not result.not_found
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("op", READ_OPS)
+def test_dangling_symlink_stays_not_regular(file_ops, tmp_path, op):
+    link = tmp_path / "dangling.txt"
+    link.symlink_to(tmp_path / "gone.txt")
+    result = getattr(file_ops, op)(str(link))
+    assert result.error and "not a regular file" in result.error
+    assert not result.not_found
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("op", READ_OPS)
 def test_unsearchable_parent_is_permission_denied(file_ops, locked_dir, op):

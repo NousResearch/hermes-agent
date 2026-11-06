@@ -163,15 +163,18 @@ _PROBE_SENTINEL_STATUS = {
 
 def _read_probe_branches(arg: str, body: str) -> str:
     """Every read probe: run ``body`` on a readable regular file, else classify the path
-    (denied, not regular, missing). ``ls`` is only asked when ``[ -e ]`` already failed,
-    and ``LC_ALL=C`` pins the strerror text the ``case`` matches."""
+    (denied, not regular, missing). ``ls`` is only asked when ``[ -e ]`` already failed;
+    ``-L`` makes it stat a symlink's target, so a link into an unsearchable directory is
+    denied while a dangling one stays not regular. ``LC_ALL=C`` pins the strerror text the
+    ``case`` matches."""
     return (
         f"if [ -f {arg} ] && [ -r {arg} ]; then {body}; "
         f"elif [ -f {arg} ]; then echo {DENIED_SENTINEL}; "
-        f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-        f"else case \"$(LC_ALL=C ls -d -- {arg} 2>&1)\" in "
+        f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+        f"else case \"$(LC_ALL=C ls -L -d -- {arg} 2>&1)\" in "
         f"*'Permission denied'|*'Operation not permitted') echo {DENIED_SENTINEL};; "
-        f"*) echo {MISSING_SENTINEL};; esac; fi")
+        f"*) if [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; else echo {MISSING_SENTINEL}; fi;; "
+        f"esac; fi")
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"

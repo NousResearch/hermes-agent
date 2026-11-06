@@ -7,6 +7,11 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
 
+# Core ``auxiliary.<block>`` slots a plugin task may name in ``inherit_from`` beyond the picker's own
+# tasks: the reviewed list, never every block (a new core block is not a base until it is added).
+# Inheriting one carries its route only with ``llm.allow_task_override`` (agent/auxiliary_task_config).
+_INHERITABLE_CORE_BLOCKS = frozenset({"background_review", "curator"})
+
 
 def build_auxiliary_task_entry(
     me: str, owner_id: str, key: str, *, display_name: str, description: str,
@@ -32,13 +37,14 @@ def build_auxiliary_task_entry(
     if existing is not None and existing.get("plugin") != owner_id:
         raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — already registered "
                          f"by plugin '{existing.get('plugin')}'")
-    # A bad base degrades to "no inheritance" rather than failing the whole plugin load; a
-    # self-reference would otherwise only surface at read time, as a cycle.
+    # A base is a picker task, one of the reviewed core blocks the picker does not list, or a task
+    # a plugin already registered. A bad base degrades to "no inheritance" rather than failing the
+    # whole plugin load; a self-reference would otherwise only surface at read time, as a cycle.
     if inherit_from is not None and (
             not isinstance(inherit_from, str) or inherit_from == key
-            or (inherit_from not in builtin_aux_keys and inherit_from not in registered)):
-        logger.warning("Plugin '%s' auxiliary task %r: ignoring inherit_from=%r — not a built-in "
-                       "auxiliary task or one already registered by a plugin", me, key, inherit_from)
+            or inherit_from not in (builtin_aux_keys | _INHERITABLE_CORE_BLOCKS | registered.keys())):
+        logger.warning("Plugin '%s' auxiliary task %r: ignoring inherit_from=%r — not an inheritable "
+                       "built-in auxiliary task or one already registered by a plugin", me, key, inherit_from)
         inherit_from = None
     # Plugin owns the schema; routing fields are guaranteed present so consumers don't crash.
     # With inheritance the base supplies the shape, so only the plugin's own overrides go here.

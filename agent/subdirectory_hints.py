@@ -121,9 +121,16 @@ _CONTAINER_HOMES = frozenset({Path("/home"), Path("/root"), Path("/workspace")})
 
 
 def _is_home_like_working_dir(working_dir: Path) -> bool:
-    """True when ``working_dir`` is a home the desktop/container fell back to — not a project."""
+    """True when ``working_dir`` is a home the desktop/container fell back to — not a project.
+    Callers pass a resolved path, so the home is compared resolved too: a home reached through a
+    symlink or junction must still count, or its whole subtree injects again."""
     home = Path.home()
-    if working_dir == home or working_dir in _CONTAINER_HOMES or working_dir.parent in _CONTAINER_HOMES:
+    try:
+        resolved_home = home.resolve()
+    except (OSError, RuntimeError):
+        resolved_home = home
+    if (working_dir in (home, resolved_home) or working_dir in _CONTAINER_HOMES
+            or working_dir.parent in _CONTAINER_HOMES):
         return True
     # Also the local-sandbox home mount: a docker backend binds the host home under a
     # container path whose basename stays the user name (e.g. /mnt/host-home/brooklyn).

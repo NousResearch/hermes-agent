@@ -193,6 +193,15 @@ needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the 
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
 bot, or `/commands` (groups in `free_response_chats` are exempt).
 
+**Group log (opt-in).** `whatsapp.group_log_chats` / `WHATSAPP_GROUP_LOG_CHATS` lists group JIDs whose every
+admitted message is appended to a JSON-lines file, addressed to the bot or not. With `require_mention: true` the
+agent still acts only on addressed messages; the log keeps the rest for a digest or a review. Files live in a
+`group-log/` folder next to the WhatsApp session folder (`group_log_dir` changes that), one `<jid>.jsonl` per
+chat, one object per line: `ts`, `chat_id`, `message_id`, `sender_id`, `sender_name`, `text`, `to_bot`, plus
+`media_type`, `reply_to` or `from_owner` when present. Media files are not referenced. Only groups admitted by
+the group policy are logged, so the list never widens intake. The log holds other people's messages: keep it on
+the bot host and tell the group that the bot keeps a log.
+
 Then start the gateway:
 
 ```bash

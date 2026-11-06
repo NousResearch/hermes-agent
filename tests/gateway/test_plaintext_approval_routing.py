@@ -134,3 +134,33 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+@pytest.mark.parametrize("reply", ["yes", "approve", "deny"])
+def test_bot_plaintext_reply_never_answers_approval(reply):
+    """This path runs before pre_gateway_dispatch, so with allow_bots on, a bot's bare "yes" in the
+    thread would approve the human's pending dangerous command. Only a human may answer."""
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event(reply)
+    event.source.is_bot = True
+
+    asyncio.run(runner._handle_active_session_busy_message(event, session_key))
+
+    assert not entry.event.is_set()
+    assert entry.result is None
+    _clear_approval_state()
+
+
+def test_plaintext_reply_without_gateway_control_never_answers_approval():
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+    event = _make_event("yes")
+    event.allow_gateway_control = False
+
+    asyncio.run(runner._handle_active_session_busy_message(event, session_key))
+
+    assert not entry.event.is_set()
+    _clear_approval_state()
+
+

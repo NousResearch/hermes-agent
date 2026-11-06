@@ -3,6 +3,16 @@
   "name": "web_search",
   "parameters": {
     "properties": {
+      "depth": {
+        "default": "standard",
+        "description": "How hard the search works. 'quick': a simple fact check; fastest and cheapest. 'standard' (default): normal searches. 'deep': hard research that needs many sources; slower and more expensive. A backend without a depth setting runs its standard search.",
+        "enum": [
+          "quick",
+          "standard",
+          "deep"
+        ],
+        "type": "string"
+      },
       "limit": {
         "default": 5,
         "description": "Maximum number of results to return. Defaults to 5.",

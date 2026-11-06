@@ -397,15 +397,15 @@ DEFAULT_CONFIG = {
         # key; "paid" = always keyed (missing key = error; vendor excluded from the ring); unset =
         # keyed when the key is present, else the ring.
         "provider_tier": {},
-        # TTL caching for web_search + web_extract: repeat searches (same query + provider) within
-        # the TTL come from an in-process memo; repeat extracts from the cache/web store. Concurrent
-        # identical searches coalesce into one vendor request. Only successes cached.
+        # TTL caching: repeat searches (same query + provider + depth) come from an in-process memo,
+        # repeat extracts from cache/web; concurrent identical searches share one request. Successes only.
         "cache_enabled": True,
         "cache_ttl_minutes": 20,
         # Hosts always fetched live, never from the extract cache (staging deploys, tunnel URLs,
         # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
         # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
+        "max_depth": "standard",  # highest web_search depth the model may use: quick | standard | deep
     },
 
     "browser": {

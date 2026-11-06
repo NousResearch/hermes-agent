@@ -347,6 +347,9 @@ class FirecrawlWebSearchProvider(BaseWebSearchProvider):
     def is_available(self) -> bool:
         return check_firecrawl_api_key()
 
+    def search_route_label(self) -> str:
+        return "keyless" if _use_keyless_ring("search") else ""
+
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Pre-flight errors (ValueError / ImportError) propagate so the dispatcher emits
         the legacy ``tool_error`` envelope; in-flight errors become failure dicts."""

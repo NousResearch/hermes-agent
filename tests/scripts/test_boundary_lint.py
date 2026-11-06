@@ -75,23 +75,38 @@ def test_grouped_imports_count_each_module(tmp_path):
 
 def test_only_a_rise_is_a_regression_and_it_names_the_import():
     lint = _load()
-    baseline = {"module_to_core": {"plugins/a gateway.run.A": 2}, "core_to_module": {"plugins.a": 1}}
-    lower = {"module_to_core": {"plugins/a gateway.run.A": 1}, "core_to_module": {"plugins.a": 1}}
+    baseline = {"module_to_core": {"plugins/a/x.py gateway.run.A": 2}, "core_to_module": {"tools/t.py plugins.a": 1}}
+    lower = {"module_to_core": {"plugins/a/x.py gateway.run.A": 1}, "core_to_module": {"tools/t.py plugins.a": 1}}
     assert lint.regressions(lower, baseline) == []
     # A swap: one import removed, another added. The total is unchanged, the new crossing still fails.
-    swap = {"module_to_core": {"plugins/a gateway.run.A": 1, "plugins/b gateway.run._B": 1},
-            "core_to_module": {"plugins.a": 1}}
-    assert lint.regressions(swap, baseline) == ["module_to_core: plugins/b gateway.run._B (1, baseline 0)"]
+    swap = {"module_to_core": {"plugins/a/x.py gateway.run.A": 1, "plugins/b/y.py gateway.run._B": 1},
+            "core_to_module": {"tools/t.py plugins.a": 1}}
+    assert lint.regressions(swap, baseline) == ["module_to_core: plugins/b/y.py gateway.run._B (1, baseline 0)"]
 
 
-def test_tally_counts_crossings_and_a_move_keeps_its_key(tmp_path):
+def test_tally_keys_by_importing_file_and_counts_repeats():
     lint = _load()
-    _write(tmp_path / "plugins" / "a" / "plugin.yaml", "name: a\n")
     found = {"module_to_core": ["plugins/a/x.py:3 gateway.run.A", "plugins/a/x.py:90 gateway.run.A"],
              "core_to_module": ["tools/t.py:1 plugins.a"]}
-    assert lint.tally(found, tmp_path) == {"module_to_core": {"plugins/a gateway.run.A": 2},
-                                           "core_to_module": {"plugins.a": 1}}
-    # Splitting a file (the module's, or core's) moves its imports without adding a crossing.
-    moved = {"module_to_core": ["plugins/a/x.py:3 gateway.run.A", "plugins/a/x_readers.py:7 gateway.run.A"],
-             "core_to_module": ["tools/t_send.py:4 plugins.a"]}
-    assert lint.tally(moved, tmp_path) == lint.tally(found, tmp_path)
+    assert lint.tally(found) == {"module_to_core": {"plugins/a/x.py gateway.run.A": 2},
+                                 "core_to_module": {"tools/t.py plugins.a": 1}}
+
+
+def _merge(*baselines):
+    """What git makes of baselines whose new keys sit on different lines: the union of their entries."""
+    return {d: {k: v for b in baselines for k, v in b[d].items()} for d in ("module_to_core", "core_to_module")}
+
+
+def test_two_branches_adding_one_target_from_different_files_merge_green():
+    lint = _load()
+
+    def tally(*sites):
+        return lint.tally({"module_to_core": [], "core_to_module": ["tools/base.py:1 plugins.a", *sites]})
+
+    x, y = "tools/x.py:4 plugins.a", "tools/y.py:9 plugins.a"
+    assert lint.regressions(tally(x, y), _merge(tally(x), tally(y))) == []
+    # Known limit: both branches adding the target in the SAME file record the same key at 1, so the
+    # merge keeps 1 while main has 2 (CI on the merged head catches it).
+    later = "tools/x.py:30 plugins.a"
+    assert lint.regressions(tally(x, later), _merge(tally(x), tally(later))) == [
+        "core_to_module: tools/x.py plugins.a (2, baseline 1)"]

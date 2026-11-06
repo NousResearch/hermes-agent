@@ -144,3 +144,14 @@ def test_exit_single_query_writes_trailer_only_for_kanban_workers(monkeypatch, c
         exit_single_query(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert exc.value.code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
     assert f"{KANBAN_WORKER_EXIT_TRAILER}{kb.KANBAN_RATE_LIMIT_EXIT_CODE}" in capsys.readouterr().err
+
+
+def test_protocol_violation_limit_reads_config(monkeypatch):
+    import hermes_cli.config as cfg
+    import hermes_cli.kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda: {"kanban": {"protocol_violation_limit": 2}})
+    assert kbd.configured_protocol_violation_limit() == 2
+    for bad in (None, 0, -1, "x"):
+        monkeypatch.setattr(cfg, "load_config_readonly", lambda b=bad: {"kanban": {"protocol_violation_limit": b}})
+        assert kbd.configured_protocol_violation_limit() == kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT

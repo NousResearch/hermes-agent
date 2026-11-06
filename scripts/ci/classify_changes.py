@@ -137,6 +137,8 @@ _PY_RELEVANT_CONTRACT_FILES = {
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
 
 # Catalog entry data: read by the catalog tests and the Plugin Catalog CI

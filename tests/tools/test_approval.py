@@ -1256,7 +1256,10 @@ class TestGitDestructiveOps:
 
 
     def test_safe_git_ops_not_flagged(self):
-        for cmd in ("git status", "git push origin main"):
+        # CR-2026-10-21-005: `git push origin main` removed from safe ops — plain push
+        # writes remote repository state and is now flagged (Admin-approved gap fix;
+        # flagged side covered by test_approval_flag_coverage.py).
+        for cmd in ("git status",):
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 

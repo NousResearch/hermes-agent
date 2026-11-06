@@ -105,10 +105,8 @@ def _resolve(ref: str) -> Any:
 _ROWS_BY_METHOD = {row[0]: row for row in _SCOPED_PROVIDER_REGISTRARS}
 
 
-def register_scoped_provider(ctx, method_name: str, provider: Any):
-    """Run ``ctx.<method_name>(provider)`` from its ``_SCOPED_PROVIDER_REGISTRARS`` row."""
-    _name, kind, registry_mod, base_ref, label, _doc, options = _ROWS_BY_METHOD[method_name]
-    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+def _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, options, normalize_fn):
+    """The body every ``register_<category>_provider`` runs for its row (admit, identity, shared body)."""
     register_name = options.get("register")
     admit, identity = options.get("admit"), options.get("identity")
     if admit:
@@ -132,7 +130,33 @@ def register_scoped_provider(ctx, method_name: str, provider: Any):
     )
 
 
+def register_scoped_provider(ctx, method_name: str, provider: Any):
+    """Run ``ctx.<method_name>(provider)`` from its ``_SCOPED_PROVIDER_REGISTRARS`` row."""
+    _name, kind, registry_mod, base_ref, label, _doc, options = _ROWS_BY_METHOD[method_name]
+    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+    return _register_with_row(ctx, provider, kind, registry_mod, base_ref, label, options, normalize_fn)
+
+
 def scoped_provider_registrar(method):
     """Decorate the explicit ``PluginContext.<row method>``: the row's docstring + one replacement transaction."""
     method.__doc__ = _ROWS_BY_METHOD[method.__name__][5]
+    return _serialized_replacement(method)
+
+
+def make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, label, doc, options):
+    """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row.
+
+    ``PluginContext`` now spells its registrars out; this stays importable (and from
+    ``hermes_cli.plugins``) for callers that build one from a row, as on main.
+    """
+    normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
+
+    def register(self, provider):
+        return _register_with_row(self, provider, kind, registry_mod, base_ref, label, options, normalize_fn)
+
+    def register_source(self, source):  # secret sources: ``source``
+        return register(self, source)
+
+    method = register_source if options.get("param") == "source" else register
+    method.__name__, method.__qualname__, method.__doc__ = method_name, f"PluginContext.{method_name}", doc
     return _serialized_replacement(method)

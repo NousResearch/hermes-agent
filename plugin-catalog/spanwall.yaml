@@ -1,0 +1,24 @@
+name: spanwall
+repo: https://github.com/tuanpv47/spanwall
+sha: dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa
+subdir: plugin/spanwall
+title: SpanWall
+description: 'One Kanban wall for every Hermes session, across every profile: Needs you, Running, Idle,
+  Done (24h) and Failed columns, one card per session. Approve requests, answer clarify, sudo and secret
+  prompts, chat, steer and stop agents right from the card. Desktop-only (desktop/plugin.js inside the
+  plugin SDK surface); no agent tools, hooks, middleware or env vars.'
+maintainer: tuanpv47
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/tuanpv47/spanwall
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/tuanpv47/spanwall/dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa/assets/spanwall-light.png
+  - https://raw.githubusercontent.com/tuanpv47/spanwall/dcd8456c3c861ba6c80ee89c4edd9753ccc5ecfa/assets/new-task-light.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

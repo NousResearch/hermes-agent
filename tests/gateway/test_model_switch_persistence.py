@@ -398,3 +398,18 @@ class TestOneTurnNeverPersisted:
         # must still be the ORIGINAL "no override" state.
         assert runner._session_state(sk).conversation.one_turn_restore["had_override"] is False
 
+    @pytest.mark.asyncio
+    async def test_plain_switch_after_once_survives_the_turn_restore(self, tmp_path, monkeypatch):
+        """`/model X --once`, then a plain `/model Y` before the turn runs: the plain switch is the
+        user's new standing choice, so it disarms the --once restore and the turn finalizer leaves
+        it in place instead of reverting the session to the pre---once state."""
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+
+        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+        assert runner._session_state(sk).conversation.one_turn_restore is not None
+        await runner._handle_model_command(self._event("/model gpt-5.5"))
+
+        assert runner._session_state(sk).conversation.one_turn_restore is None
+        runner._restore_pending_one_turn_model_override(sk)  # what the turn finalizer runs
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"

@@ -289,6 +289,25 @@ class TestDesktopSurface:
         ))
         report = validate_plugin_dir(d)
         assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
+        assert not [w for w in report.warnings if w.startswith("desktop surface review")]
+
+    def test_raw_bridge_and_app_markup_selectors_warn_for_review(self, tmp_path):
+        """squad-hub / novel-reader shapes: the raw native bridge and the app's layout markup selected
+        from CSS text or ``closest()`` pass the refusal rules, so review gets a warning (listed plugins
+        still need the bridge where the SDK has no verb). A comment naming them is not a use."""
+        d = self._desktop_plugin(tmp_path, (
+            "// window.hermesDesktop.readDir and [data-slot=x] are what we avoid\n"
+            "const git = () => window.hermesDesktop?.git || null\n"
+            "rules.push('[data-tree-tab=\"bots:pane\"]{display:none!important}')\n"
+            "const root = el.closest('[data-tree-split]')\n"
+        ))
+        report = validate_plugin_dir(d)
+        assert any(name == "desktop surface" and ok for name, ok, _ in report.checks)
+        [warning] = [w for w in report.warnings if w.startswith("desktop surface review")]
+        assert "raw bridge window.hermesDesktop (desktop/plugin.js:2)" in warning
+        assert "app markup selector (desktop/plugin.js:3)" in warning
+        assert "app markup selector (desktop/plugin.js:4)" in warning
+        assert ":1)" not in warning
 
     def test_script_regex_literal_is_not_injection_but_string_is(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { createRef } from 'react'
+import { Activity, createRef, type SyntheticEvent } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SANDBOXED_FRAME_DEFAULT_SANDBOX, SandboxedFrame, sanitizeFrameSandbox } from './sandboxed-frame'
@@ -111,6 +111,218 @@ describe('SandboxedFrame in the Webapp', () => {
     vi.stubGlobal('__HERMES_BASE_PATH__', '/hermes')
     vi.stubGlobal('__HERMES_UI_SURFACE__', 'webapp')
   }
+
+  function guestLoaded(frame: HTMLIFrameElement) {
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', { data: { type: 'hermes-guest-loaded' }, source: frame.contentWindow })
+      )
+    })
+  }
+
+  it.each([false, true])('dispatches fresh guest loads with normal propagation (stopPropagation=%s)', stop => {
+    browserHost()
+    const order: string[] = []
+    const events: SyntheticEvent<HTMLIFrameElement>[] = []
+    const targets: (EventTarget | null)[] = []
+
+    const onLoad = (event: SyntheticEvent<HTMLIFrameElement>) => {
+      order.push('sdk')
+      events.push(event)
+      targets.push(event.currentTarget, event.nativeEvent.target)
+      event.currentTarget.contentWindow!.postMessage('initialize', '*')
+
+      if (stop) {
+        event.stopPropagation()
+      }
+    }
+
+    const { container } = render(
+      <div onLoad={() => order.push('ancestor')}>
+        <SandboxedFrame onLoad={onLoad} src={guest} title="Widget" />
+      </div>
+    )
+
+    const frame = container.querySelector('iframe')!
+
+    frame.addEventListener('load', () => order.push('native'))
+    fireEvent.load(frame)
+    expect(order).toEqual([])
+
+    for (let count = 1; count <= 3; count += 1) {
+      guestLoaded(frame)
+      expect(order.splice(0)).toEqual(stop ? ['sdk', 'native'] : ['sdk', 'ancestor', 'native'])
+      expect(targets.splice(0)).toEqual([frame, frame])
+      expect(new Set(events).size).toBe(count)
+      expect(new Set(events.map(event => event.nativeEvent)).size).toBe(count)
+    }
+  })
+
+  it('remounts only when the sanitized sandbox changes', () => {
+    browserHost()
+    const { container, rerender } = render(<SandboxedFrame sandbox="allow-scripts" src={guest} title="Widget" />)
+    const initial = container.querySelector('iframe')!
+
+    rerender(<SandboxedFrame sandbox="ALLOW-SCRIPTS allow-same-origin" src={guest} title="Widget" />)
+    expect(container.querySelector('iframe')).toBe(initial)
+    rerender(<SandboxedFrame sandbox="allow-scripts allow-forms" src={guest} title="Widget" />)
+    const replacement = container.querySelector('iframe')!
+
+    expect(replacement).not.toBe(initial)
+    expect(replacement.getAttribute('sandbox')).toBe('allow-scripts allow-forms')
+    rerender(<SandboxedFrame sandbox="allow-scripts allow-forms" src={guest} title="Widget" />)
+    expect(container.querySelector('iframe')).toBe(replacement)
+  })
+
+  it('preserves an unchanged document across Activity reveals but sends changes and shell reloads', () => {
+    browserHost()
+
+    const view = (mode: 'hidden' | 'visible', src = guest) => (
+      <Activity mode={mode}>
+        <SandboxedFrame src={src} title="Widget" />
+      </Activity>
+    )
+
+    const { container, rerender } = render(view('visible'))
+    const frame = container.querySelector('iframe')!
+    const send = vi.spyOn(frame.contentWindow!, 'postMessage')
+
+    fireEvent.load(frame)
+    expect(send).toHaveBeenCalledTimes(1)
+    rerender(view('hidden'))
+    rerender(view('visible'))
+    expect(container.querySelector('iframe')).toBe(frame)
+    expect(send).toHaveBeenCalledTimes(1)
+
+    const changed = 'data:text/html,<p>changed</p>'
+
+    rerender(view('visible', changed))
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send).toHaveBeenLastCalledWith(
+      { type: 'hermes-preview-document', html: '<p>changed</p>', sandbox: 'allow-scripts' },
+      '*'
+    )
+    rerender(view('hidden', guest))
+    rerender(view('visible'))
+    expect(send).toHaveBeenCalledTimes(3)
+    fireEvent.load(frame)
+    expect(send).toHaveBeenCalledTimes(4)
+  })
+
+  it('sends the document for a shell that loads while hidden, and reports a guest that loads while hidden', () => {
+    browserHost()
+    const onLoad = vi.fn()
+
+    const view = (mode: 'hidden' | 'visible') => (
+      <Activity mode={mode}>
+        <SandboxedFrame onLoad={onLoad} src={guest} title="Widget" />
+      </Activity>
+    )
+
+    const { container, rerender } = render(view('visible'))
+    const frame = container.querySelector('iframe')!
+    const send = vi.spyOn(frame.contentWindow!, 'postMessage')
+
+    rerender(view('hidden'))
+    fireEvent.load(frame)
+    expect(send).toHaveBeenCalledExactlyOnceWith(
+      { type: 'hermes-preview-document', html: '<script>parent.postMessage("ready", "*")</script>', sandbox: 'allow-scripts' },
+      '*'
+    )
+    rerender(view('visible'))
+    rerender(view('hidden'))
+    guestLoaded(frame)
+    expect(onLoad).toHaveBeenCalledOnce()
+    rerender(view('visible'))
+    expect(send).toHaveBeenCalledOnce()
+  })
+
+  it('starts a frame inside a shadow root, where the shell load never reaches the document', () => {
+    browserHost()
+    const onLoad = vi.fn()
+    const shell = { postMessage: vi.fn() }
+    const host = window.document.createElement('div')
+    const mount = window.document.createElement('div')
+
+    window.document.body.append(host)
+    host.attachShadow({ mode: 'open' }).append(mount)
+    // jsdom gives an iframe inside a shadow root no window.
+    const windows = vi.spyOn(HTMLIFrameElement.prototype, 'contentWindow', 'get').mockReturnValue(shell as unknown as Window)
+
+    try {
+      const { unmount } = render(<SandboxedFrame onLoad={onLoad} src={guest} title="Widget" />, { container: mount })
+
+      fireEvent.load(mount.querySelector('iframe')!)
+      expect(shell.postMessage).toHaveBeenCalledOnce()
+      expect(onLoad).not.toHaveBeenCalled()
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent('message', { data: { type: 'hermes-guest-loaded' }, source: shell as unknown as Window })
+        )
+      })
+      expect(onLoad).toHaveBeenCalledOnce()
+      unmount()
+    } finally {
+      windows.mockRestore()
+      host.remove()
+    }
+  })
+
+  it.each([false, true])(
+    'starts a frame mounted hidden on reveal, even under a cancelling ancestor capture (cancel=%s)',
+    cancel => {
+      browserHost()
+      const onLoad = vi.fn()
+      const capture = vi.fn((event: SyntheticEvent) => cancel && event.stopPropagation())
+
+      const view = (mode: 'hidden' | 'visible') => (
+        <div onLoadCapture={capture}>
+          <Activity mode={mode}>
+            <SandboxedFrame onLoad={onLoad} src={guest} title="Widget" />
+          </Activity>
+        </div>
+      )
+
+      const { container, rerender } = render(view('hidden'))
+      const frame = container.querySelector('iframe')!
+      const send = vi.spyOn(frame.contentWindow!, 'postMessage')
+
+      fireEvent.load(frame)
+      expect(capture).not.toHaveBeenCalled()
+      rerender(view('visible'))
+      expect(send).toHaveBeenCalledOnce()
+      rerender(view('visible'))
+      expect(send).toHaveBeenCalledOnce()
+      guestLoaded(frame)
+      expect(capture).toHaveBeenCalledOnce()
+      expect(onLoad).toHaveBeenCalledTimes(cancel ? 0 : 1)
+    }
+  )
+
+  it('keeps the shell load from ancestor capture handlers, which cannot stop the document', () => {
+    browserHost()
+    const order: string[] = []
+
+    const { container } = render(
+      <div
+        onLoadCapture={event => {
+          order.push('capture')
+          event.stopPropagation()
+        }}
+      >
+        <SandboxedFrame onLoad={() => order.push('sdk')} src={guest} title="Widget" />
+      </div>
+    )
+
+    const frame = container.querySelector('iframe')!
+    const send = vi.spyOn(frame.contentWindow!, 'postMessage')
+
+    fireEvent.load(frame)
+    expect(order).toEqual([])
+    expect(send).toHaveBeenCalledOnce()
+    guestLoaded(frame)
+    expect(order).toEqual(['capture'])
+  })
 
   it('serves data: HTML through the guest shell with the caller tokens, and fires onLoad for the guest', () => {
     browserHost()

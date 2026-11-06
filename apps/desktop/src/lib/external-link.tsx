@@ -19,8 +19,9 @@ const URL_RE =
 // Explicit-scheme / www. URLs only — no bare-domain matching. Used where the
 // surrounding text is full of filename-shaped tokens (e.g. `agent.log`,
 // `errors.log` in a /debug report) that the bare-domain branch of URL_RE would
-// otherwise mistake for domains and linkify.
-const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
+// otherwise mistake for domains and linkify. A `www.` match must not continue a
+// path or word (`/tmp/www.config`, `C:\…\www.config` stay literal).
+const EXPLICIT_URL_RE = /(?:https?:\/\/|(?<![\w.\-/\\@])www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
 const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i

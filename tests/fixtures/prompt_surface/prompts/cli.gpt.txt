@@ -102,13 +102,11 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - codex: Delegate coding to OpenAI Codex CLI (features, PRs).
     - computer-use: Drive the desktop background-first; escalate on signal.
     - hermes-agent: Use, configure, theme, extend, and orchestrate Hermes Agent.
-    - opencode: Delegate coding to OpenCode CLI (features, PR review).
   creative:
     - architecture-diagram: Dark-themed SVG architecture/cloud/infra diagrams as HTML.
     - ascii-video: ASCII video: convert video/audio to colored ASCII MP4/GIF.
     - baoyu-infographic: Infographics: 21 layouts x 21 styles (信息图, 可视化).
     - claude-design: Design one-off HTML artifacts (landing, deck, prototype).
-    - design-md: Author/validate/export Google's DESIGN.md token spec files.
     - humanizer: Humanize text: strip AI-isms and add real voice.
     - manim-video: Manim CE animations: 3Blue1Brown math/algo videos.
     - p5js: p5.js sketches: gen art, shaders, interactive, 3D.
@@ -117,40 +115,27 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
   email:
     - email-inbox-triage: Triage an inbox: prioritize threads, draft replies safely.
     - himalaya: Himalaya CLI: IMAP/SMTP email from terminal.
-  media:
-    - gif-search: Search/download GIFs from Tenor via curl + jq.
-    - songsee: Audio spectrograms/features (mel, chroma, MFCC) via CLI.
-    - youtube-content: YouTube transcripts to summaries, threads, blogs.
+  - youtube-content: YouTube transcripts to summaries, threads, blogs.
   - obsidian: Read, search, create, and edit notes in the Obsidian vault.
   productivity:
-    - airtable: Airtable REST API via curl. Records CRUD, filters, upserts.
-    - box: Box manages cloud files, sharing, search, and metadata.
     - document-to-action-items: Extract cited obligations, deadlines, tasks from documents.
-    - docx: Create, read, edit, template, and review Word .docx files.
     - google-workspace: Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
     - maps: Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.
     - meeting-action-items: Turn meeting notes into cited decisions, owners, tickets.
-    - notion: Notion API + ntn CLI: pages, databases, markdown, Workers.
+    - microsoft-office: Create, read, and edit Word, PowerPoint, and Excel files.
     - pdf: PDF files: create, read, merge, fill, OCR, edit text.
-    - powerpoint: Create, read, edit .pptx decks with python-pptx.
     - product-price-monitor: Watch product, flight, or listing prices; alert on target.
     - teams-meeting-pipeline: Teams meeting summaries, job replay, Graph subscriptions.
     - weekly-review-planning: Weekly reset: commitments, stalled work, next-week plan.
-    - xlsx: Create, read, edit Excel .xlsx workbooks and CSVs.
   research:
     - arxiv: Search arXiv papers by keyword, author, category, or ID.
     - competitor-news-monitor: Watch named companies for material news; cited digests.
     - grounded-citations: Ground answers and documents in cited, verifiable sources.
-    - llm-wiki: Karpathy's LLM Wiki: build/query interlinked markdown KB.
   - xurl: X/Twitter via xurl CLI: raw post search, posting, DM, media.
   software-development:
     - codebase-inspection: Inspect codebases w/ pygount: LOC, languages, ratios.
     - dogfood: Exploratory QA of web apps: find bugs, evidence, reports.
     - github: GitHub via gh CLI: PRs, issues, reviews, repos, auth.
-    - hermes-agent-skill-authoring: Author in-repo SKILL.md files: frontmatter and structure.
-    - inspecting-hermes-desktop-dom: Read the live Hermes desktop DOM/CSS over CDP.
-    - node-inspect-debugger: Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
-    - python-debugpy: Debug Python: pdb REPL + debugpy remote (DAP).
     - requesting-code-review: Pre-commit review: security scan, quality gates, auto-fix.
     - simplify-code: Parallel 4-agent cleanup of recent code changes.
     - spike: Throwaway experiments to validate an idea before build.

@@ -21,14 +21,16 @@ Lanes:
   touches (``_E2E_LANES``, the ``run-e2e`` label), but ci.yaml's ``detect``
   gate forces these lanes off on pull requests and pushes to main: the E2E
   suites run only on a release run or a manual dispatch.
-* ``frontend``    — TS typecheck matrix + desktop build.
+* ``frontend``    — TS typecheck matrix + desktop build, and the WhatsApp
+  bridge's ``node --test`` suites.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
+  the standalone npm projects' package-lock.json).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -94,7 +96,12 @@ import sys
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite.
 _FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+# The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
+# change to the bridge or to the Python adapter that speaks its protocol
+# selects ``frontend``.
+_WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
+# Shift every package's tree (pnpm-workspace.yaml carries the overrides).
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
@@ -223,7 +230,7 @@ _REMOTE_BACKEND_PATHS = (
 # suite itself, its harness, and the product code the suite exists to guard.
 # Everything else reaches these lanes on the next push to main.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
-_NPM_MANIFESTS = ("package.json", "package-lock.json")
+_NPM_MANIFESTS = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
 _PY_TEST_HARNESS = (
     "tests/conftest.py",
@@ -233,6 +240,8 @@ _PY_TEST_HARNESS = (
     "tests/e2e/core/_",
     "scripts/run_tests.sh",
     "scripts/run_tests_parallel.py",
+    "scripts/run_tests_launch.py",
+    "scripts/run_tests_fork_child.py",
 )
 # Both Desktop suites package the app and share this harness (the update
 # suite imports the core suite's harness and provider).
@@ -337,6 +346,7 @@ _UPDATE_DEPENDENCIES = (
     "agent/memory_provider.py",
     "pm/plugins_state.py",
     "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
+    "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
     "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
@@ -368,6 +378,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/_parser.py",
     "hermes_cli/gateway_multiplex_mode.py",
     "hermes_cli/plugin_catalog.py",
+    "hermes_cli/plugins_auto_update.py",  # update_cmd_maint's catalog-pin notice after the code swap
     "hermes_cli/steward.py",
     "hermes_cli/observability/shared_metrics_update.py",
     "hermes_cli/main_install_repair.py",
@@ -628,12 +639,12 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in code)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
-        or f.startswith("tests-js/")
+        or f.startswith(("tests-js/",) + _WHATSAPP_BRIDGE)
         or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
+    npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
     docker_meta = any(f.startswith(_DOCKER_META) for f in files)
     
     ret = {

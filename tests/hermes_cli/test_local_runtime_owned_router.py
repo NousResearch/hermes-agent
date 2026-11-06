@@ -14,7 +14,7 @@ import sys
 import psutil
 import pytest
 
-from tests.waiting import wait_until
+from tests.waiting import pid_gone, wait_until
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -135,7 +135,7 @@ def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeyp
                                               what="model child receipt")))
         assert os.getpgid(model.pid) == pgid
         sup.stop()
-        wait_until(lambda: not model.is_running() or model.status() == psutil.STATUS_ZOMBIE, timeout=10,
+        wait_until(lambda: pid_gone(model), timeout=10,
                    what="stop() to stop the crashed router's surviving model child")
         assert pgid not in process_identity._supervised_pgids
     finally:
@@ -168,7 +168,7 @@ def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(
                                               what="model child receipt")))
         sup.proc = old
         sup._watch()
-        wait_until(lambda: not model.is_running() or model.status() == psutil.STATUS_ZOMBIE, timeout=10,
+        wait_until(lambda: pid_gone(model), timeout=10,
                    what="the restart to stop the crashed router's surviving model child")
         assert old.pid not in process_identity._supervised_pgids
     finally:

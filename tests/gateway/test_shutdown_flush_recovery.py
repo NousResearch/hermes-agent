@@ -6,6 +6,7 @@ properties the live drain already guarantees for that spool.
 """
 
 import json
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -469,3 +470,69 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 0))
 
     assert order == ["recover", "resume", "drain inbound"]
+
+
+@pytest.fixture
+def hermes_home(tmp_path, monkeypatch):
+    """A temp HERMES_HOME whose ``sessions/`` divert directory the warning reads."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._DIVERT_WARNED", set())
+    sessions = tmp_path / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+def test_divert_file_is_warned_about_at_recovery(hermes_home, caplog):
+    """A divert jsonl on disk means turns the store cannot see; recovery must say so (#139751)."""
+    from gateway.shutdown_flush import warn_undrained_divert_files
+
+    (hermes_home / "sessions" / "sess-1.jsonl").write_text(
+        json.dumps({"role": "user", "content": "diverted"}) + "\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        count = warn_undrained_divert_files()
+
+    assert count == 1
+    assert any("sess-1.jsonl" in r.getMessage() and "not replayed" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_divert_warning_is_once_per_process(hermes_home, caplog):
+    """Startup recovery may run repeatedly over one home; the same file warns once."""
+    from gateway.shutdown_flush import warn_undrained_divert_files
+
+    (hermes_home / "sessions" / "sess-1.jsonl").write_text("", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        assert warn_undrained_divert_files() == 1
+        assert warn_undrained_divert_files() == 0
+
+    assert len(caplog.records) == 1
+
+
+def test_divert_warning_ignores_other_session_artifacts(hermes_home, caplog):
+    """Snapshots (``.json``), request dumps and nested files are not divert transcripts."""
+    from gateway.shutdown_flush import warn_undrained_divert_files
+
+    sessions = hermes_home / "sessions"
+    (sessions / "sess-1.json").write_text("{}", encoding="utf-8")
+    (sessions / "request_dump_123").write_text("{}", encoding="utf-8")
+    nested = sessions / "sub"
+    nested.mkdir()
+    (nested / "sess-2.jsonl").write_text("", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        assert warn_undrained_divert_files() == 0
+
+    assert not caplog.records
+
+
+def test_boot_recovery_warns_even_without_spool_files(hermes_home, flush_dir, caplog):
+    """The divert warning rides the no-spool early return too: a replaced state.db can divert
+    transcripts while the flush spool stayed empty."""
+    (hermes_home / "sessions" / "sess-1.jsonl").write_text("", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.shutdown_flush"):
+        assert recover_pending_to_db(None) == 0
+
+    assert any("sess-1.jsonl" in r.getMessage() for r in caplog.records)

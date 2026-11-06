@@ -180,28 +180,35 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
-def _vault_page_tool(name: str) -> InlineToolExecutor:
-    def execute(agent, args: dict, ctx: InlineToolContext) -> Any:
-        from tools import browser_vault_tool  # noqa: F401 — registers the real handler
-        from tools.registry import registry
+def _preview_is_default_vault_target(agent, task_id: str) -> bool:
+    """An omitted ``browser_vault`` target means the in-app browser when this session can drive it (its
+    ``drive_preview``, eager or deferred behind ``tool_call``) and has no managed browser page of its own:
+    a Desktop agent that opened a page with browser_exec keeps filling that page."""
+    names = getattr(agent, "valid_tool_names", ()) or ()
+    preview = "drive_preview" in names
+    if not preview and "tool_call" in names:
+        from agent.tool_executor import _tool_search_scoped_names
 
-        preview_callback = getattr(agent, "drive_preview_callback", None)
-        if "target" not in args:
-            # The callback also exists on headless/TUI agents. Resolve this
-            # session's actual surface, including tools deferred behind tool_call.
-            # Missing preview transport must refuse, never retarget to a browser.
-            names = getattr(agent, "valid_tool_names", ())
-            preview_available = "drive_preview" in names
-            if not preview_available and "tool_call" in names:
-                from agent.tool_executor import _tool_search_scoped_names
+        preview = "drive_preview" in _tool_search_scoped_names(agent)
+    if not preview:
+        return False
+    from tools.browser_session import session_for_task
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-                preview_available = "drive_preview" in _tool_search_scoped_names(agent)
-            if preview_available:
-                args = {**args, "target": "preview"}
+    return not session_for_task(task_id) and SUPERVISOR_REGISTRY.get(task_id) is None
 
-        return registry.dispatch(name, args, task_id=ctx.effective_task_id,
-                                 preview_callback=preview_callback)
-    return execute
+
+def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
+    import tools.browser_vault_tool  # registers the real handler
+    from tools.registry import registry
+
+    task_id = ctx.effective_task_id or "default"
+    if "target" not in args and (args.get("action") in ("fill", "save_login", "enter_code")
+                                 and _preview_is_default_vault_target(agent, task_id)):
+        args = {**args, "target": "preview"}
+    return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
+                             preview_callback=getattr(agent, "drive_preview_callback", None))
 
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
@@ -300,9 +307,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
-    "browser_vault_fill": _vault_page_tool("browser_vault_fill"),
-    "browser_vault_save_login": _vault_page_tool("browser_vault_save_login"),
-    "browser_vault_enter_code": _vault_page_tool("browser_vault_enter_code"),
+    "browser_vault": _browser_vault,
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),

@@ -8,13 +8,14 @@
  * requesting session's tabs. Both guest-page features ride it — the tour tool (preview-tour.ts)
  * and the interaction tool (preview-act.ts) — so their heavy payloads stay out
  * of the pane component's static import graph and only load when used.
+ *
+ * Each registration also tracks its guest DOCUMENT (generation, ready): vault
+ * fills (preview-vault.ts) pin one document and refuse once it is replaced.
  */
 
 import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewTabFor } from './preview-active-tab'
-
-import { resolveActivePreviewTab } from './preview-reader'
 
 /** Runs JS source in the pane's guest page, resolving its completion value. */
 export interface PreviewScriptRunner {
@@ -105,19 +106,23 @@ export function watchPreviewDocumentLifecycle(target: EventTarget, tabId: string
   }
 }
 
-/** The page the preview reader considers selected, paired with its exact live runner. */
-export function resolveActivePreviewScriptRunner(): ActivePreviewScriptRunner | null {
-  const tab = resolveActivePreviewTab()
-  const registration = tab ? runners.get(tab.id) : undefined
+/** The live document of `tabId`, or null while it is loading / not registered. */
+export function previewScriptRunnerFor(tabId: string): ActivePreviewScriptRunner | null {
+  const registration = runners.get(tabId)
 
-  return tab && registration?.ready
-    ? { generation: registration.generation, runner: registration.runner, tabId: tab.id }
-    : null
+  return registration?.ready ? { generation: registration.generation, runner: registration.runner, tabId } : null
 }
 
-/** True only while the selected tab still has the same registered runner. */
-export function isActivePreviewScriptRunner(binding: ActivePreviewScriptRunner): boolean {
-  const active = resolveActivePreviewScriptRunner()
+/** The page an agent tool for `owner` acts on, paired with its exact live document. */
+export function resolveActivePreviewScriptRunner(owner?: PreviewOwner): ActivePreviewScriptRunner | null {
+  const tab = activePreviewTabFor(owner)
 
-  return active?.tabId === binding.tabId && active.runner === binding.runner && active.generation === binding.generation
+  return tab ? previewScriptRunnerFor(tab.id) : null
+}
+
+/** True only while `binding`'s tab still shows the same document through the same runner. */
+export function isSamePreviewDocument(binding: ActivePreviewScriptRunner): boolean {
+  const live = previewScriptRunnerFor(binding.tabId)
+
+  return live?.runner === binding.runner && live.generation === binding.generation
 }

@@ -142,6 +142,23 @@ listener keeps working.
   CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
+  Both scopes take `workspace` (only that folder's conversations, by `hermes -c`'s rule in
+  `hermes_state_sessions.workspace_key`: the same git repo root, or the folder or one under it),
+  and every row carries what a picker shows of the conversation's current segment: `preview`
+  (first prompt), `last_reply` (both shortened alike), `cwd`, `git_branch`, `workspace`,
+  `last_active_at` and `pinned` (`gateway/session_picker_fields.py`).
+- `session.transcript({session_id, cursor?, limit?})` and `session.compactions({session_id})`
+  read a listed conversation without attaching to it (`gateway/session_stored_reads.py`). Both
+  are authorized as `session.resume`'s read (`session:read`: profile, owner or operator; an old
+  CLI/TUI/GUI row by the stored feed's own rule, never adopted) and build no agent and subscribe
+  nobody. `session.transcript` returns `{session_id, rows, next_cursor}`: up to `limit` (1-500,
+  default 100) stored rows across the compression lineage, live and compaction-archived, each
+  logical message once, in `session.resume`'s `display_messages` projection. The cursor is
+  opaque and keyed by each message's first stored row, so it stays valid across later
+  compactions and turns; a page may show fewer rows than `limit` (hidden scaffolding), so read
+  until `next_cursor` is null. `session.compactions` returns `{session_id, compactions:
+  [{timestamp, summary}]}`, oldest first: the handoff summaries the display rows leave out,
+  without the model-facing preamble.
   `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,

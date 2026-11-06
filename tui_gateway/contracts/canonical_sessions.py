@@ -181,6 +181,9 @@ class CanonicalListParams(ProfileParams):
     limit: int = 200
     title: str | None = None
     include_hidden: bool = False
+    # Only conversations of this folder: the classic CLI's ``hermes -c`` rule
+    # (``hermes_state_sessions.workspace_key``): the same git repo root, or at/under this folder.
+    workspace: str | None = None
 
 
 class CanonicalSessionListRow(Result):
@@ -194,6 +197,16 @@ class CanonicalSessionListRow(Result):
     model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
+    # Picker fields (``gateway/session_picker_fields.py``), absent from a title lookup: the first
+    # prompt and the last reply (each shortened as ``preview`` is), the folder and branch of the
+    # conversation's current segment, its ``workspace`` key, its newest activity, and its pin.
+    preview: str | None = None
+    last_reply: str | None = None
+    cwd: str | None = None
+    git_branch: str | None = None
+    workspace: str | None = None
+    last_active_at: float | None = None
+    pinned: bool | None = None
 
 
 class CanonicalListResult(Result):

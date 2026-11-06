@@ -24,23 +24,46 @@ def _picker_row(row, tip, sid):
             'message_count': row.get('message_count', 0), 'model': tip.get('model'), 'running': False}
 
 
-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
+def _native_reader(authority, actor):
+    """The native transport old local rows are offered to: the one that may resume (adopt) them."""
+    return (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) == actor
+            and {'session:read', 'session:create'} <= actor.capabilities)
+
+
+def legacy_readable(authority, actor, sid):
+    """Whether this picker lists old local row *sid* (unadopted: no receipt, no route) to *actor*, so a
+    read of it may show it without adopting it (``gateway/session_stored_reads.py``)."""
+    db = authority.db
+    row = db.get_session(sid)
+    if actor.profile_id != authority.profile_id or row is None or not _native_reader(authority, actor):
+        return False
+    try:
+        validate_legacy_row(db, row, subject=actor.subject)
+        with db._read_ctx() as conn:
+            return authorize_history(conn, actor, sid)
+    except RuntimeStoreError as exc:
+        if exc.reason not in {'not_found', 'permission_denied'}:
+            raise
+        return False
+
+
+def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None):
     """Offer legacy local rows only to the same native transport that may resume them.
 
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
+    *workspace*: only the folder's rows (``hermes -c``'s rule). Every row carries the picker fields.
     """
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
-    if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
-            or not {'session:read', 'session:create'} <= actor.capabilities):
+    if not _native_reader(authority, actor):
         return {'sessions': [], 'scope': 'stored'}
     db = authority.db
     own_profile = db._own_profile_name() or 'default'
     sessions, offset, seen = [], 0, set()
     while len(sessions) < limit:
         rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
-            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden)
+            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace)
         for row in rows:
             local = row['source'] in _LOCAL_SOURCES or client_history_row(row)
             if not local and _messaging_platform(row['source']) is None:
@@ -68,14 +91,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
                 if len(sessions) == limit:
                     break
                 continue
-            try:
-                validate_legacy_row(db, tip, subject=actor.subject)
-                with db._read_ctx() as conn:
-                    if not authorize_history(conn, actor, sid):
-                        continue
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'not_found', 'permission_denied'}:
-                    raise
+            if not legacy_readable(authority, actor, sid):
                 continue
             sessions.append(_picker_row(row, tip, sid))
             if len(sessions) == limit:
@@ -83,7 +99,8 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
         if len(rows) < 200:
             break
         offset += len(rows)
-    return {'sessions': sessions, 'scope': 'stored'}
+    from gateway.session_picker_fields import with_picker_fields
+    return {'sessions': with_picker_fields(authority, sessions), 'scope': 'stored'}
 
 
 def _closed_local_session(authority, actor, row, tip):

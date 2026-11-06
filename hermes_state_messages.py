@@ -1139,7 +1139,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         first_by_uid.setdefault(uid, key)
         return key
 
-    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
+    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False, first_ids: Optional[dict] = None):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
         the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
@@ -1147,7 +1147,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         *drop_removed*: *rows* also hold the removed rows (``active=0, compacted=0``: rewound, or replaced by a
         newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
         compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
-        (a micro-compaction merge also stands for the rows it absorbed)."""
+        (a micro-compaction merge also stands for the rows it absorbed). *first_ids* gets each kept row's id ->
+        its logical message's first row id: the display sort key, which no compaction or rotation moves."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
         uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
@@ -1192,6 +1193,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         keys = sorted(seen, key=first_id.__getitem__)
         if drop_removed:
             keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
+        if first_ids is not None:
+            first_ids.update((seen[key]["id"], first_id[key]) for key in keys)
         return [seen[key] for key in keys]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
@@ -1516,19 +1519,20 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
-                                     include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> list[dict[str, Any]]:
+                                     include_row_ids: bool = False, include_compacted: bool = False,
+                                     display_sort_ids: Optional[dict] = None) -> list[dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
-        cannot merge with an original user turn; the stored transcript is never mutated."""
+        cannot merge with an original user turn; the stored transcript is never mutated. *display_sort_ids*
+        (with ``include_compacted``): see ``_dedupe_display_generations``'s ``first_ids``."""
         display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
             self._active_clause(include_inactive, include_compacted), with_session_id=False, with_compacted=display)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows, drop_removed=display)
+            rows = self._dedupe_display_generations(rows, drop_removed=display, first_ids=display_sort_ids)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)

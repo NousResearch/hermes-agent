@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from agent.context_compressor import ContextCompressor, is_compaction_summary_message
+from agent.message_content import flatten_message_text
 
 
 _COMPACTION_INTERNAL_FIELDS = (
@@ -58,3 +59,12 @@ def project_compaction_message_for_display(message: dict[str, Any]) -> Optional[
     if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
         projected.pop("display_kind", None)
     return projected
+
+
+def compaction_summary_text(message: Any) -> Optional[str]:
+    """The summary a compaction handoff carries, as the compressor wrote it: no model-facing preamble,
+    no end marker, no prior-tail content or live ask merged into the same carrier. ``None`` for any
+    other message."""
+    if not is_compaction_summary_message(message):
+        return None
+    return ContextCompressor._strip_summary_prefix(flatten_message_text(message.get("content")))

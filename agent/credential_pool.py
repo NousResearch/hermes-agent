@@ -6,6 +6,7 @@ from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
+import json
 import logging
 import os
 import random
@@ -119,12 +120,97 @@ STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
+STRATEGY_EARLIEST_RESET = "earliest_reset"
+STRATEGY_FRESH_FIRST = "fresh_first"
 SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
+    STRATEGY_EARLIEST_RESET,
+    STRATEGY_FRESH_FIRST,
 }
+
+# ── quota-window-aware strategies: quota probe cache ─────────────────────
+# The pool normally only learns reset times from 429 scars; the
+# earliest_reset/fresh_first strategies instead order available entries by the
+# reset time of each entry's BUDGET window (the window with the farthest
+# reset_at — e.g. Kimi weekly, Codex weekly), so quota that expires soonest
+# gets burned first (earliest_reset) or never-started rolling windows get
+# activated first (fresh_first). Data comes from a small probe cache written
+# by an external cron; with no cache, stale cache, or no record for an entry,
+# ordering falls back to priority.
+QUOTA_CACHE_NAME = "quota-probe-cache.json"
+QUOTA_CACHE_MAX_AGE_SECONDS = 36 * 60 * 60  # 12h probe cadence + slack
+_quota_cache_memo: Dict[str, Any] = {"mtime": None, "data": None}
+
+
+def _quota_cache_path() -> Optional[Path]:
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = Path(get_hermes_home())
+    except Exception:
+        return None
+    candidates = [home / QUOTA_CACHE_NAME]
+    # Profile layout (~/.hermes/profiles/<name>): the cache is fleet-global,
+    # written once at the shared home root (same convention as auth.json).
+    try:
+        candidates.append(home.parent.parent / QUOTA_CACHE_NAME)
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _load_quota_cache() -> Optional[Dict[str, Any]]:
+    path = _quota_cache_path()
+    if path is None:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+        if _quota_cache_memo["mtime"] == mtime and _quota_cache_memo["data"] is not None:
+            return _quota_cache_memo["data"]
+        data = json.loads(path.read_text())
+        fetched_at = float(data.get("fetched_at") or 0.0)
+        if fetched_at <= 0 or (time.time() - fetched_at) > QUOTA_CACHE_MAX_AGE_SECONDS:
+            return None  # stale probe — fall back to priority ordering
+        _quota_cache_memo["mtime"] = mtime
+        _quota_cache_memo["data"] = data
+        return data
+    except Exception:
+        return None
+
+
+def _earliest_reset_metric(
+    cache: Dict[str, Any], provider: str, entry_id: str
+) -> Optional[Tuple[float, float]]:
+    """(budget-window reset_at, used_percent) for an entry, or None."""
+    record = ((cache.get("providers") or {}).get(provider) or {}).get(entry_id)
+    if not isinstance(record, dict) or not record.get("ok"):
+        return None
+    windows = [
+        w
+        for w in (record.get("windows") or [])
+        if isinstance(w, dict) and isinstance(w.get("reset_at"), (int, float))
+    ]
+    if not windows:
+        return None
+    budget = max(windows, key=lambda w: float(w["reset_at"]))
+    reset_at = float(budget["reset_at"])
+    if reset_at <= time.time():
+        # Snapshot predates a window rollover: the "earliest" reset is actually
+        # the OLD window's expiry (now past). Treating it as known inverts the
+        # ordering (hit 2026-09-18: kimi-key-2 pinned first for ~9h after its
+        # weekly reset while the other key had the truly-earlier deadline).
+        return None
+    return (reset_at, float(budget.get("used_percent") or 0.0))
+
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
@@ -2144,6 +2230,43 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+        elif self._strategy == STRATEGY_EARLIEST_RESET and len(available) > 1:
+            # Order by each entry's budget-window reset time (earliest first)
+            # using the external quota probe cache; entries with no probe data
+            # sort after probed ones, and if nothing is probed we fall back to
+            # plain priority order. Tie-break: lower used% first.
+            probed = None
+            cache = _load_quota_cache()
+            if cache is not None:
+                scored = []
+                for idx, candidate in enumerate(available):
+                    metric = _earliest_reset_metric(cache, self.provider, candidate.id)
+                    scored.append((metric is None, metric or (0.0, 0.0), idx, candidate))
+                scored.sort(key=lambda item: (item[0], item[1], item[2]))
+                if not scored[0][0]:
+                    probed = scored[0][3]
+            entry = probed if probed is not None else available[0]
+        elif self._strategy == STRATEGY_FRESH_FIRST and len(available) > 1:
+            # fresh_first: entries whose budget window is exactly 0% used get
+            # selected first. Providers with rolling budget windows (e.g. Codex
+            # weekly) only start the window clock when the account serves
+            # traffic — an unused account reports reset_at ≈ now+window forever
+            # and never regenerates quota. Selecting fresh windows first
+            # activates every entry's clock; within each group (fresh /
+            # already-ticking) ordering falls back to earliest_reset; unprobed
+            # entries sort last; no probe data at all → plain priority order.
+            probed = None
+            cache = _load_quota_cache()
+            if cache is not None:
+                scored = []
+                for idx, candidate in enumerate(available):
+                    metric = _earliest_reset_metric(cache, self.provider, candidate.id)
+                    fresh = 0 if (metric is not None and metric[1] <= 0.0) else 1
+                    scored.append((metric is None, fresh, metric or (0.0, 0.0), idx, candidate))
+                scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+                if not scored[0][0]:
+                    probed = scored[0][4]
+            entry = probed if probed is not None else available[0]
         else:
             entry = available[0]
         # Count the selection under every strategy. The counter is ``least_used``'s

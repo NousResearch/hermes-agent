@@ -29,6 +29,7 @@ export function RewindBrowse({
   onClose,
   onEdit,
   onFork,
+  onPaste,
   onType,
   req,
   t
@@ -68,9 +69,9 @@ export function RewindBrowse({
       return onBack()
     }
 
-    // A paste is text, never a browse key: pasting "f" or "q" closes browse and types it.
+    // A paste is text, never a browse key: pasting "f" or "q" closes browse and pastes it.
     if (event?.keypress.isPasted) {
-      return ch && onType(ch)
+      return ch && onPaste(ch.replace(/\r\n?/g, '\n'))
     }
 
     // Ctrl+C closes from the global handler; other chords are not browse keys.
@@ -168,6 +169,7 @@ interface RewindBrowseProps {
   onClose: () => void
   onEdit: (target: RewindOverlay['targets'][number]) => void
   onFork: (target: RewindOverlay['targets'][number]) => void
+  onPaste: (text: string) => void
   onType: (text: string) => void
   req: RewindOverlay
   t: Theme

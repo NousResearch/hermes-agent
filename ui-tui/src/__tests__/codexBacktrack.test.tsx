@@ -180,7 +180,7 @@ describe('composer hint', () => {
 
 function slashHarness(messages: unknown[] = rows) {
   const gw = gateway(messages)
-  const composer = { attachImagePath: vi.fn(), attachImagePaths: vi.fn(async () => {}), enqueue: vi.fn(), setInput: vi.fn() }
+  const composer = { appendPaste: vi.fn(async () => {}), attachImagePath: vi.fn(), attachImagePaths: vi.fn(async () => {}), enqueue: vi.fn(), setInput: vi.fn() }
   const send = vi.fn()
   const sys = vi.fn()
 
@@ -292,7 +292,7 @@ const targets = [
 ]
 
 function mountBrowse(native = false, cols = 100) {
-  const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
+  const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
 
   const req: RewindOverlay = {
     messages: rows.map(row => ({ role: row.role as 'assistant' | 'user', text: row.text })),
@@ -357,7 +357,7 @@ describe('RewindBrowse keys', () => {
     instance.unmount()
   })
 
-  it('a pasted "f" or "q" is text: it types into the composer, never forks or closes', async () => {
+  it('a pasted "f" or "q" is text: it is pasted into the composer, never forks or closes', async () => {
     const { handlers, instance, key } = mountBrowse()
 
     await settle()
@@ -365,7 +365,9 @@ describe('RewindBrowse keys', () => {
     await key('\x1b[200~q\x1b[201~')
     expect(handlers.onFork).not.toHaveBeenCalled()
     expect(handlers.onClose).not.toHaveBeenCalled()
-    expect(handlers.onType.mock.calls.map(([text]) => text)).toEqual(['f', 'q'])
+    await key('\x1b[200~one\r\ntwo\x1b[201~')
+    expect(handlers.onPaste.mock.calls.map(([text]) => text)).toEqual(['f', 'q', 'one\ntwo'])
+    expect(handlers.onType).not.toHaveBeenCalled()
     instance.unmount()
   })
 
@@ -398,7 +400,7 @@ describe('RewindBrowse keys', () => {
       { role: 'assistant' as const, text: `reply ${i + 1}` }
     ]).flat()
 
-    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
+    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
     const manyTargets = Array.from({ length: 12 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
     const stdin = new FakeInput()
     const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })
@@ -535,7 +537,7 @@ describe('Enter on an image prompt', () => {
 
     browse.onEdit(browse.targets[1]!)
     expect(composer.setInput).toHaveBeenCalledWith('What two colors?')
-    expect(composer.attachImagePaths).toHaveBeenCalledWith(['/cache/native-inputs/a.png'])
+    expect(composer.attachImagePaths).toHaveBeenCalledWith(['/cache/native-inputs/a.png'], { followTyping: true })
   })
 })
 
@@ -546,7 +548,7 @@ describe('native pager paging', () => {
       { role: 'assistant' as const, text: `reply ${i + 1}` }
     ]).flat()
 
-    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
+    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
     const manyTargets = Array.from({ length: 30 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
     const stdin = new FakeInput()
     const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })

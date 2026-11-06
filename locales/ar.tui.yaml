@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "قيمة HERMES_TUI_TOOL_PROGRESS غير 
 canonical.launch.noTuiPolicy: "البوّابة لا تدعم سياسة جلسة tui؛ حدّث البوّابة أو أعد تشغيلها"
 canonical.launch.unsupportedOptions: "البوّابة لا تدعم خيارات تشغيل TUI: {0}"
 canonical.queue.clipboardImageFailed: "فشلت صورة الحافظة: {0}"
+canonical.queue.imagesNotRestored: "لم تُرفق {0} صورة/صور من الرسالة المعدّلة مجددًا (تغيّرت المسودة)"
 canonical.queue.discardFailed: "فشل التجاهل: {0}"
 canonical.queue.invalidRecord: "سجل إدخال معلّق غير صالح: {0}"
 canonical.queue.journalCleanupFailed: "تم تسليم الإدخال؛ فشل تنظيف السجل: {0}"

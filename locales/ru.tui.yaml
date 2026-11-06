@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "недопустимое значение
 canonical.launch.noTuiPolicy: "шлюз не поддерживает политику сеанса tui; обновите/перезапустите шлюз"
 canonical.launch.unsupportedOptions: "шлюз не поддерживает параметры запуска TUI: {0}"
 canonical.queue.clipboardImageFailed: "ошибка изображения из буфера обмена: {0}"
+canonical.queue.imagesNotRestored: "Изображений из изменённого сообщения не прикреплено повторно: {0} (черновик изменился)"
 canonical.queue.discardFailed: "не удалось сбросить: {0}"
 canonical.queue.invalidRecord: "Недопустимая запись ожидающего ввода: {0}"
 canonical.queue.journalCleanupFailed: "ввод доставлен; не удалось очистить журнал: {0}"

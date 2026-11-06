@@ -116,6 +116,7 @@ canonical.launch.invalidToolProgress: "HERMES_TUI_TOOL_PROGRESS が無効です:
 canonical.launch.noTuiPolicy: "ゲートウェイが tui セッションポリシーに対応していません。ゲートウェイを更新/再起動してください"
 canonical.launch.unsupportedOptions: "ゲートウェイが TUI 起動オプションに対応していません: {0}"
 canonical.queue.clipboardImageFailed: "クリップボード画像の取得に失敗しました: {0}"
+canonical.queue.imagesNotRestored: "編集したメッセージの画像 {0} 件を再添付できませんでした（下書きが変更されました）"
 canonical.queue.discardFailed: "破棄に失敗しました: {0}"
 canonical.queue.invalidRecord: "保留中の入力レコードが無効です: {0}"
 canonical.queue.journalCleanupFailed: "入力は配信されましたが、ジャーナルの整理に失敗しました: {0}"

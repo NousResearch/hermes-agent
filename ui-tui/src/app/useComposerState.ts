@@ -314,14 +314,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       destination: SubmissionDestination,
       revision: number,
       request: Promise<T | null>,
-      accept: (attached: T | null) => ComposerPasteResult | null
+      accept: (attached: T | null) => ComposerPasteResult | null,
+      fresh = () => revision === composerRevision.current
     ): Promise<ComposerPasteResult | null> => {
       attachmentFlights.current++
 
       try {
         const attached = await request
 
-        if (isCurrentDestination(destination) && revision === composerRevision.current) {
+        if (isCurrentDestination(destination) && fresh()) {
           return accept(attached)
         }
 
@@ -565,23 +566,36 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   /**
    * Attach images by path, one after another, each landing at the end of the draft. The destination
-   * and composer revision are captured ONCE: every attach targets that destination, and the rest of
-   * the list is dropped as soon as the session changes or anything but these attaches edits the
-   * composer (cleared, submitted, replaced, typed into). Sequential because a second attach started
-   * before the first lands would see the first one's edit as a foreign change.
+   * is captured ONCE and every attach targets it. With `followTyping` (an edited prompt's restore),
+   * typing on keeps it going and the image lands after the typed text; otherwise any other edit, like
+   * a session switch or the draft cleared, submitted or replaced, drops the rest, and a restore says
+   * so when that leaves images behind in the same session.
+   * Sequential because a second attach started before the first lands would see it as foreign.
    */
   const attachImagePaths = useCallback(
-    async (paths: readonly string[]) => {
+    async (paths: readonly string[], { followTyping = false } = {}) => {
       const destination = captureDestination()
       let revision = composerRevision.current
-      const current = () => isCurrentDestination(destination) && revision === composerRevision.current
+      let written = inputRef.current
 
-      for (const path of paths) {
-        if (!destination.sid || !path.trim() || !current()) {
+      // Unchanged since our last write or, following typing, only added to at the end.
+      const current = () => {
+        const now = inputRef.current
+        const typedOn = followTyping && now.length > written.length && now.startsWith(written)
+
+        return isCurrentDestination(destination) && (revision === composerRevision.current || typedOn)
+      }
+
+      const dropped = (count: number) => followTyping && isCurrentDestination(destination) && sys(t('canonical.queue.imagesNotRestored', count))
+
+      for (const [done, path] of paths.entries()) {
+        if (!destination.sid || !path.trim()) {
           return
         }
 
-        const value = inputRef.current
+        if (!current()) {
+          return void dropped(paths.length - done)
+        }
 
         const next = await resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
           destination,
@@ -599,18 +613,36 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
             return null
           }),
-          attached => (attached?.name ? attachImageToken(attached, value, value.length) : null)
+          attached => (attached?.name ? attachImageToken(attached, inputRef.current, inputRef.current.length) : null),
+          current
         )
 
-        if (!next || !current()) {
-          return
+        if (!next) {
+          return void (current() || dropped(paths.length - done))
         }
 
         setInput(next.value)
         revision = composerRevision.current
+        written = next.value
       }
     },
     [attachImageToken, gw, resolveAttachment, setInput, sys]
+  )
+
+  /** Text pasted somewhere other than the composer (backtrack browse), handled as a composer paste:
+   * collapse, dropped-path and image detection included. It lands at the end of the draft. */
+  const appendPaste = useCallback(
+    async (text: string) => {
+      const value = inputRef.current
+      const revision = composerRevision.current
+      const result = await handleTextPaste({ bracketed: true, cursor: value.length, text, value })
+
+      if (result && revision === composerRevision.current) {
+        placeInputCursor(result.value, result.cursor)
+        setInput(result.value)
+      }
+    },
+    [handleTextPaste, setInput]
   )
 
   const attachImagePath = useCallback((path: string) => attachImagePaths([path]), [attachImagePaths])
@@ -659,6 +691,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     () => ({
       attachClipboardImage,
       attachImagePath,
+      appendPaste,
       attachImagePaths,
       clearIn,
       collapsePaste,
@@ -684,6 +717,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [
       attachClipboardImage,
       attachImagePath,
+      appendPaste,
       attachImagePaths,
       clearIn,
       stage,

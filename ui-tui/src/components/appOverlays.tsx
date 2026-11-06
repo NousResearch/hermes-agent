@@ -160,6 +160,7 @@ export function PromptZone({
           onClose={close}
           onEdit={closeThen(req.onEdit)}
           onFork={closeThen(req.onFork)}
+          onPaste={closeThen(req.onPaste)}
           onType={closeThen(req.onType)}
           req={req}
           t={theme}

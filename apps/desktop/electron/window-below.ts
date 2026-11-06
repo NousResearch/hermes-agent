@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
 import { app } from 'electron'
 
 import { readHyprlandWindows } from './hyprland'
+import { readKwinWindows } from './kwin'
 
 export interface EnumeratedWindow {
   app: string
@@ -287,9 +288,12 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
 /**
  * Front-to-back window enumeration, or why the platform could not answer.
  *
- * Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
- * windows, which the X11 enumerator cannot, and it answers null everywhere
- * else so the established path stays the default. Shared by the
+ * A compositor that answers for itself is asked first, and only ever on that
+ * compositor: Hyprland and KWin can both see native Wayland windows, which the
+ * X11 enumerator cannot, and each answers null everywhere else so the
+ * established path stays the default. Two of them rather than a registry
+ * because each is a different protocol — a socket for Hyprland, the session bus
+ * for KWin — and there is no third caller waiting in the wings. Shared by the
  * read_window_below tool and the HUD's game-overlay watch, so the two can
  * never disagree about what the screen looks like.
  */
@@ -297,7 +301,10 @@ export async function enumerateWindowsFrontToBack(
   selfPid: number,
   titlesAvailable: boolean
 ): Promise<EnumeratedWindow[] | EnumerationFailure> {
-  const result = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  const result =
+    (await readHyprlandWindows(selfPid)) ??
+    (await readKwinWindows(selfPid)) ??
+    (await enumerateViaGetWindows(titlesAvailable))
 
   return enumerationFailed(result)
     ? { reason: getWindowsFailureReason(result.reason, process.platform, process.arch) }

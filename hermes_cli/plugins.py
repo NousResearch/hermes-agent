@@ -65,7 +65,7 @@ from hermes_cli.plugins_state import (
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
 # PluginContext lives in plugins_context.py; this facade stays its public import path.
-from hermes_cli.plugins_context import PluginContext, _UNSET
+from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
 
 
 def get_bundled_plugins_dir() -> Path:

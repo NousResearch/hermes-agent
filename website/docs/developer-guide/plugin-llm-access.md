@@ -356,7 +356,10 @@ method, without a Python subprocess:
   a `schema` request before the model is called.
 - `redact: true` masks secrets in `input` with the agent's redactor before
   the model sees it.
-- A `session_id` lends that session's model instead of the task's.
+- A `session_id` lends that session's model to a task that does not name
+  its own: when `auxiliary.<task>.provider` is `auto` (the default). A task
+  configured with an explicit provider or model keeps it; explicit settings
+  win over the session's route, as for `ctx.llm`.
 
 #### Inheriting a built-in slot
 

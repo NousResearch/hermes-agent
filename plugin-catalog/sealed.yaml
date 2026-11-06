@@ -1,7 +1,7 @@
 name: sealed
 title: Sealed
 repo: https://github.com/kailashrajh/hermes-sealed
-sha: 112a504ff9d3ba4ecfee63dca086707826b2fa7b
+sha: 9ab8bd2e6c81d055905e9558358177fca2cee5e2
 subdir: plugins/sealed
 version: "1.0.0"
 description: >-

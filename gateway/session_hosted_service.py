@@ -240,9 +240,9 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _stop_deferred_peer(self, room_id, task):
         """Also settle a local member's deferred turn once its profile is no longer served here and
         nothing on this host can run it (``unserved_member_stopped``): its daemon never answers."""
+        from gateway.session_hosted_member_homes import legacy_attempt_unproven, unserved_member_stopped
         if super()._stop_deferred_peer(room_id, task):
-            return True
-        from gateway.session_hosted_member_homes import unserved_member_stopped
+            return not legacy_attempt_unproven(self, room_id, task)
         from tui_gateway.hosted_room_service import task_member_id
         return (not self._member_is_peer(room_id, task_member_id(task))
                 and unserved_member_stopped(self, room_id, task))

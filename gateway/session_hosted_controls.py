@@ -102,13 +102,15 @@ class HostedControls:
         return self._retry_peer(binding, task)
 
     def _retry_local(self, binding, task, room_id):
-        rpc = self._resolve_member_transport(binding, task)
-        info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
-                        session_id=rpc.ref.session_id)
-        if info.get('status') == 'unknown':
-            raise RuntimeStoreError('unknown_execution')
-        if info.get('active'):
-            raise RuntimeStoreError('session_busy')
+        from gateway.session_hosted_member_homes import moved_attempt_gone
+        if not moved_attempt_gone(self, room_id, task):
+            rpc = self._resolve_member_transport(binding, task)
+            info = rpc.info(profile=task['payload']['target_profile'], source='bot_room',
+                            session_id=rpc.ref.session_id)
+            if info.get('status') == 'unknown':
+                raise RuntimeStoreError('unknown_execution')
+            if info.get('active'):
+                raise RuntimeStoreError('session_busy')
         lease = self.runtime._ensure_lease(binding)
         return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 

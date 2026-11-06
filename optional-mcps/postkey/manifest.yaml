@@ -1,0 +1,72 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: postkey
+description: Instagram DM automation, comment-to-DM, inbox and post scheduling.
+source: https://postkey.pro/docs/mcp
+
+# Vendor-hosted remote MCP (URL-only). OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 with RFC 9728 resource_metadata -> AS metadata with
+# registration_endpoint and PKCE S256).
+
+transport:
+  type: http
+  url: https://postkey.pro/mcp
+
+auth:
+  type: oauth
+
+tools:
+  # Read-only tools (readOnlyHint: true on the live endpoint) start enabled.
+  # Tools that create automations, schedule posts or send DMs stay off until
+  # the user selects them in `hermes mcp configure postkey`.
+  default_enabled:
+    - postkey_get_started
+    - postkey_guide
+    - postkey_preview_action
+    - postkey_list_social_accounts
+    - postkey_list_posts
+    - postkey_get_post
+    - postkey_list_library
+    - postkey_list_video_templates
+    - postkey_list_edits
+    - postkey_get_edit
+    - postkey_list_edit_templates
+    - postkey_list_automations
+    - postkey_get_automation
+    - postkey_list_automation_templates
+    - postkey_list_sequences
+    - postkey_list_sequence_subscribers
+    - postkey_list_conversations
+    - postkey_get_conversation
+    - postkey_search_contacts
+    - postkey_get_contact
+    - postkey_get_post_stats
+    - postkey_get_automation_stats
+    - postkey_list_waiting_for_approval
+    - postkey_get_approval
+    - postkey_x_list_stop
+    - postkey_x_status
+    - postkey_x_list_templates
+
+suggest:
+  keywords:
+    - postkey
+    - instagram dm
+    - dm automation
+    - comment to dm
+    - follow to unlock
+  hosts:
+    - postkey.pro
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Postkey (or run
+  `hermes mcp login postkey`). Pick the Postkey profile and choose what Hermes
+  may do, then restart the session so tools load.
+
+  This entry enables only read-only tools by default. Tools that build or
+  publish DM automations, schedule posts, or send DMs and replies stay off
+  until you select them with:
+    hermes mcp configure postkey
+  Postkey can also hold those actions for approval in the app before they run.

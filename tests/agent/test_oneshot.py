@@ -95,6 +95,10 @@ class TestRunOneshot:
         with patch("agent.oneshot.call_llm", side_effect=[self._mock_response(a) for a in answers]):
             assert oneshot_reply(instructions="s", user_input="u", schema=schema)["parsed"] == {"code": "```hello```"}
             assert oneshot_reply(instructions="s", user_input="u", schema=schema)["parsed"] == {"code": "x"}
+        # NaN parses in Python but is not JSON: an error, never a frame the client drops.
+        with patch("agent.oneshot.call_llm", return_value=self._mock_response('{"value": [1, NaN]}')):
+            with pytest.raises(ValueError, match="NaN"):
+                oneshot_reply(instructions="s", user_input="u", schema={})
 
 class TestHelpers:
 

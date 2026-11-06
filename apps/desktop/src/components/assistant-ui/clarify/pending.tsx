@@ -24,6 +24,7 @@ import { ClarifyConfirmBar } from './core/confirm-bar'
 import { emptyStage, QuestionBlock } from './core/question-block'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
+import { useClarifyPresentation } from './core/use-clarify-presentation'
 import type { ClarifyArgs } from './parse'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -76,6 +77,10 @@ export function ClarifyToolPending({
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
+  const formRef = useRef<HTMLFormElement | null>(null)
+  const disabled = submitting || !ready
+
+  useClarifyPresentation(formRef, request, disabled, undelivered)
 
   // Locked answers (a reconnect replay, or text typed in the composer) stage
   // their questions. A newly locked answer replaces what the card staged, so
@@ -270,8 +275,6 @@ export function ClarifyToolPending({
 
   const isStaged = useCallback((question: ClarifyQuestion) => stagedAnswer(question) !== null, [stagedAnswer])
 
-  const formRef = useRef<HTMLFormElement | null>(null)
-
   const keys = useClarifyKeys({
     enabled: ready && !submitting,
     formRef,
@@ -281,8 +284,6 @@ export function ClarifyToolPending({
     onToggle: toggleChoice,
     questions
   })
-
-  const disabled = submitting || !ready
 
   if (questions.length === 0) {
     return (

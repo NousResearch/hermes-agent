@@ -19,6 +19,39 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks())
 
+test('presentation keeps event fences through a later named-launch alias and old-backend refusal', async () => {
+  vi.spyOn(JsonRpcGatewayClient.prototype, 'connect').mockResolvedValue()
+  const wire = vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async name => {
+    if (name === 'session.resume') {
+      return { session_id: 'waiting', revision: 2, execution_generation: 3, running: true,
+        info: { profile_name: 'named' }, prompts: [{ kind: 'clarify', prompt_id: 'exact',
+          execution_generation: 3, question: 'Choose', choices: ['a', 'b'] }] } as never
+    }
+    if (name === 'clarify.presentation') { throw new Error('unknown method') }
+    return { status: 'resolved' } as never
+  })
+  const client = new HermesGateway()
+  const requests: ServerRequest[] = []
+  client.onRequest(request => { requests.push(request) })
+  await client.connect('ws://localhost/api/ws?native_dial=fixture&ticket=fixture')
+  const deliver = client as unknown as { deliverCanonicalPrompt: (event: unknown, replay: boolean) => void }
+  deliver.deliverCanonicalPrompt({ type: 'clarify.request', session_id: 'waiting', payload: {
+    prompt_id: 'exact', execution_generation: 3, question: 'Choose', choices: ['a', 'b']
+  } }, false)
+  await client.request('session.resume', { session_id: 'waiting' })
+  wire.mockClear()
+  requests[0].reportClarifyPresentation?.('presented')
+  expect(wire.mock.calls).toEqual([['clarify.presentation', {
+    session_id: 'waiting', profile: 'named', execution_generation: 3, prompt_id: 'exact', state: 'presented'
+  }]])
+  requests[0].respond({ answer: 'b' })
+  await vi.waitFor(() => expect(wire.mock.calls.map(([name]) => name)).toContain('clarify.respond'))
+  const beforeClose = wire.mock.calls.length
+  client.close()
+  requests[0].reportClarifyPresentation?.('presented')
+  expect(wire.mock.calls).toHaveLength(beforeClose)
+})
+
 test.each([
   { method: 'session.resume', warm: true },
   { method: 'session.activate', warm: true },

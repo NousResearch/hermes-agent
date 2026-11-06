@@ -31,14 +31,21 @@ test('a reopened sibling chat delivers retained questions before returning and r
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
     await client.request('session.resume', { session_id: 's', profile: 'sibling' })
     expect(delivered.map(request => [request.method, request.replayed])).toEqual([['clarify', true], ['approval', true]])
+    expect(delivered[0].reportClarifyPresentation).toBeTypeOf('function')
+    delivered[0].reportClarifyPresentation('presented')
+    await client.request('ping')
+    expect(sent.find(frame => frame.method === 'clarify.presentation')?.params).toEqual({
+      session_id: 's', profile: 'sibling', execution_generation: 7, prompt_id: 'c1', state: 'presented'
+    })
+    expect(delivered[1].reportClarifyPresentation).toBeUndefined()
     await client.request('clarify.lock', { request_id: 'c1', answer: 'staging' })
     delivered[1].respond({ choice: 'once' })
     await new Promise<void>(resolve => {
       const check = () => sent.some(frame => frame.method === 'approval.respond') ? resolve() : setTimeout(check, 5)
       check()
     })
-    expect(sent.map(frame => frame.method)).toEqual(['session.resume', 'clarify.respond', 'approval.respond'])
-    expect(sent.slice(1).map(frame => frame.params.profile)).toEqual(['sibling', 'sibling'])
+    expect(sent.map(frame => frame.method)).toEqual(['session.resume', 'clarify.presentation', 'ping', 'clarify.respond', 'approval.respond'])
+    expect(sent.filter(frame => frame.method.endsWith('.respond')).map(frame => frame.params.profile)).toEqual(['sibling', 'sibling'])
   } finally {
     client.close()
 

@@ -27,6 +27,12 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    deadline: Optional[float] = None
+    wait_duration: Optional[float] = None
+    presented_at: Optional[float] = None
+    presenter: Optional[str] = None
+    presentation_invalidated: bool = False
+    full_wait_elapsed: bool = False
 
 
 _lock = threading.RLock()
@@ -71,11 +77,23 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
     from tools.interrupt import is_interrupted
-    deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
+    with _lock:
+        entry.wait_duration = None if timeout is None or float(timeout) <= 0.0 else float(timeout)
+        if entry.wait_duration is not None:
+            start = entry.presented_at if entry.presented_at is not None else time.monotonic()
+            entry.deadline = start + entry.wait_duration
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
-        remaining = 1.0 if deadline is None else deadline - time.monotonic()
-        if remaining <= 0 or entry.event.wait(timeout=min(1.0, remaining)):
+        # Expiry and presentation share the answer lock; neither can resurrect a retired entry.
+        with _lock:
+            remaining = 1.0 if entry.deadline is None else entry.deadline - time.monotonic()
+            if entry.event.is_set():
+                break
+            if remaining <= 0:
+                entry.full_wait_elapsed = entry.presented_at is not None and not entry.presentation_invalidated
+                entry.event.set()
+                break
+        if entry.event.wait(timeout=min(1.0, remaining)):
             break
         if is_interrupted():
             # /stop or gateway shutdown on this turn's thread: withdraw the prompt the way the
@@ -98,6 +116,27 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             if not ids:
                 _session_index.pop(entry.session_key, None)
     return entry.response
+
+
+def record_presentation(entry: _ClarifyEntry, viewer: str, state: str) -> str:
+    """Record host-observed UI facts, never an answer or permission."""
+    with _lock:
+        if _entries.get(entry.clarify_id) is not entry or entry.event.is_set():
+            return "already_resolved"
+        if state == "interaction" or (state == "hidden" and entry.presenter == viewer):
+            entry.presentation_invalidated = True
+            return "invalidated"
+        if state != "presented" or entry.presentation_invalidated:
+            return "ineligible"
+        now = time.monotonic()
+        if entry.deadline is not None and now >= entry.deadline:
+            return "ineligible"
+        if entry.presented_at is not None:
+            return "already_recorded"
+        entry.presented_at, entry.presenter = now, viewer
+        if entry.wait_duration is not None:
+            entry.deadline = now + entry.wait_duration
+        return "recorded"
 
 
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:

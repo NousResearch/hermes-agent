@@ -50,7 +50,6 @@ import {
   canonicalGroupKeyRoute,
   publishCanonicalGroup,
   refreshGatewayGroupRooms,
-  registerCanonicalGroup,
   resolveCanonicalGroup
 } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -592,6 +591,7 @@ interface GroupChatWorkspaceProps {
 }
 
 export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
+  const b = useBots()
   const bindings = useValue($canonicalGroupBindings)
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
@@ -599,7 +599,16 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
+  if (binding) {return <div className="flex h-full min-h-0 flex-col">
+    {canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && !!record?.log?.length &&
+      <details className="max-h-64 shrink-0 overflow-y-auto p-3">
+        <summary className="cursor-pointer text-xs">{b.canonical.earlierMessages}</summary>
+        <GateEarlierMessages labels={b.canonical} room={record} />
+      </details>}
+    <div className="min-h-0 flex-1">
+      <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />
+    </div>
+  </div>}
 
   // Created across machines: no gateway here can own the room, so this Desktop
   // drives it, even after a membership edit leaves every bot on one machine.
@@ -789,7 +798,9 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         .then(({ room }) => {
           refreshGatewayGroupRooms()
 
-          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room), 'key')}
+          if (sourceCurrent()) {
+            publishCanonicalGroup(route, props.group, { authority: route, room }, props.origin ?? 'name')
+          }
         })
         .catch(e => { if (sourceCurrent()) {setError(canonicalGroupCreateError(e, b.canonical))} }).finally(() => setBusy(false))
     }}>{b.canonical.startGatewayGroup}</Button>}

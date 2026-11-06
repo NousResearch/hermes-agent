@@ -46,14 +46,12 @@ import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_KEEPALIVE_INTERVAL_MS,
-  PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
   PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
   ptyReconnectDelayMs,
-  shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
 import {
@@ -64,7 +62,6 @@ import {
 } from "@/lib/pty-resume-loading";
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
-  normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
@@ -119,6 +116,7 @@ import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
 import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
+import { type BlockedPtyInput, createPtyInputForwarder } from "./ChatPage_ptyInput";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -191,7 +189,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
-  const blockedInputNoticeRef = useRef(false);
+  const blockedInputRef = useRef<BlockedPtyInput>({ notice: false, queue: [] });
   const lastResumeReconnectAtRef = useRef(0);
   // True from the moment the connect effect begins until the socket resolves
   // (open or close). Guards the page-resume reconnect against firing during
@@ -216,6 +214,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [reconnectNonce, setReconnectNonce] = useState(0);
   useEffect(() => {
     ptyStateRef.current = ptyState;
+    // Held input only waits on a socket that is on its way (#145511).
+    if (ptyState === "closed" || ptyState === "ended") {
+      blockedInputRef.current.queue = [];
+    }
   }, [ptyState]);
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -227,7 +229,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     forceFreshPtyRef.current = false;
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
-    blockedInputNoticeRef.current = false;
+    blockedInputRef.current.notice = false;
     ptyInputLineRef.current = "";
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
@@ -240,7 +242,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
-    blockedInputNoticeRef.current = false;
+    blockedInputRef.current.notice = false;
     ptyInputLineRef.current = "";
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
@@ -256,7 +258,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
-    blockedInputNoticeRef.current = false;
+    blockedInputRef.current.notice = false;
     ptyInputLineRef.current = "";
     mobileReplacementInputUntilRef.current = 0;
     setSearchParams(next, { replace: true });
@@ -357,6 +359,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  useEffect(() => {
+    // Held input belongs to the session it was typed into; runs before the
+    // connect effect when `channel` changes.
+    blockedInputRef.current.queue = [];
+  }, [channel]);
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -1232,6 +1239,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+      const ptyInput = createPtyInputForwarder(ws, term, {
+        ptyState: ptyStateRef,
+        blocked: blockedInputRef,
+        inputLine: ptyInputLineRef,
+        mobileReplacementUntil: mobileReplacementInputUntilRef,
+      });
       // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
       // handoff and never fire onclose, so neither the resume predicate nor
       // scheduleReconnect can recover it. Force-close if it hasn't opened
@@ -1257,12 +1270,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setBannerAction(null);
       setReconnectGaveUp(false);
       setPtyState("open");
-      blockedInputNoticeRef.current = false;
+      // Mirrored now, not after the next render, so keys typed in that gap
+      // are not taken for "still connecting".
+      ptyStateRef.current = "open";
+      blockedInputRef.current.notice = false;
       // Connected — cancel any pending reconnect from a prior transient drop.
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      ptyInput.flushAfterOpen(() => wsRef.current === ws);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -1465,56 +1482,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setPtyState("ended");
     };
 
-    // Keystrokes → PTY.
-    //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
-    const forwardPtyData = (data: string, useMobileReplacement = true) => {
-        // Mouse reports (scroll wheel etc.) are not typed input — swallow
-        // them before the blocked-input check so scrolling a disconnected
-        // terminal doesn't trip the "reconnecting" notice.
-        if (SGR_MOUSE_RE.test(data)) {
-          return;
-        }
-
-        if (
-          ws.readyState !== WebSocket.OPEN ||
-          shouldBlockPtyInput(ptyStateRef.current)
-        ) {
-          if (!blockedInputNoticeRef.current) {
-            blockedInputNoticeRef.current = true;
-            term.write(
-              `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
-            );
-          }
-          return;
-        }
-
-        const normalized = normalizePtyMobileInput(
-          data,
-          ptyInputLineRef.current,
-          useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
-        );
-        ptyInputLineRef.current = normalized.nextLine;
-        if (normalized.normalized) {
-          mobileReplacementInputUntilRef.current = 0;
-        }
-        ws.send(normalized.data);
-      };
+    // Keystrokes → PTY: see ChatPage_ptyInput.ts.
       // The deferred composition fallback is already committed text, so it
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
-      sendComposedText = (data) => forwardPtyData(data, false);
+      sendComposedText = (data) => ptyInput.forward(data, false);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
@@ -1523,7 +1495,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // onData; only the part that is not an echo of that commit is real.
         const unechoed = compositionForwarder.filterTerminalData(data);
         if (unechoed) {
-          forwardPtyData(unechoed);
+          ptyInput.forward(unechoed);
         }
       });
 

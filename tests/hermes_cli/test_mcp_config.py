@@ -202,6 +202,115 @@ class TestMcpAdd:
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
 
 
+    def test_add_yes_skips_every_prompt(self, tmp_path, capsys, monkeypatch):
+        """--yes drives a full add without touching input() even once."""
+        fake_tools = [FakeTool("create_service", "Deploy from repo"), FakeTool("list_services", "List services")]
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [(t.name, t.description) for t in fake_tools],
+        )
+
+        def _no_input(prompt=""):
+            raise AssertionError(f"--yes must not prompt; got {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="auto", url="https://mcp.example.com/mcp", yes=True))
+        out = capsys.readouterr().out
+        assert "enabling all 2 tools" in out
+        assert "2/2 tools" in out
+        server = load_config()["mcp_servers"]["auto"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert server["enabled"] is True
+        assert "tools" not in server
+
+    def test_add_yes_with_auth_but_no_key_errors(self, tmp_path, capsys, monkeypatch):
+        """Missing header credentials fail before probing or prompting."""
+        monkeypatch.delenv("MCP_NEEDS_AUTH_API_KEY", raising=False)
+
+        from unittest.mock import MagicMock
+
+        probe = MagicMock(return_value=[("search", "Search")])
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", probe)
+
+        def _no_input(prompt=""):
+            raise AssertionError(f"--yes must not prompt; got {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        assert not (tmp_path / ".env").exists()
+        cmd_mcp_add(_make_args(
+            name="needs-auth", url="https://mcp.example.com/mcp", auth="header", yes=True,
+        ))
+        out = capsys.readouterr().out
+        assert "MCP_NEEDS_AUTH_API_KEY" in out
+        assert ".env" in out
+        assert "needs-auth" not in load_config().get("mcp_servers", {})
+        probe.assert_not_called()
+
+    def test_add_stdio_eof_explains_yes(self, tmp_path, capsys, monkeypatch):
+        """An unreadable tool-choice answer leaves configuration unchanged."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("search", "Search")],
+        )
+
+        def _eof(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _eof)
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="unreadable", mcp_command="npx", args=["pkg"], yes=False))
+        out = capsys.readouterr().out
+        assert "--yes" in out
+        assert "No answer could be read" in out
+        assert "server not saved" in out
+        assert "unreadable" not in load_config().get("mcp_servers", {})
+
+    def test_add_ctrl_c_at_tool_choice_cancels(self, tmp_path, capsys, monkeypatch):
+        """A deliberate Ctrl-C cancels without the end-of-input hint."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, config, **kw: [("search", "Search")],
+        )
+
+        def _interrupt(prompt=""):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("builtins.input", _interrupt)
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="interrupted", mcp_command="npx", args=["pkg"], yes=False))
+        out = capsys.readouterr().out
+        assert "Cancelled." in out
+        assert "No answer could be read" not in out
+        assert "interrupted" not in load_config().get("mcp_servers", {})
+
+    def test_add_yes_probe_failure_does_not_save(self, tmp_path, capsys, monkeypatch):
+        """The default after failed discovery remains to discard configuration."""
+        def _failing_probe(name, config, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", _failing_probe)
+
+        def _no_input(prompt=""):
+            raise AssertionError(f"--yes must not prompt; got {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import load_config
+
+        cmd_mcp_add(_make_args(name="failed", mcp_command="npx", args=["pkg"], yes=True))
+        assert "Server returned an error response" in capsys.readouterr().out
+        assert "failed" not in load_config().get("mcp_servers", {})
+
     def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
         """Stdio servers can persist explicit environment variables."""
         fake_tools = [FakeTool("search", "Search repos")]

@@ -4,7 +4,9 @@ A turn deferred behind that daemon's unconfirmed Stop settles once the daemon co
 (``HostedRoomRuntime.deferred_stop_confirmed``). A profile this host no longer serves (gone from
 the group's roster, or its home deleted) never confirms: its daemon's source attest refuses the
 member, so waiting would hold Disband forever. The turn then settles only on proof that no agent
-can run it: every home the profile was served from has no live gateway owner. Discovery answers
+can run it: every home the profile was served from has no live gateway owner. With neither a
+roster entry nor a recorded home (a turn dispatched before homes were recorded) that home is
+unknown, so the turn is kept. Discovery answers
 ``absent`` only with no control socket, no multiplexer serving the home, and no holder of its
 ``gateway.lock``, which a daemon keeps until its process exits. A daemon that is alive but does
 not answer keeps the turn, and so does a profile still served here: only its daemon's Stop decides.
@@ -60,10 +62,12 @@ def unserved_member_stopped(service, room_id, task):
     served = service.profile_homes().get(profile)
     if served is not None and _served_here(Path(served)):
         return False
+    recorded = _recorded_homes(service.authority.db, room_id, task_member_id(task))
+    if served is None and not recorded:
+        return False  # the home its daemon ran from is unknown: an absent default proves nothing
     own = Path(service.authority.profile_id)
     root = multiplexer_root_for(own) or own
-    homes = {root if profile == 'default' else root / 'profiles' / profile,
-             *_recorded_homes(service.authority.db, room_id, task_member_id(task))}
+    homes = {root if profile == 'default' else root / 'profiles' / profile, *recorded}
     if served is not None:
         homes.add(Path(served))
     return all(discover_gateway_endpoint(home).state == 'absent' for home in homes)

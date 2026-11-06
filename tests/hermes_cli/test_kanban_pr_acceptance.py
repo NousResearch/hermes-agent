@@ -230,3 +230,30 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+def test_unreadable_repository_via_real_gh_graphql_exit_is_auth(tmp_path, monkeypatch):
+    """Real gh exits 1 on a GraphQL NOT_FOUND (HTTP 200, no "HTTP 404" on stderr) and prints
+    the body with data.repository null: a repo this login cannot see is `auth`, not `infra`."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    body = {"data": {"repository": None}, "errors": [{"type": "NOT_FOUND", "path": ["repository"],
+            "message": "Could not resolve to a Repository with the name 'acme/private'."}]}
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys\n"
+                  f"print({json.dumps(body)!r})\n"
+                  "print(\"gh: Could not resolve to a Repository with the name 'acme/private'.\", file=sys.stderr)\n"
+                  "sys.exit(1)\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="private", completion_contract="acme/private")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/private/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+    assert receipt["classification"] == "auth"
+    assert "acme/private" in receipt["detail"]

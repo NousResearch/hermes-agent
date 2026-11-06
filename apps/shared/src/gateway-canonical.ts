@@ -1,6 +1,7 @@
 /** `hermes-gateway-v1` request/result translation for a client written against the stdio-era
  *  method names (Ink, and clients built on `./node/gateway-client`). Browser-safe. */
 import { type GatewayText, gatewayText } from './gateway-text.js'
+import { randomUuid } from './session-http-mutations.js'
 
 export interface SharedControl { session_id: string; execution_generation: number; prompt_id: string }
 export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } | null) => prompt?.sharedControl ?? {}
@@ -18,7 +19,7 @@ export function canonicalRequest(
   if (method === 'session.create') {
     delete params.cols
     params.source = 'tui'
-    params.request_id ??= crypto.randomUUID()
+    params.request_id ??= randomUuid()
 
     if (!contract?.sources.includes('tui')) { throw new Error(text('canonical.launch.noTuiPolicy')) }
 

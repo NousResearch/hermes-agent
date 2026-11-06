@@ -1,7 +1,9 @@
 """Updater restore must publish snapshot rows without replaying the old WAL."""
 
+import logging
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -112,6 +114,177 @@ def test_torn_restore_is_what_the_guard_prevents(live_db_with_hot_wal, snapshot_
     )
     assert _row_count(live_db_with_hot_wal) == OLD_ROWS
     assert _row_count(live_db_with_hot_wal) != SNAPSHOT_ROWS
+
+
+def test_post_update_preserves_readable_hot_wal_with_bad_main_header(
+    live_db_with_hot_wal, snapshot_db, capsys
+):
+    """A damaged main header is not proof that a readable WAL can be discarded."""
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.update_cmd import _verify_and_restore_one_state_db
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    main_before = live.read_bytes()
+    wal_before = _sidecar(live, "-wal").read_bytes()
+
+    result = verify_sqlite_integrity(live, check_header=True, run_pragma=True)
+    assert result["valid"] is None
+    assert result["wal_preserve"] is True
+    assert "WAL" in result["message"]
+
+    _verify_and_restore_one_state_db(live.parent, label="test home")
+    assert "corrupt" not in capsys.readouterr().out.lower()
+    assert live.read_bytes() == main_before
+    assert _sidecar(live, "-wal").read_bytes() == wal_before
+    assert _row_count(live) == OLD_ROWS
+    assert _row_count(live) != SNAPSHOT_ROWS
+
+
+def test_short_main_with_readable_wal_is_not_auto_restored(
+    live_db_with_hot_wal, snapshot_db, capsys
+):
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.update_cmd import _verify_and_restore_one_state_db
+
+    live = live_db_with_hot_wal
+    live.write_bytes(live.read_bytes()[:64])
+    with closing(sqlite3.connect(live.as_uri() + "?mode=ro", uri=True)) as probe:
+        assert probe.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert probe.execute("SELECT count(*) FROM sessions").fetchone()[0] == OLD_ROWS
+    main_before = live.read_bytes()
+    wal_before = _sidecar(live, "-wal").read_bytes()
+
+    assert verify_sqlite_integrity(live)["valid"] is None
+    _verify_and_restore_one_state_db(live.parent, label="test home")
+    assert "auto-restored" not in capsys.readouterr().out.lower()
+    assert live.read_bytes() == main_before
+    assert _sidecar(live, "-wal").read_bytes() == wal_before
+    assert _row_count(live) == OLD_ROWS
+
+
+def test_refused_main_header_read_defers_restore(
+    live_db_with_hot_wal, snapshot_db, monkeypatch, capsys
+):
+    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli import sqlite_safe_read
+    from hermes_cli.update_cmd import _verify_and_restore_one_state_db
+
+    live = live_db_with_hot_wal
+    before = live.read_bytes()
+    wal_before = _sidecar(live, "-wal").read_bytes()
+    original = sqlite_safe_read.read_header_bytes_preopen
+    monkeypatch.setattr(
+        sqlite_safe_read, "read_header_bytes_preopen",
+        lambda path, **kwargs: None if path == live else original(path, **kwargs),
+    )
+    result = verify_sqlite_integrity(live)
+    assert result["valid"] is None
+    assert "header" in result["message"]
+    _verify_and_restore_one_state_db(live.parent, label="test home")
+    assert "auto-restored" not in capsys.readouterr().out.lower()
+    assert live.read_bytes() == before
+    assert _sidecar(live, "-wal").read_bytes() == wal_before
+    assert _row_count(live) == OLD_ROWS
+
+
+def test_bad_main_header_with_wal_is_indeterminate_when_probe_is_bounded(
+    live_db_with_hot_wal
+):
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    bounded = verify_sqlite_integrity(live, max_bytes=1)
+    assert bounded["valid"] is None
+    assert bounded["wal_preserve"] is True
+    assert "full integrity check skipped" in bounded["message"]
+    skipped = verify_sqlite_integrity(live, run_pragma=False)
+    assert skipped["valid"] is None
+    assert skipped["wal_preserve"] is True
+
+
+def test_bad_main_header_with_wal_defers_when_sqlite_probe_cannot_open(
+    live_db_with_hot_wal, monkeypatch
+):
+    from hermes_cli import backup
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    monkeypatch.setattr(
+        backup, "_query_ro_sqlite", lambda path, fn: (None, sqlite3.OperationalError("database is locked"))
+    )
+    result = backup.verify_sqlite_integrity(live)
+    assert result["valid"] is None and result["wal_preserve"] is True
+    assert "locked" in result["message"]
+
+
+def test_restore_refuses_wal_dependent_source_with_damaged_main_header(
+    live_db_with_hot_wal, snapshot_db
+):
+    from hermes_cli.backup_restore import _safe_restore_db
+
+    source = live_db_with_hot_wal
+    with source.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    dst_before = snapshot_db.read_bytes()
+    wal_before = _sidecar(source, "-wal").read_bytes()
+    assert _safe_restore_db(source, snapshot_db) is False
+    assert snapshot_db.read_bytes() == dst_before
+    assert _sidecar(source, "-wal").read_bytes() == wal_before
+    assert _row_count(snapshot_db) == SNAPSHOT_ROWS
+
+
+def test_post_update_warns_to_preserve_recoverable_wal(live_db_with_hot_wal, capsys):
+    from hermes_cli.update_cmd import _verify_and_restore_one_state_db
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    _verify_and_restore_one_state_db(live.parent, label="test home")
+    out = capsys.readouterr().out.lower()
+    assert "wal" in out and "preserve" in out
+    assert "auto-restored" not in out
+
+
+def test_boot_guard_warns_for_readable_wal_with_damaged_main_header(
+    live_db_with_hot_wal, monkeypatch, caplog
+):
+    from hermes_cli.post_update import step_state_db_guard
+    import hermes_constants
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: live.parent)
+    with caplog.at_level(logging.WARNING):
+        result = step_state_db_guard()
+    assert result["ok"] is False and result["unverified"] is True
+    assert "WAL" in caplog.text and "preserve" in caplog.text.lower()
+    assert "verification deferred" in caplog.text
+    assert "failed integrity check" not in caplog.text
+
+
+def test_pre_update_snapshot_check_defers_recoverable_wal(
+    live_db_with_hot_wal, snapshot_db, monkeypatch, capsys
+):
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+    from hermes_cli import config
+
+    live = live_db_with_hot_wal
+    with live.open("r+b") as stream:
+        stream.write(b"\x00" * 16)
+    wal_before = _sidecar(live, "-wal").read_bytes()
+    monkeypatch.setattr(config, "get_hermes_home", lambda: live.parent)
+    _verify_state_db_after_snapshot(snapshot_db.parent.name)
+    out = capsys.readouterr().out.lower()
+    assert "verification deferred" in out
+    assert "integrity check failed" not in out
+    assert "will be auto-restored" not in out
+    assert _sidecar(live, "-wal").read_bytes() == wal_before
 
 
 def test_restore_helper_serves_snapshot_rows_over_a_hot_wal(

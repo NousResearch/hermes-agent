@@ -87,10 +87,10 @@ _OTP_ALGOS = {"SHA1": "sha1", "SHA256": "sha256", "SHA512": "sha512"}
 
 
 def normalize_otp_secret(value: str) -> str:
-    """Accept a raw base32 seed or an ``otpauth://totp/...`` URI. Returns the canonical stored form:
+    """Accept a raw base32 seed or a TOTP/HOTP ``otpauth://`` URI. Returns the canonical stored form:
     the bare uppercase base32 seed, followed by ``|digits|period|algo`` ONLY when the URI departs from
     the RFC 6238 defaults (6 / 30 / SHA1), so a plain seed stays a plain seed. Non-default parameters
-    are honoured, not dropped: an 8-digit or 60-second authenticator would otherwise get wrong codes."""
+    are honoured, not dropped. HOTP stores ``hotp|seed|digits|algo|counter`` in the encrypted payload."""
     value = (value or "").strip()
     if not value:
         return ""
@@ -98,8 +98,10 @@ def normalize_otp_secret(value: str) -> str:
     if value.lower().startswith("otpauth://"):
         from urllib.parse import parse_qs, urlparse
         parsed = urlparse(value)
+        if parsed.netloc.lower() == "hotp":
+            return _normalize_hotp_uri(parsed)
         if parsed.netloc.lower() != "totp":
-            raise VaultError("only otpauth://totp links are supported (counter-based HOTP is not)")
+            raise VaultError("only otpauth://totp and otpauth://hotp links are supported")
         qs = {k.lower(): v[0] for k, v in parse_qs(parsed.query).items()}
         value = qs.get("secret", "")
         try:
@@ -116,6 +118,67 @@ def normalize_otp_secret(value: str) -> str:
     if (digits, period, algo) == (6, 30, "SHA1"):
         return seed
     return f"{seed}|{digits}|{period}|{algo}"
+
+
+def _hotp_parameters(seed: str, digits: str, algo: str, counter: str) -> tuple[bytes, int, int]:
+    """Validate both enrollment and stored HOTP state without echoing secret input."""
+    import base64
+    import binascii
+
+    if (digits not in ("6", "7", "8") or algo not in _OTP_ALGOS
+            or not re.fullmatch(r"[0-9]{1,20}", counter) or int(counter) >= 1 << 64):
+        raise VaultError("invalid HOTP parameters (digits 6-8, SHA1/SHA256/SHA512, uint64 counter)")
+    try:
+        key = base64.b32decode(seed + "=" * (-len(seed) % 8))
+        if not key or base64.b32encode(key).decode().rstrip("=") != seed:
+            raise ValueError
+    except (ValueError, binascii.Error):
+        raise VaultError("invalid HOTP authenticator secret") from None
+    return key, int(digits), int(counter)
+
+
+def _normalize_hotp_uri(parsed) -> str:
+    from urllib.parse import parse_qsl
+
+    if parsed.fragment or parsed.params:
+        raise VaultError("invalid HOTP authenticator URI")
+    params = {}
+    try:
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, errors="strict")
+    except (ValueError, UnicodeError):
+        raise VaultError("invalid HOTP authenticator URI") from None
+    for name, value in pairs:
+        name = name.lower()
+        if name in params:
+            raise VaultError("duplicate HOTP authenticator parameter")
+        params[name] = value
+    if "period" in params:
+        raise VaultError("HOTP uses a counter, not a period")
+    seed = re.sub(r"[\s-]", "", params.get("secret", "")).upper().rstrip("=")
+    digits = params.get("digits", "6")
+    algo = params.get("algorithm", "SHA1").upper().replace("-", "")
+    counter = params.get("counter", "")
+    _, _, value = _hotp_parameters(seed, digits, algo, counter)
+    return f"hotp|{seed}|{digits}|{algo}|{value}"
+
+
+def _consume_hotp(stored: str) -> tuple[str, str]:
+    """Return the code and its next encrypted state; the caller must commit before return."""
+    import hmac
+    import struct
+
+    parts = stored.split("|")
+    if len(parts) != 5:
+        raise VaultError("invalid stored HOTP authenticator")
+    _, seed, digits, algo, counter = parts
+    if counter == "exhausted":
+        raise VaultError("HOTP counter is exhausted; re-enrollment required")
+    key, width, value = _hotp_parameters(seed, digits, algo, counter)
+    digest = hmac.new(key, struct.pack(">Q", value), _OTP_ALGOS[algo]).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** width)
+    next_counter = "exhausted" if value == (1 << 64) - 1 else str(value + 1)
+    return str(code).zfill(width), f"hotp|{seed}|{digits}|{algo}|{next_counter}"
 
 
 def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float] = None) -> str:
@@ -181,7 +244,7 @@ class VaultItemMeta:
     created_at: str
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
-    has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    has_otp: bool = False  # an authenticator seed is stored: 2FA codes can be minted without asking the user
     # Every origin the password manager bound to this item (manager backends only;
     # ``origin`` is the first/primary one). Fill matching stays exact-origin against
     # this list — no wildcard or subdomain inference is ever derived from it.
@@ -582,7 +645,7 @@ class VaultStore:
             if not identifier or not secret.get("password"):
                 raise VaultError("login items require identifier and password")
             identifier_type = str(id_type)
-            # Login secret payload is password (+ optional TOTP seed); identifier lives in
+            # Login secret payload is password (+ optional authenticator seed); identifier lives in
             # metadata and any stray origin echo is dropped.
             otp_secret = normalize_otp_secret(str(secret.get("otp_secret") or ""))
             secret = {"password": secret["password"], **({"otp_secret": otp_secret} if otp_secret else {})}
@@ -611,6 +674,31 @@ class VaultStore:
             items.append(record)
             self._write_all(items)
         return self._meta(record)
+
+    def consume_otp(self, item_id: str) -> Optional[str]:
+        """Resolve a code server-side. Commit HOTP advancement before releasing the lock.
+
+        A failed browser fill still consumes the counter; callers must not roll it back.
+        Never put the returned code into tool results, logs or the session database.
+        """
+        with self._locked():
+            items = self._read_all()
+            for rec in items:
+                if rec.get("id") != item_id:
+                    continue
+                stored = str((rec.get("secret") or {}).get("otp_secret") or "")
+                if not stored:
+                    return None
+                if not stored.startswith("hotp|"):
+                    return totp_now(stored)
+                code, next_state = _consume_hotp(stored)
+                rec["secret"]["otp_secret"] = next_state
+                try:
+                    self._write_all(items)
+                except (OSError, VaultError):
+                    raise VaultError("could not persist HOTP counter; no code returned") from None
+                return code
+        raise VaultError(f"no vault item with id {item_id!r}")
 
     def list_items(self) -> list[VaultItemMeta]:
         """Metadata-only listing. Secret payloads are never included."""

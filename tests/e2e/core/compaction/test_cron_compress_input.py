@@ -19,8 +19,8 @@ Invariants: every human prompt reaches the model exactly once and the cron promp
 (and never in the chat's own context as a prompt of its own); the follow-up turn is answered once;
 the request it makes carries the compaction summary in place of at least one whole earlier turn
 (every turn it drops reached the summarizer), keeps the remaining turns in order, and still carries
-the cron report (verbatim, or as summarizer input); state.db keeps the summary and the follow-up as
-live rows, no summarized turn stays live, the DB passes ``integrity_check``, and SIGTERM drains the
+the cron report verbatim; state.db keeps the summary, the follow-up prompt and its answer as live
+rows, no summarized turn stays live, the DB passes ``integrity_check``, and SIGTERM drains the
 gateway.
 """
 
@@ -75,6 +75,9 @@ COMPRESSION_CONFIG = (
     "auxiliary:\n"
     "  title_generation:\n"
     "    enabled: false\n"
+    # The gateway refreshes remote model catalogs 30 s after boot, and this run outlives that.
+    "model_catalog:\n"
+    "  enabled: false\n"
 )
 
 CREATE_JOB = """
@@ -116,9 +119,14 @@ class Script:
     def marker(self, n: int) -> str:
         return f"[[human:{self.nonce}:{n}]]"
 
+    def end(self, n: int) -> str:
+        return f"[[end:{self.nonce}:{n}]]"
+
     def human(self, n: int) -> str:
-        # Long enough that a short summary shrinks the conversation (a growing summary is refused).
-        return f"{self.marker(n)} please remember item {n}: " + " ".join(f"detail-{n}-{i}" for i in range(600))
+        # Long enough that a short summary shrinks the conversation (a growing summary is refused). The end
+        # marker sits past the summarizer's auto focus quote (the first 260 chars of the newest user turns).
+        return (f"{self.marker(n)} please remember item {n}: " + " ".join(f"detail-{n}-{i}" for i in range(600))
+                + f" {self.end(n)}")
 
     def answer(self, n: int) -> str:
         return f"noted item {n} for {self.nonce}"
@@ -233,15 +241,20 @@ def test_cron_delivery_then_compress_then_human_input(tmp_path: Path) -> None:
     kept = [n for n in turns if script.human(n) in whole]
     summarized = [n for n in turns if n not in kept]
     assert summarized, "the follow-up still carries every earlier turn verbatim"
-    assert all(script.marker(n) in summarizer_input for n in summarized), "a turn vanished without being summarized"
+    # The end marker, not the start one: the auto focus block quotes the start of the newest user turns.
+    assert all(script.end(n) in summarizer_input for n in summarized), "a turn vanished without being summarized"
     positions = [whole.index(script.human(n)) for n in kept]
     assert positions == sorted(positions) and kept[-1] == HUMAN_TURNS + 1, f"turn order broken: {kept}"
     later = [whole.index(script.human(n)) for n in kept if n > max(summarized)]
     assert whole.index(script.summary) < min(later), "the summary is not ahead of the turns it precedes"
-    assert script.report in whole or script.report in summarizer_input, "compression lost the cron report"
+    # The tail keeps at least the last 3 messages, so the mirror (the newest row before /compress) stays
+    # verbatim. The summarizer input can't vouch for it: its auto focus block quotes the mirror either way.
+    assert script.report in whole, "compression lost the cron report"
 
     live = _whole(final_rows)
     assert script.summary in live and script.answer(HUMAN_TURNS + 1) in live, "state.db lost the follow-up"
+    assert any(m.get("role") == "user" and script.human(HUMAN_TURNS + 1) in _text(m.get("content"))
+               for m in final_rows), "state.db lost the follow-up user message"
     live_rows = [_text(m.get("content")) for m in final_rows]
     assert not any(script.human(n) in live_rows for n in summarized), "a summarized turn is still a live row"
     assert integrity_ok(gw.state_db) == "ok"

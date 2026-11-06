@@ -86,8 +86,10 @@ def _watch() -> None:
             continue
         base, key = endpoint
         try:
+            from hermes_cli.local_runtime.endpoint import _managed_auth_headers
+
             req = urllib.request.Request(f"{base}/models/sse", headers={
-                "Authorization": f"Bearer {key}", "Accept": "text/event-stream"})
+                **_managed_auth_headers(key), "Accept": "text/event-stream"})
             with urllib.request.urlopen(req, timeout=60) as r:
                 buf = b""
                 while True:

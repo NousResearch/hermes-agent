@@ -60,7 +60,7 @@ async def _pick_model(authority, owner, live, payload, row):
     if is_model_reset(payload):  # the chat's own `/model reset`: its override goes, its reply is the note
         default_model, default_provider = await asyncio.to_thread(
             runner._channel_default_route, live.source, ctx.config_path)
-        note = await runner._handle_model_reset(None, ctx, picker=True)
+        note = await runner._handle_model_reset(None, ctx, picker=True, persist_db=False)
         return ({'model': (await asyncio.to_thread(messaging_route_info, runner, live))['model'], 'note': note},
                 {'model': default_model, 'provider': default_provider or None})
     # After a restart the chat's saved provider/base_url is only on disk: resolve against it, not

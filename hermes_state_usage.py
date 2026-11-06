@@ -94,7 +94,8 @@ class SessionUsageMixin:
         See #48173, #48248.
         """
         # Barrier against queued token deltas — see update_session_model.
-        self.flush_token_counts()
+        if not self.flush_token_counts():
+            raise TimeoutError("timed out flushing accounting before billing route update")
 
         def _do(conn):
             conn.execute("""UPDATE sessions SET

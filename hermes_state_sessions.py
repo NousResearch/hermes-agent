@@ -698,15 +698,11 @@ class SessionSessionsMixin:
             )
 
     def update_session_meta(
-        self, session_id: str, model_config_json: str, model: Optional[str] = None,
+        self, session_id: str, model_config_json: str, model: Optional[str] = None, *,
+        expected_fence: Optional[tuple[str, int, int, str, Optional[str], Optional[str]]] = None,
     ) -> None:
-        """Update model_config and (COALESCE) optionally model."""
-        self.flush_token_counts()  # barrier against queued token deltas — see update_session_model
-        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
-            self._write_sql(
-                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                (model_config_json, model, session_id),
-            )
+        from hermes_state_sessions_model_config import update_session_meta
+        update_session_meta(self, session_id, model_config_json, model, expected_fence=expected_fence)
 
     def update_system_prompt(self, session_id: str, system_prompt: Optional[str]) -> None:
         """Store the full assembled system prompt snapshot."""
@@ -734,33 +730,11 @@ class SessionSessionsMixin:
 
     def update_session_model(
         self, session_id: str, model: str, provider: Optional[str] = None, *,
-        base_url: Optional[str] = None, api_mode: Optional[str] = None,
+        base_url: Optional[str] = None, api_mode: Optional[str] = None, resolve_tip: bool = False,
     ) -> None:
-        """Set the model after a mid-session /model switch (unconditionally) and drop any Browser
-        runtime lock (lineage markers survive).
-
-        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness.
-
-        When *provider* is given the whole route is written, in both shapes resume reads (top-level
-        keys for the TUI/Desktop, ``gateway_runtime`` for the CLI), so a later resume recombines the
-        model with the provider that serves it (#79536). ``base_url``/``api_mode`` are always
-        replaced then (``None`` deletes): the previous provider's endpoint must not survive a switch,
-        or resume sends the new provider's model to the old host. Callers without provider knowledge
-        leave the stored route untouched.
-        """
-        # Flush first: a still-queued pre-switch delta applied after this UPDATE would trip the
-        # first_accounted_route overwrite and resurrect the old route.
-        self.flush_token_counts()
-        patch: dict[str, Any] = {"browser_model_lock": None}
-        if model:
-            patch["model"] = model
-        if provider:
-            route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
-            patch.update(route, gateway_runtime=route)
-        self._write_model_config_patch(
-            session_id, patch, "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
-            lambda merged: (model, merged, session_id),
-        )
+        from hermes_state_sessions_model_config import update_session_model
+        update_session_model(self, session_id, model, provider, base_url=base_url,
+                             api_mode=api_mode, resolve_tip=resolve_tip)
 
     def _write_model_config_patch(
         self, session_id: str, patch: dict[str, Any],

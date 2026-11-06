@@ -84,6 +84,52 @@ def import_session_id(raw: Any) -> str:
     return str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
 
 
+# Physical row/display indexes are rebuilt on import; every other stored field can carry
+# history or sidecars. Legacy rows without logical UIDs may acquire them on import.
+_ADOPTION_PHYSICAL_FIELDS = {"id", "session_id", "display_identity", "display_order"}
+_ADOPTION_OPTIONAL_UID_FIELDS = {"message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid"}
+_ADOPTION_JSON_FIELDS = {"tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+                         "display_metadata", "absorbed_message_uids", "tool_call_uids"}
+
+
+def _adoption_value(field, value):
+    json_text = value
+    structured_content = field == "content" and isinstance(value, str) and value.startswith("\x00json:")
+    if structured_content:
+        json_text = value[len("\x00json:"):]
+    if (field in _ADOPTION_JSON_FIELDS or structured_content) and isinstance(json_text, str):
+        try:
+            decoded = json.loads(json_text)
+        except (ValueError, TypeError):
+            return value  # Malformed stored bytes must still compare exactly.
+        if field == "tool_calls" and decoded == []:
+            return None
+        # Canonical JSON retains type distinctions such as true versus 1.
+        return ("json", json.dumps(decoded, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
+    return value
+
+
+def _adoption_history_covers(donor_conn, target_conn, session_id):
+    """Does the target retain every donor row in storage order, regardless of physical row ids?"""
+    if (donor_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None
+            or target_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None):
+        return False
+    donor = donor_conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+    target = target_conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+    if len(donor) > len(target):
+        return False
+    for source, destination in zip(donor, target):
+        src, dst = dict(source), dict(destination)
+        if src.keys() != dst.keys():
+            return False
+        for field, value in src.items():
+            if field in _ADOPTION_PHYSICAL_FIELDS or (field in _ADOPTION_OPTIONAL_UID_FIELDS and value is None):
+                continue
+            if _adoption_value(field, value) != _adoption_value(field, dst[field]):
+                return False
+    return True
+
+
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
     """``list_sessions_rich``-shaped SELECT: resolved prompt (``prompt_select`` fragment;
     None omits prompt columns AND the join), preview, last_active. Whitespace matches
@@ -509,8 +555,21 @@ class SessionPortabilityMixin:
                 raise AdoptionConflict("Adoption record appeared or disappeared; retry with its complete membership")
             if current is not None and current["manifest"] != record["manifest"]:
                 raise AdoptionConflict("Adoption membership changed; inspect the saved transfer")
+            # Refuse the whole transfer before imports or the adoption journal when an
+            # existing target does not preserve the donor transcript as a prefix.
+            for segment in segments:
+                sid = segment["id"]
+                if conn.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
+                    with donor_db._read_ctx() as donor_conn:
+                        if not _adoption_history_covers(donor_conn, conn, sid):
+                            raise AdoptionConflict("Target transcript differs from donor; recover the history before adoption")
             result = self._import_sessions_locked(conn, normalized)
             if result.get("ok"):
+                # A fresh import can normalize or omit legacy sidecars; do not commit
+                # a copy that cannot prove it preserves the donor's complete history.
+                with donor_db._read_ctx() as donor_conn:
+                    if any(not _adoption_history_covers(donor_conn, conn, segment["id"]) for segment in segments):
+                        raise AdoptionConflict("Imported transcript differs from donor; recover the history before adoption")
                 if current is None:
                     insert(conn, build_manifest(self, donor_db, segments, conn), retire_donor=retire_donor)
                 else:
@@ -524,17 +583,11 @@ class SessionPortabilityMixin:
                                        *, retire_donor: bool, record=None, pending_only: bool = False) -> dict[str, Any]:
         from hermes_state_adoption_records import mark_complete
         members = [segment["id"] for segment in segments]
-        donor_ahead = any(
-            self.get_session(segment["id"]) is not None
-            and len(segment.get("messages") or []) > len(self.get_messages(segment["id"], include_inactive=True))
-            for segment in segments)
-        if donor_ahead:
-            logger.warning("adoption divergence: donor %s has newer messages; leaving it unretired", session_id)
         result, saved = self._adoption_import_and_record(donor_db, segments, record, retire_donor=retire_donor, pending_only=pending_only)
         adopted = result.get("ok", False) and (result.get("imported", 0) + result.get("skipped", 0)) == len(members)
         donor_retired = False
         pending = list(members)
-        if adopted and retire_donor and not donor_ahead:
+        if adopted and retire_donor:
             pending = []
             for order, member in enumerate(members):
                 if not self._retire_donor_segment(donor_db, member):
@@ -551,21 +604,12 @@ class SessionPortabilityMixin:
                 "member_ids": members, "pending_ids": pending}
 
     def _retire_donor_segment(self, donor_db: Any, seg_id: str) -> bool:
-        """Archive one adopted donor segment; False when skipped or failed. TOCTOU close-out:
-        the divergence guard used EXPORT-TIME counts; re-read both stores right before
-        stamping so donor growth never lands behind a non-recoverable archive
-        (equal-count CONTENT divergence is accepted — bytes stay in the donor either way).
-        A retirement failure must not fail the adoption (a later resume retries
-        idempotently), but never claims success it didn't have."""
+        """Archive a copied member only while its complete donor history remains on target."""
         try:
-            donor_now = len(donor_db.get_messages(seg_id, include_inactive=True))
-            local_now = len(self.get_messages(seg_id, include_inactive=True))
-            if donor_now > local_now:
-                logger.warning(
-                    "adoption divergence at retire time: donor segment %s grew to %d messages (local %d) — "
-                    "leaving donor unretired", seg_id, donor_now, local_now,
-                )
-                return False
+            with donor_db._read_ctx() as donor_conn, self._read_ctx() as target_conn:
+                if not _adoption_history_covers(donor_conn, target_conn, seg_id):
+                    logger.warning("adoption divergence at retirement for segment %s; leaving donor unretired", seg_id)
+                    return False
             # Stamp the adoption boundary without reopening the donor: a concurrent target
             # owner must never see the donor become live again between import and retirement.
             if not donor_db.end_session_as_adopted(seg_id):

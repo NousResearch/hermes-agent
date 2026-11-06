@@ -116,8 +116,8 @@ def _branch_ids(db, conn, session_id, target, payload, prepared, reserved):
     ids = {child}
     parent = conn.execute('SELECT title FROM sessions WHERE id=?', (target,)).fetchone()
     if parent is not None:
-        from hermes_state_titles import lineage_title_on_conn
-        title = payload.get('title') or lineage_title_on_conn(conn, parent['title'] or 'branch')
+        from hermes_state_mutation_branch import resolved_branch_title
+        title = resolved_branch_title(conn, parent['title'], payload)
         ids.update(_title_conflict(db, conn, title, child))
     return ids
 

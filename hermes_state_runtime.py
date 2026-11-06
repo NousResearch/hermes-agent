@@ -476,15 +476,32 @@ def mutation_receipt_key(principal_id, session_id, request_id, *, operation, pay
     return key, admission_fingerprint(canonical_target=session_id, payload=fingerprint)
 
 
+def _mutation_receipt_result(raw, digest):
+    receipt = json.loads(raw)
+    if receipt['digest'] != digest:
+        raise RuntimeStoreError('admission_conflict')
+    result = receipt['result']
+    if not isinstance(result, dict):
+        raise ValueError('Invalid mutation receipt result')
+    return result
+
+
 def replay_mutation_receipt(conn, key, digest):
     """The stored result of an exact retry, ``None`` when unseen; a different request refuses."""
     old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-    if old is None:
-        return None
-    receipt = json.loads(old[0])
-    if receipt['digest'] != digest:
-        raise RuntimeStoreError('admission_conflict')
-    return receipt['result']
+    return _mutation_receipt_result(old[0], digest) if old is not None else None
+
+
+def _read_mutation_receipt(db, epoch, key, digest):
+    # One statement gives the epoch and receipt the same SQLite read snapshot.
+    with db._read_ctx() as conn:
+        row = conn.execute(
+            'SELECT runtime_epoch.epoch, receipt.key, receipt.value FROM runtime_epoch '
+            'LEFT JOIN state_meta AS receipt ON receipt.key=? WHERE runtime_epoch.singleton=1',
+            (key,)).fetchone()
+        if type(epoch) is not int or row is None or row[0] != epoch:
+            raise RuntimeStoreError('stale_epoch')
+        return _mutation_receipt_result(row[2], digest) if row[1] is not None else None
 
 
 def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str,
@@ -564,11 +581,22 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
     if _prepare_only:
         result, event = db._execute_write(write)
     else:
-        from hermes_state_lineage import guarded_discovered_session_write
+        # A completed retry changes no rows; current write targets cannot invalidate its receipt.
+        replay = _read_mutation_receipt(db, epoch, key, digest)
+        if replay is not None:
+            return replay
+        from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
         from hermes_state_mutation_ownership import mutation_write_ids
-        result, event = guarded_discovered_session_write(
-            db, (session_id,), lambda conn: mutation_write_ids(
-                db, conn, session_id, operation, payload, prepared=_prepared, reserved=reserved), write)
+        try:
+            result, event = guarded_discovered_session_write(
+                db, (session_id,), lambda conn: mutation_write_ids(
+                    db, conn, session_id, operation, payload, prepared=_prepared, reserved=reserved), write)
+        except SessionLineageError:
+            # Another writer may have completed this exact request after the first read.
+            replay = _read_mutation_receipt(db, epoch, key, digest)
+            if replay is None:
+                raise
+            return replay
     if event is not None:
         from hermes_state_common import emit_session_deleted
         emit_session_deleted(db, event.session_ids, reason=event.reason, primary=session_id)
@@ -972,6 +1000,30 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                                 lineage_ids=_worker_receipt_lineage_ids(operation, payload))
 
 
+def _read_worker_receipt(db, epoch, execution_id, session_id, generation, sequence, digest):
+    """Return (found, result), validating a worker receipt on one read snapshot."""
+    from hermes_state_worker_compression import worker_receipt_assignment
+    from hermes_state_runtime_workers import retired_receipt
+    with db._read_ctx() as conn:
+        conn.execute('SAVEPOINT worker_receipt_replay')
+        try:
+            _epoch(conn, epoch)
+            old = conn.execute('SELECT * FROM worker_receipts WHERE execution_id=? AND sequence=?',
+                               (execution_id, sequence)).fetchone()
+            if old is None:
+                return False, None
+            row = worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest)
+            if row['owner_epoch'] != epoch:
+                raise RuntimeStoreError('stale_epoch')
+            if old['payload_digest'] != digest:
+                raise RuntimeStoreError('admission_conflict')
+            if retired_receipt(old['result_json']):
+                raise RuntimeStoreError('stale_generation')
+            return True, json.loads(old['result_json'])
+        finally:
+            conn.execute('RELEASE SAVEPOINT worker_receipt_replay')
+
+
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
                          operation, payload, handlers, lineage_ids=()):
     """The one worker receipt transaction every ``worker.persist`` family shares.
@@ -1024,9 +1076,21 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             from hermes_state_runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    from hermes_state_lineage import guarded_discovered_session_write
+    def cached_receipt():
+        return _read_worker_receipt(db, epoch, execution_id, session_id, generation, sequence, digest)
+
+    found, result = cached_receipt()
+    if found:
+        return result
+    from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
     from hermes_state_mutation_ownership import worker_receipt_write_ids
-    return guarded_discovered_session_write(
-        db, (session_id, *lineage_ids),
-        lambda conn: worker_receipt_write_ids(conn, session_id, operation, json.loads(encoded)),
-        write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    try:
+        return guarded_discovered_session_write(
+            db, (session_id, *lineage_ids),
+            lambda conn: worker_receipt_write_ids(conn, session_id, operation, json.loads(encoded)),
+            write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    except SessionLineageError:
+        found, result = cached_receipt()
+        if found:
+            return result
+        raise

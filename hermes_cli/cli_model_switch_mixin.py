@@ -55,11 +55,13 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
-    stored_model = str((session_meta or {}).get("model") or "").strip()
+    from hermes_state import SessionDB as _SessionDB
+    from hermes_state_sessions_model_config import complete_runtime_route
+    snapshot = complete_runtime_route(session_meta)
+    stored_model = str((snapshot or session_meta or {}).get("model") or "").strip()
     if not stored_model:
         return None
-    from hermes_state import SessionDB as _SessionDB
-    runtime = _SessionDB.session_gateway_runtime(session_meta)
+    runtime = snapshot or _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
     api_mode = runtime.get("api_mode") or None
     stored_provider = runtime.get("provider") or None
@@ -534,21 +536,12 @@ class CLIModelSwitchMixin:
         sid = getattr(self, "session_id", None)
         if not db or not sid:
             return
-        route = {
-            "provider": _heal_bare_custom_provider(
-                result.target_provider, base_url=result.base_url, model=result.new_model,
-            ) or None,
-            # Both shapes use the same or-None discipline so stale keys from a previous switch are deleted
-            # (not merely omitted) in BOTH the nested gateway_runtime dict (CLI reader) and the top-level
-            # keys (TUI gateway reader). _merge_model_config_json only deletes on explicit None, so falsy
-            # values must be converted, not filtered. Deriving the top-level from **route guarantees the two
-            # shapes can never diverge — the asymmetry that caused the original stale-key bug (#85261
-            # simplify-code review).
-            "base_url": result.base_url or None,
-            "api_mode": result.api_mode or None}
+        provider = _heal_bare_custom_provider(
+            result.target_provider, base_url=result.base_url, model=result.new_model,
+        ) or ""
         try:
-            db.update_session_model(sid, result.new_model)
-            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+            db.update_session_model(sid, result.new_model, provider=provider,
+                                    base_url=result.base_url or None, api_mode=result.api_mode or None)
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 
@@ -561,7 +554,7 @@ class CLIModelSwitchMixin:
         so the session still opens (the first turn surfaces the auth error).
         """
         from cli import logger
-        if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
+        if getattr(self, "_explicit_model_override", False):
             return
         route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
         if route is None:

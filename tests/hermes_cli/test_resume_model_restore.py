@@ -174,29 +174,16 @@ class _Result:
 
 
 def test_persist_model_switch_writes_model_and_both_route_shapes():
-    written = {}
+    written = []
 
     class _DB:
-        def update_session_model(self, sid, model):
-            written["model"] = (sid, model)
-
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = (sid, patch)
+        def update_session_model(self, sid, model, **route):
+            written.append((sid, model, route))
 
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
-    assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    _sid, patch = written["patch"]
-    # Nested shape for the CLI reader...
-    assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
-    # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
-    assert patch["provider"] == "custom:opencode-zen"
-    assert patch["base_url"] == "https://oz/v1"
-    # Both shapes use or-None so stale keys are deleted (not merely omitted)
-    # in BOTH gateway_runtime and top-level — the asymmetry that caused the
-    # original stale-key bug.
-    assert patch["gateway_runtime"]["api_mode"] is None
-    assert patch["api_mode"] is None
+    assert written == [("s1", "deepseek-v4-flash-free", {
+        "provider": "custom:opencode-zen", "base_url": "https://oz/v1", "api_mode": None})]
 
 
 def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
@@ -260,11 +247,9 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     written = {}
 
     class _DB:
-        def update_session_model(self, sid, model):
+        def update_session_model(self, sid, model, **route):
             written["model"] = model
-
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = patch
+            written["route"] = route
 
     class _BareResult:
         new_model = "qwen3.6-plus"
@@ -277,7 +262,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
                         lambda base_url=None, model=None: "custom:myendpoint")
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] == "custom:myendpoint"
+    assert written["route"]["provider"] == "custom:myendpoint"
 
     # Healing fails -> provider dropped (explicit None deletes any stale
     # persisted provider), never persisted bare.
@@ -285,8 +270,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
                         lambda base_url=None, model=None: None)
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] is None
-    assert written["patch"]["gateway_runtime"]["provider"] is None
+    assert written["route"]["provider"] == ""  # explicit route clearing in the atomic call
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):

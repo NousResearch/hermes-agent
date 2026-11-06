@@ -138,11 +138,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
+    from hermes_state_sessions_model_config import complete_runtime_route
+    snapshot = complete_runtime_route(row)
+    model = str((snapshot or row).get("model") or model_config.get("model") or "").strip()
     # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
     # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
     from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
+    route = snapshot or SessionDB.session_gateway_runtime(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
@@ -211,6 +213,18 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    # A prior gateway snapshot has read precedence over these top-level fields.
+    # Replace it alongside the new live route instead of retaining stale values.
+    if "gateway_runtime" in config:
+        if model and provider:
+            config["gateway_runtime"] = {
+                key: value for key, value in {
+                    "model": model, "provider": provider, "base_url": base_url,
+                    "api_mode": attr("api_mode"),
+                }.items() if value
+            }
+        else:
+            config.pop("gateway_runtime", None)
     return config
 
 

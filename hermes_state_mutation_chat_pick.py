@@ -67,7 +67,10 @@ def commit_chat_pick(db, *, epoch, key, digest, session_id, params, result, mode
             if provider:
                 route = {'provider': provider, 'base_url': model_update.get('base_url'),
                          'api_mode': model_update.get('api_mode')}
-                patch.update(route, gateway_runtime=route)
+                patch.update(route, gateway_runtime={'model': model_update['model'], **route})
+            else:
+                # A reset to an unconfigured default must not retain the previous route.
+                patch.update(provider=None, base_url=None, api_mode=None, gateway_runtime=None)
             from hermes_state_sessions import _MODEL_CONFIG_ROW_MISSING
             merged = db._merge_model_config_json(conn, target, patch)
             if merged is _MODEL_CONFIG_ROW_MISSING:

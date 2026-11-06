@@ -128,6 +128,26 @@ def _on_transform_tool_result(tool_name: str = "", args: Any = None, result: Any
     return result + "\n\n" + _format_warning_block(findings)
 
 
+def _on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = None, **_: Any) -> None:
+    """RPC-only typed warnings; ordinary model calls still use the presentation hook."""
+    from tools.tool_advisories import ToolAdvisory, current_advisory_sink, emit_tool_advisory
+
+    if current_advisory_sink() is None:
+        return
+    # Reuse warn-mode/error filtering, but never classify arbitrary transform text.
+    if _env_flag("SECURITY_GUIDANCE_BLOCK") or not isinstance(result, str):
+        return
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and "error" in parsed and len(parsed) <= 2:
+            return
+    except (ValueError, TypeError):
+        pass
+    for code, reminder in dict.fromkeys(_scan_args(tool_name, args)):
+        emit_tool_advisory(ToolAdvisory("security-guidance", code, _format_warning_block([(code, reminder)])))
+
+
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("transform_tool_result", _on_transform_tool_result)

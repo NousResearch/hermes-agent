@@ -5,3 +5,4 @@ author: "Anthropic (patterns, Apache-2.0) / NousResearch (Hermes plugin port)"
 provides_hooks:
   - transform_tool_result
   - pre_tool_call
+  - post_tool_call

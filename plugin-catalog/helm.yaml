@@ -1,6 +1,6 @@
 name: helm
 repo: https://github.com/ASV-Labs/hermes-helm
-sha: 01d3301b032d38ab779afb2ab8227d36374eeb14
+sha: 7955fd3a84587c3b68791f7dfcec71f331cdcba7
 title: helm
 description: >-
   A redesigned Hermes Desktop. A Desk home page (greeting and crew status, a prompt that hands work to any
@@ -28,11 +28,11 @@ category: desktop
 requires_hermes: ">=0.22.0"
 version: "1.0.0"
 docs_url: https://github.com/ASV-Labs/hermes-helm#readme
-image: https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/banner.png
+image: https://raw.githubusercontent.com/ASV-Labs/hermes-helm/7955fd3a84587c3b68791f7dfcec71f331cdcba7/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/desk.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/robots-dark.png
-  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/01d3301b032d38ab779afb2ab8227d36374eeb14/docs/robots.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/7955fd3a84587c3b68791f7dfcec71f331cdcba7/docs/desk.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/7955fd3a84587c3b68791f7dfcec71f331cdcba7/docs/robots-dark.png
+  - https://raw.githubusercontent.com/ASV-Labs/hermes-helm/7955fd3a84587c3b68791f7dfcec71f331cdcba7/docs/robots.png
 platforms: []
 known_issues:
   - "The robot renders come from the plugin's dashboard half, which mounts when the gateway starts; until one Hermes restart after install the Bots board shows flat SVG robots."

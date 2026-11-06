@@ -1,0 +1,6 @@
+name: das-gate
+version: "0.1.0"
+description: "Decoupled Authorization for State-changing Actions (DAS). Gates memory writes, MCP tool calls, and dangerous git/docker commands that the existing DANGEROUS_PATTERNS regex misses. Reuses tools.approval.request_tool_approval — same [o]nce/[s]ession/[a]lways/[d]eny flow, same allowlist, same fail-closed timeout."
+author: "Fede / Claudito (Hermes plugin)"
+hooks:
+  - pre_tool_call

@@ -85,8 +85,13 @@ export function markPreviewDocumentReady(tabId: string): void {
   }
 }
 
-/** Follow the Electron guest's main-frame replacement and ready boundaries. */
-export function watchPreviewDocumentLifecycle(target: EventTarget, tabId: string): () => void {
+/** Follow the Electron guest's main-frame replacement and ready boundaries, so
+ *  a vault fill pinned to one document refuses once it is replaced. */
+export function watchPreviewDocumentLifecycle(target: EventTarget, tabId: string | undefined): () => void {
+  if (!tabId) {
+    return () => {}
+  }
+
   const onStartNavigation = (event: Event) => {
     const detail = event as Event & { isInPlace?: boolean; isMainFrame?: boolean }
 

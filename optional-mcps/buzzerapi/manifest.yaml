@@ -1,0 +1,58 @@
+manifest_version: 1
+name: buzzerapi
+connector_slug: buzzerapi
+description: Buzz in deliveries, visitors, guests, cleaners, and dog walkers through apartment or condo call boxes. Create access codes, timed or recurring entry, and view access history.
+source: https://www.buzzerapi.com/mcp.html
+transport:
+  type: http
+  url: https://api.buzzerapi.com/mcp
+auth:
+  type: oauth
+  oauth:
+    scope: "account:read access:read access:write logs:read"
+tools:
+  default_enabled:
+    - get_account
+    - list_buildings
+    - get_building_setup
+    - list_access
+    - get_access
+    - create_guest_code
+    - create_timer
+    - create_routine
+    - update_access
+    - revoke_access
+    - list_events
+suggest:
+  keywords:
+    - buzzerapi
+    - apartment buzzer
+    - condo intercom
+    - callbox
+    - entrykey
+    - buzz in
+    - buzzer access
+    - visitor passcode
+    - guest access code
+    - delivery access
+    - dog walker access
+    - cleaner access
+    - recurring building access
+    - building access history
+  hosts:
+    - buzzerapi.com
+  examples:
+    - "Buzz in my delivery when they arrive in the next 30 mins."
+    - "Create a single-use access code for my guest that expires tonight."
+    - "Let my dog walker in every weekday from noon to 1 pm."
+    - "Give my house cleaner an access code for their weekly visit."
+    - "Show my building's access history for today."
+    - "Revoke my guest's access code."
+post_install: |
+  Connect your BuzzerAPI account through browser OAuth and select only the buildings you manage.
+  Grant account:read, access:read, access:write, and logs:read as needed.
+  For read-only use, leave access:write unchecked. The OAuth screen may offer all supported scopes;
+  uncheck billing, building-management, and tone/greeting settings permissions for this default setup.
+  Requires an existing account with appropriate entitlements and a configured phone-based call box.
+  Review enabled tools with: hermes mcp configure buzzerapi
+  Restart the session or use /reload-mcp after connection.

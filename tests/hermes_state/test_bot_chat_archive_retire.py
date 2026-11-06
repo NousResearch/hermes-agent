@@ -93,3 +93,20 @@ def test_archive_of_visible_reaped_bot_chat_retires_the_name(tmp_path, writer):
     finally:
         db.close()
 
+
+def test_bulk_archive_spares_compressed_bot_chat_with_visible_tip(tmp_path):
+    """Compression carries the title onto a continuation that is not hidden; bulk archive is
+    housekeeping and must still spare the canonical chat by its title."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        db.create_session('root', source='desktop')
+        assert db.set_session_title('root', SessionDB.CANONICAL_BOT_CHAT_TITLE)
+        assert db.set_session_hidden('root', True)
+        db.end_session('root', 'compression')
+        db.create_session('tip', source='desktop', parent_session_id='root')
+        assert db.set_session_title('tip', SessionDB.CANONICAL_BOT_CHAT_TITLE)
+        assert not db.get_session('tip')['hidden']
+        assert db.archive_sessions(include_open=True) == 0
+        assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)['id'] == 'tip'
+    finally:
+        db.close()

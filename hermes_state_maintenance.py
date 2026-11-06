@@ -225,7 +225,7 @@ class SessionMaintenanceMixin:
         (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
-        and hide its OPEN, recently active tip (#115489) — and the hidden canonical Bot Chat (the idle
+        and hide its OPEN, recently active tip (#115489) — and the canonical Bot Chat (the idle
         sweep's exemption). ``include_open`` lifts the ended guard
         for reversible archive only — never for prune/delete (#139597: desktop sessions never set
         ``ended_at``)."""
@@ -237,8 +237,9 @@ class SessionMaintenanceMixin:
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
             # Bulk archive is housekeeping, like the idle sweep: it never retires the canonical
-            # Bot Chat (archiving releases its name, #139779). Only a per-chat Archive may.
-            clauses.append("NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = 'Bot Chat')")
+            # Bot Chat (archiving releases its name, #139779). Only a per-chat Archive may. Matched by
+            # title alone: compression moves the title onto a VISIBLE continuation tip.
+            clauses.append("COALESCE(s.title, '') <> 'Bot Chat'")
         params: list = []
         for name, applies, build in _PRUNE_FILTERS:
             value = filters.get(name)

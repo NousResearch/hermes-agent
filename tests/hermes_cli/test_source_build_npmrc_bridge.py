@@ -3,12 +3,14 @@
 pnpm reads an npmrc only for its registry and auth; npm also exported every other key to
 install scripts as ``npm_config_<key>``, which is how node-pre-gyp finds a binary mirror.
 ``source_build_env`` keeps that bridge. It must read the npmrc npm would read (an explicit
-``NPM_CONFIG_USERCONFIG`` wins over Hermes's own), and decode quoted values as npm does: a
-quoted ``registry=`` exported with its quotes is a malformed URL that breaks every install.
+``NPM_CONFIG_USERCONFIG``, else Hermes's own, else ``~/.npmrc``), and decode quoted values as
+npm does: a quoted ``registry=`` exported with its quotes is a malformed URL that breaks every
+install.
 """
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,9 @@ def bridge(tmp_path, monkeypatch):
     for name in list(os.environ):
         if name.upper().startswith("NPM_CONFIG_"):
             monkeypatch.delenv(name)
+    user = tmp_path / "user"
+    user.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: user)
     monkeypatch.setattr(pm, "ensure", lambda name, *, base_env, **_: Runner(name, dict(base_env)))
     return home
 
@@ -54,3 +59,14 @@ def test_quoted_values_are_exported_without_their_quotes(bridge):
     assert env["NPM_CONFIG_USERCONFIG"] == str(bridge / "npmrc")
     assert env["npm_config_registry"] == "https://mirror.invalid/"
     assert env["npm_config_electron_mirror"] == "https://mirror.invalid/electron/"
+
+
+def test_without_a_userconfig_the_home_npmrc_is_bridged(bridge, tmp_path):
+    from hermes_cli.source_build import source_build_env
+
+    (tmp_path / "user" / ".npmrc").write_text("disturl=https://mirror.invalid/node\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert "NPM_CONFIG_USERCONFIG" not in env
+    assert env["npm_config_disturl"] == "https://mirror.invalid/node"

@@ -96,8 +96,12 @@ def _special(mgr, kind, target, call, args, kwargs):
             delegations = count_active_delegations(target)
         except Exception:  # health: allow BLE001 -- the judge degrades to no background block, as main's hook did
             processes, delegations = None, 0
+        _gen = kwargs.get("expected_generation")
+        if _gen is None:
+            _gen = int(getattr(getattr(mgr, "state", None), "goal_generation", 0) or 0)
         return mgr.evaluate_after_turn(str((args or [""])[0] or ""), user_initiated=True,
-                                       background_processes=processes, active_delegations=delegations)
+                                       background_processes=processes, active_delegations=delegations,
+                                       expected_generation=_gen)
     if kind == "goal" and call == "set" and isinstance(kwargs.get("contract"), dict):
         from hermes_cli.goals import GoalContract
         kwargs = {**kwargs, "contract": GoalContract.from_dict(kwargs["contract"])}

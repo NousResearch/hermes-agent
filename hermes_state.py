@@ -1662,6 +1662,27 @@ class SessionDB(
         else:
             self._write_sql(sql, (key, value))
 
+    def mutate_meta(self, key: str, fn: Callable[[Optional[str]], tuple[Optional[str], T]]) -> T:
+        """Atomically read-modify-write one state_meta row in a single write
+        transaction.  ``fn(old_value)`` returns ``(new_value, result)``; a
+        ``new_value`` of None leaves the row untouched.  The read, the caller's
+        conditional decision, and the write all happen inside one
+        ``BEGIN IMMEDIATE`` via :meth:`_execute_write`, so concurrent writers
+        serialize and an interleaved replacement cannot slip between the check
+        and the write.  ``fn`` must be pure/idempotent (it may be retried).
+        """
+        def _do(conn: sqlite3.Connection) -> T:
+            row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
+            new_value, result = fn(None if row is None else row[0])
+            if new_value is not None:
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, new_value),
+                )
+            return result
+        return self._execute_write(_do)
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
         root; gated once per root via state_meta. Returns rows retagged."""

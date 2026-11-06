@@ -1713,6 +1713,32 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         )
         for line in result.output.splitlines():
             _cp(f"  {line}")
+        if result.clear_pending:
+            # Replacement / pause / clear: purge queued prompts for the
+            # superseded goal so they are never dispatched again.
+            try:
+                from hermes_cli.goals import is_goal_prompt_for
+                previous = result.previous_goal
+                if previous is None:
+                    previous = mgr.state.goal if getattr(mgr, "state", None) else None
+                if previous:
+                    def _purge(items):
+                        return [i for i in items if not is_goal_prompt_for(i, previous)]
+                    mutate = getattr(self, "_mutate_pending_input", None)
+                    if mutate is not None:
+                        mutate(_purge)
+                    else:
+                        q = self._pending_input
+                        with q.mutex:
+                            kept = _purge(list(q.queue))
+                            q.queue.clear()
+                            q.queue.extend(kept)
+                            q.unfinished_tasks = len(kept)
+                            if kept:
+                                q.not_empty.notify_all()
+            except Exception as exc:
+                import logging
+                logging.debug("goal pending purge failed: %s", exc)
         if result.prompt:
             queued = self._kick_goal(result.prompt)
             if not result.kickoff:
@@ -1721,7 +1747,21 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _kick_goal(self, prompt: str) -> bool:
         """Queue the next turn without mutating cached conversation history."""
         try:
-            self._pending_input.put(prompt)
+            # Tag synthetic kickoffs so replacement can purge them by
+            # ownership, never by text (a user message with identical text
+            # is plain str and survives).
+            from hermes_cli.goals import GoalKickoff
+            gen = 0
+            goal_text = ""
+            try:
+                mgr = self._get_goal_manager()
+                state = getattr(mgr, "state", None) if mgr is not None else None
+                if state is not None:
+                    gen = int(getattr(state, "goal_generation", 0) or 0)
+                    goal_text = state.goal or ""
+            except Exception:
+                pass
+            self._pending_input.put(GoalKickoff(prompt, goal_generation=gen, goal_text=goal_text))
             return True
         except Exception:
             return False

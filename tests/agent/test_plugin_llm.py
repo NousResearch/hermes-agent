@@ -234,6 +234,15 @@ class TestJsonParsing:
         assert parsed == {"language": "French"}
         assert ct == "json"
 
+    def test_a_reply_whose_strings_hold_code_fences_parses_as_a_whole(self):
+        """A valid JSON reply is parsed as it is, not from a ``` block inside one of its strings;
+        a fenced or prose-wrapped reply still parses from its fence."""
+        whole = '{"code": "```hello```"}'
+        assert _parse_structured_text(text=whole, json_mode=True, json_schema=None) == (
+            {"code": "```hello```"}, "json")
+        wrapped = 'Here it is:\n```json\n{"code": "x"}\n```'
+        assert _parse_structured_text(text=wrapped, json_mode=True, json_schema=None) == ({"code": "x"}, "json")
+
 # ---------------------------------------------------------------------------
 # End-to-end facade
 # ---------------------------------------------------------------------------

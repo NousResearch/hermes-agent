@@ -3982,9 +3982,7 @@ plan_usage:
   large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
   large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"
 shared:
-  # /undo's pointer at the /rollback command that restores the undone turns' files
-  # (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ 取り消したターンで変更されたファイル: {files}。復元するには: /rollback {ref}"
     list: "↶ 取り消したターンで変更されたファイル: {files}。/rollback でチェックポイントを一覧表示し、1 つを復元してください。"
     more: "ほか {count} 件"

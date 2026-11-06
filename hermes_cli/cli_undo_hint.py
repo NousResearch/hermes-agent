@@ -1,4 +1,4 @@
-"""Classic CLI ``/undo``: the read-only line pointing at the ``/rollback`` that restores the undone turns' files.
+"""Classic CLI ``/undo``: the read-only line naming the files the undone turns changed and pointing at ``/rollback``.
 
 The in-process CLI asks its agent's checkpoint manager over the same cwd its ``/rollback`` lists; a
 CLI rewired onto the shared gateway asks the owner (``rollback.list`` with ``undo_since``), whose
@@ -33,6 +33,6 @@ def print_undo_rollback_hint(cli, before: list, turns_undone: int) -> None:
                                    undo_since=undo_span_start(target_ts, kept)).get("undo_hint")
     else:
         mgr = getattr(getattr(cli, "agent", None), "_checkpoint_mgr", None)
-        hint = undo_hint_payload(mgr, os.getenv("TERMINAL_CWD", os.getcwd()), target_ts, kept, history=before)
+        hint = undo_hint_payload(mgr, os.getenv("TERMINAL_CWD", os.getcwd()), undo_span_start(target_ts, kept))
     if text := (hint or {}).get("text"):
         print(f"  {text}")

@@ -224,28 +224,24 @@ If the ledger is empty (a store created before this feature, or Hermes hasn't
 written any files in the project yet), `/rollback` falls back to the full
 restore automatically.
 
-## `/undo` points at the `/rollback` that restores its files
+## `/undo` lists the files the undone turns changed
 
 `/undo` only rewinds the conversation; it never touches files. When checkpoints
-are on and one of the undone turns took a checkpoint, `/undo` adds one line
-naming the files changed since that checkpoint and the exact command that
-restores them:
+are on and the undone turns changed files in the project, `/undo` adds one line
+naming them and pointing at `/rollback`:
 
 ```
 /undo
-↶ Files changed in the undone turns: app.js, notes.md. To restore them: /rollback 3f9c2a1b
+↶ Files changed in the undone turns: app.js, notes.md. Run /rollback to see checkpoints and restore them.
 ```
 
-The command names the checkpoint by its short hash, which `/rollback` accepts
-on every surface just like a list number; unlike a number, it still means the
-same checkpoint after more are taken, so you can paste it as printed. It points
-at the files as they were when the first undone turn started, so `/undo N`
-restores what all N turns changed. When Hermes cannot prove which checkpoint
-that is (the project's checkpoints predate this feature, a checkpoint attempt
-failed, or the one it needs was pruned), the line says to run `/rollback` and
-pick one instead of guessing. The line itself writes nothing, and with
-checkpoints off `/undo` prints exactly what it always did. The editor (ACP)
-and the gateway chat client do not run `/rollback`, so they print no line.
+The line names no checkpoint: run `/rollback` to see the list and pick the one
+to restore (by number or hash). The file list is best effort: it compares the
+project with the checkpoint taken around when the undone turns started, and it
+only says what changed, not what a restore will bring back. The line itself
+writes nothing, and with checkpoints off, or when no undone turn took a
+checkpoint, `/undo` prints exactly what it always did. The editor (ACP) and the
+gateway chat client do not run `/rollback`, so they print no line.
 
 A whole-tree `/rollback` also undoes the newest remaining chat turn (step 4
 above), but only when that turn made the checkpoint or came after it. After

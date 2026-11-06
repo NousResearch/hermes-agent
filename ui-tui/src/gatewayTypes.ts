@@ -293,7 +293,7 @@ export interface SessionSaveResponse {
   file?: string
 }
 
-/** `/undo`'s pointer at the `/rollback` that restores the undone turns' files, rendered by the backend. */
+/** `/undo`'s line naming the files the undone turns changed, rendered by the backend. */
 export interface UndoRollbackHint {
   text?: string
 }

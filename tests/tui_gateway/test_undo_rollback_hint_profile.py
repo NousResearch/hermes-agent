@@ -1,5 +1,5 @@
-"""A secondary-profile sidecar session: the /undo hint and the /rollback it prints use the SESSION's profile
-store, not the launch profile's, so pasting the printed command restores the files."""
+"""A secondary-profile sidecar session: the /undo file line and /rollback use the SESSION's profile store, not
+the launch profile's, so the line names the edit and restoring the listed checkpoint brings the file back."""
 from __future__ import annotations
 
 import threading
@@ -18,7 +18,6 @@ def test_undo_hint_then_rollback_restore_round_trip_in_the_sessions_profile(tmp_
     (project / "app.js").write_text("hello\n")
     mgr = CheckpointManager(enabled=True)
     start = time.time()
-    mgr.turn_key = repr(start)  # the turn editing app.js made the take (agent/turn_context.py binds it)
     history = [{"role": "user", "content": "read", "timestamp": start - 60},
                {"role": "assistant", "content": "ok", "timestamp": start - 59},
                {"role": "user", "content": "edit app.js", "timestamp": start}]
@@ -37,14 +36,15 @@ def test_undo_hint_then_rollback_restore_round_trip_in_the_sessions_profile(tmp_
     token = set_hermes_home_override(str(launch))  # the RPC thread holds the launch profile
     try:
         undo = server._methods["session.undo"]("rid", {"session_id": sid})["result"]
-        ref = undo["undo_hint"]["ref"]
-        restored = server._methods["rollback.restore"]("rid", {"session_id": sid, "hash": ref})["result"]
+        listed = server._methods["rollback.list"]("rid", {"session_id": sid})["result"]
+        restored = server._methods["rollback.restore"]("rid", {"session_id": sid, "hash": "1"})["result"]
         kept = [m["content"] for m in server._sessions[sid]["history"]]
     finally:
         reset_hermes_home_override(token)
         server._sessions.pop(sid, None)
     assert undo["removed"] == 2 and undo["undo_hint"]["files"] == ["app.js"], undo
-    assert f"/rollback {ref}" in undo["undo_hint"]["text"], undo
+    assert "Run /rollback" in undo["undo_hint"]["text"], undo
+    assert len(listed["checkpoints"]) == 1, listed
     assert restored["success"] is True, restored
     assert (project / "app.js").read_text() == "hello\n"
     assert kept == ["read", "ok"]

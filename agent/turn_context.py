@@ -1208,8 +1208,6 @@ def build_turn_context(
         persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
     )
     _hydrate_from_history(agent, conversation_history)
-    from tools.checkpoint_takes import bind_checkpoint_turn
-    bind_checkpoint_turn(agent, user_msg)  # /undo's /rollback hash names only this turn's own take
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
     # Append the user message now that close persistence is safe.

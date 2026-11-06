@@ -369,7 +369,7 @@ class RollbackListParams(Params):
     session_id: str
     profile: str | None = None
     # Epoch seconds an /undo's span began (``tools/checkpoint_undo_hint.py::undo_span_start``): the result
-    # then carries ``undo_hint`` when a checkpoint taken in that span restores files changed since.
+    # then carries ``undo_hint`` naming the files that span changed.
     undo_since: float | None = None
     # The rewound user row's id (``session.mutate`` rewind's ``target_message.id``): the kept rows before it
     # bound the span, so a turn another viewer starts after the rewind cannot move it.

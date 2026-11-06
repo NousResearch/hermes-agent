@@ -129,15 +129,19 @@ def test_failed_web_build_does_not_skip_the_tui(tmp_path, monkeypatch, capsys):
 
 
 def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, monkeypatch, capsys):
-    from hermes_cli import update_cmd, update_cmd_maint as maint
+    from hermes_cli import update_cmd, update_cmd_config, update_cmd_maint as maint
 
     calls = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_cli import update_windows_acl
     monkeypatch.setattr(update_windows_acl, "repair_windows_home_acl", lambda: calls.append("repair_windows_home_acl"))
-    for name in ("_verify_and_restore_state_dbs_post_update", "_invalidate_live_plugin_catalog_caches",
-                 "_print_bundled_skills_sync_report", "_sync_profiles_after_update"):
+    for name in ("_invalidate_live_plugin_catalog_caches", "_print_bundled_skills_sync_report",
+                 "_sync_profiles_after_update"):
         monkeypatch.setattr(maint, name, lambda name=name: calls.append(name))
+    monkeypatch.setattr(update_cmd_config, "_LAST_SIBLING_SNAPSHOTS", {"work": "work-before"})
+    monkeypatch.setattr(maint, "_verify_and_restore_state_dbs_post_update",
+                        lambda snapshot_id, *, sibling_snapshots:
+                        calls.append(("verify_state", snapshot_id, sibling_snapshots)))
     monkeypatch.setattr("hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
     monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
 
@@ -156,10 +160,11 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
     update_receipt.begin_update_receipt()
     owed: list = []
     assert maint._run_post_update_maintenance(
-        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id="default-before",
         had_desktop_app_before_update=False, pre_update_version=None, followups=owed) is True
     assert [step for step, _ in owed] == ["config_migration"]
     assert calls[0] == "repair_windows_home_acl"
+    assert ("verify_state", "default-before", {"work": "work-before"}) in calls
     assert ("commit_graph", update_cmd._m().PROJECT_ROOT) in calls
     assert calls[-2:] == ["verdict", "notices"]
     assert "⚠ Update follow-up 'config_migration'" in capsys.readouterr().out

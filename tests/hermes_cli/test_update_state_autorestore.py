@@ -174,9 +174,9 @@ def _make_valid_snapshot(home: Path, snap_id: str, rows: int) -> None:
 def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys):
     """#97994: the guard must verify + auto-restore EVERY profile's state.db,
     not just the root home's. Pre-update snapshots already cover siblings
-    (#66140); the guard was the missing half."""
-    from hermes_cli import update_cmd
-    from hermes_cli.backup import _sibling_profile_homes
+    (#66140); the guard was the missing half. Restores only this update's
+    snapshot (#147938), never an older sibling directory."""
+    from hermes_cli import backup, update_cmd
 
     root_home = tmp_path / "default-home"
     root_home.mkdir()
@@ -187,10 +187,12 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     _make_valid_db(root_home / "state.db", 10)
     root_before = (root_home / "state.db").read_bytes()
 
-    # Corrupt only the sessions B-tree; the canonical epoch must remain readable.
-    _make_valid_snapshot(sibling_home, "20260901-pre-update", 25)
+    # Capture this update's snapshot, then add a decoy older/newer directory.
     state = sibling_home / "state.db"
-    _make_valid_db(state, 3)
+    _make_valid_db(state, 25)
+    snapshot_id = backup.create_quick_snapshot(label="pre-update", hermes_home=sibling_home)
+    assert snapshot_id
+    _make_valid_snapshot(sibling_home, "99999999-other-snapshot", 50)
     with sqlite3.connect(state) as conn:
         page = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sessions'").fetchone()[0]
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
@@ -205,9 +207,9 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
         lambda invoking_home: [("work", sibling_home)],
     )
 
-    update_cmd._verify_and_restore_state_dbs_post_update()
+    update_cmd._verify_and_restore_state_dbs_post_update(sibling_snapshots={"work": snapshot_id})
 
-    # Sibling restored from ITS snapshot (snap rows, not zeroed bytes).
+    # Sibling restored from THIS update's snapshot (25 rows), not the decoy (50).
     assert _row_count(sibling_home / "state.db") == 25
     # Root DB byte-identical — untouched.
     assert (root_home / "state.db").read_bytes() == root_before
@@ -215,6 +217,7 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "profile work" in out
     assert "✓ Auto-restored from snapshot" in out
+    assert snapshot_id in out
 
 
 def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch, capsys):
@@ -241,6 +244,7 @@ def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch,
 
     assert (sibling_home / "state.db").read_bytes() == sibling_before
     out = capsys.readouterr().out
+    assert "verification failed" not in out
     assert "corrupted" not in out
 
 
@@ -267,6 +271,176 @@ def test_post_update_guard_survives_missing_sibling_snapshot(tmp_path, monkeypat
     update_cmd._verify_and_restore_state_dbs_post_update()
 
     out = capsys.readouterr().out
-    assert "corrupted" in out
-    # Still corrupt (no snapshot) — but the guard completed cleanly.
+    assert "verification failed" in out
+    # Still corrupt (no this-update snapshot) — but the guard completed cleanly.
     assert (sibling_home / "state.db").read_bytes() == b"\x00" * 4096
+
+
+# ── #147938 combined guard: lock ≠ corrupt, freshness, honest restore label ──
+
+
+def test_unreadable_header_on_healthy_db_does_not_restore(tmp_path, monkeypatch, capsys):
+    """Defect 1: a failed header read must fall through to PRAGMA, not accuse corruption."""
+    from hermes_cli import backup, sqlite_safe_read, update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 10)
+    # Stale snapshot that must never be selected even if the guard misfires.
+    _make_valid_snapshot(home, "20260715-pre-update", 2)
+    before = state.read_bytes()
+    real_read = sqlite_safe_read.read_header_bytes_preopen
+
+    def refuse_live(path, **kwargs):
+        if Path(path) == state:
+            return None
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(sqlite_safe_read, "read_header_bytes_preopen", refuse_live)
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
+
+    # Even with a recorded snapshot id, a healthy DB must not be restored.
+    snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snap_id
+    # Recreate the richer live DB after the snapshot so a mistaken restore is visible.
+    _make_valid_db(state, 10)
+    before = state.read_bytes()
+    update_cmd._verify_and_restore_state_dbs_post_update(snap_id)
+
+    assert state.read_bytes() == before
+    out = capsys.readouterr().out
+    assert "verification failed" not in out
+    assert "corrupted" not in out
+    assert "Auto-restored" not in out
+
+
+def test_no_this_update_snapshot_leaves_corrupt_db_unchanged(tmp_path, monkeypatch, capsys):
+    """Defect 2: without this update's snapshot, never fall back to a months-old image."""
+    from hermes_cli import backup, update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 10)
+    stale = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert stale
+    # Destroy the live header so verify returns a definite False.
+    state.write_bytes(b"\x00" * max(state.stat().st_size, 4096))
+    damaged = state.read_bytes()
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
+
+    update_cmd._verify_and_restore_state_dbs_post_update(None)
+
+    assert state.read_bytes() == damaged
+    out = capsys.readouterr().out
+    assert "left unchanged" in out
+    assert "Auto-restored" not in out
+
+
+def test_this_update_snapshot_restores_genuine_corruption(tmp_path, monkeypatch, capsys):
+    """Genuine corruption still restores — but only from this update's snapshot."""
+    from hermes_cli import backup, update_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 10)
+    snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snap_id
+    _make_valid_snapshot(home, "20260715-old", 2)  # decoy
+    state.write_bytes(b"\x00" * max(state.stat().st_size, 4096))
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(backup, "_sibling_profile_homes", lambda _h: [])
+
+    update_cmd._verify_and_restore_state_dbs_post_update(snap_id)
+
+    assert _row_count(state) == 10
+    out = capsys.readouterr().out
+    assert f"Auto-restored from snapshot {snap_id}" in out
+
+
+def test_post_restore_success_despite_unreadable_header(tmp_path, monkeypatch, capsys):
+    """Defect 3: a completed restore must not be reported as 'did not complete'."""
+    from hermes_cli import backup, sqlite_safe_read, update_cmd
+    from hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    state = home / "state.db"
+    _make_valid_db(state, 3)
+    snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    snap_state = home / "state-snapshots" / snap_id / "state.db"
+    assert snap_state.is_file()
+    state.write_bytes(b"\x00" * 4096)
+
+    real_read = sqlite_safe_read.read_header_bytes_preopen
+
+    def refuse_live(path, **kwargs):
+        if Path(path) == state:
+            return None
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(sqlite_safe_read, "read_header_bytes_preopen", refuse_live)
+
+    assert _restore_state_db_from_snapshot(state, snap_state) is True
+    assert _row_count(state) == 3
+
+
+@pytest.mark.parametrize("max_bytes", [1, 2 << 30])
+def test_integrity_probe_treats_an_exclusive_lock_as_indeterminate(tmp_path, max_bytes):
+    """A busy schema probe or full PRAGMA cannot establish corruption."""
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    db = tmp_path / "state.db"
+    _make_valid_db(db, 3)
+    holder = sqlite3.connect(db)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        result = verify_sqlite_integrity(db, run_pragma=True, max_bytes=max_bytes)
+    finally:
+        holder.rollback()
+        holder.close()
+
+    assert result["valid"] is None
+    assert verify_sqlite_integrity(db)["valid"] is True
+
+
+def test_update_and_boot_guards_defer_a_locked_healthy_db(tmp_path, monkeypatch, capsys):
+    """Update must explain a deferred check without entering the restore path."""
+    from hermes_cli import update_cmd
+    from hermes_cli.post_update import step_state_db_guard
+    from hermes_cli.update_cmd_maint import _verify_state_db_after_snapshot
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db = home / "state.db"
+    _make_valid_db(db, 3)
+    # Provide a this-update snapshot id so a mistaken restore path would fire.
+    from hermes_cli import backup
+    snap_id = backup.create_quick_snapshot(label="pre-update", hermes_home=home)
+    assert snap_id
+    before = db.read_bytes()
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd_maint._restore_state_db_from_snapshot",
+        lambda *args: pytest.fail("a locked database must not be restored"),
+    )
+
+    holder = sqlite3.connect(db)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        _verify_state_db_after_snapshot(snap_id)
+        update_cmd._verify_and_restore_one_state_db(home, label="default home", snapshot_id=snap_id)
+        assert step_state_db_guard() == {"ok": True, "skipped": "integrity-indeterminate"}
+    finally:
+        holder.rollback()
+        holder.close()
+
+    out = capsys.readouterr().out
+    assert "verification deferred" in out
+    assert "corrupted" not in out
+    assert "integrity check FAILED" not in out
+    assert db.read_bytes() == before

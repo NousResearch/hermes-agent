@@ -71,6 +71,28 @@ def test_store_root_reads_executing_trees_canonical_install_stamp(tmp_path, monk
     assert environments.store_root(project) == runtime
 
 
+@pytest.mark.parametrize("layout", ["beside-tree", "install-root"])
+def test_store_root_resolves_a_relative_runtime_dir_against_its_stamp(tmp_path, monkeypatch, layout):
+    """``runtimeDir`` is relative to the stamp's directory (scripts/write_install_stamp.py), never the cwd."""
+    from pm import environments, paths
+
+    project = tmp_path / "package" / "hermes-agent"
+    project.mkdir(parents=True)
+    stamp_dir, value = project, ".."
+    if layout == "install-root":
+        stamp_dir, value = tmp_path / "package" / "share", "tools"
+        stamp_dir.mkdir()
+        monkeypatch.setattr(paths, "repo_root", lambda: project)
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(stamp_dir))
+    (stamp_dir / "install-stamp.json").write_text(json.dumps({"runtimeDir": value}))
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    shell = tmp_path / "shell" / "cwd"
+    shell.mkdir(parents=True)
+    monkeypatch.chdir(shell)
+
+    assert environments.store_root(project) == (stamp_dir / value).resolve()
+
+
 @pytest.mark.parametrize("distribution", ["nix", "docker"])
 def test_packaged_runtime_uses_explicit_stamp_without_tool_downloads(tmp_path, monkeypatch, distribution):
     from pm import runtime, paths

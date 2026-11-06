@@ -1,0 +1,37 @@
+name: construct
+title: Construct
+repo: https://github.com/rtmandreyev/construct
+sha: 6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595
+subdir: hermes/construct
+version: "1.2.0"
+category: tools
+maintainer: rtmandreyev
+requires_hermes: ">=0.22"
+known_issues:
+  - Tested end to end on macOS (Hermes Desktop and CLI); Linux and Windows are untested.
+screenshots:
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/new-1.2-hermes.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-built.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-provenance.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-gltf.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/docs/media/hermes-villa-kit.jpg
+  - https://raw.githubusercontent.com/rtmandreyev/construct/6c1cfdfbb85ff6ed1bd93dcaab7947f493e3d595/examples/villa-savoye/blender.jpg
+docs_url: https://github.com/rtmandreyev/construct/blob/main/hosts/hermes/construct/README.md
+description: >-
+  Hermes researches a thing and writes one exact, checked description of it: named parts at real sizes, how they fit,
+  open and move, and how each is known, measured, designed or guessed. Construct turns that description into a live
+  hologram in the chat and everything downstream: glTF with named parts and working joints for Blender, Godot, Unity
+  or Unreal; exact CAD shapes (STEP, FreeCAD); prints and model kits with booklets; films; and NetLogo runs drawn as
+  constructs. It reconstructs what exists, from a building to your own chair, and designs what does not: wholly new
+  objects grounded in real counterparts (an invented ice-hauling spacecraft, reasoned from real spacecraft studies),
+  or a physical product from software's documentation (a synthesizer's manual made into a hardware instrument
+  concept), keeping evidence apart from design. Disclosures: runs Construct's bundled Python (source, no binaries) in
+  local subprocesses; optionally runs local programs the user already has (a Chromium-family browser headless for
+  review stills, ffmpeg for films, FreeCAD for CAD, Blender for film renders, NetLogo for model runs), each found on
+  the machine, never downloaded; reads only files the user names and writes only in its own data folder; long work
+  (films, NetLogo runs, large builds) runs as local background jobs with progress in the chat; no network calls, no
+  credentials, no telemetry.
+capabilities:
+  provides_tools: [construct_start, construct_edit, construct_check, construct_inspect, construct_build,
+    construct_review, construct_export, construct_film, construct_job, construct_command, construct_netlogo_run,
+    construct_netlogo_draw]

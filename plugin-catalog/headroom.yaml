@@ -1,17 +1,17 @@
 name: headroom
 repo: https://github.com/seongj-un/hermes-headroom
-sha: ce200e9ab2107f5afc0e0694e2a3f2d9ed1226c9
+sha: a98a64bfb20595c2e26d88fb0a90f4205f37db31
 description: "Keeps Hermes alive on small machines (1-4 GB VPS, Raspberry Pi). Heavy terminal jobs (package installs, builds, test suites, compilers, browsers, nested agents) wait for a machine-wide slot and enough free RAM, run inside their own memory-capped systemd --user scope with a raised OOM score, get single-worker flags where a stable one exists (jest --runInBand, pytest -n 0, make -jN, cargo -j N, Node heap cap), and are stopped by a watchdog if the host nears OOM or Hermes' own cgroup starts stalling. Hermes stays outside the scope, and the tool result tells the model the cap, the peak and whether the kernel killed the job, so it retries lighter. Adds headroom_status, /headroom and hermes headroom status|events|explain|selftest. Disclosure — Linux only for enforcement; runs busctl --user (StartTransientUnit, AttachProcessesToUnit) and systemctl --user kill/reset-failed for its own headroom-*.scope units, plus one sleep placeholder process per isolated job; reads /proc meminfo, PSI and stat/status/cmdline/cgroup of the user's own processes and cgroup files of its scopes and Hermes' cgroup; raises oom_score_adj of job processes; kills only processes inside its own scopes (or a tracked job's process group without systemd) when the watchdog fires; rewrites heavy commands before approval so the approved command is what runs; writes events to <HERMES_HOME>/plugin-data/headroom/events.jsonl and slot locks to $XDG_RUNTIME_DIR/hermes-headroom; no network, no telemetry, no credentials; reads tools.interrupt.is_interrupted (guarded) so /stop cancels a queued command."
-image: https://raw.githubusercontent.com/seongj-un/hermes-headroom/ce200e9ab2107f5afc0e0694e2a3f2d9ed1226c9/docs/banner.png
+image: https://raw.githubusercontent.com/seongj-un/hermes-headroom/a98a64bfb20595c2e26d88fb0a90f4205f37db31/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/seongj-un/hermes-headroom/ce200e9ab2107f5afc0e0694e2a3f2d9ed1226c9/docs/media/status.png
-  - https://raw.githubusercontent.com/seongj-un/hermes-headroom/ce200e9ab2107f5afc0e0694e2a3f2d9ed1226c9/docs/media/explain.png
+  - https://raw.githubusercontent.com/seongj-un/hermes-headroom/a98a64bfb20595c2e26d88fb0a90f4205f37db31/docs/media/status.png
+  - https://raw.githubusercontent.com/seongj-un/hermes-headroom/a98a64bfb20595c2e26d88fb0a90f4205f37db31/docs/media/explain.png
 maintainer: seongj-un
 tier: community
 category: tools
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/seongj-un/hermes-headroom#readme
-version: "0.1.1"
+version: "0.1.2"
 platforms: [linux]
 capabilities:
   provides_tools:

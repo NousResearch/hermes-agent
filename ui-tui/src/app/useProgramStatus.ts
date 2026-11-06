@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { $programStatusEnabled, $turnOutcome, deriveProgramStatus, encodeProgramStatus } from '../lib/programStatus.js'
+import { $programStatusEnabled, $turnOutcome, deriveProgramStatus, encodeProgramStatus, markProgramStatusReported } from '../lib/programStatus.js'
 
 import { $connectionOperation } from './connectionOperationStore.js'
 import { $overlayState } from './overlayStore.js'
@@ -26,13 +26,14 @@ export function useProgramStatus(stdout: NodeJS.WriteStream | undefined): void {
       return
     }
 
-    const { kind, state } = deriveProgramStatus(busy, overlay, outcome, connectionTargets)
-    const seq = encodeProgramStatus(state, kind)
+    const { kind, msg, state } = deriveProgramStatus(busy, overlay, outcome, connectionTargets)
+    const seq = encodeProgramStatus(state, kind, msg)
 
     const timer = setTimeout(() => {
       if (seq !== last.current) {
         last.current = seq
         stdout.write(seq)
+        markProgramStatusReported()
       }
     }, SETTLE_MS)
 

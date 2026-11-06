@@ -77,6 +77,43 @@ def test_program_status_follows_the_screen_through_one_owner(monkeypatch):
     assert states() == ["state=idle"]
 
 
+def test_quit_clears_the_reported_record_once_and_late_turn_ends_stay_silent(monkeypatch):
+    """idle/done/error outlive the process under the spec, so quitting must clear the record or a pane
+    back at its shell keeps listing Hermes as an agent. A turn that settles after quit must not re-report."""
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled, cli._agent_running = True, False
+
+    cli._clear_program_status()
+    assert written == []  # never reported: nothing to clear
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled, cli._agent_running = True, False
+    cli._sync_program_status()
+    written.clear()
+    cli._clear_program_status()
+    cli._clear_program_status()
+    assert written == ["\x1b]7501;state=clear\x1b\\"]
+
+    written.clear()
+    cli._program_turn_outcome = ("done", "late reply")  # an interrupted turn settling during shutdown
+    cli._sync_program_status()
+    assert written == []
+
+
+def test_quit_clear_respects_display_program_status_false(monkeypatch):
+    written = []
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.program_status_enabled, cli._agent_running = False, False
+    cli._sync_program_status()
+    cli._clear_program_status()
+    assert written == []
+
+
 def test_display_program_status_false_from_config_writes_nothing(monkeypatch):
     from tests.hermes_cli.test_cli_init import _make_cli
 

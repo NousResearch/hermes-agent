@@ -9184,6 +9184,252 @@
         "title": "CanonicalGroupsPeerRevokeParams",
         "type": "object"
       },
+      "CanonicalGuidanceAdmitParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "runtime_instance_id": {
+            "title": "Runtime Instance Id",
+            "type": "string"
+          },
+          "expected_turn_id": {
+            "title": "Expected Turn Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "runtime_instance_id",
+          "expected_turn_id",
+          "message_id",
+          "text"
+        ],
+        "title": "CanonicalGuidanceAdmitParams",
+        "type": "object"
+      },
+      "CanonicalGuidanceIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "runtime_instance_id": {
+            "title": "Runtime Instance Id",
+            "type": "string"
+          },
+          "expected_turn_id": {
+            "title": "Expected Turn Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "runtime_instance_id",
+          "expected_turn_id",
+          "message_id"
+        ],
+        "title": "CanonicalGuidanceIdentity",
+        "type": "object"
+      },
+      "CanonicalGuidanceReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "runtimeInstanceId": {
+            "title": "Runtimeinstanceid",
+            "type": "string"
+          },
+          "sessionId": {
+            "title": "Sessionid",
+            "type": "string"
+          },
+          "turnId": {
+            "title": "Turnid",
+            "type": "string"
+          },
+          "messageId": {
+            "title": "Messageid",
+            "type": "string"
+          },
+          "disposition": {
+            "title": "Disposition",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sequence"
+          }
+        },
+        "required": [
+          "runtimeInstanceId",
+          "sessionId",
+          "turnId",
+          "messageId",
+          "disposition",
+          "state"
+        ],
+        "title": "CanonicalGuidanceReceipt",
+        "type": "object"
+      },
+      "CanonicalGuidanceTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "runtimeInstanceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runtimeinstanceid"
+          },
+          "sessionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sessionid"
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turnid"
+          },
+          "promptId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Promptid"
+          },
+          "receipts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalGuidanceReceipt"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipts"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CanonicalGuidanceTurn",
+        "type": "object"
+      },
+      "CanonicalGuidanceTurnParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CanonicalGuidanceTurnParams",
+        "type": "object"
+      },
       "CanonicalListParams": {
         "additionalProperties": false,
         "properties": {
@@ -50620,6 +50866,60 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
+      "name": "session.guidance.admit",
+      "summary": "Admit literal input only to the expected live owner turn; never a new admission.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGuidanceAdmitParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalGuidanceReceipt"
+        }
+      }
+    },
+    {
+      "name": "session.guidance.status",
+      "summary": "Read an instruction receipt without resubmission or execution-owner restoration.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGuidanceIdentity"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalGuidanceReceipt"
+        }
+      }
+    },
+    {
+      "name": "session.guidance.turn",
+      "summary": "Read one primary admission's active-only guidance identity and receipts.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalGuidanceTurnParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalGuidanceTurn"
         }
       }
     },

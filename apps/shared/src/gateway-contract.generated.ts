@@ -5131,6 +5131,43 @@ export interface CanonicalGroupsPeerRegisterParams {
   grant: string
   catalog: Record<string, unknown>
 }
+export interface CanonicalGuidanceTurnParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+}
+export interface CanonicalGuidanceTurn {
+  state: string
+  runtimeInstanceId?: string | null
+  sessionId?: string | null
+  turnId?: string | null
+  promptId?: string | null
+  receipts?: CanonicalGuidanceReceipt[] | null
+}
+export interface CanonicalGuidanceReceipt {
+  runtimeInstanceId: string
+  sessionId: string
+  turnId: string
+  messageId: string
+  disposition: string
+  state: string
+  sequence?: number | null
+}
+export interface CanonicalGuidanceAdmitParams {
+  profile?: string | null
+  session_id: string
+  runtime_instance_id: string
+  expected_turn_id: string
+  message_id: string
+  text: string
+}
+export interface CanonicalGuidanceIdentity {
+  profile?: string | null
+  session_id: string
+  runtime_instance_id: string
+  expected_turn_id: string
+  message_id: string
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -7162,6 +7199,12 @@ export interface CanonicalRpcMethods {
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
   /** The /save transcript rendered for the client to write (the gateway writes nothing). */
   'session.export': { params: SessionExportParams; result: SessionExportResult }
+  /** Admit literal input only to the expected live owner turn; never a new admission. */
+  'session.guidance.admit': { params: CanonicalGuidanceAdmitParams; result: CanonicalGuidanceReceipt }
+  /** Read an instruction receipt without resubmission or execution-owner restoration. */
+  'session.guidance.status': { params: CanonicalGuidanceIdentity; result: CanonicalGuidanceReceipt }
+  /** Read one primary admission's active-only guidance identity and receipts. */
+  'session.guidance.turn': { params: CanonicalGuidanceTurnParams; result: CanonicalGuidanceTurn }
   /** Frozen launch policy projection of one local session. */
   'session.info': { params: CanonicalSessionInfoParams; result: CanonicalSessionInfo }
   'session.interrupt': { params: CanonicalControlParams; result: CanonicalSessionHandle }
@@ -7227,6 +7270,9 @@ export const CANONICAL_RPC_METHODS = [
   'session.detach',
   'session.events.since',
   'session.export',
+  'session.guidance.admit',
+  'session.guidance.status',
+  'session.guidance.turn',
   'session.info',
   'session.interrupt',
   'session.list',

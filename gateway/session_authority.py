@@ -94,6 +94,7 @@ class LiveSession:
     retire_timer: object = None
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
+    guidance: object = None
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -943,6 +944,8 @@ class SessionAuthority:
             # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
             # agent is called: an adoption racing the call consumes them. The agent is called outside it.
             with live.event_stream.lock:
+                from gateway.session_guidance import close
+                close(live, generation, cancelled=True)
                 adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
                 if adopted_generation != generation:
                     # Its execution returned and only the settlement is left: nothing to stop, and the route's
@@ -1015,6 +1018,8 @@ class SessionAuthority:
         live = self.sessions.get(session_id)
         # The turn's executor thread runs this; the stream lock orders it against session.steer's latch.
         with live.event_stream.lock if live is not None else contextlib.nullcontext():
+            from gateway.session_guidance import adopt
+            adopt(live, generation, agent)
             self.adopted[session_id] = (generation, agent)
             clear = getattr(agent, 'clear_interrupt', None)
             if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
@@ -1175,6 +1180,8 @@ class SessionAuthority:
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
+                from gateway.session_guidance import start
+                start(self, ref, row)
                 from gateway.session_automation import admission_display
                 live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
                                           event_type='message.start')
@@ -1295,6 +1302,8 @@ class SessionAuthority:
                 return await execute_finite_admission(self, ref, row), 'completed'
             finally:
                 with live.event_stream.lock:
+                    from gateway.session_guidance import close
+                    close(live, row['generation'])
                     self.executing.pop(ref.session_id, None)
         except ManagedExecutionUnknown:
             with live.event_stream.lock:

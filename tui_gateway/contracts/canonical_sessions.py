@@ -27,6 +27,47 @@ class CanonicalClientIdentity(Params):
     version: str | None = None
 
 
+class CanonicalGuidanceTurnParams(CanonicalSessionParams):
+    admission_id: str
+
+
+class CanonicalGuidanceIdentity(CanonicalSessionParams):
+    runtime_instance_id: str
+    expected_turn_id: str
+    message_id: str
+
+
+class CanonicalGuidanceAdmitParams(CanonicalGuidanceIdentity):
+    text: str
+
+
+class CanonicalGuidanceReceipt(Result):
+    runtimeInstanceId: str
+    sessionId: str
+    turnId: str
+    messageId: str
+    disposition: str
+    state: str
+    sequence: int | None = None
+
+
+class CanonicalGuidanceTurn(Result):
+    state: str
+    runtimeInstanceId: str | None = None
+    sessionId: str | None = None
+    turnId: str | None = None
+    promptId: str | None = None
+    receipts: list[CanonicalGuidanceReceipt] | None = None
+
+
+canonical_method('session.guidance.turn', params=CanonicalGuidanceTurnParams, result=CanonicalGuidanceTurn,
+                 doc='Read one primary admission\'s active-only guidance identity and receipts.')
+canonical_method('session.guidance.admit', params=CanonicalGuidanceAdmitParams, result=CanonicalGuidanceReceipt,
+                 doc='Admit literal input only to the expected live owner turn; never a new admission.')
+canonical_method('session.guidance.status', params=CanonicalGuidanceIdentity, result=CanonicalGuidanceReceipt,
+                 doc='Read an instruction receipt without resubmission or execution-owner restoration.')
+
+
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
     source: Literal['cli', 'tui', 'gui', 'acp', 'tool', 'oneshot'] = 'cli'

@@ -122,6 +122,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
         self._background = set()
+        from acp_adapter.gateway_guidance import GatewayGuidance
+        self._guidance = GatewayGuidance(self)
 
     def on_connect(self, conn):
         self._conn = conn
@@ -140,13 +142,17 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
         from acp_adapter.auth import build_auth_methods
+        guidance_capability = await self._guidance.capability(kwargs.get("client_capabilities"))
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
-            agent_capabilities=AgentCapabilities(load_session=True,
+            agent_capabilities=AgentCapabilities(load_session=True, field_meta=guidance_capability,
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                          resume=SessionResumeCapabilities())),
             auth_methods=build_auth_methods())
+
+    async def ext_method(self, method, params):
+        return await self._guidance.request(method, params)
 
     async def authenticate(self, method_id, **kwargs):
         from acp_adapter.server import HermesACPAgent
@@ -164,6 +170,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 gateway = await connection.__aenter__()
                 try:
                     descriptor = await gateway.rpc("runtime.describe")
+                    self._guidance.observe_owner(descriptor)
                     if descriptor.get("profile_id") != str(self._home):
                         raise GatewayClientError("profile_mismatch")
                     await self._reattach(gateway)
@@ -654,6 +661,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return ListSessionsResponse(sessions=page, next_cursor=page[-1].session_id if len(rows) > 50 else None)
 
     async def prompt(self, prompt, session_id, **kwargs):
+        from acp_adapter.gateway_guidance import prompt_identity
+        guidance_prompt_id = prompt_identity(kwargs)
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
@@ -697,11 +706,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise
         finally:
             self._submitting.discard(session_id)
+        self._guidance.track(session_id, receipt.get("admission_id"), guidance_prompt_id)
         admission_id = await self._admission_from_receipt(client, held_id, session_id, receipt)
         if admission_id is None:
             return PromptResponse(stop_reason='end_turn')
         self._inflight[(session_id, admission_id)] = None
         try:
+            await self._guidance.started_turn(session_id, admission_id)
             await self._after_ack(session_id, admission_id, link, resumes)
             if session_id in self._pending_cancels:
                 self._pending_cancels.discard(session_id)
@@ -736,7 +747,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp_adapter.gateway_session_meta import turn_usage
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
-                              usage=turn_usage(self._usage.get(session_id)))
+                              usage=turn_usage(self._usage.get(session_id)),
+                              field_meta=await self._guidance.terminal(session_id, admission_id))
 
     async def _admission_from_receipt(self, client, held_id, session_id, receipt):
         """The admission a ``prompt.submit`` receipt names, or None when the owner admitted nothing."""
@@ -974,6 +986,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
+        if kind == "message.start":
+            await self._guidance.started_turn(sid, aid)
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload, event)
             return

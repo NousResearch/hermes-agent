@@ -11258,6 +11258,17 @@
             "default": null,
             "title": "Launch Request"
           },
+          "client": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalClientLabel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "reasoning_effort": {
             "anyOf": [
               {

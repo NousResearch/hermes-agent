@@ -2,7 +2,7 @@ name: kokpit
 repo: https://github.com/sahindemirbas/kokpit
 sha: 21112512fcb8d5fa24efc1558e9b50195eb031a0
 subdir: integrations/hermes/kokpit
-description: "Your own cockpit in Hermes: /kokpit setup makes a plain Markdown vault, capture from any chat (Telegram included), a session card and short receipt only when a session produced a result so Claude Code, Codex and Hermes continue from the same place, a night pass whose proposals quote their sources, and a morning brief. Local, stdlib only."
+description: "A personal cockpit for Hermes Agent. When a session produces something, Kokpit leaves a short card and receipt in plain Markdown that Hermes, Claude Code and Codex all read, so the next session picks up where the last one stopped. It also captures notes and todos from any Hermes chat, gives a morning brief, and runs a night pass whose proposals quote their exact source lines. Local, stdlib only."
 maintainer: sahindemirbas
 tier: community
 category: memory

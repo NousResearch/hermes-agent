@@ -1138,6 +1138,10 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        # The fake child is registered in the module-global process registry by
+        # ``_default_spawn`` and has no ``poll()``; isolate the registry so a
+        # LATER test's ``dispatch_once`` doesn't crash in ``reap_worker_zombies``.
+        monkeypatch.setattr(kbd, "_live_worker_procs", {})
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -1654,6 +1658,10 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
             self.pid = 4242
 
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    # The fake child is registered in the module-global process registry by
+    # ``_default_spawn`` and has no ``poll()``; isolate the registry so a LATER
+    # test's ``dispatch_once`` doesn't crash in ``reap_worker_zombies``.
+    monkeypatch.setattr(kbd, "_live_worker_procs", {})
 
     task = kb.Task(
         id="t_import_root", title="x", body=None, assignee="coder", status="ready",

@@ -78,7 +78,7 @@ def test_cli_edit_inherit_flag_parses_to_reset():
     ({}, None, True),                       # config failed to load
     ({}, {"cron": "not-a-mapping"}, True),   # malformed section
 ])
-def test_effective_wrap_response_precedence(job, cfg, expected):
-    from cron.scheduler_delivery import _effective_wrap_response
+def test_should_wrap_cron_response_precedence(job, cfg, expected):
+    from cron.scheduler_delivery import _should_wrap_cron_response
 
-    assert bool(_effective_wrap_response(job, cfg)) is expected
+    assert _should_wrap_cron_response(job, cfg) is expected

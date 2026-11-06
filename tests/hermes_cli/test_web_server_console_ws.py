@@ -218,3 +218,44 @@ def test_interrupt_scope_cancels_agents_that_start_after_the_cancel():
     assert early.stops == ["Console command cancelled"]
     assert late_agent.stops == ["Console command cancelled"]
     assert unscoped.stops == []
+
+
+def test_console_command_holds_retirement_admission_until_worker_exits(console_client, monkeypatch):
+    """A console command is new work: it reserves retirement admission before it is queued, holds
+    it while the worker runs, and is refused while a retirement freeze is in progress."""
+    import threading
+
+    from hermes_cli import backend_retirement
+    from hermes_cli.console_engine import ConsoleResult, HermesConsoleEngine
+
+    fence = backend_retirement.RetirementFence()
+    monkeypatch.setattr(backend_retirement, "retirement", fence)
+    started, release, ran = threading.Event(), threading.Event(), []
+
+    def blocking_execute(self, line: str, *, confirmed: bool = False):
+        ran.append(line)
+        started.set()
+        release.wait(5)
+        return ConsoleResult("ok", output="done", command=line)
+
+    monkeypatch.setattr(HermesConsoleEngine, "execute", blocking_execute)
+
+    with console_client.websocket_connect(_url()) as conn:
+        assert conn.receive_json()["type"] == "ready"
+        conn.send_json({"type": "input", "line": "status"})
+        assert started.wait(5)
+        assert fence.active_count() == 1
+        release.set()
+        _recv_until(conn, "complete", status="ok")
+        deadline = time.monotonic() + 5.0
+        while fence.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert fence.active_count() == 0
+
+        fence._preparing = True  # a prepare() freeze is in progress: admission is closed
+        conn.send_json({"type": "input", "line": "doctor"})
+        error = _recv_until(conn, "error")
+        _recv_until(conn, "complete", status="error")
+    assert "retiring" in error["message"]
+    assert ran == ["status"]
+    assert fence.active_count() == 0

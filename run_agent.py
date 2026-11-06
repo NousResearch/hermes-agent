@@ -406,6 +406,8 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
+        # Where the current turn came from (``turn_origin``); set the same way.
+        self._turn_origin = None
         # Provider hooks that failed in the old session (agent.provider_route_hooks) are asked again.
         self._provider_hook_failures = set()
         # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).

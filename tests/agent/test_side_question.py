@@ -159,9 +159,10 @@ class TestForkPath:
         calls = {}
 
         class FakeFork:
-            def run_conversation(self, user_message, conversation_history):
+            def run_conversation(self, user_message, conversation_history, turn_origin=None):
                 calls["user_message"] = user_message
                 calls["history"] = conversation_history
+                calls["turn_origin"] = turn_origin
                 return {"final_response": "it was foo.py"}
 
             def shutdown_memory_provider(self):
@@ -193,6 +194,7 @@ class TestForkPath:
         assert calls["history"] == history  # full snapshot replayed verbatim
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
+        assert calls["turn_origin"] == "side_question"  # the per-turn reset keeps the fork's log tag
 
     def test_fork_teardown_leaves_the_sessions_terminal_environment(self):
         """The /btw fork shares the live session's id, which keys its terminal sandbox: a real

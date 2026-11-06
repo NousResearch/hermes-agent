@@ -881,6 +881,13 @@ class PluginsManageResult(Result):
     scan_findings: list[PluginScanFinding] | None = None
     error: str | None = None
     written: list[str] | None = None
+    # ``settings`` → ``saved`` (written to config) vs ``activated`` (live now). After the hosted boot froze
+    # the registries a save whose MCP launch inputs changed is saved, not activated: ``restart_required``
+    # with the servers that need it (``restart_required_servers``) and a ``message``; no reconnect runs.
+    saved: bool | None = None
+    activated: bool | None = None
+    restart_required_servers: list[str] | None = None
+    message: str | None = None
     # ``onboarding`` → the curated catalog plugins for the onboarding card.
     onboarding: list[OnboardingCatalogPlugin] | None = None
     # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.

@@ -779,6 +779,33 @@ def mcp_servers_awaiting_connect() -> list[str]:
 _RESTART_LOCK = threading.Lock()
 
 
+def _servers_with_new_inputs(names: set[str], scope) -> tuple[list[tuple], list[tuple]]:
+    """``(owned, borrowed)`` ``(name, key)`` pairs of live servers in *names* whose resolved launch
+    inputs no longer hash to what they connected with. Read-only."""
+    owned, borrowed = [], []
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+        for name in sorted(names):
+            config = servers.get(name)
+            with _core._lock:
+                key = _resolve_server_key(name, scope, current=False)
+                server = _core._servers.get(key)
+            recorded = getattr(server, "_resolved_identity", None)
+            if config is None or recorded is None or not mcp_server_enabled(config):
+                continue
+            # Render as the connect path does (plugin servers join the config after load's render pass).
+            if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
+    return owned, borrowed
+
+
+def mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
+    """Names in *names* that :func:`restart_mcp_servers_with_new_inputs` would reconnect now, without
+    reconnecting them: after the hosted boot froze the registries these need a process restart."""
+    owned, borrowed = _servers_with_new_inputs(names, _core._mcp_registry_scope())
+    return sorted(name for name, _key in owned + borrowed)
+
+
 def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
     """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
     HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
@@ -792,23 +819,11 @@ def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
 
     A restart is a registry removal plus a registration: after the hosted boot froze the registries,
     one with anything to restart raises :class:`registry_freeze.RegistryFrozen` before it disconnects
-    or detaches a server; one with nothing to restart still returns ``[]``."""
+    or detaches a server; one with nothing to restart still returns ``[]``. A caller that must not
+    fail (a settings save) asks :func:`mcp_servers_with_new_inputs` first."""
     with _RESTART_LOCK:
         scope = _core._mcp_registry_scope()
-        owned, borrowed = [], []
-        with _owner_secret_scope():
-            servers = _config._load_mcp_config()
-            for name in sorted(names):
-                config = servers.get(name)
-                with _core._lock:
-                    key = _resolve_server_key(name, scope, current=False)
-                    server = _core._servers.get(key)
-                recorded = getattr(server, "_resolved_identity", None)
-                if config is None or recorded is None or not mcp_server_enabled(config):
-                    continue
-                # Render as the connect path does (plugin servers join the config after load's render pass).
-                if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
-                    (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
+        owned, borrowed = _servers_with_new_inputs(names, scope)
         if not owned and not borrowed:
             return []
         refuse_if_frozen("MCP registry")

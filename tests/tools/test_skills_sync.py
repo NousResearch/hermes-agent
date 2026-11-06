@@ -454,6 +454,211 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_fresh_seed_from_immutable_epoch_source_is_mutable(self, tmp_path):
+        """A bundled tree from a Nix-like store must not make a fresh user copy immutable."""
+        bundled = self._setup_bundled(tmp_path)
+        source = bundled / "category" / "new-skill"
+        nested = source / "references"
+        nested.mkdir()
+        runner = source / "run.sh"
+        runner.write_text("#!/bin/sh\nexit 0\n")
+        (nested / "note.md").write_text("reference\n")
+        for path in (source / "SKILL.md", source / "main.py", nested / "note.md"):
+            os.chmod(path, 0o444)
+            os.utime(path, (1, 1))
+        os.chmod(runner, 0o555)
+        os.utime(runner, (1, 1))
+        for path in (nested, source):
+            os.chmod(path, 0o555)
+            os.utime(path, (1, 1))
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        dest = skills_dir / "category" / "new-skill"
+        assert "new-skill" in result["copied"]
+        assert stat.S_IMODE((dest / "SKILL.md").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "references").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "run.sh").stat().st_mode) & stat.S_IXUSR
+        assert (dest / "SKILL.md").stat().st_mtime > 1
+        assert (dest / "references").stat().st_mtime > 1
+        assert _dir_hash(dest) == _dir_hash(source)
+        for path in (source, nested, source / "SKILL.md", runner):
+            assert not path.stat().st_mode & stat.S_IWUSR
+            assert path.stat().st_mtime == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_pristine_update_from_immutable_epoch_source_is_mutable(self, tmp_path):
+        """A replacement of a pristine skill must also shed store metadata."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+            source = bundled / "old-skill"
+            runner = source / "run.sh"
+            runner.write_text("#!/bin/sh\nexit 0\n")
+            (source / "SKILL.md").write_text("# Updated\n")
+            for path in (source / "SKILL.md",):
+                os.chmod(path, 0o444)
+                os.utime(path, (1, 1))
+            os.chmod(runner, 0o555)
+            os.utime(runner, (1, 1))
+            os.chmod(source, 0o555)
+            os.utime(source, (1, 1))
+
+            result = sync_skills(quiet=True)
+
+        dest = skills_dir / "old-skill"
+        assert "old-skill" in result["updated"]
+        assert stat.S_IMODE((dest / "SKILL.md").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE(dest.stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "run.sh").stat().st_mode) & stat.S_IXUSR
+        assert (dest / "SKILL.md").stat().st_mtime > 1
+        assert dest.stat().st_mtime > 1
+
+    def test_copied_readonly_file_can_be_edited(self, tmp_path):
+        """Exercise fresh/update copies on native Windows too (no POSIX exec assertions)."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        source = bundled / "old-skill" / "SKILL.md"
+        source.chmod(stat.S_IREAD)
+        os.utime(source, (1, 1))
+        with self._patches(bundled, skills_dir, manifest_file):
+            assert "old-skill" in sync_skills(quiet=True)["copied"]
+            dest = skills_dir / "old-skill" / "SKILL.md"
+            assert dest.stat().st_mtime > 1
+            assert _dir_hash(dest.parent) == _dir_hash(source.parent)
+            source.chmod(stat.S_IREAD | stat.S_IWRITE)
+            source.write_text("# Updated", encoding="utf-8")
+            source.chmod(stat.S_IREAD)
+            assert "old-skill" in sync_skills(quiet=True)["updated"]
+            with dest.open("a", encoding="utf-8") as stream:
+                stream.write("\nUser edit")
+            assert dest.read_text(encoding="utf-8") == "# Updated\nUser edit"
+            assert source.read_text(encoding="utf-8") == "# Updated"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("modified", [False, True])
+    def test_legacy_readonly_copy_is_repaired_only_when_pristine(self, tmp_path, modified):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            dest = skills_dir / "old-skill"
+            skill_md = dest / "SKILL.md"
+            if modified:
+                skill_md.write_text("# User customization", encoding="utf-8")
+            skill_md.chmod(0o444)
+            dest.chmod(0o555)
+            os.utime(skill_md, (1, 1))
+            os.utime(dest, (1, 1))
+            before = skill_md.read_bytes()
+            origin = _read_manifest()["old-skill"]
+            first = sync_skills(quiet=True)
+            assert bool(skill_md.stat().st_mode & stat.S_IWUSR) == (not modified)
+            assert bool(dest.stat().st_mode & stat.S_IWUSR) == (not modified)
+            assert skill_md.read_bytes() == before
+            assert skill_md.stat().st_mtime == 1
+            assert dest.stat().st_mtime == 1
+            after = (skill_md.stat().st_ctime_ns, dest.stat().st_ctime_ns)
+            second = sync_skills(quiet=True)
+            assert (skill_md.stat().st_ctime_ns, dest.stat().st_ctime_ns) == after
+            assert _read_manifest()["old-skill"] == origin
+            assert first["updated"] == second["updated"] == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks and permissions")
+    @pytest.mark.parametrize("link_kind", ["skill", "category", "child"])
+    def test_legacy_repair_leaves_symlink_targets_untouched(self, tmp_path, link_kind):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            dest = skills_dir / "category" / "new-skill"
+            if link_kind == "child":
+                external = tmp_path / "external"
+                external.mkdir()
+                (external / "note.md").write_text("external", encoding="utf-8")
+                (dest / "external").symlink_to(external, target_is_directory=True)
+                dest.chmod(0o555)
+            else:
+                target = dest if link_kind == "skill" else dest.parent
+                external = tmp_path / "external"
+                shutil.move(str(target), str(external))
+                target.symlink_to(external, target_is_directory=True)
+            paths = [external, *external.rglob("*")]
+            for path in paths:
+                path.chmod(0o555 if path.is_dir() else 0o444)
+                os.utime(path, (1, 1))
+            before = [(p.stat().st_mode, p.stat().st_mtime_ns) for p in paths]
+            sync_skills(quiet=True)
+            assert [(p.stat().st_mode, p.stat().st_mtime_ns) for p in paths] == before
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+    def test_optional_restore_from_immutable_source_is_mutable(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        source = optional / "category" / "optional-test"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: optional-test\n---\n", encoding="utf-8")
+        (source / "run.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        for path in (source / "SKILL.md", source / "run.sh", source):
+            path.chmod(0o444 if path.name == "SKILL.md" else 0o555)
+            os.utime(path, (1, 1))
+        skills_dir = tmp_path / "user_skills"
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = restore_official_optional_skill("optional-test", restore=True)
+        dest = skills_dir / "category" / "optional-test"
+        assert result["ok"] and result["restored"] == ["optional-test"]
+        assert _dir_hash(dest) == _dir_hash(source)
+        assert stat.S_IMODE((dest / "run.sh").stat().st_mode) == 0o755
+        for path in (dest, dest / "SKILL.md", dest / "run.sh"):
+            assert path.stat().st_mode & stat.S_IWUSR
+            assert path.stat().st_mtime > 1
+        assert stat.S_IMODE(source.stat().st_mode) == 0o555
+        assert source.stat().st_mtime == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+    def test_metadata_normalization_skips_symlink_root(self, tmp_path):
+        from tools.skills_sync import _normalize_copied_tree_metadata
+        external = tmp_path / "external"
+        external.mkdir()
+        skill_md = external / "SKILL.md"
+        skill_md.write_text("# External", encoding="utf-8")
+        skill_md.chmod(0o444)
+        external.chmod(0o555)
+        os.utime(external, (1, 1))
+        link = tmp_path / "link"
+        link.symlink_to(external, target_is_directory=True)
+        _normalize_copied_tree_metadata(link)
+        assert stat.S_IMODE(external.stat().st_mode) == 0o555
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o444
+        assert external.stat().st_mtime == 1
+
+    def test_metadata_failure_restores_original_update(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+            before = _read_manifest()
+            (bundled / "old-skill" / "SKILL.md").write_text("# Updated", encoding="utf-8")
+            with patch("tools.skills_sync._normalize_copied_tree_metadata", side_effect=OSError("metadata failure")):
+                result = sync_skills(quiet=True)
+            assert result["updated"] == []
+            assert (skills_dir / "old-skill" / "SKILL.md").read_text(encoding="utf-8") == "# Old"
+            assert _read_manifest() == before
+            assert not (skills_dir / "old-skill.bak").exists()
+            assert "old-skill" in sync_skills(quiet=True)["updated"]
+
     def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
         """In manifest but not on disk = user deleted it; don't re-add. And a
         manifest entry no longer present in bundled gets cleaned out."""

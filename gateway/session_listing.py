@@ -47,12 +47,13 @@ def legacy_readable(authority, actor, sid):
         return False
 
 
-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None):
+def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, workspace=None, picker=False):
     """Offer legacy local rows only to the same native transport that may resume them.
 
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
-    *workspace*: only the folder's rows (``hermes -c``'s rule). Every row carries the picker fields.
+    *workspace*: only the folder's rows (``hermes -c``'s rule). *picker*: each row carries the picker
+    fields, from the columns the listing already read (``gateway/session_picker_fields.py``).
     """
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -60,7 +61,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
         return {'sessions': [], 'scope': 'stored'}
     db = authority.db
     own_profile = db._own_profile_name() or 'default'
-    sessions, offset, seen = [], 0, set()
+    sessions, offset, seen, sources = [], 0, set(), []  # sources: (first row, current segment, listed row)
     while len(sessions) < limit:
         rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
             order_by_last_active=True, compact_rows=True, include_hidden=include_hidden, workspace_key=workspace)
@@ -80,6 +81,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
                         and root not in seen):
                     seen.add(root)
                     sessions.append(_picker_row({**row, 'id': root}, tip, root))
+                    sources.append((root, sid, row))
                 if len(sessions) == limit:
                     break
                 continue
@@ -88,19 +90,23 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False, wor
                 if closed['id'] not in seen:
                     seen.add(closed['id'])
                     sessions.append(closed)
+                    sources.append((closed['id'], sid, row))
                 if len(sessions) == limit:
                     break
                 continue
             if not legacy_readable(authority, actor, sid):
                 continue
             sessions.append(_picker_row(row, tip, sid))
+            sources.append((row.get('_lineage_root_id') or row['id'], sid, row))
             if len(sessions) == limit:
                 break
         if len(rows) < 200:
             break
         offset += len(rows)
-    from gateway.session_picker_fields import with_picker_fields
-    return {'sessions': with_picker_fields(authority, sessions), 'scope': 'stored'}
+    if picker and sessions:
+        from gateway.session_picker_fields import fill_picker_fields
+        fill_picker_fields(db, [(row, *source) for row, source in zip(sessions, sources)])
+    return {'sessions': sessions, 'scope': 'stored'}
 
 
 def _closed_local_session(authority, actor, row, tip):

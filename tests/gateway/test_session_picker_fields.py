@@ -19,18 +19,22 @@ async def test_live_rows_carry_picker_fields_and_filter_by_workspace(tmp_path, m
         db.append_message(target, 'assistant', 'in the parser')
         db.append_message(target, 'assistant', '', tool_calls=[{'id': 'c1', 'type': 'function',
                           'function': {'name': 'read_file', 'arguments': '{}'}}])
+        from agent.context_compressor import SUMMARY_PREFIX
+        db.append_message(target, 'assistant', f'{SUMMARY_PREFIX}\n## Goal\nnot a reply')
 
         async def listing(**params):
             reply = await owner.dispatch({'id': 1, 'method': 'session.list', 'params': params})
             assert 'result' in reply, reply
             return reply['result']['sessions']
 
-        [row] = await listing()
+        [bare] = await listing()
+        assert 'preview' not in bare and 'last_reply' not in bare  # a live-list poll pays for none of it
+        [row] = await listing(picker=True)
         assert row['preview'] == 'where is the bug?'
         assert row['last_reply'] == 'in the parser'
         assert (row['cwd'], row['workspace'], row['pinned']) == (str(tmp_path), str(tmp_path), False)
         assert row['last_active_at'] >= db.get_session(target)['started_at']
-        assert [r['session_id'] for r in await listing(workspace=str(tmp_path))] == [ref.session_id]
+        assert [r['session_id'] for r in await listing(workspace=str(tmp_path), picker=True)] == [ref.session_id]
         assert await listing(workspace=str(tmp_path / 'elsewhere')) == []
         assert 'error' in await owner.dispatch({'id': 2, 'method': 'session.list',
                                                 'params': {'title': 'x', 'workspace': str(tmp_path)}})
@@ -66,7 +70,7 @@ async def test_stored_rows_carry_picker_fields_and_filter_by_repo_root(tmp_path,
         'profile_id': str(tmp_path), 'instance_id': 'owner'})
     try:
         reply = await native.dispatch({'id': 1, 'method': 'session.list',
-                                       'params': {'scope': 'stored', 'workspace': str(repo)}})
+                                       'params': {'scope': 'stored', 'workspace': str(repo), 'picker': True}})
         assert 'result' in reply, reply
         [row] = reply['result']['sessions']
         assert (row['id'], row['workspace'], row['git_branch'], row['cwd']) == (

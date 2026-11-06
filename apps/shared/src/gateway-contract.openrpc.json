@@ -9223,6 +9223,11 @@
             ],
             "default": null,
             "title": "Workspace"
+          },
+          "picker": {
+            "default": false,
+            "title": "Picker",
+            "type": "boolean"
           }
         },
         "title": "CanonicalListParams",
@@ -43459,11 +43464,23 @@
           "summary": {
             "title": "Summary",
             "type": "string"
+          },
+          "compacted_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compacted Messages"
           }
         },
         "required": [
           "timestamp",
-          "summary"
+          "summary",
+          "compacted_messages"
         ],
         "title": "StoredCompaction",
         "type": "object"
@@ -43525,6 +43542,20 @@
             "default": 100,
             "title": "Limit",
             "type": "integer"
+          },
+          "order": {
+            "default": "oldest",
+            "enum": [
+              "oldest",
+              "latest"
+            ],
+            "title": "Order",
+            "type": "string"
+          },
+          "inline_images": {
+            "default": false,
+            "title": "Inline Images",
+            "type": "boolean"
           }
         },
         "required": [
@@ -49865,7 +49896,7 @@
     },
     {
       "name": "session.compactions",
-      "summary": "The handoff summaries a stored conversation's compactions wrote, oldest first, across its compression lineage. The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch.",
+      "summary": "The summaries a stored conversation's compactions wrote, oldest first, across its compression lineage, without the parts written for the model (preamble, end marker, re-quoted user messages, recovery footer). The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch.",
       "params": [
         {
           "name": "params",
@@ -50117,7 +50148,7 @@
     },
     {
       "name": "session.transcript",
-      "summary": "One page of a stored conversation's display rows, oldest first, across its compression lineage (live rows and rows a compaction archived, each logical message once). Never attaches the caller. A page reads at most `limit` stored rows (1-500), so it can show fewer, even none; read on until `next_cursor` is null. A cursor stays valid across later compactions and new turns. Refusals: invalid_params (a cursor this owner did not issue), not_found, permission_denied, profile_mismatch.",
+      "summary": "One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON (a single larger row has its text cut and carries `truncated`); it can show fewer rows, even none, so read on until `next_cursor` is null. A cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. Refusals: invalid_params (a cursor issued for another session or order, or not by this read), not_found, permission_denied, profile_mismatch.",
       "params": [
         {
           "name": "params",

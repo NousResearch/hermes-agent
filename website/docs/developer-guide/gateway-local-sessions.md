@@ -142,23 +142,42 @@ listener keeps working.
   CLI/TUI/GUI history. This read-only feed uses the native legacy-resume ownership checks,
   excludes hidden/archived/internal and foreign-owned rows, and never adopts a session merely
   by listing it. Explicit resume performs adoption; the default live feed is unchanged.
-  Both scopes take `workspace` (only that folder's conversations, by `hermes -c`'s rule in
-  `hermes_state_sessions.workspace_key`: the same git repo root, or the folder or one under it),
-  and every row carries what a picker shows of the conversation's current segment: `preview`
-  (first prompt), `last_reply` (both shortened alike), `cwd`, `git_branch`, `workspace`,
-  `last_active_at` and `pinned` (`gateway/session_picker_fields.py`).
-- `session.transcript({session_id, cursor?, limit?})` and `session.compactions({session_id})`
-  read a listed conversation without attaching to it (`gateway/session_stored_reads.py`). Both
-  are authorized as `session.resume`'s read (`session:read`: profile, owner or operator; an old
-  CLI/TUI/GUI row by the stored feed's own rule, never adopted) and build no agent and subscribe
-  nobody. `session.transcript` returns `{session_id, rows, next_cursor}`: up to `limit` (1-500,
-  default 100) stored rows across the compression lineage, live and compaction-archived, each
-  logical message once, in `session.resume`'s `display_messages` projection. The cursor is
-  opaque and keyed by each message's first stored row, so it stays valid across later
-  compactions and turns; a page may show fewer rows than `limit` (hidden scaffolding), so read
-  until `next_cursor` is null. `session.compactions` returns `{session_id, compactions:
-  [{timestamp, summary}]}`, oldest first: the handoff summaries the display rows leave out,
-  without the model-facing preamble.
+  Both scopes take `workspace`: only conversations whose first row is in that folder, by
+  `hermes -c`'s rule (`hermes_state_sessions.workspace_key`): the row's git repo root equals it, or
+  (no root recorded) its cwd is the folder or under it. Pass the caller's repo root (else its cwd).
+  With `picker: true` each row also carries what a picker shows (`gateway/session_picker_fields.py`):
+  `cwd` and `workspace` from the same first row the filter reads, and from the conversation's current
+  segment (the compression tip, as the stored listing projects it) `preview` (the first prompt
+  there), `last_reply` (its newest reply, shortened as `preview` is; a pure compaction handoff is no
+  reply, a carrier shows the reply it wraps), `git_branch`, `last_active_at` and `pinned`. Off by
+  default, so the 1.5 s live-list poll pays nothing; on, a page is one batched store read.
+- `session.transcript({session_id, cursor?, limit?, order?, inline_images?})` and
+  `session.compactions({session_id})` read a conversation without attaching to it
+  (`gateway/session_stored_reads.py`). Both are authorized as `session.resume`'s read
+  (`SessionAuthority.authorize`, `session:read`: profile, owner or operator). Like `session.info`
+  that check publishes the conversation's route entry in `authority.sessions` when it is not there;
+  it builds no agent, subscribes nobody, and an ended local conversation stays out of the live list.
+  An old CLI/TUI/GUI row (no receipt or route) is judged at its compression tip by the stored feed's
+  own rule, whichever lineage id is asked, and never adopted. Both run on the socket's concurrent
+  read lane, so a prompt or interrupt never queues behind them.
+  `session.transcript` returns `{session_id, rows, next_cursor}`: display rows across the compression
+  lineage (live and compaction-archived, each logical message once) in `session.resume`'s
+  `display_messages` projection, oldest first within a page. `order: "latest"` starts at the newest
+  rows and pages older. A page holds at most `limit` (1-500, default 100) rows plus up to 64 tool
+  results of the call at its edge, and at most 2 MiB of JSON (a single larger row has its text cut and
+  carries `truncated: true`); images read `[image]` unless `inline_images: true`. It can show fewer
+  rows than `limit`, so read until `next_cursor` is null. The cursor is opaque, bound to the session
+  and order, and keyed by each message's first durable row, so a page boundary holds across later
+  compactions (a carried tail included). A single-segment conversation is paged in SQL on its display
+  index (only the page's bodies are read, and the first read may backfill that index once, as REST
+  `/messages` does); a rotated lineage is deduplicated whole, and past
+  `sessions.max_resume_messages` only its current segment is paged.
+  `session.compactions` returns `{session_id, compactions: [{timestamp, summary,
+  compacted_messages}]}`, oldest first, read from the handoff rows themselves (live, archived, or
+  superseded by a later compaction that carried or unwrapped them; copies of one handoff collapse).
+  `summary` drops what was written for the model: the preamble and end marker, the re-quoted user
+  messages, the recovery footer and the snapshot's ranking line; `compacted_messages` is the count the
+  footer named.
   `session.info({session_id})` is a lightweight,
   authorized view of source, current model, lazy-agent status, and profile ID.
 - `ping({})` returns `{pong: true}`. `runtime.describe({})` exposes only authority identity,

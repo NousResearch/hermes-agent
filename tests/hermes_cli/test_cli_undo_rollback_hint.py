@@ -172,6 +172,35 @@ def test_a_busy_first_undone_take_gives_no_command_that_restores_the_wrong_files
     assert "Run /rollback to list checkpoints" in out, out
 
 
+def test_two_turns_sharing_a_stamp_give_no_hash_for_the_later_turns_take(setup, capsys):
+    """Platform event times can be whole seconds: two undone turns share their user rows' stamp. The first edits
+    with no take, the second takes one that already holds that edit; a printed command must restore app.js."""
+    from tools.checkpoint_takes import bind_checkpoint_turn
+
+    cli, db, project = setup
+    mgr = CheckpointManager(enabled=True)
+    cli.agent = SimpleNamespace(_checkpoint_mgr=mgr)
+    _turn(cli, db, mgr, project, "kept")
+    _next_second()
+    stamp = float(int(time.time()))
+    for text, path, take in (("edit 1", "app.js", False), ("edit 2", "b.txt", True)):
+        db.append_message(cli.session_id, "user", text, timestamp=stamp)
+        bind_checkpoint_turn(SimpleNamespace(_checkpoint_mgr=mgr, _persist_user_message_timestamp=stamp), {})
+        mgr.new_turn()
+        if take:
+            mgr.ensure_checkpoint(str(project), f"before {text}")
+        (project / path).write_text(f"{text}\n")
+        db.append_message(cli.session_id, "assistant", f"did {text}", timestamp=time.time())
+    cli.conversation_history = db.get_messages_as_conversation(cli.session_id)
+
+    cli._cmd_undo("/undo 2")
+    out = capsys.readouterr().out
+    if command := _PRINTED.search(out):
+        cli._handle_rollback_command(command.group(1))
+    assert not command or (project / "app.js").read_text() == "hello\n", out
+    assert "Run /rollback to list checkpoints" in out, out
+
+
 def test_a_first_undone_turn_that_took_no_checkpoint_gets_no_hash(setup, capsys):
     """The first undone turn edits through a tool that takes no checkpoint; the next turn's take holds that edit."""
     cli, db, project = setup

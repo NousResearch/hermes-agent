@@ -15,7 +15,7 @@ through a tool that takes no checkpoint, or its attempt met a busy store) would 
 target to the NEXT turn's take, which already holds the first turn's edits. The hint then finds that
 tree among the retained snapshots, so a snapshot the pruner dropped is simply not found. Whenever
 the record cannot prove the target (an older build's project, a gap, a failed or busy take, a take
-of another turn, a pruned snapshot), the line says to run ``/rollback`` and pick one: a wrong
+of another turn, a user-row stamp two turns share, a pruned snapshot), the line says to run ``/rollback`` and pick one: a wrong
 command is worse than none.
 
 Read-only over the store: ``git log`` plus a name-only diff of the snapshot's tree against the
@@ -215,14 +215,15 @@ def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken) 
     return newest >= when if exact else newest >= math.floor(when) + 1
 
 
-def undo_hint_payload(mgr, cwd: str, target_timestamp, kept_history=(), *,
+def undo_hint_payload(mgr, cwd: str, target_timestamp, kept_history=(), *, history=(),
                       task_id: Optional[str] = "default") -> Optional[dict]:
     """``undo_rollback_hint`` over a rewind's target (first undone) user row stamp and the kept prefix, as the
-    wire dict (None: no line)."""
-    from tools.checkpoint_takes import turn_key
+    wire dict (None: no line). ``history``: the whole pre-undo transcript, so a stamp two turns share names
+    no turn (``checkpoint_takes.unique_turn_key``)."""
+    from tools.checkpoint_takes import unique_turn_key
 
     hint = undo_rollback_hint(mgr, cwd, undo_span_start(target_timestamp, kept_history),
-                              first_turn=turn_key(target_timestamp), task_id=task_id)
+                              first_turn=unique_turn_key(target_timestamp, history), task_id=task_id)
     return hint.as_dict() if hint is not None else None
 
 

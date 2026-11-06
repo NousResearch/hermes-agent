@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { SubagentProgress } from '@/store/subagents'
+import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentProgress } from '@/store/subagents'
 
 import { delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
 
@@ -254,5 +254,26 @@ describe('mergeDelegateRows', () => {
     ])
 
     expect(merged.map(r => r.model)).toEqual(['mine', undefined])
+  })
+
+  // subagent.list rows carry no task_index, so after a reload or on a second
+  // client every hydrated child reads as task 0.
+  it('places children from a cold roster by goal, not by an index it never sent', () => {
+    reconcileSubagentSnapshot('sess-cold', [
+      { delegation_id: 'deleg_x', goal: 'B', model: 'mB', status: 'running', subagent_id: 'sa-b' },
+      { delegation_id: 'deleg_x', goal: 'A', model: 'mA', status: 'running', subagent_id: 'sa-a' }
+    ])
+
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }] },
+      { delegation_id: 'deleg_x', status: 'dispatched' }
+    )
+
+    const merged = mergeDelegateRows(rows, $subagentsBySession.get()['sess-cold'] ?? [])
+
+    expect(merged.map(r => [r.goal, r.model])).toEqual([
+      ['A', 'mA'],
+      ['B', 'mB']
+    ])
   })
 })

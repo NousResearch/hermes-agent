@@ -165,9 +165,16 @@ export function mergeDelegateRows(
   const prefix = toolCallId ? `delegate-tool:${toolCallId}:` : ''
   const byId = rows.map((_row, index) => (prefix ? claim(c => c.id === `${prefix}${index}`) : undefined))
 
+  // A subagent.list row carries no task_index (the store reads it as 0), so the
+  // index only tells same-goal siblings apart; the goal join places the rest.
   const byDelegation = rows.map((row, index) =>
     row.delegationId && byId[index] === undefined
-      ? claim(c => sameDelegation(c.delegationId, row.delegationId!) && c.taskIndex === index)
+      ? claim(
+          c =>
+            sameDelegation(c.delegationId, row.delegationId!) &&
+            c.taskIndex === index &&
+            normalize(c.goal) === normalize(row.goal)
+        )
       : undefined
   )
 

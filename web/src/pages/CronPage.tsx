@@ -958,7 +958,7 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -1033,7 +1033,7 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setEditJob(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />
@@ -1063,7 +1063,7 @@ export default function CronPage() {
               />
 
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground font-mono-ui truncate pr-4">
+                <span className="text-xs text-muted-foreground font-mono-ui truncate pe-4">
                   {editJob.id}
                 </span>
                 <Button

@@ -189,7 +189,7 @@ export function PanelListRow({
       data-panel-row={rowKey}
     >
       <RowButton
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-1 text-left"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md ps-2 pe-1 text-start"
         onClick={onSelect}
       >
         {lead ??
@@ -200,13 +200,13 @@ export function PanelListRow({
           ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </RowButton>
-      {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
+      {meta ? <span className="shrink-0 pe-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
       {menuItems ? (
-        <div className="shrink-0 pr-1">
+        <div className="shrink-0 pe-1">
           <PanelRowMenu items={menuItems} label={menuLabel} />
         </div>
       ) : menu ? (
-        <div className="shrink-0 pr-1">{menu}</div>
+        <div className="shrink-0 pe-1">{menu}</div>
       ) : null}
     </div>
   )
@@ -279,7 +279,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
 export function PanelDetail({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className={cn('min-h-0 flex-1 overflow-y-auto overscroll-contain', className)}>
-      <div className="space-y-4 pb-6 pl-1 pr-2">{children}</div>
+      <div className="space-y-4 pb-6 ps-1 pe-2">{children}</div>
     </div>
   )
 }

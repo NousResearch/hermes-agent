@@ -71,7 +71,7 @@ export function TabDropdown({
           <Fragment key={item.id}>
             {item.separatorBefore && index > 0 && <DropdownMenuSeparator />}
             <DropdownMenuItem
-              className={cn(item.indent && 'pl-6', item.active && 'text-foreground')}
+              className={cn(item.indent && 'ps-6', item.active && 'text-foreground')}
               onSelect={item.onSelect}
             >
               {item.icon && <TabDropdownIcon icon={item.icon} indent={item.indent} />}

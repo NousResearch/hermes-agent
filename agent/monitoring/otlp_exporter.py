@@ -178,6 +178,7 @@ _KEEP_BY_KIND: dict[str, tuple[str, ...]] = {
     ),
     "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code", "platform", "old_state", "new_state", "version", "severity"),
     "cron_execution": ("status", "job_key", "source", "duration_ms", "delivery_outcome", "error_class"),
+    "managed_process": ("subsystem", "action", "outcome", "actor", "reason", "count"),
 }
 
 
@@ -205,7 +206,11 @@ def export_batch(provider, batch: list[dict[str, Any]]) -> int:
     n = 0
     for ev in batch:
         try:
-            tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev)).end()
+            # The event's own time, not the export's: a spooled event can be exported long after it happened.
+            ts = ev.get("ts_ns")
+            when = ts if type(ts) is int and 0 < ts < 2**63 else None  # outside it, the batch fails to encode
+            tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev), start_time=when).end(
+                end_time=when)
             n += 1
         except Exception:
             logger.debug("OTLP span map failed", exc_info=True)

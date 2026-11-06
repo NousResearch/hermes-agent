@@ -26,6 +26,8 @@ integration and explicitly configured Relay subscribers or exporters.
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
 | Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), a monotonic catch-up-occurrence count from the scheduler's stale-window branch, enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
 | Cron execution lifecycle | `/v1/traces` | Durable `claimed/running/completed/failed/unknown` states, bounded source and error class, opaque hashed job key, elapsed duration when timestamps exist, and delivery outcome when the scheduler knows it; terminal states make a fail-open flush attempt that can delay completion by up to one second |
+| Managed-process gauges | `/v1/metrics` | `hermes.bot_desktop.screens.running` and `hermes.bot_desktop.screens.human_held` across the gateway's own and served profiles; `hermes.owned_children.groups`, the child process groups the gateway's owner-death supervisor covers |
+| Managed-process events | `/v1/traces` | `hermes.managed_process` spans for Bot Desktop idle stops, abandoned-lease hand-backs and a screen's self-stop turning off, and for owned children reaped after their owner died or a supervisor that exited or could not start (see below) |
 
 Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
@@ -133,6 +135,9 @@ hermes_cron_jobs_overdue > 0
 # Catch-up counter increased, proving at least one stale occurrence was
 # collapsed and run once after a delay.
 increase(hermes_cron_scheduler_catch_up_occurrences[15m]) > 0
+
+# A Bot Desktop screen held by a human for longer than expected.
+hermes_bot_desktop_screens_human_held > 0
 ```
 
 Cron execution lifecycle records arrive as `hermes.cron_execution` spans.
@@ -145,6 +150,50 @@ hermes.error_class = auth_failed|rate_limited|timeout|network_error|
                      dispatch_failed|interrupted|empty_response|
                      invalid_config|unknown
 ```
+
+### Managed processes
+
+Bot Desktop screens and owned child process groups live outside any turn, and
+most of what happens to them happens where no exporter runs: a screen stops
+itself from its own launcher once its gateway is gone, and the owner-death
+supervisor reaps after its owner died. Those writers leave one small JSON
+record in `<HERMES_HOME>/monitoring/spool/`; the exporting gateway drains the
+spool of its own home and of every profile it serves on each diagnostics pass
+(`logs_export_interval_seconds`) and exports the record as a span carrying its
+original timestamp (one outside the last 30 days to one day ahead, such as a
+broken clock, takes the drain's time). A gateway that exports creates the spool of each home it
+serves and keeps it, so records written while it is down wait for its restart;
+a gateway that does not drain (export or diagnostics off, or the exporter failed
+to start) removes them, at startup and whenever its served set changes. A spool
+nobody drains stops at 1,000 records, and every field must match the closed
+vocabulary below or the record is dropped. An exporting process emits directly
+instead. The new names are `hermes.bot_desktop.screens.running`,
+`hermes.bot_desktop.screens.human_held`, `hermes.owned_children.groups` and the
+`hermes.managed_process` span attributes `hermes.subsystem`, `hermes.action`,
+`hermes.outcome`, `hermes.actor`, `hermes.reason` and `hermes.count`: add them
+to any collector allowlist in front of the backend.
+
+```text
+hermes.subsystem = bot_desktop
+  hermes.action = idle_stop       hermes.outcome = stopped|kept
+                                  hermes.reason  = idle|abandoned_lease
+  hermes.action = lease_handback  hermes.outcome = released|kept_newer|write_failed
+  hermes.action = self_stop_off   hermes.outcome = sleep_failed
+  hermes.actor  = watcher (a gateway or dashboard) | screen (the screen's own check)
+hermes.subsystem = owned_children
+  hermes.action = orphan_reap             hermes.outcome = terminated|killed
+                                          hermes.count   = groups that still had a member
+  hermes.action = supervisor_exit         hermes.outcome = restarted|not_restarted
+  hermes.action = supervisor_unavailable  hermes.outcome = spawn_failed|registration_failed
+  hermes.actor  = supervisor | owner
+```
+
+Worth alerting on: `orphan_reap` (a Hermes process died, or exited, leaving
+owned children behind), `outcome=killed` (a child ignored SIGTERM),
+`supervisor_unavailable` and `supervisor_exit outcome=not_restarted` (the
+owner-death safety net is gone), `self_stop_off` (that screen will never stop
+itself), and `lease_handback outcome=write_failed` (the agent stays fenced out
+of the next screen).
 
 Recommended operator views:
 
@@ -176,6 +225,11 @@ collector and backend:
    remain healthy.
 5. **Killed gateway:** terminate one canary, verify missing-series detection,
    restart it, and confirm the same opaque instance identity returns.
+6. **Abandoned children and screens:** SIGKILL a gateway that owns a child
+   process and a Bot Desktop screen, restart it, and observe one
+   `owned_children orphan_reap` span and, after the idle window, a
+   `bot_desktop idle_stop` span (`actor=screen` when the screen stopped itself
+   before the restarted gateway's watcher got to it, `actor=watcher` otherwise).
 
 Hermes Agent-owned Relay transport health remains in scope. A separate gateway
 or connector service remains authoritative for any shared connected-platform
@@ -263,6 +317,10 @@ classifier, never one without the other:
   out, so a new value that is not added to the set is invisible.
 - **Gateway/platform** (`agent/monitoring/gateway_health.py`):
   `_KNOWN_GATEWAY_STATES`, `_KNOWN_PLATFORM_STATES`, and `classify_gateway_error`.
+- **Managed processes** (`agent/monitoring/managed_processes.py`): `_VOCABULARY`
+  (subsystem → action → outcomes), `_ACTORS`, `_REASONS`. The shell writers
+  (`tools/bot_desktop/launcher.sh`, `hermes_cli/process_supervisor.sh`) spell
+  their records by hand: change them together.
 
 Rules: keep the vocabulary SMALL and operationally meaningful (an error class
 should map to an operator action, not to an exception subclass); a new bucket

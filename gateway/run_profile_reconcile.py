@@ -103,6 +103,9 @@ class GatewayProfileReconcileMixin:
         """Called by ``_record_served_profiles``: remember the served set and each home's signature."""
         homes = {str(name): Path(home) for name, home in profile_homes}
         self._served_profile_homes = homes
+        with _log_suppressed(logging.DEBUG, "managed-process spool sync failed", exc_info=True):
+            from agent.monitoring.gateway_health_export import note_served_homes
+            note_served_homes(getattr(self, "_gateway_health_export_runtime", None), homes.values())
         sigs = self._served_profile_signatures if isinstance(self._served_profile_signatures, dict) else {}
         self._served_profile_signatures = {name: sigs.get(name) or profile_serve_signature(home)
                                            for name, home in homes.items()}

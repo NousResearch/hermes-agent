@@ -37,6 +37,11 @@ class MonitoringEmitter:
         self._subscribers: list = []
 
     # ── public API (hot path) ───────────────────────────────────────────────
+    @property
+    def enabled(self) -> bool:
+        """True while an exporter is attached: an emit is collected, not dropped."""
+        return self._enabled
+
     def emit(self, event: Any) -> None:
         """Enqueue a dataclass with ``to_dict()`` or a plain dict. Never blocks, never raises."""
         if not self._enabled:

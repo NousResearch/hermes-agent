@@ -512,18 +512,51 @@ def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
         return _idle_due(launcher) is not None
 
     logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
-    if not stop(still_due=still_due):
+    actor = "screen" if launcher is not None else "watcher"
+    stopped = stop(still_due=still_due)
+    abandoned = held if held is not None and held.holder == _bd_lease.HUMAN else None
+    if not stopped:
+        # A kept screen has no idle reason: it was used, replaced or already gone when the stop judged it again.
+        _report("idle_stop", "kept", actor=actor)
         return False
-    if held is not None and held.holder == _bd_lease.HUMAN:
+    handback = None
+    if abandoned is not None:
         # An abandoned human lease stopped the screen. Left in place it would fence the agent out of the next
         # screen ("a human has control"); only the lease generation judged abandoned goes, so any takeover
         # since (another viewer, or the same one handing back and taking over again) is kept.
         try:
-            _bd_lease.release(held.viewer_id, epoch=held.epoch)
+            after = _bd_lease.release(abandoned.viewer_id, epoch=abandoned.epoch)
         except OSError as exc:  # the screen is already stopped: a full or read-only home must not undo that
             logger.warning("Bot Desktop for profile %s stopped, but its abandoned lease was not released: %s",
                            _profile_name(), exc)
+            outcome = "write_failed"
+        else:
+            outcome = "released" if after.holder == _bd_lease.AGENT else "kept_newer"
+        handback = outcome
+    # Reported once the stop and the hand-back are done: a slow telemetry write must not leave the human lease
+    # fencing the agent out of a screen that is already gone.
+    _report("idle_stop", "stopped", actor=actor, reason="idle" if abandoned is None else "abandoned_lease")
+    if handback is not None:
+        _report("lease_handback", handback, actor=actor)
     return True
+
+
+def _telemetry_spool() -> str:
+    try:
+        from agent.monitoring.managed_processes import spool_dir
+        return str(spool_dir())
+    except Exception:
+        logger.debug("No telemetry spool for the Bot Desktop launcher", exc_info=True)
+        return ""
+
+
+def _report(action: str, outcome: str, *, actor: str, reason: Optional[str] = None) -> None:
+    """Managed-process telemetry for an idle stop. Never costs the stop: a broken monitoring import means no record."""
+    try:
+        from agent.monitoring.managed_processes import BOT_DESKTOP, record
+        record(BOT_DESKTOP, action, outcome, actor=actor, reason=reason)
+    except Exception:
+        logger.debug("Bot Desktop idle-stop telemetry failed", exc_info=True)
 
 
 def published_env() -> dict[str, str]:
@@ -535,6 +568,11 @@ def published_env() -> dict[str, str]:
     from tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker():
         return _sandbox_published_env()
+    return _host_published_env()
+
+
+def _host_published_env() -> dict[str, str]:
+    """The published environment of a screen on this host (never a sandbox probe)."""
     if _launcher_pid() is None:
         return {}
     raw = _read(state_dir() / "env")
@@ -600,6 +638,13 @@ def _owned_sandbox_env():
 
 def is_running() -> bool:
     return bool(published_env().get("DISPLAY"))
+
+
+def is_running_locally() -> bool:
+    """``is_running()`` from host files only: a sandbox-hosted screen counts while its start marker exists,
+    with no exec into the sandbox. For frequent observers (the monitoring gauges) a hung sandbox must not stall."""
+    from tools.bot_desktop import sandbox_host
+    return bool(sandbox_host._read_marker()) or bool(_host_published_env().get("DISPLAY"))
 
 
 def open_rfb_stream() -> subprocess.Popen:
@@ -810,6 +855,8 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
                 Path(__file__).resolve().parents[2], module="tools.bot_desktop.idle_watch")),
             "HERMES_BD_HOME": str(get_hermes_home()),
             "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
+            # Where the watch loop reports a self-stop that turned itself off (written only while it exists).
+            "HERMES_BD_SPOOL": _telemetry_spool(),
         })
         from tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:

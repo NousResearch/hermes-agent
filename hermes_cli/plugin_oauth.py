@@ -94,7 +94,7 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     problems = [] if isinstance(oauth_id, str) and _ID_RE.match(oauth_id) else [
         f"{where}.id: {entry.get('id')!r} must be lowercase letters, digits and dashes"]
     grant_type = entry.get("grant_type", "authorization_code")
-    if grant_type not in {"authorization_code", "client_credentials"}:
+    if not isinstance(grant_type, str) or grant_type not in {"authorization_code", "client_credentials"}:
         problems.append(f"{where}.grant_type: must be authorization_code or client_credentials")
     if grant_type == "authorization_code":
         problems += _url_problems(f"{where}.authorize_url", entry.get("authorize_url"))
@@ -463,10 +463,6 @@ def _bearer(plugin_dir: Path, client: OAuthClient) -> str:
 
     key = f"{plugin_key(plugin_dir)}:{client.id}"
     row = _read_grant(key)
-    if client.grant_type == "client_credentials" and row is None:
-        with _auth_store_lock():
-            row = _read_grant(key)
-            return _live_token(row) or _client_credentials_token(client, key)
     token = _live_token(_usable_grant(row, client, key))
     if token:
         return token

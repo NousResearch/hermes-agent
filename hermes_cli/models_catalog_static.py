@@ -532,7 +532,7 @@ def group_providers(slugs):
     members fold into it. Member order inside a group follows ``PROVIDER_GROUPS`` declaration,
     restricted to the members present in ``slugs``.
     """
-    present = set(slugs)
+    present = {str(slug or "").strip().lower() for slug in slugs}  # same normalisation as the rows below
     group_members = {
         gid: [m for m in members if m in present]
         for gid, (_label, _desc, members) in PROVIDER_GROUPS.items()

@@ -472,7 +472,7 @@ def test_describe_connector_names_fall_to_not_found_when_dark_and_to_connectors_
 
 def test_peel_admits_pure_connector_batch_as_sentinel():
     name, _args = _peel_bridge_call(
-        "tool_call",
+        "invoke_tool",
         {"calls": [
             {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
             {"name": "connectors__slack__POST_MESSAGE", "arguments": {}},
@@ -486,15 +486,15 @@ def test_peel_keeps_mixed_and_local_batches_as_sequential_barrier():
         {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
         {"name": "write_file", "arguments": {"path": "x"}},
     ]}
-    name, _args = _peel_bridge_call("tool_call", mixed)
-    assert name == "tool_call"  # barrier: local entries never got admission
+    name, _args = _peel_bridge_call("invoke_tool", mixed)
+    assert name == "invoke_tool"  # barrier: local entries never got admission
 
     all_local = {"calls": [
         {"name": "write_file", "arguments": {"path": "x"}},
         {"name": "read_file", "arguments": {"path": "x"}},
     ]}
-    name, _ = _peel_bridge_call("tool_call", all_local)
-    assert name == "tool_call"
+    name, _ = _peel_bridge_call("invoke_tool", all_local)
+    assert name == "invoke_tool"
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ def _tool_call(calls):
     import model_tools
 
     return json.loads(model_tools.handle_function_call(
-        "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="bridge-session",
+        "invoke_tool", {"calls": calls}, enabled_toolsets=["connections"], session_id="bridge-session",
         skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
         skip_tool_execution_middleware=True))
 

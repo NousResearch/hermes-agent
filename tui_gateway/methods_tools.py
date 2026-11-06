@@ -312,7 +312,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     would leave sibling sessions on stale tools until /new — and a request without a resolvable
     session_id (desktop passes ``activeSessionId ?? undefined``) would refresh nothing while still
     answering "reloaded". ``enabled_override`` re-resolves toolsets so a server enabled this session
-    (config or a just-installed plugin) is in the session's ``tool_call`` scope.
+    (config or a just-installed plugin) is in the session's ``invoke_tool`` scope.
 
     ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
     launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:

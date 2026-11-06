@@ -25,6 +25,7 @@ import {
   toolLabels,
   toolLabelTitle
 } from '@/lib/connector-tools'
+import { isBridgeCallName } from '@/lib/bridge-tool'
 import {
   $connectionRequests,
   connectionOpOf,
@@ -528,7 +529,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
           <ToolFallback
             {...props}
             args={recordOf(recordOf(batch[index]).arguments ?? props.args)}
-            innerToolName={props.toolName === 'tool_call' ? label.name : props.toolName}
+            innerToolName={isBridgeCallName(props.toolName) ? label.name : props.toolName}
             isError={Boolean(result.error) || props.isError === true}
             key={`${props.toolCallId}:${index}`}
             result={item}

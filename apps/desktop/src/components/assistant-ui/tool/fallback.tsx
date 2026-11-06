@@ -1072,7 +1072,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
 }
 
 // The name the run splitter classifies a part by: connector and MCP calls are cards, and so is set_theme
-// reached through the tool_call bridge (a reloaded transcript).
+// reached through the invoke_tool bridge (a reloaded transcript).
 function toolGroupKey(toolName: string, args: ToolCallMessagePartProps['args']): string {
   if (connectorCalls(toolName, args).length || mcpTargets(toolName, args).length) {
     return CONNECTION_CARD_KEY

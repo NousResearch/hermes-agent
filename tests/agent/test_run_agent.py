@@ -738,12 +738,12 @@ class TestHydrateTodoStore:
         "name,arguments",
         [
             ("todo_list", "{}"),
-            ("tool_call", json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})),
+            *[(b, json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]})) for b in ("invoke_tool", "tool_call")],
         ],
-        ids=["direct", "bridged"],
+        ids=["direct", "bridged", "bridged-legacy"],
     )
     def test_todo_list_name_hydrates(self, agent, name, arguments):
-        """Regression for #124960: the current name and its tool_call-bridged form pair like legacy ``todo``."""
+        """Regression for #124960: the current name and its bridged form (either bridge name) pair like legacy ``todo``."""
         todos = [{"id": "t", "content": "Task", "status": "pending"}]
         history = [
             self._assistant_todo_call(name=name, arguments=arguments),

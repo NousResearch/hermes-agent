@@ -242,10 +242,10 @@ def parity_responder(nonce: str, tool: str = MCP_TOOL_NAME) -> Callable[[dict[st
         if any(m.get("role") == "tool" for m in body.get("messages") or []):
             return Text(FINAL_ANSWER)
         args = {"nonce": nonce}
-        if tool in _tool_names(body) or "tool_call" not in _tool_names(body):
+        if tool in _tool_names(body) or "invoke_tool" not in _tool_names(body):
             return ToolCall(tool, args)
         # Tool Search active: MCP tools sit in the deferred catalog behind the bridge.
-        return ToolCall("tool_call", {"calls": [{"name": tool, "arguments": args}]})
+        return ToolCall("invoke_tool", {"calls": [{"name": tool, "arguments": args}]})
 
     return respond
 

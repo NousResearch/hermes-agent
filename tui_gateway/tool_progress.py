@@ -182,7 +182,7 @@ def _todo_state_from_db(db, session_id: str) -> dict | None:
 def _todo_state_from_history(history) -> dict | None:
     """Latest todo snapshot from a loaded transcript, for resume paths that answer before an AIAgent (and
     its live TodoStore) exists: the newest tool result paired with an assistant Todo-tool call (aliases and
-    the ``tool_call`` bridge included) IS it."""
+    the ``invoke_tool`` bridge included) IS it."""
     if not isinstance(history, list) or not history:
         return None
     try:
@@ -240,10 +240,11 @@ def _tool_labels(name: str, args: dict) -> list[dict] | None:
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
     from tools.connectors import is_connector_name
+    from tools.tool_search_catalog import TOOL_CALL_NAME
 
     if name == "manage_connections" or is_connector_name(name):
         return True
-    if name != "tool_call" or not isinstance(args, dict):
+    if name != TOOL_CALL_NAME or not isinstance(args, dict):
         return False
     calls = args.get("calls") if isinstance(args.get("calls"), list) else [args]
     return any(isinstance(call, dict) and (call.get("name") == "manage_connections"

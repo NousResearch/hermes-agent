@@ -27,7 +27,7 @@ Requires `OPENROUTER_API_KEY` set or present in `~/.hermes/.env`.
 Each scenario runs with `tool_search.enabled = on` and again with `off` for an
 A/B baseline. The harness records:
 
-- bridge_calls (the tool_search / tool_describe / tool_call sequence the model emitted)
+- bridge_calls (the tool_search / tool_describe / invoke_tool sequence the model emitted)
 - underlying_tool_calls (what actually ran through the registry dispatcher)
 - final_response, iteration count, elapsed time, any errors
 

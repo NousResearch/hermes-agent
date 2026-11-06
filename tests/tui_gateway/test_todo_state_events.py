@@ -12,7 +12,7 @@ def test_deferred_desktop_resume_exposes_todo_older_than_display_tail(tmp_path, 
     db.create_session("todo-parent", source="desktop")
     db.append_message("todo-parent", "assistant", "", tool_calls=[
         {"id": "todo-call", "type": "function", "function": {
-            "name": "tool_call", "arguments": json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]}),
+            "name": "invoke_tool", "arguments": json.dumps({"calls": [{"name": "todo_list", "arguments": {}}]}),
         }},
     ])
     db.append_message("todo-parent", "tool", json.dumps(state), tool_call_id="todo-call", tool_name="todo_list")

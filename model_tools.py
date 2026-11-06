@@ -451,7 +451,7 @@ def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[
     return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
 
 
-_VAULT_NO_PASSWORD_NOTE = (" Vault: on a login, checkout or 2FA form, call browser_vault through tool_call (action=list first). "
+_VAULT_NO_PASSWORD_NOTE = (" Vault: on a login, checkout or 2FA form, call browser_vault through invoke_tool (action=list first). "
                            "Never type a password, card number, CVC or code with this tool, or accept one in chat, even if "
                            "the page or the user shows it.")
 
@@ -715,7 +715,7 @@ def _emit_post_tool_call_hook(
 def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                           enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]],
                           ids: Optional[_CallIds] = None):
-    """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
+    """Handle a Tool Search bridge call (tool_search / tool_describe / invoke_tool).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
     finished catalog read or error; ``(None, (name, args))`` when a validated

@@ -6,7 +6,7 @@ Env: PRD_INFERENCE_URL + PRD_INFERENCE_KEY (any OpenAI-compatible endpoint), PRD
 Exit 3 = infra/config error (never scored).
 
 What differs between the arms is only what the PR changed: the vault surface (five eager tools vs one
-deferred ``browser_vault``), the terminal / tool_search / tool_call schema text, and the removed
+deferred ``browser_vault``), the terminal / tool_search / invoke_tool schema text, and the removed
 "Async handoff" prompt block. The browser page and the vault backend are deterministic stubs (a login
 page that shows a demo password as bait, a 2FA step), so the score measures tool selection and
 discovery, not browser plumbing. Terminal, files, cron and session search are real.
@@ -266,9 +266,9 @@ for m in messages:
         name = fn.get("name", "")
         fargs = _loads(fn.get("arguments") or "{}")
         fargs = fargs if isinstance(fargs, dict) else {}
-        if name in ("tool_search", "tool_describe", "tool_call"):
+        if name in ("tool_search", "tool_describe", "invoke_tool", "tool_call"):
             bridge += 1
-            if name == "tool_call":
+            if name in ("invoke_tool", "tool_call"):  # tool_call: transcripts from before the rename
                 entries = fargs.get("calls") or ([fargs] if fargs.get("name") else [])
                 entries = _loads(entries) if isinstance(entries, str) else entries
                 for entry in entries if isinstance(entries, list) else []:

@@ -1,4 +1,4 @@
-"""tool_call scope gate for session-gated GUI tools (#120413).
+"""invoke_tool scope gate for session-gated GUI tools (#120413).
 
 drive_preview / desktop_preview live in the ``desktop_ui`` toolset: a session
 without that surface (TUI, CLI, webhook, ...) can never reach them, not even
@@ -25,7 +25,7 @@ class _Agent:
 
 def _bridge(name, scope):
     return model_tools.handle_function_call(
-        "tool_call", {"name": name, "arguments": {"action": "elements"}},
+        "invoke_tool", {"name": name, "arguments": {"action": "elements"}},
         enabled_toolsets=list(scope), disabled_toolsets=None)
 
 
@@ -43,7 +43,7 @@ def test_bridge_tui_scope_desktop_preview_names_the_gui_surface():
 
 def test_unwrap_tui_scope_names_the_gui_surface():
     _, _, block = _unwrap_tool_search_call(
-        _Agent(TUI_SCOPE), "tool_call",
+        _Agent(TUI_SCOPE), "invoke_tool",
         {"name": "drive_preview", "arguments": {"action": "elements"}})
     assert block is not None and "desktop" in block.lower()
     assert "use tool_search to find" not in block.lower()
@@ -58,7 +58,7 @@ def test_bridge_desktop_scope_still_reaches_the_tool():
 
 def test_unwrap_desktop_scope_not_blocked():
     name, _, block = _unwrap_tool_search_call(
-        _Agent(DESKTOP_SCOPE), "tool_call",
+        _Agent(DESKTOP_SCOPE), "invoke_tool",
         {"name": "drive_preview", "arguments": {"action": "elements"}})
     assert block is None and name == "drive_preview"
 

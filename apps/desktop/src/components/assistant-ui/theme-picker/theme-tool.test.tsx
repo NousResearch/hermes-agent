@@ -90,12 +90,12 @@ describe('ThemeTool', () => {
     await waitFor(() => expect($accentOverride.get()).toBeNull())
   })
 
-  it('draws the layout card for a call made through the tool_call bridge', () => {
+  it('draws the layout card for a call made through the invoke_tool bridge', () => {
     const respond = park('layout')
 
     renderRow({
       args: { calls: [{ arguments: { picker: 'layout' }, name: 'set_theme' }] },
-      toolName: 'tool_call'
+      toolName: 'invoke_tool'
     })
     fireEvent.click(screen.getByRole('button', { name: /Elite/ }))
 

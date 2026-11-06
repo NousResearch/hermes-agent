@@ -67,7 +67,7 @@ def test_deferred_builtins_and_cron_narrowing_are_not_unavailable(monkeypatch):
     monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
     route = {"model": "m", "provider": "openrouter"}
     agent = SimpleNamespace(_delegate_depth=0, enabled_toolsets=None, disabled_toolsets=None)
-    # Enabled but behind tool_search (reachable via tool_call): not "disabled in this session".
+    # Enabled but behind tool_search (reachable via invoke_tool): not "disabled in this session".
     assert signals.tool_unavailable_fields(agent, "session_search", "unknown_tool", route) is None
     # The same tool in a session that turned its toolset off is.
     narrowed = SimpleNamespace(_delegate_depth=0, enabled_toolsets=None, disabled_toolsets=["session_search"])

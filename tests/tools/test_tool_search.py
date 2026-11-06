@@ -489,7 +489,7 @@ class TestRegression_OpenClawCron84141:
 
 
     def test_unwrap_rejects_core_tool_attempt(self):
-        """Even if the model tries to invoke a core tool through tool_call,
+        """Even if the model tries to invoke a core tool through invoke_tool,
         we reject the call and tell the model to use it directly."""
         from tools.tool_search import resolve_underlying_call
         _, _, err = resolve_underlying_call({
@@ -505,7 +505,7 @@ class TestRegression_ToolsetScoping:
     The bug: the bridge dispatch and the tool_executor unwrap read the
     catalog from the *global* registry (get_tool_definitions with no
     toolset scope = "start with everything"), so a session scoped to one
-    MCP server could tool_search the entire process registry and tool_call
+    MCP server could tool_search the entire process registry and invoke_tool
     any plugin tool it was never granted. registry.dispatch() has no
     enabled_tools gate for non-execute_code tools, so the out-of-scope tool
     actually ran.
@@ -752,7 +752,7 @@ class TestDeferredCallSchemaProbe:
 
         self._register("mcp_probe_valid_op", "mcp-probe-valid")
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": "mcp_probe_valid_op",
                            "arguments": {"document_id": "abc"}},
             enabled_toolsets=["mcp-probe-valid"],
@@ -775,7 +775,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"priority": "urgent"}},
             enabled_toolsets=[toolset],
         ))
@@ -845,7 +845,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"count": "42"}},
             enabled_toolsets=[toolset],
         ))
@@ -866,7 +866,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"value": None}},
             enabled_toolsets=[toolset],
         ))
@@ -900,7 +900,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"value": "kept"}},
             enabled_toolsets=[toolset],
         ))

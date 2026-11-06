@@ -138,7 +138,7 @@ def test_restricted_toolset_never_gains_the_recovered_tool(mail_state, clock):
     invalidate_check_fn_cache()
     assert _names(get_tool_definitions(**restricted)) == {ANCHOR}
     result, redispatch = model_tools._dispatch_bridge_tool(
-        "tool_call", {"calls": [{"name": MAIL, "arguments": {}}]}, ["mcp-probe-anchor"], None)
+        "invoke_tool", {"calls": [{"name": MAIL, "arguments": {}}]}, ["mcp-probe-anchor"], None)
     assert redispatch is None and "error" in json.loads(result)
 
 
@@ -180,12 +180,12 @@ def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, cloc
     from tests.fakes.fake_llm_provider import MODEL_ID, FakeLLMServer, Text, ToolCall
 
     script = [
-        ToolCall("tool_call", {"calls": [{"name": ANCHOR, "arguments": {}}]},
+        ToolCall("invoke_tool", {"calls": [{"name": ANCHOR, "arguments": {}}]},
                  parallel=[("tool_describe", {"names": [MAIL]})]),
         Text("turn one done"),
         ToolCall("tool_search", {"queries": ["probe mailbox messages"]},
                  parallel=[("tool_describe", {"names": [MAIL]})]),
-        ToolCall("tool_call", {"calls": [{"name": MAIL, "arguments": {}}]}),
+        ToolCall("invoke_tool", {"calls": [{"name": MAIL, "arguments": {}}]}),
         Text("turn two done"),
     ]
     with FakeLLMServer(script) as server:
@@ -193,7 +193,7 @@ def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, cloc
                         base_url=server.base_url, enabled_toolsets=BOTH, quiet_mode=True,
                         skip_context_files=True, skip_memory=True, save_trajectories=False)
         bridge = {(t.get("function") or {}).get("name") for t in agent.tools}
-        assert {"tool_search", "tool_describe", "tool_call"} <= bridge
+        assert {"tool_search", "tool_describe", "invoke_tool"} <= bridge
 
         first = agent.run_conversation("turn one")
         tools_after_turn_one = json.dumps(agent.tools, sort_keys=True)
@@ -274,7 +274,7 @@ def test_direct_tool_list_still_appends_a_late_registration_at_the_tail(mail_sta
 
 def test_grace_verdict_reuse_bounds_failing_probes_and_ends_with_the_grace(mail_state, clock):
     """A failing probe served as a grace True must not re-run on every catalog read: a slow or
-    timing-out probe would block each ``tool_call`` for its full duration. The list built on it
+    timing-out probe would block each ``invoke_tool`` for its full duration. The list built on it
     is reused for a few seconds, and never past the end of the grace window."""
     ttl, grace = registry_mod._CHECK_FN_TTL_SECONDS, registry_mod._CHECK_FN_FAILURE_GRACE_SECONDS
     kwargs = {"enabled_toolsets": BOTH, **BRIDGE_KW}
@@ -296,7 +296,7 @@ def test_grace_verdict_reuse_bounds_failing_probes_and_ends_with_the_grace(mail_
     assert _names(get_tool_definitions(**kwargs)) == {ANCHOR}  # the reuse stops where the grace does
 
 
-BRIDGE = {"tool_search", "tool_describe", "tool_call"}
+BRIDGE = {"tool_search", "tool_describe", "invoke_tool"}
 
 
 @pytest.fixture
@@ -319,7 +319,7 @@ def test_bridge_tools_stay_out_of_a_live_session_when_its_only_deferrable_tools_
         mail_state, clock, tool_search_on):
     """Tool Search on, and the session's only deferrable tools were down when it was built, so it
     has no bridge. Their recovery is a check_fn flip: it must not add ``tool_search`` /
-    ``tool_describe`` / ``tool_call`` to the live tools[]. ``/new`` gets them."""
+    ``tool_describe`` / ``invoke_tool`` to the live tools[]. ``/new`` gets them."""
     from tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     selection = ["mcp-probe-mail", "clarify"]

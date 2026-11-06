@@ -2,7 +2,7 @@
 
 This package owns everything hermes-agent needs to talk to the managed tool
 gateway's connector routes (search / schemas / execute / connections) and to
-merge remote execute results back into ``tool_call`` result arrays.
+merge remote execute results back into ``invoke_tool`` result arrays.
 
 Layering rules (enforced by review, not imports — keep them true):
 

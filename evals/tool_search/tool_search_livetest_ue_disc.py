@@ -188,7 +188,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
     elapsed = time.time() - started
     bridge_call_log = base._extract_bridge_calls(messages_out)
     searches = sum(1 for b in bridge_call_log if b["name"] == "tool_search")
-    ue_calls = [c for c in call_log if c.lower() not in ("tool_search", "tool_describe", "tool_call")
+    ue_calls = [c for c in call_log if c.lower() not in ("tool_search", "tool_describe", "invoke_tool")
                 and not c.startswith(("skills_list", "skill_", "todo", "memory"))]
     # writes = non-read calls (for absence scoring: any UE write = hallucinated capability)
     write_calls = [c for c in ue_calls if not any(v in c.lower() for v in

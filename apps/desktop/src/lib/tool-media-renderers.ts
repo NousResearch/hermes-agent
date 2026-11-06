@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { isBridgeCallName } from '@/lib/bridge-tool'
 import type { MediaKind } from '@/lib/media'
 
 /**
@@ -328,7 +329,7 @@ function bridgeArguments(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
 }
 
-/** The tool a call really ran. The deferred-tool bridge (`tool_call`) runs one
+/** The tool a call really ran. The deferred-tool bridge (`invoke_tool`) runs one
  *  local tool per call (batches are split before they run), with the tool's
  *  name and arguments in `args.calls[0]` (or the legacy `{name, arguments}`
  *  shape, a JSON-string `calls`, a single object) and its own result as the
@@ -337,7 +338,7 @@ function bridgeArguments(raw: unknown): Record<string, unknown> {
  *  only) stays the bridge: no plugin owns it. */
 export function effectiveToolCall(part: ToolCallLike): ToolCallLike {
   const entries =
-    part.toolName === 'tool_call' && part.args && typeof part.args === 'object'
+    isBridgeCallName(part.toolName) && part.args && typeof part.args === 'object'
       ? bridgeEntries(part.args as Record<string, unknown>)
       : null
 
@@ -348,7 +349,7 @@ export function effectiveToolCall(part: ToolCallLike): ToolCallLike {
   const entry = entries[0] as { arguments?: unknown; name?: unknown } | null
   const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
 
-  return name && name !== 'tool_call' ? { ...part, args: bridgeArguments(entry?.arguments), toolName: name } : part
+  return name && !isBridgeCallName(name) ? { ...part, args: bridgeArguments(entry?.arguments), toolName: name } : part
 }
 
 /** The package that owns `toolName`: the one package whose registered tools

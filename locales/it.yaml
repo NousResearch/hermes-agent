@@ -3416,7 +3416,7 @@ display:
     search: " di "
     default: " "
   bridge_generating:
-    tool_call: "una chiamata a uno strumento"
+    invoke_tool: "una chiamata a uno strumento"
     tool_search: "una ricerca di strumenti"
     tool_describe: "dettagli dello strumento"
   status_phrase:

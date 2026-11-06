@@ -478,7 +478,8 @@ _PREVIEW_BUILDERS = {
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view, "clarify": _preview_clarify,
     "session_search": lambda args, _m: t("display.preview.session_search_recall", query=_clip(_oneline(args.get("query", "")), 25)),
-    "tool_call": _preview_bridge_call("tool_call"),
+    "invoke_tool": _preview_bridge_call("invoke_tool"),
+    "tool_call": _preview_bridge_call("tool_call"),  # pre-#110442 transcripts
     "tool_search": _preview_bridge_call("tool_search"),
     "tool_describe": _preview_bridge_call("tool_describe"),
 }
@@ -543,7 +544,7 @@ _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({"skills_list", "session_sear
 # Verbs joined to the preview with " for " (search-style phrasing).
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({"web_search", "search_files"})
 
-_BRIDGE_GENERATING_TOOLS: frozenset[str] = frozenset({"tool_call", "tool_search", "tool_describe"})
+_BRIDGE_GENERATING_TOOLS: frozenset[str] = frozenset({"invoke_tool", "tool_search", "tool_describe"})
 
 
 def bridge_generating_phrase(tool_name: str) -> str | None:

@@ -11,7 +11,7 @@ import pytest
 
 def _call(entries, call_id="batch"):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
-        name="tool_call", arguments=json.dumps({"calls": entries})))
+        name="invoke_tool", arguments=json.dumps({"calls": entries})))
 
 
 def _response(calls=None):
@@ -144,9 +144,9 @@ def test_expansion_preserves_connector_batches_and_rejects_bad_envelopes():
     bedrock_thinking = {"reasoningContent": {"reasoningText": {"text": "opaque", "signature": "signed"}}}
     provider_data = {
         "anthropic_content_blocks": [thinking, {"type": "tool_use", "id": "batch",
-            "name": "tool_call", "input": json.loads(original)}],
+            "name": "invoke_tool", "input": json.loads(original)}],
         "bedrock_content_blocks": [bedrock_thinking, {"toolUse": {"toolUseId": "batch",
-            "name": "tool_call", "input": json.loads(original)}}],
+            "name": "invoke_tool", "input": json.loads(original)}}],
     }
     expanded = expand_local_tool_batches([call], provider_data=provider_data)
     assert provider_data["anthropic_content_blocks"][0] is thinking

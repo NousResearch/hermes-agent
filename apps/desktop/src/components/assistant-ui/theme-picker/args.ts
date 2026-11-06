@@ -1,6 +1,7 @@
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type { ThemePicker } from '@hermes/shared'
 
+import { isBridgeCallName } from '@/lib/bridge-tool'
 import { recordOf } from '@/lib/connector-tools'
 
 export const SET_THEME_TOOL = 'set_theme'
@@ -11,9 +12,9 @@ export interface SetThemeCall {
   picker: null | ThemePicker
 }
 
-// After a reload the transcript holds the model's own call, which reached the deferred tool through tool_call.
+// After a reload the transcript holds the model's own call, which reached the deferred tool through invoke_tool.
 function bridgedArgs(toolName: string, args: ToolCallMessagePart['args']): null | ToolCallMessagePart['args'] {
-  if (toolName !== 'tool_call') {
+  if (!isBridgeCallName(toolName)) {
     return null
   }
 

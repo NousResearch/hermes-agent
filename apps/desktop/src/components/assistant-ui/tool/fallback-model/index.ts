@@ -9,6 +9,8 @@ import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@
 import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
+import { isBridgeCallName } from '@/lib/bridge-tool'
+
 import { skillActivityTitle } from '../skill-activity'
 
 import {
@@ -766,7 +768,7 @@ const NON_DELIVERABLE_TOOLS = new Set([
 ])
 
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
-  if (toolName === 'tool_call') {
+  if (isBridgeCallName(toolName)) {
     const calls = Array.isArray(args.calls) ? args.calls : [args]
     const call = parseMaybeObject(calls[0])
 

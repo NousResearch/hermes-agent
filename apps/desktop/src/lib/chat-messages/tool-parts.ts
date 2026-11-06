@@ -32,7 +32,7 @@ function collectToolMatchValues(query: string, context: string, preview: string)
   return [...new Set([query, context, preview].map(normalizeToolMatchValue).filter(Boolean))]
 }
 
-/** The gateway names what a bridged `tool_call` actually runs; the row renders those words.
+/** The gateway names what a bridged `invoke_tool` actually runs; the row renders those words.
  *  Under a key no tool can take as an argument, so a tool's own `labels` never collides. */
 function labelArgs(labels: ToolLabel[] | undefined): { [TOOL_LABELS_ARG]: ToolLabel[] } | undefined {
   return labels?.length ? { [TOOL_LABELS_ARG]: labels } : undefined

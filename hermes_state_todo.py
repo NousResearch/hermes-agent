@@ -26,6 +26,7 @@ class SessionTodoResultMixin:
             return None
         if max_chars is None:
             from tools.todo_tool import MAX_TODO_RESULT_CHARS
+            from tools.tool_search_catalog import TOOL_CALL_NAMES
             max_chars = MAX_TODO_RESULT_CHARS
         session_ids = self._resume_lineage_ids(session_id)
         with self._read_ctx() as conn:
@@ -64,7 +65,7 @@ class SessionTodoResultMixin:
                                     return False
                                 if function.get("name") in ("todo_list", "todo"):
                                     return True
-                                if function.get("name") != "tool_call":
+                                if function.get("name") not in TOOL_CALL_NAMES:
                                     return False
                                 arguments = function.get("arguments")
                                 if isinstance(arguments, str):

@@ -7,7 +7,7 @@ fixture server, launched from a portable package under ``<HERMES_HOME>/plugins/<
   chat is open in the ``tui_gateway`` host (the Ink TUI / Desktop backend) is usable in that SAME
   chat on its next turn (the call reaches the server, its canary reaches the model), the open
   chat's model-facing ``tools[]`` stays byte-identical (prompt-cache invariant: MCP tools go live
-  deferred behind ``tool_call``), and a new chat gets the tool too;
+  deferred behind ``invoke_tool``), and a new chat gets the tool too;
 * a resource-only portable server activated live is reported connected (#119751);
 * ``${VAR}`` placeholders in a portable ``mcp.json`` ``env`` reach the server interpolated from the
   profile's ``.env`` (#120526), with the native ``mcp_servers`` path as the passing control, and

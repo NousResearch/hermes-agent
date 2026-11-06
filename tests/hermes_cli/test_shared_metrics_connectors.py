@@ -63,7 +63,7 @@ def test_connector_and_bridge_calls_are_named_without_a_slug():
     connector = {"tool_name": "connectors__gmail__SEND_EMAIL", "toolset": "other"}
     assert contract.tool_metric_name(connector) == "connector"
     assert contract.tool_category(connector) == "connector"
-    for bridge in ("tool_search", "tool_describe", "tool_call"):
+    for bridge in ("tool_search", "tool_describe", "invoke_tool"):
         assert contract.tool_metric_name({"tool_name": bridge}) == bridge
     # A non-connector tool that reports an error code keeps the generic class.
     plain = {"tool_name": "mcp_github_x", "status": "error", "error_type": "tool_error",
@@ -76,7 +76,7 @@ def _tool_call(name, arguments):
 
 
 def test_batch_row_counts_logical_calls_and_the_connector_share():
-    batch = _tool_call("tool_call", {"calls": [
+    batch = _tool_call("invoke_tool", {"calls": [
         {"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
         {"name": "connectors__slack__POST", "arguments": {}}]})
     assert tool_batch_fields(_ROUTE, [batch]) == {**_ROUTE, "connector_share": "all", "size_bucket": "2"}
@@ -98,7 +98,7 @@ def _connector_batch_hooks(entries, *, wrapper_result="ok"):
             "post_tool_call", **entry, tool_name=name, args={}, result=json.dumps(result if failed else {"ok": 1}),
             status="error" if failed else "ok", error_type="tool_error" if failed else None)
     lifecycle.invoke_hook(
-        "post_tool_call", **call, tool_name="tool_call", status=wrapper_result, result="{}",
+        "post_tool_call", **call, tool_name="invoke_tool", status=wrapper_result, result="{}",
         args={"calls": [{"name": name, "arguments": {}} for name, _ in entries]})
 
 
@@ -129,12 +129,12 @@ def test_a_connector_batch_counts_each_entry_once_and_not_the_wrapper(fake_relay
 def test_a_batch_rejected_before_any_entry_still_counts_as_tool_call(fake_relay):
     lifecycle.invoke_hook("pre_llm_call", **_BASE)
     lifecycle.invoke_hook(
-        "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="tool_call", status="error",
+        "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="invoke_tool", status="error",
         error_type="tool_error", result=json.dumps({"error": "too many calls"}),
         args={"calls": [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]})
     _end_turn()
     [end] = [event[2] for event in fake_relay.events if event[0] == "tool.call_end"]
-    assert (end["tool_name"], end["outcome"]) == ("tool_call", "failed")
+    assert (end["tool_name"], end["outcome"]) == ("invoke_tool", "failed")
 
 
 def test_a_batch_the_executor_abandons_mid_entry_counts_that_entry_once(fake_relay):
@@ -144,7 +144,7 @@ def test_a_batch_the_executor_abandons_mid_entry_counts_that_entry_once(fake_rel
     entry = {**_BASE, "tool_call_id": "tc1#0", "tool_name": "connectors__gmail__SEND_EMAIL", "args": {}}
     lifecycle.invoke_hook("pre_tool_call", **entry)
     lifecycle.invoke_hook(
-        "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="tool_call", status="timeout",
+        "post_tool_call", **_BASE, tool_call_id="tc1", tool_name="invoke_tool", status="timeout",
         error_type="tool_timeout", result="timed out",
         args={"calls": [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}}]})
     _end_turn()
@@ -239,7 +239,7 @@ def test_entries_report_their_own_post_even_under_the_executor_suppression(monke
     calls = [{"name": "connectors__gmail__SEND_EMAIL", "arguments": {}},
              {"name": "connectors__slack__POST", "arguments": {}}]
     with model_tools.suppress_post_tool_call_hook():
-        model_tools.handle_function_call("tool_call", {"calls": calls}, tool_call_id="tc1",
+        model_tools.handle_function_call("invoke_tool", {"calls": calls}, tool_call_id="tc1",
                                          enabled_toolsets=["connections"])
     # Each entry reports under its own id, so a trace observer never folds entries together.
     assert posts == [("connectors__gmail__SEND_EMAIL", "tc1#0"), ("connectors__slack__POST", "tc1#1")]

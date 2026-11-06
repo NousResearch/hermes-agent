@@ -27,7 +27,7 @@ function turn(bridged = false): ThreadMessage[] {
     ? {
         type: 'tool-call',
         toolCallId: 'call-sfx',
-        toolName: 'tool_call',
+        toolName: 'invoke_tool',
         args: { calls: [{ name: 'sfx_make', arguments: { prompt: 'boom' } }] },
         argsText: '{}',
         result: { file_path: SFX_PATH, media_tag: `MEDIA:${SFX_PATH}` }

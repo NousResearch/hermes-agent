@@ -119,11 +119,11 @@ describe('findProducingToolCall', () => {
 
 describe('effectiveToolCall', () => {
   it('unwraps a single-entry deferred-tool bridge call and leaves batches and plain calls alone', () => {
-    const bridged = call('tool_call', {}, { args: { calls: [{ name: 'sfx_make', arguments: { prompt: 'zap' } }] } })
-    const batch = call('tool_call', {}, { args: { calls: [{ name: 'a' }, { name: 'b' }] } })
+    const bridged = call('invoke_tool', {}, { args: { calls: [{ name: 'sfx_make', arguments: { prompt: 'zap' } }] } })
+    const batch = call('invoke_tool', {}, { args: { calls: [{ name: 'a' }, { name: 'b' }] } })
 
     expect(effectiveToolCall(bridged)).toMatchObject({ args: { prompt: 'zap' }, toolName: 'sfx_make' })
-    expect(effectiveToolCall(batch).toolName).toBe('tool_call')
+    expect(effectiveToolCall(batch).toolName).toBe('invoke_tool')
     expect(effectiveToolCall(call('terminal', {})).toolName).toBe('terminal')
   })
 
@@ -135,14 +135,14 @@ describe('effectiveToolCall', () => {
     ]
 
     for (const args of shapes) {
-      expect(effectiveToolCall(call('tool_call', {}, { args }))).toMatchObject({
+      expect(effectiveToolCall(call('invoke_tool', {}, { args }))).toMatchObject({
         args: { prompt: 'zap' },
         toolName: 'sfx_make'
       })
     }
 
     // The bridge never names itself.
-    expect(effectiveToolCall(call('tool_call', {}, { args: { name: 'tool_call' } })).toolName).toBe('tool_call')
+    expect(effectiveToolCall(call('invoke_tool', {}, { args: { name: 'invoke_tool' } })).toolName).toBe('invoke_tool')
   })
 })
 

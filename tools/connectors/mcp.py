@@ -26,7 +26,7 @@ PREPARE_WAIT_SECONDS = 30.0
 NOTE = (
     "Settled once; do not re-ask on your own for any target the user skipped or that timed out, but "
     "a later request from the USER for that same app is not a re-ask — run it. Connected "
-    "targets' tools are available now through tool_describe/tool_call and are named under "
+    "targets' tools are available now through tool_describe/invoke_tool and are named under "
     "tools_listing. A target with discovery_error is authorized but its tools are unavailable; "
     "retry discovery with manage_connections using that target's authorize or install action "
     "without asking for consent again."
@@ -35,7 +35,7 @@ NOTE = (
 NO_CARD_NOTE = (
     "No connection card is drawn for this turn. Show any connect_url to the user so they "
     "open it in a browser, then ask them to say when they are done. Connected targets' tools are "
-    "available now through tool_describe/tool_call and are named under tools_listing. A target with "
+    "available now through tool_describe/invoke_tool and are named under tools_listing. A target with "
     "discovery_error is authorized but its tools are unavailable; retry discovery with "
     "manage_connections using that target's authorize or install action without asking for consent "
     "again. Do not re-ask on your own for skipped or timed-out targets, but a later request from "

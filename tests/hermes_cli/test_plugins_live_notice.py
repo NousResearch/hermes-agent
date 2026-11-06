@@ -45,7 +45,7 @@ def test_the_notice_names_the_skill_and_the_tool_prefix_and_lists_no_tool(blende
     assert "MCP server blender: 3 tools, mcp__blender__*." in note
     assert "MCP server blender-render: not connected (spawn failed)." in note
     assert all(tool not in note for tool in blender_tools)
-    for bridge in ("tool_search", "tool_describe", "tool_call"):
+    for bridge in ("tool_search", "tool_describe", "invoke_tool"):
         assert bridge in note
     # A Hermes control frame, so a hosted room relabels a reply that copies it.
     assert note.startswith("[") and note[1:].startswith(CONTROL_FRAME_OPENERS) and note.endswith("]")

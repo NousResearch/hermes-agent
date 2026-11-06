@@ -45,7 +45,7 @@ class MCPModelPeer(BaseHTTPRequestHandler):
         if not finished:
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'mcp-fixture-' + str(len(results)), 'type': 'function', 'function': {
-                    'name': ('tool_describe' if len(results) == 1 else 'tool_call') if names else 'tool_search',
+                    'name': ('tool_describe' if len(results) == 1 else 'invoke_tool') if names else 'tool_search',
                     'arguments': json.dumps(({'names': [names[0]]} if len(results) == 1 else
                         {'name': names[0], 'arguments': {}}) if names else {'queries': ['owned echo']})}}]}
         tool = 'tool_calls' in message

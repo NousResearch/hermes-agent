@@ -1,11 +1,13 @@
 import { useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { sessionRoute } from '@/app/routes'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $onboardingChatOpener, startOnboarding } from '@/store/onboarding-run'
+import { requestRoute } from '@/store/recovery-requests'
 
 import { ListRow } from './primitives'
 
@@ -20,10 +22,11 @@ export function OnboardingSettings() {
 
     // The whole first-run experience again: the boot overlay, the onboarding-sized window, the demo
     // layout and the intro, in a new chat opened the way the launch opens it.
-    const open = $onboardingChatOpener.get()
+    // The main shell normally supplies the opener. Keep the former route intent as a fallback while
+    // that effect is unavailable, so a rerun never skips the backend start solely because of UI wiring.
+    const open = $onboardingChatOpener.get() ?? (async storedId => requestRoute(sessionRoute(storedId)))
 
-    const started =
-      open !== null && (await startOnboarding(requestGateway, open, { intro: firstRunIntro(), rerun: true }))
+    const started = await startOnboarding(requestGateway, open, { intro: firstRunIntro(), rerun: true })
 
     setStarting(false)
 

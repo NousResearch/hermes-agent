@@ -1772,16 +1772,17 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
                                         task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
-        # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
-        _LIMIT = 2000
-        # Truncate at line boundaries so notifications never start mid-line (fixes #23284). Keep the last
-        # ~2000 chars but snap to the nearest preceding newline, then prepend a truncation marker when
-        # output was cut.
+        # Bot delivery runners carry the reply itself and request a larger payload budget.
+        _LIMIT = getattr(session, "completion_output_chars", 0) or 2000
+        _cut = 0
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-            _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
+            # A single JSON line followed by a newline must never become an empty reply.
+            if 0 <= _nl < len(_tail) - 1:
+                _tail = _tail[_nl + 1:]
+            _cut = len(_raw) - len(_tail)
+            _out = _tail
         else:
             _out = _raw
         return {
@@ -1797,6 +1798,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             "completion_reason": getattr(session, "completion_reason", "exited"),
             "termination_source": getattr(session, "termination_source", ""),
             "output": _redact_gateway_user_facing_secrets(_out),
+            **({"output_cut": _cut} if _cut else {}),
             # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
             "parent_session_id": (
                 watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""

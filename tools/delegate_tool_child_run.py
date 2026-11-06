@@ -36,11 +36,15 @@ def _reserve_child_transcript(child: Any) -> None:
         # children retain their existing no-transcript behavior.
         return
     try:
-        # Leave model_config and the prompt unset. The constructor upsert keeps
-        # existing values, so a partial config here would freeze first-turn state.
+        # Only the lineage marker: every marker-keyed reader (pickers, resume tip
+        # walk, FTS, cascade delete) must see a subagent, not a continuation, from
+        # the moment its id is published. The first turn merges the rest of the
+        # constructor config in (``AIAgent._ensure_db_session``); the prompt stays unset.
+        parent_sid = child._parent_session_id
         db.create_session(
             session_id=child.session_id, source="subagent",
-            parent_session_id=child._parent_session_id,
+            parent_session_id=parent_sid,
+            model_config={"_delegate_from": parent_sid} if parent_sid else None,
         )
         child._session_db_reserved = True
     except BaseException:

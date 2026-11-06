@@ -149,3 +149,17 @@ def reinstall_primary_runtime(
     agent._fallback_activated = False
     agent._fallback_index = 0
     agent._rate_limit_backoff_count = 0
+
+
+def notify_route_change(agent: Any) -> bool:
+    """Call ``agent.route_change_callback`` once a fallback switch or a primary restore has
+    installed the new ``model`` and ``provider``, so a viewer's label follows the route mid-turn.
+    A raising callback is logged at debug level and never undoes the switch. Returns True, the
+    caller's success result."""
+    callback = getattr(agent, "route_change_callback", None)
+    if callback is not None:
+        try:
+            callback()
+        except Exception:  # health: allow BLE001 -- display-only refresh; the route change stands
+            logger.debug("route_change_callback failed", exc_info=True)
+    return True

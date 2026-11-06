@@ -1,6 +1,6 @@
 name: lemma
 repo: https://github.com/udirobert/lemma
-sha: bacb0ef4047e155a6a941b2c97ab7137af054320
+sha: 3f1e637c4f5ab7df1d2a075989db32095bdf12c7
 subdir: hermes-plugin
 title: Lemma — Audit What Agents Read
 description: 'An AI-scientist plugin that audits what your agent reads. Paste or mention a paper link and the ambient
@@ -8,12 +8,14 @@ description: 'An AI-scientist plugin that audits what your agent reads. Paste or
   claims, generate and run honest audit scripts behind a mandatory positive control, and render verdicts —
   supported, falsified, inconclusive — over an append-only evidence trail. The Desktop Audit Room pane shows live
   runs (stage, attempts, trace tail) and self-distrust flags (verify_gain) when a post-feedback flip to supported
-  needs eyeballing. Everything stays local under plugin_data_dir; the only network call is Anthropic inside tool
-  handlers.'
+  needs eyeballing. Everything stays local under plugin_data_dir. Disclosure: LLM-written audit scripts execute
+  inside a sandbox (no network, workdir-only writes) and are refused where none exists; audit and improve run as
+  detached background processes; network goes to Anthropic (LLM), arxiv.org/openreview.net (papers), and
+  api.firecrawl.dev only if the user configures that key.'
 maintainer: udirobert
 tier: community
 category: tools
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://github.com/udirobert/lemma/tree/main/hermes-plugin
 platforms: []
 capabilities:

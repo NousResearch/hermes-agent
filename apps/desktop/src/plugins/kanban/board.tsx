@@ -85,6 +85,7 @@ import {
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
+import { $openTaskRequest } from './open-request'
 import { OrchestrationPanel } from './orchestration'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
@@ -1136,6 +1137,19 @@ export function KanbanBoardPage() {
     setAddStatus(requestedLane)
     $newTaskLane.set(null)
   }, [requestedLane])
+
+  // An open-card request from outside the page (a toast's "Open Kanban", the
+  // blocked-panel plugin) — same park-and-consume handshake as above.
+  const requestedTask = useValue($openTaskRequest)
+
+  useEffect(() => {
+    if (requestedTask === null) {
+      return
+    }
+
+    setOpenId(requestedTask)
+    $openTaskRequest.set(null)
+  }, [requestedTask])
 
   const toggleSelect = (id: string) => {
     setSelected(prev => {

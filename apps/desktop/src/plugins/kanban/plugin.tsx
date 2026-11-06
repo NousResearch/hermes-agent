@@ -33,6 +33,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
+import { openTaskOnBoard } from './open-request'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -86,6 +87,34 @@ const plugin: HermesPlugin = {
   register(ctx) {
     ctx.i18n.register(KANBAN_LOCALES)
     ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket, { os: ctx.os, t: ctx.i18n.t }))
+
+    // Global "open this card" hook for other plugins (blocked-panel's "Open
+    // card" probes `window.__hermesKanbanOpenTask(id, board)`; true = handled).
+    // A named non-default board is selected first so the drawer's fetch hits it.
+    const hookWin = window as unknown as { __hermesKanbanOpenTask?: (id: string, board?: string) => boolean }
+
+    const openHook = (id: string, board?: string) => {
+      if (typeof id !== 'string' || !id.trim()) {
+        return false
+      }
+
+      const slug = typeof board === 'string' ? board.trim() : ''
+
+      if (slug && slug !== 'default' && slug !== $boardSlug.get()) {
+        $boardSlug.set(slug)
+      }
+
+      openTaskOnBoard(id)
+
+      return true
+    }
+
+    hookWin.__hermesKanbanOpenTask = openHook
+    ctx.onDispose(() => {
+      if (hookWin.__hermesKanbanOpenTask === openHook) {
+        delete hookWin.__hermesKanbanOpenTask
+      }
+    })
 
     // The plugin command pattern: ONE action id (`kanban.newTask`) wired into
     // two areas — a keybind (dispatch + rebindable panel row) and a palette row

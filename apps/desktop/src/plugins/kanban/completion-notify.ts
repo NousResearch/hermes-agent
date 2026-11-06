@@ -30,6 +30,7 @@
 import { host, type PluginOs, type PluginRestOptions, type PluginTranslate } from '@hermes/plugin-sdk'
 
 import { en } from './i18n'
+import { openTaskOnBoard } from './open-request'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 
@@ -168,7 +169,7 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
     title,
     message,
     ...(detail ? { detail } : {}),
-    action: { label: t('notify.openKanban'), onClick: () => host.navigate('/kanban') }
+    action: { label: t('notify.openKanban'), onClick: () => openTaskOnBoard(taskId) }
   })
 
   // Native OS notification — the desktop shell fires it only while the user

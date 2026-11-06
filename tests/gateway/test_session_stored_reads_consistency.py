@@ -30,7 +30,7 @@ async def test_a_compaction_between_the_cursor_lookup_and_the_page_read_skips_no
         rest = await _call(owner, 'session.transcript', session_id=ref.session_id, limit=10, order='latest',
                            cursor=first['result']['next_cursor'])
         assert fired
-        assert [row['text'] for row in rest['result']['rows']] == [
+        assert [row['text'] for row in rest['result']['rows'] if row['row_kind'] == 'message'] == [
             'question 1', 'answer 1', 'question 2', 'answer 2', 'question 3']
         await owner.close()
 
@@ -63,7 +63,8 @@ def test_a_result_is_labelled_by_its_own_call_when_the_provider_id_repeats(tmp_p
 async def test_a_cursor_past_sqlites_integer_range_is_invalid_params(tmp_path, monkeypatch):
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         db.append_message(target, 'user', 'question 1')
-        cursor = base64.urlsafe_b64encode(json.dumps(['t2', ref.session_id, 'oldest', [0, 2 ** 63]]).encode()).decode()
+        cursor = base64.urlsafe_b64encode(json.dumps(['t3', ref.session_id, None, 'oldest', [0, 2 ** 63], target, 0,
+                                                       [0, 0, 0]]).encode()).decode()
         reply = await _call(owner, 'session.transcript', session_id=ref.session_id, cursor=cursor)
         assert reply.get('error', {}).get('data', {}).get('reason') == 'invalid_params', reply
         await owner.close()

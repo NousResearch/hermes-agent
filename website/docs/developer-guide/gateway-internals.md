@@ -57,6 +57,10 @@ Subagent reads require the current parent's live object ancestry, not merely equ
 session IDs; tails are bounded to 16 KiB. Missing or retired children return
 `available: false`. These are reads, not child steering or stop controls.
 
+`subagent.list` rows also carry `child_session_id`: the child's own stored session
+(`null` until it has one). A child's stored transcript, live or finished, is
+`session.transcript` with `subagent_id` (see [Gateway local sessions](./gateway-local-sessions.md)).
+
 Managed-worker policies return `unsupported_projection` for process/subagent reads:
 the owner's process-local registry cannot truthfully describe another interpreter.
 Control mutations (`session.control`), process mutations and subagent steering are

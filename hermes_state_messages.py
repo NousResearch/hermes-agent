@@ -1151,7 +1151,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
         (a micro-compaction merge also stands for the rows it absorbed). *first_ids* gets each kept row's id ->
         its message's first durable row id, a removed copy's included (a carried tail's superseded original):
-        the key no compaction or rotation moves."""
+        the key no compaction or rotation moves.
+
+        Storage interface: port as ``display_generations`` (``first_ids`` is ``session.transcript``'s)."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
         uid_key: dict[Any, tuple[Any, ...]] = {}  # message_uid -> the display key of its first copy
@@ -1332,7 +1334,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
     def _display_rows_from_conn(conn, session_id: str, *, limit: Optional[int] = None,
                                 offset: int = 0, latest: bool = False, after: Optional[int] = None):
         """One display-history projection for normal reads and transactional verification. *after*: keyset
-        paging past that ``display_order`` (before it when *latest*)."""
+        paging past that ``display_order`` (before it when *latest*).
+
+        Storage interface: port as ``display_rows_page`` (``after`` is ``session.transcript``'s keyset)."""
         direction = "DESC" if latest else "ASC"
         keyset = "" if after is None else f" AND display_order {'<' if latest else '>'} {int(after)}"
         return conn.execute(

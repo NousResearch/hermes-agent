@@ -1,6 +1,6 @@
-"""``session.transcript`` / ``session.compactions`` bounds (#150091 review): no nested store read, a page never
-over its byte cap, tool results keep their call's label across a page cut, newest-first paging across a
-compaction, and every compaction listed even with the same prose."""
+"""``session.transcript`` bounds (#150091 review): no nested store read, a page never over its byte cap, tool
+results keep their call's label across a page cut, newest-first paging across a compaction, and every
+compaction a row even with the same prose."""
 import json
 from contextlib import contextmanager
 
@@ -43,16 +43,15 @@ def _forbid_nested_reads(monkeypatch, db):
 @pytest.mark.asyncio
 async def test_no_stored_read_opens_a_read_inside_another(tmp_path, monkeypatch):
     from gateway.session_picker_fields import current_segments, fill_picker_fields
-    from gateway.session_stored_reads import read_page, stored_compactions
+    from gateway.session_stored_reads import read_page
     with _session(tmp_path, monkeypatch) as (db, authority, owner, ref, target):
         db.append_message(target, 'user', 'question 1')
         db.append_message(target, 'assistant', 'answer 1')
         _compact_carrying_tail(db, target, _summary('## Goal\nship', 2), tail_rows=1)
         _forbid_nested_reads(monkeypatch, db)
-        assert [c['summary'] for c in stored_compactions(db, target)] == ['## Goal\nship']
         for order in ('oldest', 'latest'):
-            rows, _ = read_page(db, target, order, None, 10, profile_home=str(tmp_path))
-            assert [row['text'] for row in rows] == ['question 1', 'answer 1']
+            rows, _, _ = read_page(db, target, order, None, 10, profile_home=str(tmp_path))
+            assert [row['text'] for row in rows] == ['question 1', '## Goal\nship', 'answer 1']
         row = {'session_id': ref.session_id}
         fill_picker_fields(db, [(row, ref.session_id, current_segments(authority, [ref.session_id])[ref.session_id],
                                  None)])
@@ -73,7 +72,7 @@ async def test_a_row_too_large_for_a_page_is_bounded_whole(tmp_path, monkeypatch
             assert len(json.dumps(reply)) <= PAGE_BYTES + 4096, len(json.dumps(reply))
             truncated += [row.get('truncated') for row in reply['result']['rows']]
             cursor = reply['result']['next_cursor']
-            if cursor is None:
+            if not reply['result']['rows']:
                 break
         assert truncated == [True, True]
         await owner.close()
@@ -94,7 +93,7 @@ async def test_tool_results_keep_their_calls_label_when_a_page_is_cut(tmp_path, 
                                 **({'cursor': cursor} if cursor else {}))
             tools += [row for row in reply['result']['rows'] if row['role'] == 'tool']
             cursor = reply['result']['next_cursor']
-            if cursor is None:
+            if not reply['result']['rows']:
                 break
         assert [(row['name'], row.get('args')) for row in tools] == [
             ('write_file', {'path': f'f{i}'}) for i in (1, 2, 3)]
@@ -116,7 +115,7 @@ async def test_newest_first_paging_across_a_compaction_skips_and_repeats_nothing
 
 
 @pytest.mark.asyncio
-async def test_two_compactions_with_the_same_prose_are_both_listed(tmp_path, monkeypatch):
+async def test_two_compactions_with_the_same_prose_are_both_rows(tmp_path, monkeypatch):
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         db.append_message(target, 'user', 'question 1')
         db.append_message(target, 'assistant', 'answer 1')
@@ -124,7 +123,7 @@ async def test_two_compactions_with_the_same_prose_are_both_listed(tmp_path, mon
         db.append_message(target, 'user', 'question 2')
         db.append_message(target, 'assistant', 'answer 2')
         _compact_carrying_tail(db, target, _summary('## Goal\nsame', 4), tail_rows=1)
-        reply = await _call(owner, 'session.compactions', session_id=ref.session_id)
-        assert [(c['summary'], c['compacted_messages']) for c in reply['result']['compactions']] == [
-            ('## Goal\nsame', 2), ('## Goal\nsame', 4)], reply
+        rows = (await _call(owner, 'session.transcript', session_id=ref.session_id))['result']['rows']
+        assert [(row['text'], row['compacted_messages']) for row in rows if row['row_kind'] == 'compaction'] == [
+            ('## Goal\nsame', 2), ('## Goal\nsame', 4)], rows
         await owner.close()

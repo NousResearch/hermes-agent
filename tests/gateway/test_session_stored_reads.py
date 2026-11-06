@@ -1,4 +1,4 @@
-"""``session.transcript`` and ``session.compactions``: a stored conversation read without attaching (#150091)."""
+"""``session.transcript``: a stored conversation read without attaching (#150091), its compaction handoffs as rows."""
 import base64
 import json
 import os
@@ -13,15 +13,26 @@ async def _call(connection, method, **params):
     return await connection.dispatch({'id': 1, 'method': method, 'params': params})
 
 
-async def _pages(connection, session_id, limit, between=None, **extra):
-    """Every page of *session_id*'s transcript as a list of row-text lists; *between* runs after the first page."""
-    pages, cursor = [], None
+async def _pages(connection, session_id, limit, between=None, kinds=('message',), resets=None, **extra):
+    """Every page of *session_id*'s transcript as a list of row-text lists (rows of *kinds*), as a reader
+    keeps them: a ``reset`` reply drops what it held. *between* runs after the first page. Oldest order
+    ends at the first empty page, latest order at a null cursor; *resets* collects each reply's ``reset``."""
+    pages, cursor, latest = [], None, extra.get('order') == 'latest'
     while True:
         reply = await _call(connection, 'session.transcript', session_id=session_id, limit=limit,
                             **extra, **({'cursor': cursor} if cursor else {}))
         assert 'result' in reply, reply
-        pages.append([row.get('text') for row in reply['result']['rows']])
-        cursor = reply['result']['next_cursor']
+        result = reply['result']
+        if resets is not None:
+            resets.append(result['reset'])
+        assert result['reset'] is (cursor is None) or not latest, result
+        if result['reset']:
+            pages = []
+        if not latest and not result['rows']:
+            assert result['next_cursor'], result
+            return pages
+        pages.append([row.get('text') for row in result['rows'] if row['row_kind'] in kinds])
+        cursor = result['next_cursor']
         if between is not None:
             between()
             between = None
@@ -60,15 +71,20 @@ async def test_transcript_pages_both_ways_across_a_compaction_and_never_attach(t
                                    watermark=db.get_active_message_watermark(target), tail_count=len(tail))
 
         everything = ['question 1', 'answer 1', 'question 2', 'answer 2', 'question 3', 'answer 3']
-        # The first page is read before the compaction, the rest after it: each message once, in order.
-        assert _flat(await _pages(owner, ref.session_id, 2, between=compact)) == everything
+        # The first page is read before the compaction: the next read starts over, each message once, in order.
+        resets = []
+        assert _flat(await _pages(owner, ref.session_id, 2, between=compact, resets=resets)) == everything
+        assert resets[:2] == [True, True] and not any(resets[2:]), resets
         newest = await _pages(owner, ref.session_id, 2, order='latest')
         assert newest[0] == ['question 3', 'answer 3']
         assert _flat(newest[::-1]) == everything
-        reply = await _call(owner, 'session.compactions', session_id=ref.session_id)
-        assert reply['result']['compactions'] == [
-            {'timestamp': reply['result']['compactions'][0]['timestamp'], 'summary': '## Goal\nship it',
-             'compacted_messages': 4}], reply
+        # The handoff is a row at its position, without the parts written for the model.
+        rows = (await _call(owner, 'session.transcript', session_id=ref.session_id))['result']['rows']
+        assert [(row['row_kind'], row.get('text')) for row in rows] == [
+            ('message', 'question 1'), ('message', 'answer 1'), ('message', 'question 2'), ('message', 'answer 2'),
+            ('compaction', '## Goal\nship it'), ('message', 'question 3'), ('message', 'answer 3')], rows
+        [handoff] = [row for row in rows if row['row_kind'] == 'compaction']
+        assert handoff['role'] == 'system' and handoff['compacted_messages'] == 4 and handoff['timestamp'] > 0
         assert authority.sessions[ref.session_id].subscribers == {}
         assert ref.session_id not in owner.subscriptions
 
@@ -111,9 +127,11 @@ async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_p
         for i in (1, 2, 3):
             db.append_message(target, 'user', f'question {i}')
             db.append_message(target, 'assistant', f'answer {i}')
-        pages = await _pages(owner, ref.session_id, 5, between=lambda: _compact_carrying_tail(
+        resets = []
+        pages = await _pages(owner, ref.session_id, 5, resets=resets, between=lambda: _compact_carrying_tail(
             db, target, f'{SUMMARY_PREFIX}\n## Goal\none'))
-        assert pages[0] == ['question 1', 'answer 1', 'question 2', 'answer 2', 'question 3']
+        # The first page ended inside the tail the compaction then carried: the next read starts over.
+        assert resets[:2] == [True, True] and not any(resets[2:]), resets
         assert _flat(pages) == ['question 1', 'answer 1', 'question 2', 'answer 2', 'question 3', 'answer 3']
     finally:
         await owner.close()
@@ -121,7 +139,7 @@ async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_every_compaction_is_listed_when_a_later_one_reuses_a_summary_carrier(tmp_path, monkeypatch):
+async def test_every_compaction_is_a_row_when_a_later_one_reuses_a_summary_carrier(tmp_path, monkeypatch):
     from agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
@@ -151,8 +169,8 @@ async def test_every_compaction_is_listed_when_a_later_one_reuses_a_summary_carr
         db.archive_and_compact(target, [{'role': 'user', 'content': f'{SUMMARY_PREFIX}\n## Goal\nsecond'},
                                         prompt, *held[1:]], watermark=db.get_active_message_watermark(target),
                                tail_count=len(held))
-        reply = await _call(owner, 'session.compactions', session_id=ref.session_id)
-        assert [c['summary'] for c in reply['result']['compactions']] == ['## Goal\nfirst', '## Goal\nsecond'], reply
+        pages = await _pages(owner, ref.session_id, 3, kinds=('compaction',))
+        assert _flat(pages) == ['## Goal\nsecond', '## Goal\nfirst'], pages  # each at its position
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -180,7 +198,7 @@ async def test_a_page_stays_under_its_byte_cap_and_shows_images_as_placeholders(
             assert len(json.dumps(reply)) < PAGE_BYTES + 64 * 1024, len(json.dumps(reply))
             texts += [row['text'].split()[0:2] for row in reply['result']['rows']]
             cursor = reply['result']['next_cursor']
-            if cursor is None:
+            if not reply['result']['rows']:
                 break
         assert [t for t in texts if t[0] == 'look'] == [['look', str(i)] for i in range(5)]
         assert len([t for t in texts if t[0] == 'reply']) == 5
@@ -284,10 +302,9 @@ async def test_an_old_row_is_judged_at_its_tip_whichever_lineage_id_is_asked(tmp
     bob = _native(authority, tmp_path, 'bob')
     try:
         assert (await _call(bob, 'session.list', scope='stored'))['result']['sessions'] == []
-        for method in ('session.transcript', 'session.compactions'):
-            for sid in ('tui-tip', 'old-tui'):
-                refused = await _call(bob, method, session_id=sid)
-                assert refused['error']['data']['reason'] == 'not_found', (method, sid, refused)
+        for sid in ('tui-tip', 'old-tui'):
+            refused = await _call(bob, 'session.transcript', session_id=sid)
+            assert refused['error']['data']['reason'] == 'not_found', (sid, refused)
     finally:
         await bob.close()
         store.close_all_db_handles()

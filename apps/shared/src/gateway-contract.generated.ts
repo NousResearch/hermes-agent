@@ -5509,6 +5509,7 @@ export interface CanonicalBotCancelResult {
 export interface StoredTranscriptParams {
   profile?: string | null
   session_id: string
+  subagent_id?: string | null
   cursor?: string | null
   limit?: number
   order?: 'oldest' | 'latest'
@@ -5516,21 +5517,33 @@ export interface StoredTranscriptParams {
 }
 export interface StoredTranscriptResult {
   session_id: string
-  rows: TranscriptMessage[]
+  rows: StoredTranscriptRow[]
   next_cursor: string | null
+  reset: boolean
+  subagent_id?: string | null
+  available?: boolean | null
+  running?: boolean | null
+  child_session_id?: string | null
 }
-export interface CanonicalSessionParams {
-  profile?: string | null
-  session_id: string
-}
-export interface StoredCompactionsResult {
-  session_id: string
-  compactions: StoredCompaction[]
-}
-export interface StoredCompaction {
-  timestamp: number | null
-  summary: string
-  compacted_messages: number | null
+/** ``row_kind: 'message'`` is a ``session.resume`` ``display_messages`` row. ``row_kind: 'compaction'`` is a compaction handoff at its position: ``role: 'system'``, ``text`` the summary a reader sees (not the parts written for the model), ``compacted_messages``, ``timestamp`` and the stored ``row_id``. */
+export interface StoredTranscriptRow {
+  role: string
+  text?: string | null
+  content?: unknown | null
+  tool_call_id?: string | null
+  timestamp?: number | null
+  row_id?: number | null
+  display_kind?: string | null
+  display_metadata?: unknown | null
+  name?: string | null
+  context?: string | null
+  args?: Record<string, unknown> | null
+  labels?: ToolLabel[] | null
+  reasoning?: string | null
+  row_kind: 'message' | 'compaction'
+  compacted_messages?: number | null
+  truncated?: boolean | null
+  [key: string]: unknown
 }
 /** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
 export interface PluginRpcParams {
@@ -7084,8 +7097,6 @@ export interface CanonicalRpcMethods {
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
-  /** The summaries a stored conversation's compactions wrote, oldest first, across its compression lineage, without the parts written for the model (preamble, end marker, re-quoted user messages, recovery footer). The display rows leave them out. Never attaches the caller. Refusals: not_found, permission_denied, profile_mismatch. */
-  'session.compactions': { params: CanonicalSessionParams; result: StoredCompactionsResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
@@ -7105,7 +7116,7 @@ export interface CanonicalRpcMethods {
   /** The session.usage dict on demand: what main's classic CLI read off its agent. */
   'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
-  /** One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, time, ids and the head of its text, and carries `truncated`); it can show fewer rows, even none, so read on until `next_cursor` is null. A cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. Refusals: invalid_params (a cursor issued for another session or order, or not by this read), not_found, permission_denied, profile_mismatch. */
+  /** One page of a stored conversation's display rows across its compression lineage (live rows and rows a compaction archived, each logical message once, and each compaction handoff as a `row_kind: 'compaction'` row at its position), from the oldest or the newest. Never attaches the caller. A page holds at most `limit` (1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, ids and the head of its text, and carries `truncated`). Oldest order: read on until a page is empty, then poll with the same `next_cursor` for the rows written since; `reset: true` means the rows the cursor covered changed shape, so the reply starts again from the first page. Latest order: read on until `next_cursor` is null; its cursor stays valid across later compactions and turns. A rotated lineage past `sessions.max_resume_messages` pages only its current segment. With `subagent_id`: a delegated child of the session (running: through the parent's roster; finished: through its stored row, when its ancestry reaches this conversation); a foreign or unknown child is `available: false`. Refusals: invalid_params (a cursor issued for another session, child or order, or not by this read), not_found, permission_denied, profile_mismatch. */
   'session.transcript': { params: StoredTranscriptParams; result: StoredTranscriptResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
@@ -7153,7 +7164,6 @@ export const CANONICAL_RPC_METHODS = [
   'rollback.session_diff',
   'runtime.describe',
   'session.automation',
-  'session.compactions',
   'session.create',
   'session.detach',
   'session.events.since',

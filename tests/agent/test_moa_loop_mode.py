@@ -914,6 +914,83 @@ def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
     assert captured["reasoning_config"] == expected_reasoning
 
 
+def test_prepared_aggregator_forwards_caller_extra_headers(monkeypatch):
+    """Caller-supplied extra_headers (middleware attribution) reach the aggregator call.
+
+    A MoA request assembled by the turn pipeline may carry per-request headers
+    (Copilot x-initiator, OpenRouter cache bypass, plugin/relay attribution).
+    The prepared-aggregator path picks which api_kwargs fields to forward; headers
+    dropped there silently strip attribution from the acting model's request.
+    """
+    from agent import moa_loop
+
+    captured = {}
+    caller_headers = {
+        "x-plugin-conversation": "20261020_172737_32e74f",
+        "x-initiator": "user",
+    }
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(moa_loop, "_aggregator_reasoning_config", lambda _slot: None)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    api_kwargs = {"extra_headers": caller_headers, "stream": False}
+    facade._call_prepared_aggregator(
+        {
+            "messages": [{"role": "user", "content": "question"}],
+            "aggregator": {"provider": "openrouter", "model": "aggregator"},
+            "aggregator_temperature": None,
+        },
+        api_kwargs,
+    )
+
+    assert captured["extra_headers"] == caller_headers
+    # Forward a copy: the same-role-alternation retry reuses the partial, and the
+    # caller owns api_kwargs — neither may observe mutation of the header dict.
+    assert captured["extra_headers"] is not caller_headers
+    assert api_kwargs["extra_headers"] == caller_headers
+
+
+def test_prepared_aggregator_without_extra_headers_passes_none(monkeypatch):
+    """A caller with no middleware headers keeps the previous no-header behaviour."""
+    from agent import moa_loop
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(moa_loop, "_aggregator_reasoning_config", lambda _slot: None)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade._call_prepared_aggregator(
+        {
+            "messages": [{"role": "user", "content": "question"}],
+            "aggregator": {"provider": "openrouter", "model": "aggregator"},
+            "aggregator_temperature": None,
+        },
+        {},
+    )
+
+    assert captured.get("extra_headers") is None
+
+
 
 
 

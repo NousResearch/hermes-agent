@@ -1832,6 +1832,11 @@ export interface Translations extends NoticeTranslations {
         disabledTitle: string
         disabledMessage: string
         failedSave: string
+        reimportSignins: string
+        signinsImportedTitle: string
+        signinsImported: (count: number) => string
+        signinsRemote: string
+        signinsFailed: string
         prompt: {
           title: string
           body: string

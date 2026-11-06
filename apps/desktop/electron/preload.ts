@@ -444,6 +444,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   beginPreviewGuestActivity: webContentsId => ipcRenderer.invoke('hermes:preview-guest-activity:begin', webContentsId),
   endPreviewGuestActivity: token => ipcRenderer.invoke('hermes:preview-guest-activity:end', token),
   executePreviewGuestScript: (token, code) => ipcRenderer.invoke('hermes:preview-guest-activity:script', token, code),
+  syncPreviewSignins: request => ipcRenderer.invoke('hermes:preview-signins:sync', request),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   freeTierChallenge: {
     // Load the account service's challenge page in a hidden window (revealed

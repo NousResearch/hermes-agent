@@ -300,15 +300,15 @@ identity), and `task_id` is `sandbox.key`. Create or resume the sandbox that
 scope names the same agent, and raises `CrossAgentHandleRefused` otherwise
 (including when no scope is bound), then passes that scope to your method as
 `scope=`. Your environment must implement the hosted operation interface:
-`execute`, `cleanup`, `start_process`, `attach_process` and `stop_process`,
-plus `fetch_file`, `fetch_realpath`, `get_temp_dir` and `stop_idle` when it
+`execute`, `cleanup`, `stop_idle`, `start_process`, `attach_process` and
+`stop_process`, plus `fetch_file`, `fetch_realpath` and `get_temp_dir` when it
 has them, each accepting `scope=` (a named parameter or `**kwargs`). An
 environment that lacks one, or would drop the scope, is refused with
 `HostedSandboxRequired` when it is created. The idle reaper runs with no scope
 bound: its `stop_idle` (suspend: keep the workspace, resume on the next call)
 and `cleanup` (destroy) calls run under the scope that created the sandbox. An
-idle hosted sandbox is suspended with `stop_idle` when you implement it; a
-sandbox with a background process still running is never reaped.
+idle hosted sandbox is always suspended with `stop_idle`, never destroyed in
+its place; a sandbox with a background process still running is never reaped.
 
 **Tools.** In a hosted scope the terminal, `execute_code` (always the remote
 kernel, never the host's), background processes and the file tools (read,

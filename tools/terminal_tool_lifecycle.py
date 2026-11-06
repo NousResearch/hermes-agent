@@ -202,7 +202,9 @@ def _hosts_running_process(registry: Any, key: str) -> bool:
 
 
 def _suspends_when_idle(env: Any, key: str) -> bool:
-    return (_is_workspace_key(key) or _is_sandbox_key(key)) and callable(getattr(env, "stop_idle", None))
+    """A hosted sandbox is always suspended, never destroyed for idleness (``stop_idle`` is part of
+    the required hosted interface); a workspace container is when its backend can."""
+    return _is_sandbox_key(key) or (_is_workspace_key(key) and callable(getattr(env, "stop_idle", None)))
 
 
 def _is_sandbox_key(key: str) -> bool:

@@ -476,6 +476,35 @@ class TestAuxiliaryClientBedrockResolution:
             wire_kwargs = boto3_client.converse.call_args.kwargs
             assert wire_kwargs["inferenceConfig"]["maxTokens"] == 1234
 
+    def test_bedrock_shim_sends_explicit_cap_for_claude_when_caller_omits_max_tokens(self, monkeypatch):
+        """For Claude, an omitted maxTokens is a 4,096-token default on Converse, not the model
+        maximum, so compression summaries stopped at finish_reason=length. The shim must send an
+        explicit cap above that default; non-Claude models keep the omit behaviour (test above)."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent import bedrock_adapter
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        model = "eu.anthropic.claude-sonnet-4-6"
+        client = BedrockAuxiliaryClient("eu-west-1", model)
+        boto3_client = MagicMock()
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=boto3_client), \
+             patch("agent.bedrock_adapter.normalize_converse_response"):
+            client.chat.completions.create(
+                model=model, messages=[{"role": "user", "content": "summarize"}],
+            )
+            sent = boto3_client.converse.call_args.kwargs["inferenceConfig"]["maxTokens"]
+            assert sent == bedrock_adapter._CONVERSE_AUX_OUTPUT_CAP
+            assert sent > 4096
+
+            # An explicit caller cap still wins.
+            client.chat.completions.create(
+                model=model, messages=[{"role": "user", "content": "summarize"}], max_tokens=777,
+            )
+            assert boto3_client.converse.call_args.kwargs["inferenceConfig"]["maxTokens"] == 777
+
     def test_bedrock_mantle_config_region_beats_env_region(self, monkeypatch):
         """bedrock.region in config.yaml must win over AWS_REGION for auxiliary
         Mantle calls — the same priority the main runtime resolver uses (#65076

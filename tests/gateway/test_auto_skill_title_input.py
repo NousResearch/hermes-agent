@@ -69,7 +69,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
 
     def title_request(**kwargs):
         title_requests.append(kwargs["messages"][-1]["content"])
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"title": "Diagnose connection pool exhaustion"}'))])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"title": "Connection pool exhaustion"}'))])
 
     def title_at_turn_start(db, sid, text, **kwargs):
         title_inputs.append(text)

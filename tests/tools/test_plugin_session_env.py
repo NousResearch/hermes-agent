@@ -27,6 +27,7 @@ def register(ctx):
 @pytest.fixture
 def plugin(tmp_path, monkeypatch):
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
+    monkeypatch.setattr(plugins_session_env, "_DECLARED", set())
     home = tmp_path / "home"
     plugin_dir = home / "plugins" / "session_env_probe"
     plugin_dir.mkdir(parents=True)
@@ -91,9 +92,22 @@ def test_a_lowercase_name_replaces_or_unsets_the_inherited_windows_variable(monk
     from tools.environments.local import build_subprocess_env
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
+    monkeypatch.setattr(plugins_session_env, "_DECLARED", set())
     monkeypatch.setenv("PANE", "gateway")
     monkeypatch.setenv("WINDOW", "gateway-win")
     values = {"a": {"pane": "pane-a", "window": None}}
     plugins_session_env.register_session_env(hermes_home_key(), ["pane", "window"], values.get)
     child = _as_session("a", build_subprocess_env)
     assert [k for k in child if k.upper() in {"PANE", "WINDOW"}] == ["PANE"] and child["PANE"] == "pane-a"
+
+
+def test_an_unloaded_plugins_names_stay_out_of_the_shell_snapshot(monkeypatch):
+    """A snapshot taken while a value was injected may hold it: after the plugin unloads, its names
+    stay excluded, so no later command restores another session's value."""
+    from hermes_constants import hermes_home_key
+
+    monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
+    monkeypatch.setattr(plugins_session_env, "_DECLARED", set())
+    release = plugins_session_env.register_session_env(hermes_home_key(), ["PANE"], lambda sid: {"PANE": sid})
+    release()
+    assert "PANE" in plugins_session_env.session_env_names()

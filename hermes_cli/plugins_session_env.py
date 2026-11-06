@@ -20,6 +20,9 @@ Resolver = Callable[[str], Optional[Mapping[str, Optional[str]]]]
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 _LOCK = threading.Lock()
 _REGISTRATIONS: dict[object, tuple[str, frozenset[str], Resolver]] = {}
+# Every name declared in this process, kept past its plugin's unload: a shell snapshot taken while a
+# value was injected may hold it, and the name must stay excluded so no later command restores it.
+_DECLARED: set[str] = set()
 
 
 def _env_key(name: str) -> str:
@@ -38,7 +41,9 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -
         raise TypeError("session env resolver must be callable")
     token = object()
     with _LOCK:
-        _REGISTRATIONS[token] = (scope, frozenset(_env_key(n) for n in names), resolver)
+        keys = frozenset(_env_key(n) for n in names)
+        _REGISTRATIONS[token] = (scope, keys, resolver)
+        _DECLARED.update(keys)
 
     def release() -> None:
         with _LOCK:
@@ -47,9 +52,10 @@ def register_session_env(scope: str, names: Iterable[str], resolver: Resolver) -
 
 
 def session_env_names() -> frozenset[str]:
-    """Every registered name, all profiles: none may be baked into a shared shell snapshot."""
+    """Every name declared in this process, all profiles, unloaded plugins' included: none may be baked
+    into (or restored from) a shared shell snapshot."""
     with _LOCK:
-        return frozenset(n for _, names, _ in _REGISTRATIONS.values() for n in names)
+        return frozenset(_DECLARED)
 
 
 def resolve_session_env(session_id: str) -> dict[str, Optional[str]]:

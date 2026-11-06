@@ -184,6 +184,83 @@ def _settle_units_proven_current(restart, fleet_rows: list) -> bool:
     return True
 
 
+#: The Windows resume raises this when its PID poll could not see the replacement inside its
+#: liveness budget. It is the one restart-phase error a later fleet matrix may over-prove.
+_RELAUNCH_UNVERIFIED_PREFIX = "Windows gateway relaunch after update was not verified alive"
+
+
+def _expected_gateway_profiles(plan) -> set:
+    """Profiles the pre-update plan expects a gateway runtime for (gateway rows only)."""
+    return {
+        str(getattr(row, "profile", "") or "")
+        for row in (getattr(plan, "runtimes", None) or ())
+        if getattr(row, "kind", None) == "gateway"
+    } - {""}
+
+
+def _discharge_relaunch_verification_by_fleet(restart, plan, fleet_rows) -> bool:
+    """Clear a relaunch-verification timeout the post-restart fleet matrix over-proves.
+
+    The Windows resume verifies the relaunch by polling PID files inside a fixed liveness budget
+    (``_RELAUNCH_VERIFY_TIMEOUT_S``); a respawn that lands after that budget — the watcher only
+    starts once the paused PID is gone, and a cold gateway then needs >11 s before its control
+    socket answers — or one a parent Job Object kills during updater teardown (#48820) is reported
+    as "not verified alive" even though the gateway serves this checkout. The verdict is then
+    committed and never revisited: ``record_followup`` records a ``gateway_restart`` debt, the
+    Desktop hand-off turns it into ``-Manual``, and the boot gate re-dialogs *"The update finished,
+    but needs one more step (gateway_restart)"* at the next launch with a remedy
+    (``hermes gateway restart``) that answers "already running — nothing to start".
+
+    The matrix collected HERE runs after the restart phase, so it is the evidence that was missing
+    when the verdict was written. A ``current`` row on this checkout for every gateway profile the
+    plan expected is proof the gateway no longer runs pre-update code, which is the whole
+    obligation. Adding a second witness inside the verification window does not work: the fresh
+    gateway's control socket has not answered yet, so an in-window probe reads down/unknown/stale
+    and shares the pid poll's blind spot.
+
+    Fail-closed. Only the relaunch-verification phase error may be dropped, and only when it is the
+    restart phase's ONLY remaining reason: a second phase error, a failed/stale unit, a gateway
+    stopped without a successor, a missing row, an ``unknown``/``stale``/``down``/``restart_pending``
+    row or an empty snapshot all leave the verdict exactly as it was. Returns True when discharged;
+    the caller re-derives what is owed and re-records the restart result so the receipt stops
+    reporting a debt this matrix disproved.
+    """
+    if not getattr(restart, "incomplete", False):
+        return False
+    phase_errors = [str(err) for err in (getattr(restart, "phase_errors", None) or ())]
+    remaining = [err for err in phase_errors if _RELAUNCH_UNVERIFIED_PREFIX not in err]
+    if len(remaining) == len(phase_errors):
+        return False  # the restart phase never reported a relaunch timeout
+    if remaining:
+        return False  # another phase error is still owed: never launder it
+    if getattr(restart, "stopped_unmapped_pids", None):
+        return False  # a gateway stopped without a successor owes a restart of its own
+    if getattr(restart, "failed_or_stale_units", None):
+        return False
+    expected = _expected_gateway_profiles(plan)
+    if not expected:
+        return False  # nothing in the plan to prove: absence is not evidence
+    current = {
+        str(row.get("profile") or "")
+        for row in (fleet_rows or ())
+        if isinstance(row, dict) and row.get("state") == "current"
+    }
+    if expected - current:
+        return False
+    restart.phase_errors = remaining
+    restart.incomplete = bool(restart.failed_or_stale_units or restart.phase_errors)
+    print(
+        "  ✓ Relaunch timeout discharged: the fleet matrix proves "
+        f"{', '.join(sorted(expected))} serving this checkout — no restart owed"
+    )
+    if not restart.incomplete:
+        # The restart phase withheld this stamp; every other profile's CLI reads it.
+        from hermes_cli import update_cmd_fleet as fleet
+        from hermes_cli.update_host_obligation import mark_host_restart_completed
+        mark_host_restart_completed(fleet._restart_identity_sha())
+    return True
+
+
 def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
     """Name the pre-update gateways on the obligation once their restart is owed.
 
@@ -397,6 +474,21 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             restart.incomplete = _gateway_owed = True
     # Printed after the probe, not by the restart phase: only units it did not prove current.
     fleet._warn_incomplete_gateway_fleet_restart(getattr(restart, "unrestarted_units", None) or [])
+
+    # The relaunch verdict is written before this matrix exists, so the later, stronger evidence has
+    # to be allowed to retract it: without this the restart phase's "not verified alive" timeout
+    # survives a gateway the matrix proves current, and the Desktop re-dialogs the stale debt at the
+    # next boot gate. Runs before the follow-up is recorded below — and before the runtime-outcome
+    # reconciliation after it, so a run whose matrix is healthy but whose plan row is unaccounted
+    # still owes the restart.
+    with _best_effort('Relaunch-verification discharge failed: %s'):
+        if not _dashboards_down and _discharge_relaunch_verification_by_fleet(
+                restart, _pre_update_plan, _fleet_snapshot):
+            # What is owed changed: re-derive it and save the result once, now that the verdict and
+            # the receipt agree (a receipt that keeps ``incomplete`` re-arms the debt on the next
+            # run through ``_pending_fleet_restart_needed``).
+            _gateway_owed = _restart_phase_owes_gateway(restart)
+            restart.record_receipt()
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.

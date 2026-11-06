@@ -34,7 +34,7 @@ import {
   writeDesktopFileText
 } from '@/lib/desktop-fs'
 import { ExternalLink } from '@/lib/external-link'
-import { Check, Pencil, X } from '@/lib/icons'
+import { AudioLines, Check, Loader2, Pencil, VolumeX, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
@@ -49,9 +49,12 @@ import {
 } from '@/lib/preview-markdown-links'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
+import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { notifyError } from '@/store/notifications'
 import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
+import { $voicePlayback } from '@/store/voice-playback'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
@@ -559,6 +562,97 @@ export function PreviewModeSwitcher({
         ))}
       {trailing && <div className="flex items-center gap-1.5">{trailing}</div>}
     </div>
+  )
+}
+
+// Read the previewed document aloud through the SAME read-aloud path an
+// assistant message uses (`playSpeechText` → the profile's configured TTS
+// voice, one shared `$voicePlayback` slot), keyed by file so only this
+// file's button shows the stop state.
+export function PreviewReadAloudButton({ filePath, text }: { filePath: string; text: string }) {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const playback = useStore($voicePlayback)
+  const id = `file:${filePath}`
+  const mine = playback.source === 'read-aloud' && playback.messageId === id
+  const preparing = mine && playback.status === 'preparing'
+  const speaking = mine && playback.status === 'speaking'
+  const busyElsewhere = !mine && playback.status !== 'idle'
+  const Icon = preparing ? Loader2 : speaking ? VolumeX : AudioLines
+  const label = speaking || preparing ? copy.stopReading : copy.readAloud
+
+  const onClick = () => {
+    if (speaking || preparing) {
+      stopVoicePlayback()
+
+      return
+    }
+
+    void playSpeechText(text, { messageId: id, source: 'read-aloud' }).catch(error =>
+      notifyError(error, copy.readAloudFailed)
+    )
+  }
+
+  return (
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        disabled={busyElsewhere || !text.trim()}
+        onClick={onClick}
+        type="button"
+      >
+        <Icon className={cn('size-3', preparing && 'animate-spin')} />
+        {label}
+      </button>
+    </Tip>
+  )
+}
+
+// Trailing slot of the read-view header: Read aloud (prose documents only —
+// reading code aloud is noise) and Edit. Null when neither applies so the
+// header can collapse.
+function previewHeaderActions({
+  canEdit,
+  filePath,
+  isMarkdown,
+  onEdit,
+  text
+}: {
+  canEdit: boolean
+  filePath: string
+  isMarkdown: boolean
+  onEdit: () => void
+  text: string
+}): ReactNode {
+  const canReadAloud = isMarkdown || /\.(txt|markdown|mdx?)$/i.test(filePath)
+
+  if (!canReadAloud && !canEdit) {
+    return null
+  }
+
+  return (
+    <>
+      {canReadAloud && <PreviewReadAloudButton filePath={filePath} text={text} />}
+      {canEdit && <PreviewEditButton onEdit={onEdit} />}
+    </>
+  )
+}
+
+function PreviewEditButton({ onEdit }: { onEdit: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <Tip label={`${t.preview.edit} (e)`}>
+      <button
+        className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+        onClick={onEdit}
+        type="button"
+      >
+        <Pencil className="size-3" />
+        {t.preview.edit}
+      </button>
+    </Tip>
   )
 }
 
@@ -1258,20 +1352,7 @@ export function LocalFilePreview({
           active={mode}
           modes={modes}
           onSelect={selectMode}
-          trailing={
-            canEdit ? (
-              <Tip label={`${t.preview.edit} (e)`}>
-                <button
-                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                  onClick={beginEdit}
-                  type="button"
-                >
-                  <Pencil className="size-3" />
-                  {t.preview.edit}
-                </button>
-              </Tip>
-            ) : null
-          }
+          trailing={previewHeaderActions({ canEdit, filePath, isMarkdown, onEdit: beginEdit, text: state.text })}
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (

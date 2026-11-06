@@ -176,6 +176,49 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); resetLocale(); vi.useRealTimers() }
   })
 
+  // Pins Ink's launch on the shared client: the exact session.create params (no client name, even to an
+  // owner that takes one) and its TUI-worded refusals. Passes unchanged on the tree before the
+  // shared client grew its source/client options.
+  it('launches Ink sessions with the same frame and refusals', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const clients: GatewayClient[] = []
+
+    const attach = async (sessionCreate: { parameters: string[]; sources: string[] }) => {
+      const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+      clients.push(gw)
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: Record<string, unknown> })
+      const describe = frames().find(frame => frame.method === 'runtime.describe')!
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: describe.id, result: { session_create: sessionCreate } }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      return { frames, gw }
+    }
+
+    const message = (promise: Promise<unknown>) => promise.then(() => '', (error: Error) => error.message)
+
+    try {
+      const { frames, gw } = await attach({ sources: ['cli', 'tui'], parameters: ['source', 'request_id', 'model', 'client'] })
+      void gw.request('session.create', { model: 'm', cols: 80 }).catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(0)
+      const create = frames().find(frame => frame.method === 'session.create')!
+      expect(Object.keys(create.params)).toEqual(['model', 'source', 'request_id'])
+      expect(create.params).toMatchObject({ model: 'm', source: 'tui' })
+      expect(create.params.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      expect(await message(gw.request('session.create', { yolo: true }))).toBe('gateway does not support TUI launch options: yolo')
+
+      const older = await attach({ sources: ['cli'], parameters: ['source', 'request_id'] })
+      expect(await message(older.gw.request('session.create', {})))
+        .toBe('gateway does not support tui session policy; update/restart the gateway')
+    } finally { clients.forEach(gw => gw.kill()); vi.useRealTimers() }
+  })
+
   it('publishes canonical readiness once after discovery and arms the negotiated heartbeat', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

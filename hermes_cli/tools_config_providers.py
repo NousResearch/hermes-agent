@@ -176,7 +176,7 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     ``features`` avoids re-fetching portal state per row. ``is_active`` is the completed-setup fallback
     for post_setup hooks with no registered installed-check (selecting a row runs its hook)."""
     from hermes_cli.tools_config import _POST_SETUP_READY, _provider_env_ready, get_nous_subscription_features
-    from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY
+    from hermes_cli.tools_config_post_setup import _POST_SETUP_AUTH_READY, post_setup_missing_status
 
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
@@ -205,9 +205,11 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
         predicate = _POST_SETUP_READY.get(post_setup)
         if predicate is not None:
             try:
-                return "ready" if predicate() else "needs_setup"
+                if predicate():
+                    return "ready"
             except Exception:
                 return "ready"  # flaky detection must not manufacture a warning state
+            return post_setup_missing_status(post_setup)
         # No installed-check registered → the active-provider signal means "setup completed".
         if is_active is None:
             is_active = _is_provider_active(provider, config)

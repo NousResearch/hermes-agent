@@ -141,7 +141,25 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "🗜️ 3" in text
+        assert "🗜 3" in text
+
+    def test_compression_count_uses_text_presentation_icon(self):
+        """Keep status-bar width accounting aligned with VS16-aware terminals (#120588)."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=3,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "🗜 3" in text
+        assert "🗜️" not in text
 
 
 
@@ -370,7 +388,7 @@ class TestStatusBarFieldConfig:
         text = self._cli_with_fields([])
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
-        assert "🗜️" in text
+        assert "🗜" in text
 
 
 

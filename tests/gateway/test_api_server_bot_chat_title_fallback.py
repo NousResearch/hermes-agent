@@ -3,6 +3,8 @@
 ``GET /api/sessions?title=Bot+Chat`` lists a reset lineage as its latest, untitled segment, so a
 fallback returns the titled root. It must not resurrect a deliberately archived Bot Chat into
 ``hermes peer dm`` routing, nor answer a ``source=`` query the row does not match."""
+import contextlib
+
 import pytest
 
 from gateway.platforms import api_server_bot_chat as bot_chat
@@ -16,10 +18,16 @@ class FakeDB:
     def get_session_by_title(self, title):
         return dict(self.row) if title == self.row['title'] else None
 
+    def _read_ctx(self):
+        return contextlib.nullcontext(object())
+
 
 @pytest.fixture(autouse=True)
 def reset_lineage(monkeypatch):
-    monkeypatch.setattr('hermes_state_local.local_receipt', lambda db, sid: {'lineage': [sid, 'fresh']})
+    # The titled row resolves to its lineage owner, whose physical target has moved off
+    # the creation id (the shape a reset lineage leaves behind).
+    monkeypatch.setattr('hermes_state_local.local_lineage_owner', lambda conn, sid: 'local-root')
+    monkeypatch.setattr('hermes_state_local_lineage.local_physical_target', lambda conn, owner: 'fresh')
 
 
 def test_the_reset_bot_chat_is_found():

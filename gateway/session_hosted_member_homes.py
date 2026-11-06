@@ -181,14 +181,15 @@ def _legacy_home_released(service, room_id, member, home, task):
         if rpc.resolve_exact(title=room_session_title(room_id), **kw) is None:
             return True
         info = rpc.info(session_id=rpc.ref.session_id, **kw)
-        if not info.get('active') and info.get('task_id') is None:
-            return True  # no queued, running or unknown input left in that session
-        if info.get('task_id') != task['identity'].task_id or info.get('status') == 'unknown':
-            return False  # another turn, or one whose admission that home cannot tell
+        if not info.get('active'):
+            # Nothing queued or running there. An input left 'unknown' by a restart reads inactive:
+            # its agent died with the old process, the same rule as a live Stop's acknowledgement.
+            return True
+        if info.get('task_id') != task['identity'].task_id:
+            return False  # another turn holds that session
         rpc.interrupt(session_id=rpc.ref.session_id, expected_task_id=task['identity'].task_id, **kw)
         # A queued input is cancelled at once; a running one stays until its run ends.
-        info = rpc.info(session_id=rpc.ref.session_id, **kw)
-        return not info.get('active') and info.get('task_id') is None
+        return not rpc.info(session_id=rpc.ref.session_id, **kw).get('active')
     except Exception:  # health: allow BLE001 -- an unreachable or refusing home keeps the turn
         return False
 

@@ -30,6 +30,17 @@ from hermes_cli import kanban_db_connect as kbc
 
 def _load_plugin_router():
     """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
+
+
+def _load_plugin_module():
+    """Load the dashboard plugin module itself (not just its router).
+
+    The plugin is loaded under its OWN module name, so it is NOT the same
+    object as ``plugins.kanban.dashboard.plugin_api`` — a test that patches
+    the imported package would patch a different module and the endpoint
+    would keep the old behaviour.
+    """
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -41,7 +52,7 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -58,6 +69,22 @@ def client(kanban_home):
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
+
+
+@pytest.fixture
+def plugin_module(client):
+    """The dashboard plugin module the ROUTER was built from.
+
+    The endpoint reads its caps through this module's globals, so a test
+    that wants to control the config must patch THIS object. The plugin is
+    loaded under its own module name, so it is NOT the same object as
+    ``plugins.kanban.dashboard.plugin_api`` — patching that would patch a
+    second copy and the endpoint would keep the old behaviour.
+    """
+    for route in client.app.routes:
+        if getattr(route, "path", "").endswith("/dispatch"):
+            return sys.modules[route.endpoint.__module__]
+    raise AssertionError("dispatch route not found on the kanban dashboard router")
 
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
@@ -482,6 +509,64 @@ def test_dispatch_dry_run(client):
     body = r.json()
     # DispatchResult is serialized as a dataclass dict.
     assert isinstance(body, dict)
+
+
+def test_dispatch_nudge_honours_the_configured_ceiling(client, plugin_module, monkeypatch):
+    """A nudge must never spawn MORE than the configured ceiling.
+
+    The endpoint's default used to be a hardcoded 8, ignoring
+    ``kanban.max_in_progress`` entirely — so a board capped at 24 was still
+    limited to 8 spawns by the browser's nudge button, and the dashboard
+    showed a different number than the board actually ran.
+    """
+    # Patch the config the endpoint reads.
+    monkeypatch.setattr(
+        plugin_module, "_load_config_or_empty",
+        lambda: {"kanban": {"max_in_progress": 24}},
+    )
+    captured: dict = {}
+
+    def _fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return plugin_module.kbd.DispatchResult()
+
+    monkeypatch.setattr(plugin_module.kbd, "dispatch_once", _fake_dispatch_once)
+    r = client.post("/api/plugins/kanban/dispatch")
+    assert r.status_code == 200, r.text
+    # The host cap is read from config and passed through, so the nudge can
+    # never spawn more than the board is allowed to run.
+    assert captured["max_in_progress"] == 24, captured
+    # No ?max= and no kanban.max_spawn -> no PER-BOARD cap. The host cap
+    # alone bounds the tick (see _tick_spawn_budget: it takes the minimum of
+    # the two), so the nudge is still bounded at 24.
+    assert captured["max_spawn"] is None, captured
+
+
+def test_dispatch_nudge_max_parameter_narrows_the_budget(client, plugin_module, monkeypatch):
+    """``?max=`` narrows the budget; it never widens it past the ceiling."""
+    monkeypatch.setattr(
+        plugin_module, "_load_config_or_empty",
+        lambda: {"kanban": {"max_in_progress": 24, "max_spawn": 10}},
+    )
+    captured: dict = {}
+
+    def _fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return plugin_module.kbd.DispatchResult()
+
+    monkeypatch.setattr(plugin_module.kbd, "dispatch_once", _fake_dispatch_once)
+    client.post("/api/plugins/kanban/dispatch?max=3")
+    assert captured["max_spawn"] == 3, captured
+
+    captured.clear()
+    client.post("/api/plugins/kanban/dispatch?max=99")
+    # 99 is above the configured max_spawn (10) and the host cap (24):
+    # it must not buy extra spawns.
+    assert captured["max_spawn"] == 10, captured
+
+    captured.clear()
+    client.post("/api/plugins/kanban/dispatch")
+    assert captured["max_spawn"] == 10, captured
 
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)

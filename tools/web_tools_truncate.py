@@ -22,6 +22,7 @@ DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 MAX_STORED_TEXT_CHARS = 2_000_000
 
 _CHAR_LIMIT_FLOOR, _CHAR_LIMIT_CEILING = 2000, 500_000
+_STORED_LINE_WIDTH = 1000
 
 
 def _clamp_char_limit(value: Any) -> int:
@@ -56,6 +57,34 @@ def convert_base64_images_to_links(text: str) -> str:
     return re.sub(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", "[IMAGE]", out)
 
 
+def _wrap_stored_text(content: str) -> str:
+    """Insert safe page boundaries into long physical lines kept for ``read_file``.
+
+    ``read_file`` deliberately clips a single overlong line, so a saved web page
+    needs physical lines below that limit to stay pageable.  Existing newlines and
+    every source character are retained; only boundary newlines are inserted.
+    """
+    from tools.tool_output_limits import get_max_line_length
+
+    width = min(_STORED_LINE_WIDTH, get_max_line_length())
+    wrapped: list[str] = []
+    for line in content.splitlines(keepends=True):
+        ending = "\n" if line.endswith("\n") else ""
+        body = line[:-1] if ending else line
+        wrapped.append("\n".join(body[start:start + width] for start in range(0, len(body), width)) + ending)
+    return "".join(wrapped)
+
+
+def _stored_line_at(content: str, position: int) -> int:
+    """Return the 1-based saved-copy line containing ``content[position]``."""
+    marker = "\0"
+    while marker in content:
+        marker += "\0"
+    marked = content[:position] + marker + content[position:]
+    wrapped = _wrap_stored_text(marked)
+    return wrapped[:wrapped.index(marker)].count("\n") + 1
+
+
 def _store_full_text(url: str, content: str) -> Optional[str]:
     """Write the full page to cache/web; absolute path or None (best-effort: the truncated content is still
     returned). cache/web is mounted read-only into remote backends (credential_files _CACHE_DIRS) so
@@ -67,6 +96,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
         cache_dir = get_hermes_dir("cache/web", "web_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"{_host_slug(url)}-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:10]}.md"
+        content = _wrap_stored_text(content)
         if len(content) > MAX_STORED_TEXT_CHARS:
             content = content[:MAX_STORED_TEXT_CHARS] + (
                 f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
@@ -92,9 +122,11 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
     head_budget = int(char_limit * 0.75)
     tail_budget = char_limit - head_budget
     head, tail = content[:head_budget], content[-tail_budget:]
+    head_ends_at_line_boundary = False
     # Snap both cuts to line boundaries (head back, tail forward) so we never slice mid-line.
     if (nl := head.rfind("\n")) > head_budget * 0.5:
         head = head[:nl]
+        head_ends_at_line_boundary = True
     if 0 <= (nl := tail.find("\n")) < tail_budget * 0.5:
         tail = tail[nl + 1:]
 
@@ -110,8 +142,11 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
         f"of {len(content):,} total clean characters.",
     ]
     if stored_path:
-        # read_file is 1-indexed; +2 lands on the first line after the shown head.
-        middle_start_line = head.count("\n") + 2
+        # A snapped head ends before its following newline; otherwise its omitted
+        # middle starts on the same physical line.  Resolve against the wrapped
+        # saved copy rather than the provider's original line layout.
+        middle_position = len(head) + int(head_ends_at_line_boundary)
+        middle_start_line = _stored_line_at(content, middle_position)
         footer_lines += [
             f"Full text saved to: {stored_path}",
             f'To read the omitted middle: read_file path="{stored_path}" '

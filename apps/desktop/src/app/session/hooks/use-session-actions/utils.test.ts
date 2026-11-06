@@ -1782,6 +1782,87 @@ describe('appendLiveSessionProjection', () => {
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
   })
 
+  it.each(['queued', 'optimistic', 'redirected'] as const)(
+    'retains the immediate %s prompt occurrence when it predates the turn clock',
+    kind => {
+      const prompt = msg('current-user', 'user', 'Check.', { timestamp: 99.99, rowId: 10 })
+      const reply = msg('persisted-output', 'assistant', 'Working.', { timestamp: 101, rowId: 11 })
+
+      const liveReply = msg('assistant-stream-runtime-1', 'assistant', '', {
+        timestamp: 99.99,
+        pending: true,
+        parts: [{ type: 'tool-call', toolCallId: 'live', toolName: 'terminal', args: {}, result: 'ok' }]
+      })
+
+      const correction = msg('current-correction', 'user', 'Continue.', { timestamp: 102 })
+
+      const stored =
+        kind === 'queued' ? [prompt, reply] : [prompt, liveReply, ...(kind === 'redirected' ? [correction] : [])]
+
+      const projection = {
+        session_id: 'runtime-1',
+        turn_started_at: 100,
+        inflight: {
+          user: 'Check.',
+          assistant: 'Working.',
+          streaming: true,
+          ...(kind === 'redirected' ? { corrections: ['Continue.'] } : {})
+        }
+      }
+
+      const restored = appendLiveSessionProjection(stored, projection)
+      expect(restored).toEqual(stored)
+      expect(appendLiveSessionProjection(restored, projection)).toEqual(stored)
+    }
+  )
+
+  it.each(['missing', 'older', 'undated'] as const)(
+    'places an unmaterialized prompt before current-turn output without consuming %s history',
+    history => {
+      const prompt = 'Repeat this check.'
+
+      const previous: ChatMessage[] =
+        history === 'missing'
+          ? []
+          : [
+              msg('previous-user', 'user', prompt, history === 'older' ? { timestamp: 90 } : {}),
+              ...(history === 'older' ? [msg('previous-answer', 'assistant', 'Done earlier.', { timestamp: 91 })] : [])
+            ]
+
+      const current = [
+        msg('current-output', 'assistant', 'Checking now.', { timestamp: 101, rowId: 20 }),
+        msg('task-restore', 'user', '[Your active task list was preserved across context compression]', {
+          timestamp: 102
+        })
+      ]
+
+      const restored = appendLiveSessionProjection([...previous, ...current], {
+        session_id: 'runtime-1',
+        turn_started_at: 100,
+        inflight: { user: prompt, assistant: 'Continuing.', streaming: true }
+      })
+
+      expect(restored.map(message => message.id)).toEqual([
+        ...previous.map(message => message.id),
+        'user-inflight-runtime-1',
+        ...current.map(message => message.id),
+        'assistant-stream-runtime-1'
+      ])
+      expect(restored.slice(0, previous.length)).toEqual(previous)
+      expect(restored.find(message => message.id === 'current-output')).toBe(current[0])
+
+      const reactivated = appendLiveSessionProjection(restored, {
+        session_id: 'runtime-1',
+        turn_started_at: 100,
+        inflight: { user: prompt, assistant: 'Continuing.', streaming: true }
+      })
+
+      expect(reactivated.filter(message => message.role === 'user').map(message => message.id)).toEqual(
+        restored.filter(message => message.role === 'user').map(message => message.id)
+      )
+    }
+  )
+
   it('preserves the original array when no live projection exists', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 

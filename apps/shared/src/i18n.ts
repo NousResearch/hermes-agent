@@ -171,6 +171,7 @@ export const LOCALE_ENDONYMS = {
   af: 'Afrikaans',
   ar: 'العربية',
   de: 'Deutsch',
+  el: 'Ελληνικά',
   en: 'English',
   es: 'Español',
   fr: 'Français',

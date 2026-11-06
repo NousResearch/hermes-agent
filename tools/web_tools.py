@@ -185,10 +185,28 @@ def _get_search_backend() -> str:
 
 
 def _get_extract_backend() -> str:
-    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
-    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
+    """Backend for web_extract, preserving strict selections and filtering autodetect by capability.
+
+    A per-capability ``nous`` pin is managed Firecrawl. Explicit extract and shared selections stay
+    strict; only an unconfigured install may replace a search-only autodetected backend with a
+    registered extract-capable candidate.
+    """
     pin = _configured_backend("extract_backend")
-    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
+    if pin:
+        return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin
+    if _configured_backend() or read_selection("web") is not None:
+        return _get_backend()
+
+    backend = _get_backend()
+    _ensure_web_plugins_loaded()
+    provider = _registered_web_provider(backend)
+    if provider is None or provider.supports_extract():
+        return backend
+
+    # The shared autodetect ladder selected a search-only provider. The registry applies the
+    # extract capability filter and then its keyless free-tier fallback.
+    active_extract = _registry_call("get_active_extract_provider", None)
+    return active_extract.name if active_extract is not None else backend
 
 
 def _ddgs_package_importable() -> bool:

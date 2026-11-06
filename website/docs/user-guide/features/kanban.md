@@ -76,7 +76,9 @@ own — or one that no longer exists — is refused `not logged in` rather than
 falling through to `~/.config/gh`; unassigned cards still use the ambient
 login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
-retryable infra failure.
+retryable infra failure. A spent API rate limit, which GitHub also answers
+with HTTP 403, is `classification=rate_limited`: wait for the limit to reset,
+then retry completion.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery

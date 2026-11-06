@@ -216,6 +216,40 @@ def test_assignee_without_own_gh_login_never_falls_through_to_ambient_login(tmp_
     assert "GH_TOKEN" not in captured and "GITHUB_TOKEN" not in captured
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("message,expected", [
+    ("API rate limit exceeded for user ID 1.", "rate_limited"),
+    ("You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+     "rate_limited"),
+    ("Resource not accessible by integration", "auth"),
+])
+def test_rate_limited_403_is_a_wait_not_a_credential_fix(tmp_path, monkeypatch, message, expected):
+    """GitHub answers a spent rate limit with HTTP 403, like an identity refusal. Real gh then
+    prints the body, writes ``gh: <message> (HTTP 403)`` to stderr and exits 1. Only a 403
+    without a rate-limit message is ``auth``; the card must not be told to fix credentials."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                  f"print(json.dumps({{'message': {message!r}}}))\n"
+                  f"print('gh: ' + {message!r} + ' (HTTP 403)', file=sys.stderr)\n"
+                  "sys.exit(1)\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="limited", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        error = kb.get_task(conn, tid).last_failure_error or ""
+    assert receipt["classification"] == expected
+    assert ("credentials" in error) is (expected == "auth")
+    assert message not in json.dumps(receipt)
+
+
 def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, monkeypatch):
     """A card assigned to a profile that no longer exists must not run gh as the completing
     process's ambient login: classification `auth` naming the profile, gh never invoked."""

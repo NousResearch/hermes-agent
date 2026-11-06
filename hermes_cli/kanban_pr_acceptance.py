@@ -40,6 +40,10 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as exc:
+        # GitHub sends a rate-limited request back as HTTP 403 too; that is a wait, not
+        # a credential problem, so it is checked before the identity match below.
+        if "rate limit" in (exc.stderr or "").lower():
+            raise _GateRateLimited(f"rate limit on {endpoint.split('?')[0]}") from None
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
@@ -59,6 +63,10 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _GateRateLimited(RuntimeError):
+    """gh was refused because the login's GitHub API rate limit is spent."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -177,6 +185,11 @@ def collect_acceptance(contract: str, published_pr: str | None,
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
+        return receipt
+    except _GateRateLimited as exc:
+        receipt.update(classification="rate_limited",
+                       detail=f"GitHub refused the acceptance read ({exc}); "
+                              "wait for the rate limit to reset, then retry completion.")
         return receipt
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"

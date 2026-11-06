@@ -178,6 +178,10 @@ class HostedRoomService:
         # Stop and approvals under that one lock, as before rooms had their own.
         self._approval_stop_lock: Any = None
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
+        # Guards the two maps a status read projects (pending actions, peer-route status). A leaf
+        # lock: nothing is called while holding it, so Desktop's room status never waits behind a
+        # room's preparation, which holds ``_policy_lock`` across its log and checkpoint work.
+        self._state_lock = threading.Lock()
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
             self.db_path,
             # Every Continue grants one more budget, so one discussion's projection holds up to that many.
@@ -344,7 +348,9 @@ class HostedRoomService:
                     and current.base_url == client.base_url):
                 # The active worker still polls this client; keep its observed approval identities.
                 client = current
-            self.peer_routes[key], self._peer_route_status[key] = route, "ready"
+            self.peer_routes[key] = route
+            with self._state_lock:
+                self._peer_route_status[key] = "ready"
             self._may_owe_revokes = True
             if client is not None:
                 self.peer_clients[key] = client
@@ -372,8 +378,10 @@ class HostedRoomService:
             revoked.update(hosted_rooms.grant_digest(route.grant) for _key, route in routes)
             hosted_rooms.retire_room_link_records(self.db_path, room_id=room_id, revoked_digests=revoked)
             for key, _route in routes:
-                for table in (self.peer_routes, self._peer_route_status, self.peer_clients):
+                for table in (self.peer_routes, self.peer_clients):
                     table.pop(key, None)
+                with self._state_lock:
+                    self._peer_route_status.pop(key, None)
         self.runtime.wakeup()
         return len(routes)
 
@@ -573,7 +581,7 @@ class HostedRoomService:
         return False
 
     def _set_route_status(self, room_id: str, member_id: str, status: str) -> None:
-        with self._policy_lock:
+        with self._policy_lock, self._state_lock:
             if self._peer_route_status.get((room_id, member_id)) == status:
                 return
             self._peer_route_status[(room_id, member_id)] = status
@@ -582,7 +590,7 @@ class HostedRoomService:
 
     def _set_pending_action(
         self, room_id: str, member_id: str, action: Mapping[str, Any] | None) -> None:
-        with self._policy_lock:
+        with self._policy_lock, self._state_lock:
             if action is None:
                 self._pending_actions.pop((room_id, member_id), None)
             else:
@@ -656,7 +664,7 @@ class HostedRoomService:
         self._publish_route(key, replace(route, grant=grant, **digests))
 
     def _route_statuses(self, room_id: str | None = None) -> list[dict[str, str]]:
-        with self._policy_lock:
+        with self._state_lock:
             rows = sorted(self._peer_route_status.items())
         return [
             {"room_id": key[0], "member_id": key[1], "status": status}
@@ -967,9 +975,10 @@ class HostedRoomService:
                 if require_acknowledged or int(task["payload"]["source_event_seq"]) < int(fence["seq"])}
             # A stopped attempt's approval is spent: a concurrent Allow waiting on the lock finds nothing.
             stopped = {(task["identity"].task_id, task.get("execution_generation")) for task in tasks.values()}
-            for key in [key for key, action in self._pending_actions.items() if key[0] == room_id
-                        and (action.get("task_id"), action.get("execution_generation")) in stopped]:
-                self._pending_actions.pop(key, None)
+            with self._state_lock:
+                for key in [key for key, action in self._pending_actions.items() if key[0] == room_id
+                            and (action.get("task_id"), action.get("execution_generation")) in stopped]:
+                    self._pending_actions.pop(key, None)
         # Stopping a member on another gateway waits on the network: never under the policy lock.
         # The snapshot only picks the tasks: the worker can defer a stopping turn at any point, so
         # cancel decides on its own read (``confirm_deferred_stop``), the count on the state it left.
@@ -1101,7 +1110,7 @@ class HostedRoomService:
         # Allow is refused) or after the member already has its answer.
         with self._room_approval_stop_lock(room_id):
             live = _approvable_attempts(driver.list_tasks(self.db_path, room_id=room_id))
-            with self._policy_lock:
+            with self._policy_lock, self._state_lock:
                 action = self._pending_actions.get(key)
                 if not requested_approval_id or not matches(action):
                     raise RuntimeError("room approval is no longer pending")
@@ -1113,7 +1122,7 @@ class HostedRoomService:
             result = self._dispatch_approval(
                 route, client, action, task_id=task_id, execution_generation=execution_generation,
                 request_id=requested_approval_id, choice=choice)
-            with self._policy_lock:
+            with self._policy_lock, self._state_lock:
                 if matches(self._pending_actions.get(key)):
                     self._pending_actions.pop(key, None)
         self.runtime.wakeup()
@@ -1152,7 +1161,7 @@ class HostedRoomService:
         # Stop can end the attempt without another info poll clearing its cached approval.
         # A late poll from an older generation must not offer that approval on the next attempt.
         approvable = _approvable_attempts(tasks)
-        with self._policy_lock:
+        with self._state_lock:
             pending_actions.extend(
                 dict(action) for (action_room_id, member_id), action in self._pending_actions.items()
                 if action_room_id == room_id

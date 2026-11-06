@@ -1,0 +1,27 @@
+# Catalog entry for injection-shield (subdir of the MOTHR/security-suite monorepo).
+# Owner submission (Rule 5): submitted by MOTHR, owner of the plugin repo.
+# Validated with `hermes plugins validate` + `hermes plugins doctor --ci`
+# at this exact commit against a fresh clone.
+name: injection-shield
+repo: https://github.com/MOTHR/hermes-security-suite
+sha: 8c4c7d794161adaf34ee391eaa1ab79dadcd5295
+subdir: "injection-shield"
+description: "Injection-Shield — defends Hermes agents against prompt-injection attacks via tool outputs and untrusted content. Validates LLM responses, audits risky tool calls. Modes: block / alert / log."
+maintainer: MOTHR
+tier: community
+category: general
+docs_url: https://github.com/MOTHR/hermes-security-suite#readme
+version: "0.7.1"
+readme: true
+platforms: []
+known_issues:
+  - "Formal multi-agent security audit covers privacy-shield; the equivalent formal audit for injection-shield is still pending (status: triple peer review + 410+ regression tests; see SECURITY-AUDIT.md in the repo)."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

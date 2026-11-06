@@ -442,6 +442,26 @@ class TestChatCompletionsBuildKwargs:
         )
         assert "temperature" not in kw
 
+    def test_wire_tools_strip_nonstandard_output_schema(self, transport):
+        """Strict OpenAI-compatible servers reject MCP's ``outputSchema`` field (#137128)."""
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+                "outputSchema": {"type": "object"},
+            },
+        }]
+
+        kwargs = transport.build_kwargs(
+            model="glm-5.3-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+        )
+
+        assert "outputSchema" not in kwargs["tools"][0]["function"]
+        assert tools[0]["function"]["outputSchema"] == {"type": "object"}
+
 
 class TestChatCompletionsKimi:
     """Regression tests for the Kimi/Moonshot quirks migrated into the transport."""

@@ -2,12 +2,19 @@
 
 Spec: tests/tools/ORACLE_SPEC.md. Expected answers are not taken from
 apply_v4a_operations. Fault injection is test-only (_MUTATION).
+
+Closed-domain fuzz reads HERMES_PATCH_ORACLE_SEED and
+HERMES_PATCH_ORACLE_COUNT (each default 2000). For scripts/run_tests.sh,
+use -- --oracle-seed=N --oracle-count=N: its hermetic environment drops
+unlisted environment variables.
 """
 from __future__ import annotations
 
 import itertools
+import os
 import random
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 import pytest
@@ -661,3 +668,445 @@ def test_comparison_never_accepts_wrong_output_or_refusal(monkeypatch):
     assert _compare(b"old\n", b"patch", OOD)[0] == "out-of-domain"
     monkeypatch.setattr(module, "_apply_prod", lambda *_: ("WRITE", b"new\n", _unified(b"old\n", b"new\n")))
     assert _compare(b"old\n", b"patch", Write((1, 2), b"new\n"))[0] == "finding"
+
+
+# Closed-domain differential fuzz. Expected values come from evaluate(), never
+# from the planner. site-unavailable is not agreement. Xfail is per class and
+# only after the exact pinned signature matches; a different disagreement fails.
+_EMPTY_SEARCH = re.compile(
+    r"Patch validation failed \(no files were modified\):\n"
+    r"  • f: hunk 1 \(no hint\) has empty search text — "
+    r"include surrounding context lines\Z"
+)
+_FOUND_EXTRA = re.compile(
+    r"Patch validation failed \(no files were modified\):\n"
+    r"  • f: hunk 1 \(no hint\) not found — Found (?P<n>[0-9]+) matches for "
+    r"old_string\. Add a unique @@ hint @@ to this hunk or include unique "
+    r"context lines in its search text\. Matches:\n"
+    r"(?P<lines>(?:  L[0-9]+: \[source omitted\]\n)*"
+    r"  L[0-9]+: \[source omitted\])\Z"
+)
+_SIMILAR = re.compile(
+    r"Patch validation failed \(no files were modified\):\n"
+    r"  • f: hunk 1 \(no hint\) not found — "
+    r"Could not find a match for old_string in the file\n"
+    r"\nSimilar sections near lines [0-9]+(?:, [0-9]+)*; "
+    r"read the file for context\.\Z"
+)
+_PIN_REASON = {
+    "strict-site": (
+        "bytes match but site comparison is unavailable, which is not agreement"
+    ),
+    "strict-blank-delete": (
+        "unique nonblank deletion writes a blank terminated line "
+        "instead of removing the pair"
+    ),
+    "strict-empty-search": (
+        "empty search text is UNMAPPED and leaves the file unchanged"
+    ),
+    "strict-found-extra": (
+        "normalized ambiguity reports Found N matches plus match lines, "
+        "so the mapper returns UNMAPPED"
+    ),
+}
+_FUZZ_BUNDLES = {}
+_ROW_CACHE = {}
+
+
+class _KnownPlannerDefect(AssertionError):
+    """Raised only for the specific currently documented planner defect."""
+
+
+def _fuzz_settings():
+    seed = int(os.environ.get("HERMES_PATCH_ORACLE_SEED", "2000"))
+    count = int(os.environ.get("HERMES_PATCH_ORACLE_COUNT", "2000"))
+    if seed < 0 or count < 0:
+        raise ValueError("fuzz seed and count must be >= 0")
+    return seed, count
+
+
+def _fuzz_bundle():
+    settings = _fuzz_settings()
+    bundle = _FUZZ_BUNDLES.get(settings)
+    if bundle is None:
+        bundle = enumerate_corpus(*settings)
+        _FUZZ_BUNDLES[settings] = bundle
+    return bundle
+
+
+def _class_id(key) -> str:
+    style, final, kind, target, tier, pos, card, _rules = key
+    return f"{style}-{final}-{kind}-{target}-{tier}-{pos}-{card}"
+
+
+def _sorted_classes():
+    return tuple(sorted(advertised_classes(), key=_class_id))
+
+
+def _pin_kind(key) -> str:
+    """Exact class pin. Not a delete-wide or not-found-wide group."""
+    _style, final, kind, target, tier, pos, card, _rules = key
+    if (
+        kind == "delete" and target == "nonblank" and card == "one"
+        and final == "unterminated" and pos == "final"
+    ):
+        return "strict-site"
+    if (
+        kind == "delete" and target == "nonblank" and card == "one"
+        and tier in ("exact", "normalized")
+    ):
+        return "strict-blank-delete"
+    if target == "blank":
+        return "strict-empty-search"
+    if target == "nonblank" and tier == "normalized" and card == "many":
+        return "strict-found-extra"
+    if target == "nonblank" and tier == "none" and card == "zero":
+        return "mixed-not-found"
+    return "must-agree"
+
+
+def _blank_kept(src: bytes, index: int):
+    lines = decode_lines(src)
+    style = file_style(lines) if lines else None
+    if not lines or style is None or not 0 <= index < len(lines):
+        return None
+    return b"".join(
+        style if j == index else content + term
+        for j, (content, term) in enumerate(lines)
+    )
+
+
+def _signature(src, expected, status, code, out) -> str:
+    if status in ("agree-site", "agree-refuse"):
+        return "agree"
+    if (
+        status == "site-unavailable"
+        and isinstance(expected, Write)
+        and out == expected.new_text
+    ):
+        return "site-unavailable-bytes-ok"
+    if status == "finding" and code == "UNMAPPED" and out == src:
+        return "unmapped-unchanged"
+    if (
+        status == "finding"
+        and code == "WRITE"
+        and isinstance(expected, Write)
+        and out != expected.new_text
+        and out == _blank_kept(src, expected.site[0])
+    ):
+        return "delete-keeps-blank-line"
+    return "other"
+
+
+def _found_extra(error: str) -> bool:
+    match = _FOUND_EXTRA.fullmatch(error or "")
+    if not match:
+        return False
+    count = int(match.group("n"))
+    lines = [line for line in match.group("lines").splitlines() if line.startswith("  L")]
+    return count >= 2 and len(lines) == count
+
+
+def _planner_error(file: bytes, patch: bytes) -> str:
+    from tools.file_operations_common import ReadResult, WriteResult
+    from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
+
+    class Mem:
+        def __init__(self, text):
+            self.files = {"f": text}
+
+        def read_file_raw(self, path):
+            text = self.files[path]
+            return ReadResult(
+                content=text,
+                total_lines=text.count("\n") + 1,
+                file_size=len(text.encode()),
+            )
+
+        def write_file(self, path, content, pre_content=None):
+            self.files[path] = content
+            return WriteResult(bytes_written=len(content.encode()), verified=True)
+
+    store = Mem(file.decode("ascii"))
+    ops, err = parse_v4a_patch(patch.decode("ascii"))
+    if err or not ops:
+        return err or ""
+    return apply_v4a_operations(ops, store).error or ""
+
+
+@dataclass(frozen=True)
+class _Row:
+    origin: str
+    sig: str
+    status: str
+    code: str
+    out: bytes
+    error: str
+    expected: object
+    src: bytes
+
+
+def _class_rows(key):
+    cache_key = (_fuzz_settings(), key)
+    cached = _ROW_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    witnesses, sample, _stats = _fuzz_bundle()
+    cases = [("witness", witnesses[key])]
+    cases.extend(("sample", item) for item in sample if item[2] == key)
+    rows = []
+    for origin, (src, patch, tagged) in cases:
+        expected = evaluate(src, patch)
+        if expected is OOD or tags_from_bytes(src, patch) != tagged or tagged != key:
+            raise AssertionError(f"{_class_id(key)} left the closed domain")
+        status, code, out, _site = _compare(src, patch, expected)
+        if not isinstance(code, str) or not isinstance(out, bytes):
+            raise AssertionError(f"{_class_id(key)} comparison returned {status!r}")
+        sig = _signature(src, expected, status, code, out)
+        error = _planner_error(src, patch) if sig == "unmapped-unchanged" else ""
+        rows.append(_Row(origin, sig, status, code, out, error, expected, src))
+    _ROW_CACHE[cache_key] = tuple(rows)
+    return _ROW_CACHE[cache_key]
+
+
+def _fmt(row: _Row) -> str:
+    return (
+        f"{row.origin} sig={row.sig} status={row.status} code={row.code} "
+        f"expected={row.expected!r} out={row.out!r}"
+    )
+
+
+def _matches_pin(kind: str, row: _Row) -> bool:
+    if kind == "strict-site":
+        return row.sig == "site-unavailable-bytes-ok"
+    if kind == "strict-blank-delete":
+        return row.sig == "delete-keeps-blank-line"
+    if kind == "strict-empty-search":
+        return row.sig == "unmapped-unchanged" and bool(_EMPTY_SEARCH.fullmatch(row.error))
+    if kind == "strict-found-extra":
+        return row.sig == "unmapped-unchanged" and _found_extra(row.error)
+    return False
+
+
+def _finish_strict(rows, key, kind) -> None:
+    if rows and all(row.sig == "agree" or _matches_pin(kind, row) for row in rows) and any(
+        _matches_pin(kind, row) for row in rows
+    ):
+        raise _KnownPlannerDefect(_PIN_REASON[kind])
+    if all(row.sig == "agree" for row in rows):
+        return
+    unrelated = "; ".join(
+        _fmt(row) for row in rows if row.sig != "agree" and not _matches_pin(kind, row)
+    )
+    pytest.fail(f"unrelated disagreement in {_class_id(key)}: {unrelated}")
+
+
+def _finish_mixed(rows, key) -> int:
+    witness = [row for row in rows if row.origin == "witness"]
+    assert len(witness) == 1
+    assert witness[0].sig == "agree", (
+        f"{_class_id(key)} witness must agree; refusing to xfail the class"
+    )
+    similar = 0
+    bad = []
+    for row in rows:
+        if row.sig == "agree":
+            continue
+        not_found = isinstance(row.expected, Refuse) and row.expected.code == "NOT_FOUND"
+        if (
+            row.origin == "sample"
+            and row.sig == "unmapped-unchanged"
+            and not_found
+            and _SIMILAR.fullmatch(row.error)
+        ):
+            similar += 1
+            continue
+        bad.append(row)
+    if bad:
+        pytest.fail(
+            f"unrelated disagreement in {_class_id(key)}: "
+            + "; ".join(_fmt(row) for row in bad)
+        )
+    # Similar-section diagnostics are counted findings, not an oracle agreement.
+    return similar
+
+
+def test_planner_smoke_r1_lf():
+    """Real planner, not the oracle: the spec's LF replacement must agree."""
+    _name, src, body, expected = next(row for row in SPEC if row[0] == "r1-lf")
+    patch = _patch(body)
+    assert evaluate(src, patch) == expected
+    status, code, out, site = _compare(src, patch, expected)
+    assert (status, code, out, site) == (
+        "agree-site", "WRITE", expected.new_text, expected.site,
+    )
+    print(f"oracle-fuzz smoke r1-lf {status} {code} site={site}")
+
+
+def test_fuzz_defaults_are_2000(monkeypatch):
+    monkeypatch.delenv("HERMES_PATCH_ORACLE_SEED", raising=False)
+    monkeypatch.delenv("HERMES_PATCH_ORACLE_COUNT", raising=False)
+    assert _fuzz_settings() == (2000, 2000)
+
+
+def test_fuzz_seed_and_count_follow_the_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_PATCH_ORACLE_SEED", "7")
+    monkeypatch.setenv("HERMES_PATCH_ORACLE_COUNT", "3")
+    witnesses, sample, stats = _fuzz_bundle()
+    assert stats["seed"] == 7
+    assert len(witnesses) == 80
+    assert len(sample) == 3
+    assert all(evaluate(src, patch) is not OOD for src, patch, _key in sample)
+
+
+def test_pin_partition_is_exact():
+    groups = Counter(_pin_kind(key) for key in advertised_classes())
+    assert dict(groups) == {
+        "strict-site": 4,
+        "strict-blank-delete": 12,
+        "strict-empty-search": 28,
+        "strict-found-extra": 8,
+        "mixed-not-found": 8,
+        "must-agree": 20,
+    }
+    assert _pin_kind(_key(
+        "LF", "terminated", "delete", "nonblank", "exact", "none", "many",
+    )) == "must-agree"
+    assert _pin_kind(_key(
+        "LF", "terminated", "delete", "nonblank", "none", "none", "zero",
+    )) == "mixed-not-found"
+    assert _pin_kind(_key(
+        "LF", "unterminated", "delete", "nonblank", "exact", "final", "one",
+    )) == "strict-site"
+    assert _pin_kind(_key(
+        "LF", "terminated", "replace", "nonblank", "exact", "nonfinal", "one",
+    )) == "must-agree"
+
+
+def test_site_unavailable_is_not_agreement():
+    expected = Write((1, 2), b"a\n")
+    assert _signature(b"a\nold", expected, "site-unavailable", "WRITE", b"a\n") == (
+        "site-unavailable-bytes-ok"
+    )
+    assert _signature(b"a\nold", expected, "agree-site", "WRITE", b"a\n") == "agree"
+
+
+def test_known_defect_pin_never_swallows_an_unrelated_mismatch():
+    key = next(key for key in _sorted_classes() if _pin_kind(key) == "strict-blank-delete")
+    row = _Row("sample", "other", "finding", "WRITE", b"wrong", "", Write((0, 1), b""), b"a\n")
+    with pytest.raises(pytest.fail.Exception, match="unrelated disagreement"):
+        _finish_strict((row,), key, "strict-blank-delete")
+
+
+def test_fuzz_seed_and_counts():
+    seed, count = _fuzz_settings()
+    witnesses, sample, stats = _fuzz_bundle()
+    items = [*witnesses.values(), *sample]
+    assert stats["seed"] == seed
+    assert len(witnesses) == 80
+    assert len(sample) == min(count, stats["enumerated_parameter_sets"])
+    counts = Counter()
+    for src, patch, key in items:
+        assert evaluate(src, patch) is not OOD
+        assert tags_from_bytes(src, patch) == key
+        counts[key] += 1
+    assert set(counts) == advertised_classes()
+    assert all(counts[key] >= 1 for key in advertised_classes())
+    rule_cases = {
+        n: sum(v for key, v in counts.items() if n in key[-1])
+        for n in (1, 2, 3, 4, 5, 6)
+    }
+    assert rule_cases[4] == 0
+    assert rule_cases[1] == rule_cases[2] == rule_cases[3] == len(items)
+    outcomes = Counter()
+    for key in _sorted_classes():
+        for row in _class_rows(key):
+            outcomes[(_pin_kind(key), row.sig)] += 1
+    print(
+        "oracle-fuzz",
+        {
+            "seed": seed,
+            "count": count,
+            "enumerated_parameter_sets": stats["enumerated_parameter_sets"],
+            "witnesses": len(witnesses),
+            "sample": len(sample),
+            "in_domain": len(items),
+            "classes": len(counts),
+            "rule_cases": rule_cases,
+        },
+    )
+    print(
+        "oracle-fuzz class-counts",
+        {_class_id(key): counts[key] for key in _sorted_classes()},
+    )
+    print("oracle-fuzz outcomes", dict(outcomes))
+
+
+def test_mixed_not_found_witnesses_agree():
+    witnesses, _sample, _stats = _fuzz_bundle()
+    for key in advertised_classes():
+        if _pin_kind(key) != "mixed-not-found":
+            continue
+        src, patch, _key = witnesses[key]
+        expected = evaluate(src, patch)
+        status, code, out, _site = _compare(src, patch, expected)
+        assert status == "agree-refuse" and code == "NOT_FOUND" and out == src, key
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=_KnownPlannerDefect,
+    reason="known V4A defect similar-section diagnostic unmapped, fixed in t_6e12e276",
+)
+def test_not_found_with_similar_section_has_mapped_refusal():
+    src = b"a\n"
+    patch = _patch(b"-tail\n+new\n")
+    expected = evaluate(src, patch)
+    assert expected == Refuse("NOT_FOUND")
+    status, code, out, _site = _compare(src, patch, expected)
+    if (status, code, out) == ("agree-refuse", "NOT_FOUND", src):
+        return
+    if code == "UNMAPPED" and out == src and _SIMILAR.fullmatch(_planner_error(src, patch)):
+        raise _KnownPlannerDefect("similar-section suffix is not mapped")
+    pytest.fail("unrelated not-found mismatch")
+
+
+def _class_parameter(key):
+    kind = _pin_kind(key)
+    if kind in ("strict-blank-delete", "strict-empty-search", "strict-found-extra"):
+        return pytest.param(
+            key,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=_KnownPlannerDefect,
+                reason=f"known V4A defect {kind}, fixed in t_6e12e276",
+            ),
+            id=_class_id(key),
+        )
+    return pytest.param(key, id=_class_id(key))
+
+
+@pytest.mark.parametrize("key", [_class_parameter(key) for key in _sorted_classes()])
+def test_closed_domain_differential(key):
+    rows = _class_rows(key)
+    assert rows
+    assert all(row.expected is not OOD for row in rows)
+    kind = _pin_kind(key)
+    if kind == "must-agree":
+        # A byte-identical replacement has no diff from which to establish
+        # provenance. Record this as unavailable, never as agreement.
+        bad = [row for row in rows if row.sig not in ("agree", "site-unavailable-bytes-ok")]
+        assert not bad, (
+            f"{_class_id(key)} must match bytes and outcome; "
+            + "; ".join(_fmt(row) for row in bad)
+        )
+        return
+    if kind == "mixed-not-found":
+        _finish_mixed(rows, key)
+        return
+    if kind == "strict-site":
+        # Correct bytes cannot prove the selected site when the diff cannot
+        # frame an unterminated line. Count separately; never call it agreement.
+        assert all(row.sig in ("agree", "site-unavailable-bytes-ok") for row in rows)
+        return
+    _finish_strict(rows, key, kind)

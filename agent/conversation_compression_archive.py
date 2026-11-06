@@ -134,3 +134,21 @@ def coverage_for_commit(
     if not covered and not marked:
         return None, None
     return covered, unresolved
+
+
+def untagged_carried_messages(compacted: Sequence[Any], held: Sequence[Any]) -> list[dict[str, Any]]:
+    """Return plugin-retained rows that preserve a held durable message identity.
+
+    Built-in compaction marks its tail explicitly.  Plugins receive the same
+    ``message_uid`` identities but are not required to know that private marker;
+    an unchanged uid in their compacted output is enough to name a superseded
+    original through ``archive_and_compact(..., carried_messages=...)``.
+    """
+    held_uids = {
+        message.get("message_uid") for message in held
+        if isinstance(message, dict) and isinstance(message.get("message_uid"), str) and message["message_uid"]
+    }
+    return [
+        message for message in compacted
+        if isinstance(message, dict) and message.get("message_uid") in held_uids
+    ]

@@ -47,13 +47,15 @@ def session_source_for(platform: Optional[str]) -> str:
     return source or platform or "cli"
 
 
-def turn_daybreak_surface() -> bool:
-    """Whether the gateway judged the agent running this turn to serve the owner's own chat, for code with no
-    agent in hand (a delegation backend's ``route_task``). A gateway-hosted chat's platform is the ``local``
-    transport, so the gateway records its launch policy's verdict as ``agent.daybreak_surface``. Only that
-    explicit verdict counts: an agent the gateway built elsewhere (a ``/bg`` task runs as ``cli``) is unjudged."""
+def turn_daybreak_surface() -> Optional[bool]:
+    """The gateway's verdict on whether the agent running this turn serves the owner's own chat, for code with no
+    agent in hand (a delegation backend's ``route_task``): ``True`` or ``False`` when the gateway judged it (a turn
+    it runs, a ``/bg`` task), ``None`` when nothing did (classic CLI, the TUI backend, cron). A gateway-hosted chat's
+    platform is the ``local`` transport, and a ``/bg`` task binds no session (it reads as ``cli``), so ``False``
+    must refuse whatever the session source says."""
     from agent.subagent_lifecycle import get_active_subagent_parent
-    return getattr(get_active_subagent_parent(), "daybreak_surface", None) is True
+    verdict = getattr(get_active_subagent_parent(), "daybreak_surface", None)
+    return verdict if isinstance(verdict, bool) else None
 
 
 def is_attended(agent: Any) -> bool:

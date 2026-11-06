@@ -185,11 +185,12 @@ def test_delegation_sees_the_owners_gateway_chat_with_the_switch_off(tmp_path, m
     def seen(**agent):
         with bind_subagent_parent(SimpleNamespace(**agent)):
             return turn_daybreak_surface()
-    # Only the gateway's explicit verdict counts: a ``/bg`` agent the gateway builds runs as ``cli`` unjudged.
+    # Only the gateway's explicit verdict counts, and False stays apart from unjudged (None): a ``/bg`` task binds no
+    # session, so its chat's False is the only thing that can refuse it.
     assert [seen(platform="local", daybreak_surface=True), seen(platform="local", daybreak_surface=False),
             seen(platform="local"), seen(platform="cli"), seen(platform="local", daybreak_surface="yes")] == [
-        True, False, False, False, False]
-    assert turn_daybreak_surface() is False
+        True, False, None, None, None]
+    assert turn_daybreak_surface() is None
 
 
 def test_model_menu_capability_marks_only_listed_subscription_models(catalog, monkeypatch):

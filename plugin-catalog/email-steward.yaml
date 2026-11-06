@@ -1,0 +1,21 @@
+name: email-steward
+repo: https://github.com/kaosjammo/hermes-email-steward
+sha: 6b4ff6916d6b376c4e65f6454f5d404c67bdc44d
+description: Owner-private Gmail triage, durable obligations and shared Desktop rules.
+maintainer: kaosjammo
+tier: community
+category: automation
+title: Email Steward
+version: "0.1.0"
+docs_url: https://github.com/kaosjammo/hermes-email-steward#readme
+platforms: [linux]
+known_issues:
+  - "Draft WIP: unfinished presentation changes have no fresh independent approval."
+  - "Aggregate Python tests timed out with failures/skips; package build is blocked by a setuptools environment/requirement mismatch."
+  - "Pinned-SDK validation passes with private-core-import warnings; released-version compatibility floor remains unverified."
+  - "Live Gmail/OAuth, gateway delivery, native Electron and mobile acceptance are unrun."
+capabilities:
+  provides_tools: [email_steward]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [EMAIL_STEWARD_GOOGLE_CLIENT_ID, EMAIL_STEWARD_GOOGLE_CLIENT_SECRET]

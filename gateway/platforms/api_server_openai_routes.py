@@ -17,6 +17,7 @@ from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
 from agent.i18n import t
+from gateway.platforms.api_server_chat_approval import ChatApprovalMixin
 
 try:
     from aiohttp import web
@@ -777,7 +778,7 @@ def _parse_conversation_history(raw_history: Any) -> tuple:
     return conversation_history, None
 
 
-class OpenAICompatRoutesMixin:
+class OpenAICompatRoutesMixin(ChatApprovalMixin):
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
     def _select_request_route(
@@ -803,16 +804,33 @@ class OpenAICompatRoutesMixin:
         self._run_owners[completion_id] = self._run_idempotency_scope(request)
         self._set_run_status(completion_id, "running", session_id=session_id or "")
         self._run_approval_sessions[completion_id] = completion_id
+        # The parked turn's own queue/task, so the chat turn that answers the approval can stream
+        # its continuation (an OpenAI-compatible client is not watching the original response).
+        self._chat_approval_books()["parked"][completion_id] = {"stream_q": stream_q,
+                                                               "agent_task": None}
 
         def _approval_notify(approval_data):
             event = _approval_request_event(completion_id, approval_data, session_id=session_id or "")
             self._set_run_status(completion_id, "waiting_for_approval", last_event="approval.request",
                                  approval=event)
+            # Remember the prompt so the client's next chat turn can answer it: an
+            # OpenAI-compatible client has no approval channel, so the reply is the channel.
+            self._chat_approval_books()["pending"][completion_id] = {
+                "run_id": completion_id, "session_id": session_id or "",
+                "request_id": str(event.get("request_id") or ""),
+                "execution_generation": event.get("execution_generation"),
+                "command": str(event.get("command") or ""),
+                "description": str(event.get("description") or ""),
+                "choices": list(event.get("choices") or []),
+                "created": time.time(),
+            }
             stream_q.put_threadsafe(("__approval__", event))
 
         def _on_done(fut):
             from gateway.platforms.api_server_runs import terminal_run_status
             self._run_approval_sessions.pop(completion_id, None)
+            for _book in self._chat_approval_books().values():
+                _book.pop(completion_id, None)
             if fut.cancelled():
                 status = "cancelled"
             elif fut.exception() is not None:
@@ -893,9 +911,10 @@ class OpenAICompatRoutesMixin:
 
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of
         # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
+        gateway_session_key, refusal = await self._chat_turn_admission(
+            request, user_message, stream, body)
+        if refusal is not None:
+            return refusal
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
@@ -995,6 +1014,10 @@ class OpenAICompatRoutesMixin:
                 _stream_q, on_done=end_stream_run, tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete, approval_notify_callback=approval_notify,
                 approval_session_key=completion_id, **run_kwargs)
+            # The approval surfaces are registered before the task exists; stamp it now so the
+            # answering chat turn can follow this run to its end.
+            self._chat_approval_books()["parked"].get(completion_id, {}).update(
+                agent_task=agent_task)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the
@@ -1184,7 +1207,8 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
                     await response.write(_sse_frame(delta[1], event="hermes.status"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
-                    await response.write(_sse_frame(delta[1], event="approval.request"))
+                    if await self._chat_approval_frame(response, delta[1], completion_id, _chunk):
+                        return response
                 else:
                     if delta:
                         content_sent = True
@@ -1235,8 +1259,7 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
-            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+            await self._chat_stream_disconnect(agent_ref, agent_task, completion_id)
         except Exception:
             # Agent crashed mid-stream: an error chunk beats a TransferEncodingError.
             import traceback as _tb

@@ -111,6 +111,10 @@ curl http://localhost:8642/v1/chat/completions \
 **流中的工具进度：**
 - **Chat Completions**：Hermes 发出 `event: hermes.tool.progress` 以提供工具启动可见性，同时不污染持久化的 assistant 文本。无法处理具名 SSE 事件的严格 OpenAI 客户端可设置 `gateway.platforms.api_server.tool_progress_events: false`（默认 `true`）关闭这些帧；内容块不受影响。该开关仅作用于 Chat Completions——`/v1/runs/{id}/events` 始终发出工具事件，`/v1/capabilities` 中的 `tool_progress_events` 功能描述的正是这一点。
 - **Responses**：Hermes 在 SSE 流期间发出符合规范的 `function_call` 和 `function_call_output` 输出项，让客户端能够实时渲染结构化工具 UI。
+
+**流中的审批：**
+- **Chat Completions**：危险命令审批没有符合 OpenAI 规范的帧，而严格的客户端会忽略 SSE 的 `event:` 名称——它们把每一行 `data:` 都按 `chat.completion.chunk` 校验，因此 `choices` 为字符串列表的 `approval.request` 负载会中断整轮（opencode 的 `openai-compatible-chat` 解码器报 `Expected object at ["choices"][0]`）。所以 Hermes 默认把审批渲染为 assistant **文本**（命令、原因、run id 以及可用来回答的词语），并以 `finish_reason: "stop"` 结束该响应；agent 保持挂起而不被中断。客户端的下一条消息就是回答：仅回复一个 `approve` / `deny` / `session` / `always` 即通过原生客户端所用的同一个 `POST /v1/runs/{run_id}/approval` 入口解决挂起的审批，随后被恢复的工作继续在这条回复自己的响应上流式输出。设置 `gateway.platforms.api_server.approval_events: true`（默认 `false`）可在该接口恢复结构化的 `event: approval.request` 帧，供确实读取事件名的客户端使用。`/v1/runs/{id}/events` 始终发出 `approval.request`；非流式请求仍会等到 `approvals.timeout` —— 请在流式路径上回答审批。
+- **Responses**：审批不会在流中呈现；需要审批的一轮会等到 `approvals.timeout` 后按失败关闭。
 **模型推理**（仅当模型确实产生了推理内容且解析后的 `reasoning` 配置允许时才会发出；输入侧的关闭方式是 `model_options.reasoning.enabled: false`）：
 - **Chat Completions**：推理增量以 `choices[0].delta.reasoning_content` 块的形式到达（DeepSeek 风格的字段，Open WebUI、opencode 和 Vercel AI SDK 会将其渲染为思考块）；回答文本仍留在 `delta.content` 中。
 - **Responses**：每一段思考都是一个符合规范的 `reasoning` 输出项——`response.output_item.added`（`item.type: "reasoning"`）、`response.reasoning_summary_part.added`、`response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`、`response.reasoning_summary_part.done`、`response.output_item.done`——在下一个 message 或 `function_call` 项打开之前关闭，并在 `response.completed` 的 output 中以 `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}` 的形式回显。`sequence_number` 在推理、文本和工具事件之间保持单调递增。

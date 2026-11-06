@@ -411,6 +411,31 @@ async def test_ignored_beats_allowed(adapter, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# discord.py lazy-installed after the gateway imported the adapter siblings
+# ---------------------------------------------------------------------------
+
+
+def test_slash_gate_survives_lazy_discord_install(adapter, monkeypatch):
+    """The sibling bound ``discord = None`` at the gateway's pre-install scan; only the facade is
+    rebound by ``check_discord_requirements``. The gate must not crash (Discord shows "The
+    application did not respond" when the interaction is never acknowledged)."""
+    from plugins.platforms.discord import adapter_slash_auth
+
+    monkeypatch.setattr(adapter_slash_auth, "discord", None)
+    adapter._allowed_user_ids = {"100200300"}
+    assert adapter._evaluate_slash_authorization(_make_interaction("100200300")) == (True, None)
+
+
+def test_thread_title_labels_survive_lazy_discord_install(adapter, monkeypatch):
+    """Same stale binding in the thread-titles sibling (reached from the voice path)."""
+    from plugins.platforms.discord import adapter_thread_titles
+
+    monkeypatch.setattr(adapter_thread_titles, "discord", None)
+    channel = SimpleNamespace(id=1, name="general", guild=SimpleNamespace(name="G"), topic="t")
+    assert adapter._guild_channel_labels(channel) == ("G / #general", "t")
+
+
+# ---------------------------------------------------------------------------
 # Admin notify soft-fail fallback
 # ---------------------------------------------------------------------------
 

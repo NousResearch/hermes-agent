@@ -105,6 +105,9 @@ class DiscordThreadTitlesMixin:
 
     def _guild_channel_labels(self, channel: Any) -> tuple[str, str | None]:
         """``(chat_name, chat_topic)`` for a guild channel or thread, as a message posted there gets them."""
+        # The facade's binding survives a lazy discord.py install; this module's import-time one does not.
+        from plugins.platforms.discord.adapter import discord
+
         if isinstance(channel, discord.Thread):
             return self._format_thread_chat_name(channel), self._get_effective_topic(channel, is_thread=True)
         name, guild = getattr(channel, "name", str(channel.id)), getattr(channel, "guild", None)

@@ -250,9 +250,12 @@ class HeartbeatManager:
                 path = Path(DEFAULT_HEARTBEAT_FILE)
             body = f"orders: file {path}"
             try:
-                mtime = time.strftime("%H:%M", time.localtime(path.stat().st_mtime))
-                body += f" (modified {mtime})"
-            except OSError:
+                if not path.read_text(encoding="utf-8").strip():
+                    body += " (blank — idle)"
+                else:
+                    mtime = time.strftime("%H:%M", time.localtime(path.stat().st_mtime))
+                    body += f" (modified {mtime})"
+            except (OSError, UnicodeDecodeError):
                 pass
         else:
             body = orders
@@ -270,6 +273,12 @@ class HeartbeatManager:
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
         if prompt.startswith(HEARTBEAT_FILE_MARKER):
+            if prompt == HEARTBEAT_FILE_MARKER:
+                # The default file is blank-and-ready: create it empty on first use so the user has a
+                # home to write into. Explicit paths stay strict — no auto-create for a typo'd path.
+                path = heartbeat_file_path(prompt)
+                if path is not None and not path.exists():
+                    path.write_text("", encoding="utf-8")
             # Fail fast at set time: a typo'd path should surface NOW, not silently on tick 47.
             path = heartbeat_file_path(prompt)
             if path is None:  # defensive: marker present but resolver disagreed — default house file
@@ -316,6 +325,18 @@ class HeartbeatManager:
             s = self._state
             if s is None or not s.is_due(now):
                 return None
+            if s.prompt.startswith(HEARTBEAT_FILE_MARKER):
+                # Blank orders = deliberate dormancy: the file exists, says nothing, so the tick is
+                # NEVER claimed — nothing injected, nothing recorded, silence is correct. The user
+                # writes orders, the next poll obeys them. Only an unreadable file falls through to
+                # render, which surfaces the loud failure (a deleted file must not pass as blank).
+                fp = heartbeat_file_path(s.prompt)
+                if fp is not None and fp.is_file():
+                    try:
+                        if not fp.read_text(encoding="utf-8").strip():
+                            return None
+                    except OSError:
+                        pass  # fall through — render surfaces the loud failure
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
             # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
             stored = load_heartbeat(self.session_id)

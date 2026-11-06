@@ -1,0 +1,18 @@
+name: keepmd-mcp-eob-decoder
+title: KeepMD MCP for EOB Decoder
+repo: https://github.com/keepmd-medical/keepmd-mcp-eob-decoder
+sha: 345a48ca803a966de23b97b00f30cef545a4130c
+subdir: hermes
+version: "0.1.3"
+description: "Explain the codes, insurance terms and patient-responsibility math on a medical Explanation of Benefits (EOB), Medicare Summary Notice or itemized bill through KeepMD's hosted, read-only MCP server (Streamable HTTP at https://mcp.keepmd.org/eob, no sign-in, no keys): official ICD-10-CM and HCPCS Level II descriptors, code search from everyday wording, an insurance glossary, EOB arithmetic checks and a reading and appeal guide. Bundles the reading-an-eob workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to KeepMD's hosted server (mcp.keepmd.org), which receives only codes, search words, insurance terms and dollar amounts and stores nothing; the tool set is served by that server at runtime and is not covered by the pinned sha. All five tools are annotated read-only. General billing and coding reference, not medical, legal or financial advice."
+maintainer: KeepMD
+tier: community
+category: tools
+docs_url: https://keepmd.org/mcp-eob-decoder/
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

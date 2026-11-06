@@ -1,4 +1,4 @@
-"""Bounded retries for PM-owned, idempotent network operations."""
+"""Retry policy for PM-owned, idempotent network operations."""
 
 from __future__ import annotations
 
@@ -71,8 +71,11 @@ def edge_block(exc: BaseException) -> str | None:
             "retry from another network")
 
 
-def _delay(exc: Exception, attempt: int) -> float:
+def _delay(exc: Exception, attempt: int, *, jitter: bool = False) -> float:
     delay = float(2 ** attempt)
+    if jitter:
+        ceiling = min(delay, _MAX_DELAY)
+        delay = max(1.0, random.uniform(ceiling / 2, ceiling))
     if isinstance(exc, urllib.error.HTTPError):
         value = exc.headers.get("Retry-After", "") if exc.headers else ""
         if value:
@@ -87,18 +90,13 @@ def _delay(exc: Exception, attempt: int) -> float:
                 except (TypeError, ValueError, OverflowError):
                     retry_after = 0.0
             delay = max(delay, retry_after)
-    return delay
-
-
-def recovery_delay(exc: Exception, attempt: int) -> float:
-    """Spread active-job retries without shortening the server's requested wait."""
-    ceiling = min(_MAX_DELAY, 2.0 ** min(attempt, 5))
-    return max(random.uniform(ceiling / 2, ceiling), min(_delay(exc, 0), sys.float_info.max))
+    return min(delay, sys.float_info.max)
 
 
 def retry_network(
     operation: Callable[[], _T], *, wait: Callable[[float], None] | None = None,
     progress: Callable[[], int] | None = None, fallback_available: bool = False,
+    attempts: int | None = _ATTEMPTS,
 ) -> _T:
     """Retry the complete request and body read, never an install or publish.
 
@@ -107,6 +105,7 @@ def retry_network(
     Downloads supply ``progress``: durable forward progress renews their
     budget. Metadata and non-resumable requests still get four attempts.
     A resumable request yields to an available fallback before a long wait.
+    ``attempts=None`` keeps retrying transient failures until the caller stops.
     """
     failures_since_progress = 0
     backoff = 0
@@ -126,16 +125,17 @@ def retry_network(
                 saved = current
             else:
                 failures_since_progress += 1
-            if failures_since_progress >= _ATTEMPTS:
+            if attempts is not None and failures_since_progress >= attempts:
                 raise
-            delay = _delay(exc, backoff)
-            if progress is None:
-                delay = min(delay, _MAX_DELAY)
-            elif delay > (_MAX_DELAY if fallback_available else _MAX_RECOVERY_DELAY):
-                raise
+            delay = _delay(exc, min(backoff, 5), jitter=attempts is None)
+            if attempts is not None:
+                if progress is None:
+                    delay = min(delay, _MAX_DELAY)
+                elif delay > (_MAX_DELAY if fallback_available else _MAX_RECOVERY_DELAY):
+                    raise
             backoff += 1
             logging.getLogger(__name__).warning(
-                "network request failed (%s); retrying in %gs (%d/%d failures without progress)",
-                exc, delay, failures_since_progress, _ATTEMPTS,
+                "network request failed (%s); retrying in %gs (%d/%s failures without progress)",
+                exc, delay, failures_since_progress, attempts if attempts is not None else "unlimited",
             )
             (wait or time.sleep)(delay)

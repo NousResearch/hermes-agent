@@ -1,9 +1,10 @@
-"""Network retry policy keeps permanent errors immediate and attempts bounded."""
+"""Network retries preserve server delays, cancellation and bounded defaults."""
 
 import errno
 import http.client
 import socket
 import ssl
+import sys
 import urllib.error
 from datetime import datetime, timezone, UTC
 from email.message import Message
@@ -134,3 +135,31 @@ def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
     else:
         assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
         assert waits == [expected]
+
+
+@pytest.mark.parametrize("retry_after,expected", [(None, None), ("3600", 3600), ("future-date", 3600), ("9" * 400, sys.float_info.max)])
+def test_unlimited_retries_preserve_server_waits_without_exponent_overflow(monkeypatch, retry_after, expected):
+    now = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(network.time, "time", lambda: now)
+    monkeypatch.setattr(network.random, "uniform", lambda low, high: low)
+    if retry_after == "future-date":
+        retry_after = format_datetime(datetime.fromtimestamp(now + 3600, UTC), usegmt=True)
+    error = _http_error(503, retry_after)
+    waits = []
+
+    def fail():
+        raise error
+
+    def wait(delay):
+        waits.append(delay)
+        if len(waits) == 1100:
+            raise DownloadPaused("stop recovery")
+
+    with pytest.raises(DownloadPaused):
+        network.retry_network(fail, wait=wait, attempts=None)
+    assert len(waits) == 1100
+    if retry_after is None:
+        assert waits[:6] == [1, 1, 2, 4, 8, 15]
+        assert all(delay == 15 for delay in waits[6:])
+    else:
+        assert waits == [expected] * 1100

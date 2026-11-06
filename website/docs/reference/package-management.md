@@ -582,9 +582,9 @@ Each retry logs its cause, delay and consecutive failures without progress.
 
 Required dashboard model downloads remain active during transient outages, including
 the initial connection. They retry with jittered backoff capped at 30 seconds,
-respect each source's `Retry-After`, and try other mirrors while a source waits.
-Pause interrupts recovery. Optional drafts and non-resumable transfers retain
-the bounded policy.
+respect the server's `Retry-After`, and remain interruptible with Pause.
+Initial connections retry before resumability is known. Optional drafts and
+non-resumable response bodies retain the bounded policy.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.

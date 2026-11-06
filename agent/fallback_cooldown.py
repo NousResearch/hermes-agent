@@ -127,3 +127,20 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
+    """True when every credential the candidate would use sits in an exhaustion cooldown longer
+    than the retry loop's longest wait (the 600s Retry-After cap): switching to it only fails the
+    turn the same way the primary just did (#89401). A short throttle still gets its chance."""
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(fb_provider)
+        except Exception:
+            return False
+    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
+        return False
+    until = pool.next_available_at(model=fb_model)
+    return until is None or until - time.time() > 600

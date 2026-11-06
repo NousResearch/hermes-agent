@@ -25,6 +25,8 @@ import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
 
+import { PreviewVaultButton } from './preview-vault-picker'
+
 interface PreviewBrowserBarProps {
   annotateMode?: boolean
   canGoBack: boolean
@@ -46,6 +48,8 @@ interface PreviewBrowserBarProps {
   onToggleAnnotate?: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
+  /** The Browser tab this bar drives; set = offer the saved-login key button. */
+  tabId?: string
   /** The page's CURRENT address (it moves as the user navigates), not the
    *  target the tab was opened with. */
   url: string
@@ -116,6 +120,7 @@ export function PreviewBrowserBar({
   onToggleAnnotate,
   onToggleConsole,
   onToggleDevTools,
+  tabId,
   url
 }: PreviewBrowserBarProps) {
   const { t } = useI18n()
@@ -219,6 +224,7 @@ export function PreviewBrowserBar({
           text={url}
         />
       </div>
+      {tabId ? <PreviewVaultButton tabId={tabId} url={url} /> : null}
       {onToggleAnnotate ? (
         <PaneStripGlyph
           active={annotateMode}

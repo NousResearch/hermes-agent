@@ -250,14 +250,17 @@ explicit Bot Chat title is resolved in the target profile's session database.
 ### The live reply-wait budget
 
 A live Bot Chat delivery (a local DM, a peer DM, or the Desktop relay) waits
-for the target's reply for at most `bot_mode.live_wait_seconds` — 300 by
-default. The knob is a **single budget spanning the queue wait and the reply
-wait**: one deadline per request that starts when the message is dispatched,
-covering both the time the target spends waiting for a free runtime and the
-time its turn spends producing the reply. It is not two independent timeouts.
-Work that outlives the budget still settles its receipt, but the waiter has
-already exited, so the reply is stranded in a ticket nobody reads again —
-raise the knob when bot-to-bot turns routinely run longer than five minutes:
+for the target's reply for at most its built-in budget: gateway lanes (peer
+DMs, the Desktop relay, `/v1` runs) wait 300 seconds, and the local DM runner
+caps at 30 minutes, polled in 300-second windows. Set
+`bot_mode.live_wait_seconds` to replace every lane's budget with **a single
+budget spanning the queue wait and the reply wait**: one deadline per request
+that starts when the message is dispatched, covering both the time the target
+spends waiting for a free runtime and the time its turn spends producing the
+reply. It is not two independent timeouts. Work that outlives the budget
+still settles its receipt, but the waiter has already exited, so the reply is
+stranded in a ticket nobody reads again — raise the knob when bot-to-bot
+turns routinely run longer than five minutes:
 
 ```yaml
 bot_mode:

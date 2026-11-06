@@ -53,7 +53,7 @@ jobs:
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -279,7 +279,7 @@ jobs:
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -315,7 +315,7 @@ jobs:
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -366,7 +366,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -422,7 +422,7 @@ jobs:
     if: fromJSON(needs.admit.outputs.jobs)['bootstrap-version']
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -461,7 +461,7 @@ jobs:
             bootstrap-version]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -516,7 +516,7 @@ jobs:
     needs: [admit, acceptance, publish-docker, publish-bundles]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -601,7 +601,7 @@ jobs:
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

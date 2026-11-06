@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: useblacksmith/checkout@2b9fe87d796feea153b455ec2f3125b471a7b0e7  # v1
         with:
           ref: ${{ inputs.commit }}
           # Full history: the diff's merge base + base worktree, and the ratchet's HEAD^1 (the

@@ -15,7 +15,7 @@ every other file of the shipped packages (pyproject ``packages.find``) and the r
 tests, scripts, docs and skills are neither.
 
 Existing violations never fail anything. ``scripts/boundary_lint_baseline.json`` counts each crossing
-(``<module dir> <target>`` for a module, the target alone for core); ``--check`` (and
+by importing file and target (``<file> <target>``); ``--check`` (and
 ``tests/scripts/test_boundary_lint.py``) fails only when a crossing's count rises above it, and names
 that crossing. Run ``--update`` to record an intended import, or to drop the entries a change removed.
 """
@@ -131,19 +131,17 @@ def collect(root: Path = ROOT) -> dict[str, list[str]]:
     return {"module_to_core": module_to_core(root), "core_to_module": core_to_module(root)}
 
 
-def _key(direction: str, site: str, modules: list[str]) -> str:
-    """What a site couples: ``<module dir> <target>`` for a module's import, the target alone for
-    core's. Moving an import between files of one module, or between core files, keeps its key."""
+def _key(site: str) -> str:
+    """What a site couples: ``<importing file> <target>`` (repo-relative path, line dropped). Two
+    branches that add the same target from different files add two different keys; a file that imports
+    one target twice counts 2 under one key."""
     loc, target = site.split(" ", 1)
-    if direction == "core_to_module":
-        return target
-    return f"{next(m for m in modules if loc.startswith(f'{m}/'))} {target}"
+    return f"{loc.rsplit(':', 1)[0]} {target}"
 
 
-def tally(found: dict[str, list[str]], root: Path = ROOT) -> dict[str, dict[str, int]]:
+def tally(found: dict[str, list[str]]) -> dict[str, dict[str, int]]:
     """Per direction, ``{key: count}`` with the keys of ``_key``."""
-    modules = [m.relative_to(root).as_posix() for m in module_dirs(root)]
-    return {d: dict(sorted(Counter(_key(d, site, modules) for site in found[d]).items())) for d in DIRECTIONS}
+    return {d: dict(sorted(Counter(_key(site) for site in found[d]).items())) for d in DIRECTIONS}
 
 
 def read_baseline(path: Path = BASELINE) -> dict[str, dict[str, int]]:

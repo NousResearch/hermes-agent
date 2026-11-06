@@ -1,0 +1,30 @@
+name: airlock-sandbox
+title: Airlock Sandbox
+repo: https://github.com/justrunme/hermes-airlock-plugin
+sha: 86d342dace0280fcd867b3e135c0aa428a4c3c93
+subdir: ""
+description: >-
+  Terminal backend that routes Hermes command execution through an external Airlock
+  policy engine and disposable Docker sandbox, then surfaces verifiable receipts
+  (RFC 8785 JCS, SHA-256, Ed25519, prev_hash chain) with BLOCKED / ALLOWED / VERIFIED
+  status (`hermes config set terminal.backend airlock_sandbox`). Disclosure — network
+  calls to the configured Airlock HTTPS base URL (`/healthz`, `/api/pubkey`,
+  `/api/arena`, `/api/receipt/{id}`); optional secret `AIRLOCK_API_TOKEN` via Hermes
+  secret scope; no host shell of its own (commands run only inside Airlock when
+  policy allows). Hermes dangerous-command approvals are not bypassed.
+maintainer: justrunme
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+image: https://raw.githubusercontent.com/justrunme/hermes-airlock-plugin/86d342dace0280fcd867b3e135c0aa428a4c3c93/docs/img/banner.jpg
+docs_url: https://github.com/justrunme/hermes-airlock-plugin
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

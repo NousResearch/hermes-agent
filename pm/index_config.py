@@ -177,8 +177,9 @@ def read_npmrc(path: Path, env: Mapping[str, str]) -> dict[str, str]:
     npm reads the file as UTF-8 (lossily, so a UTF-16 file from Windows PowerShell's ``>``
     yields only unusable keys rather than an error), ignores everything under an ``[section]``,
     turns ``true``/``false``/``null`` and a bare key into ``"true"``/``""``/``""``/``"true"``,
-    and expands ``${VAR}`` in keys and values. Array lines (``key[]=``) and entries naming an
-    unset variable are left out; a missing or unreadable file reads as empty.
+    and expands ``${VAR}`` in keys and values. Array lines (``key[]=``), entries naming an
+    unset variable and entries no child environment can carry (``_spawnable``) are left out; a
+    missing or unreadable file reads as empty.
     """
     try:
         text = path.read_bytes().decode("utf-8", errors="replace").removeprefix("\ufeff")
@@ -196,9 +197,19 @@ def read_npmrc(path: Path, env: Mapping[str, str]) -> dict[str, str]:
             continue
         value = _ini_unsafe(match.group(4)) if match.group(3) else "true"
         key, value = _npmrc_env_replace(key, env), _npmrc_env_replace("" if value in ("false", "null") else value, env)
-        if key is not None and value is not None:
+        if key is not None and value is not None and _spawnable(key) and _spawnable(value):
             settings[key] = value
     return settings
+
+
+def _spawnable(text: str) -> bool:
+    """Whether *text* can travel in a child's environment: no NUL (a raw byte or a ``\\u0000``
+    escape) and no lone surrogate (a ``\\ud800`` escape), either of which fails the spawn."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return "\x00" not in text
 
 
 def npm_registry(env: Mapping[str, str]) -> str:

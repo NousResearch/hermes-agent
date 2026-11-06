@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -144,3 +146,22 @@ def test_one_time_passwords_and_inline_tls_keys_never_reach_install_scripts(brid
 
     assert not {"NPM_CONFIG_OTP", "NPM_CONFIG_KEY", "NPM_CONFIG_CERT"} & {name.upper() for name in env}
     assert env["npm_config_fund"] == ""  # npm exports a false setting as empty
+
+
+def test_values_no_child_environment_can_carry_are_skipped(bridge):
+    """A JSON-unquoted ``\\ud800`` (lone surrogate), ``\\u0000`` or a raw NUL byte would make
+    every install spawn fail; npm survives them, and so must a source build."""
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    npmrc = bridge / "npmrc"
+    npmrc.write_bytes(b'disturl="\\ud800"\nelectron-mirror="a\\u0000b"\nsass-binary-site=raw\x00nul\n'
+                      b'registry=https://ok.invalid/\nfund=false\n')
+
+    env = source_build_env()
+
+    assert not {"npm_config_disturl", "npm_config_electron_mirror", "npm_config_sass_binary_site"} & set(env)
+    assert env["npm_config_registry"] == "https://ok.invalid/" and env["npm_config_fund"] == ""
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == "https://ok.invalid/"
+    subprocess.run([sys.executable, "-c", ""], env=env, check=True)
+

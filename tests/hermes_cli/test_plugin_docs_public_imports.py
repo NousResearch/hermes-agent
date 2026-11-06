@@ -35,12 +35,16 @@ def _plugin_docs() -> list[Path]:
             *sorted((docs / "user-guide" / "features").glob("plugins*.md")), _ROOT / "plugins" / "AGENTS.md"]
 
 
-def _fences(markdown: str):
+def _fences(markdown: str, offset: int = 0):
     """``(opening line, language, body)`` per fenced block, as markdown-it-py's CommonMark parser reads it
-    (closer indent, fence length, list items, block quotes and unclosed fences all follow the spec)."""
-    for token in MarkdownIt("commonmark").parse(markdown):
+    (closer indent, fence length, list items, block quotes and unclosed fences all follow the spec), with
+    the two CommonMark rules the MDX site does not have turned off: a JSX/HTML line does not swallow the
+    fence under it, and indented lines are markdown (their fences included), not an indented code block."""
+    for token in MarkdownIt("commonmark").disable("html_block").parse(markdown):
         if token.type == "fence":
-            yield token.map[0] + 1, re.match(r"\w*", token.info.lstrip())[0], token.content
+            yield offset + token.map[0] + 1, re.match(r"\w*", token.info.lstrip())[0], token.content
+        elif token.type == "code_block":
+            yield from _fences(token.content, offset + token.map[0])
 
 
 def _parse(block: str) -> ast.AST | None:
@@ -57,8 +61,9 @@ def _parse(block: str) -> ast.AST | None:
 def scan(markdown: str) -> tuple[set[str], list[int]]:
     """Dotted Hermes targets the markdown's Python blocks import that the plugin API does not list, and
     the opening line of every Python block that mentions ``import`` but does not parse even after
-    placeholder repair (so it cannot be checked). A module core does not ship is the example plugin's
-    own package; ``TYPE_CHECKING`` imports are skipped, as validate skips them."""
+    placeholder repair (so it cannot be checked). A ``plugins.`` module core does not ship is the example
+    plugin's own package; any other module core does not ship is a stale core import, reported with
+    ``(core ships no <module>)``. ``TYPE_CHECKING`` imports are skipped, as validate skips them."""
     found, unparsable = set(), []
     for line, lang, body in _fences(markdown):
         if lang.lower() not in ("python", "py", "python3"):
@@ -74,6 +79,8 @@ def scan(markdown: str) -> tuple[set[str], list[int]]:
                 target = _private_target(module, name, _hermes_packages(), set())
                 if target and _core_module_exists(module):
                     found.add(target)
+                elif target and not module.startswith("plugins."):
+                    found.add(f"{target} (core ships no {module})")
     return found, unparsable
 
 
@@ -83,6 +90,7 @@ def test_scanner_flags_unlisted_imports_even_in_blocks_with_placeholders():
         from agent.memory_provider import MemoryProvider
         from tools.approval_smart import judge
         from plugins.web.my_backend.provider import MyProvider
+        from agent.memory_providers import MemoryProvider as Typo
         class P(MemoryProvider): …  # prose placeholder
         ctx.register(name="p", ...)
         ```
@@ -110,8 +118,8 @@ def test_scanner_flags_unlisted_imports_even_in_blocks_with_placeholders():
         ```
         """)
 
-    assert scan(markdown) == ({"tools.approval_smart.judge", "tools.approval._continued",
-                               "tools.approval._inline"}, [])
+    assert scan(markdown) == ({"tools.approval_smart.judge", "tools.approval._continued", "tools.approval._inline",
+                               "agent.memory_providers.MemoryProvider (core ships no agent.memory_providers)"}, [])
 
 
 def test_scanner_reports_blocks_it_cannot_parse_instead_of_guessing():
@@ -168,6 +176,39 @@ def test_scanner_closes_fences_whose_indent_differs_from_the_opener():
     assert scan(markdown) == ({"tools.approval._hidden", "tools.approval._opener_indented",
                                "tools.approval._in_list_item", "tools.approval._after_indented_code",
                                "tools.approval._after_closer_two_past_opener"}, [])
+
+
+def test_scanner_reads_fences_the_mdx_site_renders():
+    markdown = textwrap.dedent("""\
+        <Tabs>
+        <TabItem value="py">
+        ```python
+        from tools.approval import _in_tab
+        ```
+        </TabItem>
+        </Tabs>
+
+        <details>
+        <summary>Full example</summary>
+        ```python
+        from tools.approval import _in_details
+        ```
+        </details>
+
+        - step
+
+              ```python
+              from tools.approval import _four_past_item
+              ```
+
+              ```python
+              from tools.approval import _unparsable_four_past_item
+              success_response(image=<url>)
+              ```
+        """)
+
+    assert scan(markdown) == ({"tools.approval._in_tab", "tools.approval._in_details",
+                               "tools.approval._four_past_item"}, [22])
 
 
 def test_plugin_docs_import_only_the_published_plugin_api():

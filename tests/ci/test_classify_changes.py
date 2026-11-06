@@ -443,6 +443,8 @@ CASES = {
     ),
     # The rules README is mirrored by a docs-page test, so it keeps the suite.
     "catalog README → python": (["plugin-catalog/README.md"], _lanes(python=True)),
+    # Its code examples are held to the plugin API by a Python test.
+    "plugins AGENTS.md → python": (["plugins/AGENTS.md"], _lanes(python=True)),
     # Any code next to the entry brings the full suite back.
     "catalog entry + code → python and catalog": (
         ["plugin-catalog/foo.yaml", "agent/display.py"],

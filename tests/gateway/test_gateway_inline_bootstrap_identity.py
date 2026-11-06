@@ -21,7 +21,7 @@ import pytest
 
 from gateway import status
 from gateway.status import looks_like_gateway_command_line, looks_like_gateway_runtime_command_line
-from gateway.status_inline_source import inline_bootstrap_argv
+from gateway.status_inline_source import _inline_bootstrap_argv_cached, clear_inline_bootstrap_cache, inline_bootstrap_argv
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -169,3 +169,66 @@ def test_live_payload_launched_gateway_is_found_for_its_home(argv, profile, foun
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: " ".join(_payload_launcher(argv)))
 
     assert status.live_gateway_pid_for_home(home) == (4242 if found else None)
+
+
+class TestInlineBootstrapArgvCache:
+    """Regression for #141858: inline_bootstrap_argv must memoize to avoid re-parsing regexes per call."""
+
+    def setup_method(self):
+        clear_inline_bootstrap_cache()
+
+    def teardown_method(self):
+        clear_inline_bootstrap_cache()
+
+    def test_cache_hit_avoids_reparse(self) -> None:
+        """Second call with the same tokens must be a cache hit (no re-parse)."""
+        tokens = _payload_launcher(["gateway", "run", "--replace"])
+        clear_inline_bootstrap_cache()
+        result1 = inline_bootstrap_argv(tokens)
+        info1 = _inline_bootstrap_argv_cached.cache_info()
+        result2 = inline_bootstrap_argv(tokens)
+        info2 = _inline_bootstrap_argv_cached.cache_info()
+        assert result1 == result2
+        assert info2.hits == info1.hits + 1
+        assert info2.misses == info1.misses  # no new miss on the second call
+
+    def test_clear_cache_works(self) -> None:
+        """clear_inline_bootstrap_cache() must reset the cache."""
+        tokens = _payload_launcher(["gateway", "run"])
+        inline_bootstrap_argv(tokens)
+        info_before = _inline_bootstrap_argv_cached.cache_info()
+        assert info_before.currsize > 0
+        clear_inline_bootstrap_cache()
+        info_after = _inline_bootstrap_argv_cached.cache_info()
+        assert info_after.currsize == 0
+        assert info_after.hits == 0
+
+    def test_each_call_returns_fresh_list(self) -> None:
+        """Mutating a returned list must not poison the cache."""
+        tokens = _payload_launcher(["gateway", "run"])
+        result1 = inline_bootstrap_argv(tokens)
+        result1.append("MUTATED")
+        result2 = inline_bootstrap_argv(tokens)
+        assert result2 == [PY, "-m", "hermes_cli.main", "gateway", "run"]
+        assert "MUTATED" not in result2
+
+    def test_none_result_is_cached(self) -> None:
+        """A non-bootstrap command line must also be cached (negative caching)."""
+        tokens = [PY, "-c", "print('hello')"]
+        clear_inline_bootstrap_cache()
+        assert inline_bootstrap_argv(tokens) is None
+        info1 = _inline_bootstrap_argv_cached.cache_info()
+        assert inline_bootstrap_argv(tokens) is None
+        info2 = _inline_bootstrap_argv_cached.cache_info()
+        assert info2.hits == info1.hits + 1
+
+    def test_different_tokens_are_separate_entries(self) -> None:
+        """Different token tuples must produce separate cache entries."""
+        tokens_a = _payload_launcher(["gateway", "run"])
+        tokens_b = _payload_launcher(["chat"])
+        clear_inline_bootstrap_cache()
+        inline_bootstrap_argv(tokens_a)
+        inline_bootstrap_argv(tokens_b)
+        info = _inline_bootstrap_argv_cached.cache_info()
+        assert info.misses == 2
+        assert info.currsize == 2

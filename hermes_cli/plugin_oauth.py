@@ -422,6 +422,9 @@ def _client_credentials_token(client: OAuthClient, key: str) -> str:
     token = str(payload.get("access_token") or "").strip()
     if not token:
         raise _auth_error(key, "the token endpoint returned no access token.", "oauth_refresh_failed")
+    token_type = payload.get("token_type")
+    if not isinstance(token_type, str) or token_type.strip().casefold() != "bearer":
+        raise _auth_error(key, "the token endpoint must return token_type Bearer; unsupported token response.", "oauth_refresh_failed")
     try:
         expires_in = max(0, int(payload.get("expires_in", 0)))
     except (TypeError, ValueError):

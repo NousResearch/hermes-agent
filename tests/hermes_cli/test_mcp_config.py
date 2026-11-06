@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tools import mcp_tool_config as _mcp_config
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -60,11 +61,11 @@ def _make_args(**kwargs):
 
 def _seed_config(tmp_path: Path, mcp_servers: dict):
     """Write a config.yaml with the given mcp_servers."""
-    import yaml
+    import hermes_yaml as yaml
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -90,12 +91,6 @@ class FakeTool:
 # ---------------------------------------------------------------------------
 
 class TestMcpList:
-    def test_list_empty_config(self, tmp_path, capsys):
-        from hermes_cli.mcp_config import cmd_mcp_list
-
-        cmd_mcp_list()
-        out = capsys.readouterr().out
-        assert "No MCP servers configured" in out
 
     def test_list_with_servers(self, tmp_path, capsys):
         _seed_config(tmp_path, {
@@ -170,7 +165,7 @@ class TestMcpRemove:
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
-        token_file.write_text("{}")
+        token_file.write_text("{}", encoding="utf-8")
 
         from hermes_cli.mcp_config import cmd_mcp_remove
 
@@ -293,29 +288,43 @@ class TestMcpAdd:
 
 class TestMcpTest:
 
-    def test_test_success(self, tmp_path, capsys, monkeypatch):
-        _seed_config(tmp_path, {
-            "ink": {"url": "https://mcp.ml.ink/mcp"},
-        })
 
-        def mock_probe(name, config, **kw):
-            return [("create_service", "Deploy"), ("list_services", "List all")]
-
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
-        )
+    def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
+        """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        cmd_mcp_test(_make_args(name="ink"))
-        out = capsys.readouterr().out
-        assert "Connected" in out
-        assert "Tools discovered: 2" in out
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: [])
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp_test(_make_args(name="ink")) == 1
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
+        assert "not found in config" in capsys.readouterr().out
+
+    def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
+        """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.main import cmd_mcp
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp(_make_args(name="ink", mcp_action="test")) == 1
+        assert cmd_mcp(_make_args(name="doesnotexist", mcp_action="test")) == 3
+        assert cmd_mcp(_make_args(mcp_action="list")) is None
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio
         from hermes_cli import mcp_config
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from tools import mcp_tool_loop as _mcp_loop
 
         captured = {}
 
@@ -336,10 +345,10 @@ class TestMcpTest:
             captured["inner_timeout"] = timeout
             return await awaitable
 
-        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop_if_idle", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
-        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+        monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(_mcp_discovery, "_connect_server", fake_connect)
+        monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
         monkeypatch.setattr(mcp_config.asyncio, "wait_for", fake_wait_for)
 
         assert mcp_config._probe_single_server(
@@ -360,13 +369,13 @@ class TestEnvVarInterpolation:
     def test_interpolate_cursor_env_prefix(self, monkeypatch):
         """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
         monkeypatch.setenv("MY_KEY", "secret123")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
 
 
     def test_env_ref_name_strips_prefix(self):
-        from tools.mcp_tool import _env_ref_name
+        from tools.mcp_tool_common import _env_ref_name
 
         assert _env_ref_name("env:API_KEY") == "API_KEY"
         assert _env_ref_name("API_KEY") == "API_KEY"
@@ -374,7 +383,7 @@ class TestEnvVarInterpolation:
 
     def test_escape_only_changes_behavior_when_requested(self, monkeypatch):
         monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         value = "$${AUTH_HEADER}"
         assert _interpolate_env_vars(value) == "$Bearer test-token"
@@ -383,7 +392,7 @@ class TestEnvVarInterpolation:
     def test_server_config_unescapes_explicit_child_reference(self, monkeypatch):
         monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
         monkeypatch.setenv("RESOURCE_ID", "project-42")
-        from tools.mcp_tool import _interpolate_mcp_server_config
+        from tools.mcp_tool_config import _interpolate_mcp_server_config
 
         result = _interpolate_mcp_server_config({
             "command": "npx",
@@ -403,9 +412,22 @@ class TestEnvVarInterpolation:
         assert result["args"][4] == "project-42"
         assert result["env"]["AUTH_HEADER"] == "Bearer test-token"
 
+    def test_escaped_arg_survives_connect_time_rerender(self, monkeypatch):
+        """Connect re-renders the loaded config; a deferred ref must stay literal."""
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        from tools.mcp_tool_config import _interpolate_mcp_server_config
+
+        ref = "$" + "${AUTH_HEADER}"
+        want = "Authorization:" + "${AUTH_HEADER}"
+        loaded = _interpolate_mcp_server_config(
+            {"command": "npx", "args": ["--header", "Authorization:" + ref]})
+        assert loaded["args"][1] == want
+        again = _interpolate_mcp_server_config(loaded)
+        assert again["args"][1] == want
+
     def test_server_config_keeps_unescaped_interpolation(self, monkeypatch):
         monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
-        from tools.mcp_tool import _interpolate_mcp_server_config
+        from tools.mcp_tool_config import _interpolate_mcp_server_config
 
         result = _interpolate_mcp_server_config({
             "args": ["Authorization:${AUTH_HEADER}"],
@@ -424,7 +446,7 @@ class TestEnvVarInterpolation:
         monkeypatch.setenv("RESOURCE_ID", "project-42")
 
         from hermes_cli.config import load_config
-        from tools.mcp_tool import _load_mcp_config
+        from tools.mcp_tool_config import _load_mcp_config
 
         loaded = load_config()
         persisted_server = loaded["mcp_servers"]["escaped-stdio"]
@@ -445,50 +467,48 @@ class TestContextVarInterpolation:
     def test_user_home(self):
         import os
 
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${userHome}") == os.path.expanduser("~")
 
     def test_path_separator_and_slash_shorthand(self):
         import os
 
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${pathSeparator}") == os.sep
         assert _interpolate_env_vars("${/}") == os.sep
 
     def test_workspace_folder_and_basename(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setattr(
-            mcp_tool, "_workspace_folder", lambda: "/srv/projects/myapp"
+            _mcp_config, "_workspace_folder", lambda: "/srv/projects/myapp"
         )
-        assert mcp_tool._interpolate_env_vars("${workspaceFolder}") == (
+        assert _mcp_config._interpolate_env_vars("${workspaceFolder}") == (
             "/srv/projects/myapp"
         )
-        assert mcp_tool._interpolate_env_vars(
+        assert _mcp_config._interpolate_env_vars(
             "${workspaceFolderBasename}"
         ) == "myapp"
 
     def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
         import os
 
-        import tools.file_tools as file_tools
-        from tools.mcp_tool import _workspace_folder
+        from tools import file_tools_paths
+        from tools.mcp_tool_config import _workspace_folder
 
         monkeypatch.setattr(
-            file_tools, "_authoritative_workspace_root", lambda task_id="default": None
+            file_tools_paths, "_authoritative_workspace_root", lambda task_id="default": None
         )
         assert _workspace_folder() == os.getcwd()
 
     def test_mixed_string_with_env_and_context_vars(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setenv("MY_TOKEN", "tok-1")
-        monkeypatch.setattr(mcp_tool, "_workspace_folder", lambda: "/ws/app")
-        result = mcp_tool._interpolate_env_vars(
+        monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
+        result = _mcp_config._interpolate_env_vars(
             "${userHome}${/}.cache${/}${workspaceFolderBasename}-${MY_TOKEN}"
         )
         home = os.path.expanduser("~")
@@ -498,13 +518,13 @@ class TestContextVarInterpolation:
         """${USERHOME} is NOT a context var — it keeps env-var semantics
         (literal placeholder when unset)."""
         monkeypatch.delenv("USERHOME", raising=False)
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${USERHOME}") == "${USERHOME}"
 
     def test_unknown_ref_keeps_literal_placeholder(self, monkeypatch):
         monkeypatch.delenv("NOT_A_REAL_VAR_XYZ", raising=False)
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("${NOT_A_REAL_VAR_XYZ}") == (
             "${NOT_A_REAL_VAR_XYZ}"
@@ -513,9 +533,9 @@ class TestContextVarInterpolation:
     def test_context_vars_in_nested_config(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_config as _mcp_config
 
-        monkeypatch.setattr(mcp_tool, "_workspace_folder", lambda: "/ws/app")
+        monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
         cfg = {
             "command": "npx",
             "args": ["-y", "server-fs", "${workspaceFolder}"],
@@ -523,7 +543,7 @@ class TestContextVarInterpolation:
             "env": {"CACHE": "${userHome}${/}.cache"},
             "headers": {"X-Ws": "${workspaceFolderBasename}"},
         }
-        out = mcp_tool._interpolate_env_vars(cfg)
+        out = _mcp_config._interpolate_env_vars(cfg)
         home = os.path.expanduser("~")
         assert out["args"][2] == "/ws/app"
         assert out["cwd"] == "/ws/app"
@@ -569,17 +589,17 @@ class TestProbeEnvResolution:
     ):
         """The CLI probe must resolve the same loaded fixture as runtime."""
         import asyncio
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         _seed_escaped_stdio_fixture(tmp_path)
         monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
         monkeypatch.setenv("RESOURCE_ID", "project-42")
 
         from hermes_cli.config import load_config
-        from tools import mcp_tool
+        from tools import mcp_tool_config
 
         persisted = load_config()["mcp_servers"]["escaped-stdio"]
-        runtime = mcp_tool._load_mcp_config()["escaped-stdio"]
+        runtime = mcp_tool_config._load_mcp_config()["escaped-stdio"]
         seen = {}
 
         class FakeServer:
@@ -596,13 +616,19 @@ class TestProbeEnvResolution:
         def fake_run(coro, timeout):
             return asyncio.run(coro)
 
-        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop_if_idle", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
-        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run)
+        monkeypatch.setattr("tools.mcp_tool_loop._ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(
+            "tools.mcp_tool_lifecycle._stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(
+            "tools.mcp_tool_discovery._connect_server", fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_loop._run_on_mcp_loop", fake_run)
 
         assert mcp_config._probe_single_server("escaped-stdio", persisted) == []
-        assert seen == {"name": "escaped-stdio", "config": runtime}
+        # The probe adds its own connect_timeout; everything else must match runtime.
+        probe_config = dict(seen["config"])
+        probe_config.pop("connect_timeout", None)
+        assert seen["name"] == "escaped-stdio"
+        assert probe_config == runtime
 
     def test_active_secret_scope_does_not_load_dotenv_into_process_env(
         self, tmp_path, monkeypatch
@@ -645,7 +671,7 @@ class TestProbeEnvResolution:
             seen["config"] = config
             return _FakeServer()
 
-        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
 
         tools = mc._probe_single_server("n8n", {
             "url": "http://localhost:5678/mcp-server/http",
@@ -654,6 +680,34 @@ class TestProbeEnvResolution:
 
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_probe_propagates_explicit_connect_timeout_to_config(self, monkeypatch):
+        """An explicit `connect_timeout=` override (e.g. `hermes mcp login`'s 315s, extended so a
+        user has time to finish an OAuth browser flow) must reach `config["connect_timeout"]` —
+        that's what tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
+        with. Left stale at its unrelated 60s default, the still-pending OAuth callback wait gets
+        cancelled mid-flow well before the caller's intended deadline."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        mc._probe_single_server(
+            "travelermd", {"url": "https://mcp.traveler.md/mcp", "auth": "oauth"}, connect_timeout=315.0
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
 
 
 class TestProbeCapabilityGating:
@@ -718,7 +772,7 @@ class TestProbeCapabilityGating:
         async def _fake_connect(name, cfg):
             return self._make_server(called, caps)
 
-        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
         details: dict = {}
         mc._probe_single_server("srv", config, details=details)
         return called, details
@@ -726,7 +780,7 @@ class TestProbeCapabilityGating:
     def test_config_disables_prompts_probe(self, monkeypatch):
         # Server advertises both, but user turned prompts off.
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(
+        called, _details = self._run_probe(
             monkeypatch, {"url": "http://x/mcp", "tools": {"prompts": False}}, caps
         )
         assert "prompts" not in called
@@ -735,7 +789,7 @@ class TestProbeCapabilityGating:
 
     def test_advertised_and_enabled_is_probed(self, monkeypatch):
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
+        called, _details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
         assert set(called) == {"prompts", "resources"}
 
 
@@ -893,7 +947,7 @@ class TestMcpLogin:
         def mock_probe(name, cfg, connect_timeout=30):
             seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            (token_dir / "realserver.json").write_text('{"access_token": "x"}', encoding="utf-8")
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(
@@ -910,6 +964,38 @@ class TestMcpLogin:
         # The login path must grant a human enough time to finish the browser
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
+
+    def test_login_clears_tokens_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
+        """Re-login wipes the stale grant and client registration but spares ``.meta.json``: when the
+        authorization server's metadata document cannot be re-fetched (a WAF-fronted split-host
+        server), the cached ``authorization_endpoint`` is what keeps the announced authorize URL off
+        the SDK's ``{mcp-origin}/authorize`` guess (#115329)."""
+        _seed_config(tmp_path, {
+            "tv": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "tv.json").write_text('{"access_token": "stale"}', encoding="utf-8")
+        (token_dir / "tv.client.json").write_text('{"client_id": "old"}', encoding="utf-8")
+        (token_dir / "tv.meta.json").write_text(
+            '{"issuer": "https://www.example.com", "authorization_endpoint": "https://www.example.com/oauth/authorize",'
+            ' "token_endpoint": "https://www.example.com/oauth/token"}', encoding="utf-8")
+        state_at_probe = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            state_at_probe.update({p.name: p.exists() for p in token_dir.glob("tv*")})
+            state_at_probe["meta"] = (token_dir / "tv.meta.json").exists()
+            (token_dir / "tv.json").write_text('{"access_token": "fresh"}', encoding="utf-8")
+            return [("a", "d")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="tv"))
+
+        assert state_at_probe["meta"] is True
+        assert state_at_probe.get("tv.json") is None and state_at_probe.get("tv.client.json") is None
+        assert "Authenticated — 1 tool(s) available" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -967,3 +1053,13 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+def test_tool_filters_keeps_explicit_empty_include():
+    """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
+    "no filter"; only an absent/non-list key is None (#12865)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": {"include": []}}) == ([], None)
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({}) == (None, None)

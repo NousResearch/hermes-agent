@@ -1,0 +1,28 @@
+name: hermes-cloud-file-manager
+title: Cloud File Manager
+repo: https://github.com/electricsheephq/hermes-cloud-file-manager
+sha: 9678d440f0c1735996d2a0b1a5e97fe58013fddd
+description: "Cloud Files for Hermes Desktop — browse, search and sort by date, create folders and bulk-upload files and whole folders to the machine your agent runs on, preview its images, PDFs and code files, download a file, read and edit its Markdown and text files (view first; nothing is written until you press Save in the review, which shows the line diff for files up to 20,000 lines), drag files into the chat, import files from the agent's own Google Drive, and hand the agent file locations from the chat + menu without re-uploading. Built for remote gateways (token or sign-in); works locally too. Ships one plugin skill, hermes-cloud-file-manager:cloud-file-manager-report-problem, which drafts a bug report and files it with the GitHub CLI only after the user approves the exact text. Disclosure — adds a file API to the gateway (dashboard plugin routes under the gateway's existing auth) over the agent's working folders: the configured roots, else terminal.cwd, TERMINAL_CWD or MESSAGING_CWD, else the gateway user's home with its dot-entries hidden. It lists, sorts and searches those folders, reads the files you open or preview (Markdown and .txt files up to 1 MiB in the editor; the first 1 MiB of other code and text files; images and PDFs up to 10 MiB), creates folders, and writes uploads, Drive imports and editor saves (staged as hidden .cfm-* temp files in the destination folder; a name clash keeps both files). It overwrites only an existing .md/.markdown/.txt file you open and explicitly Save in its editor (refused if the file changed since you opened it). It has no delete action: it removes only its own .cfm-* staging files and folders (aborted ones, and stale ones over a day old) and, when an upload or import fails to publish, the empty file it had reserved for it. It never follows links out of those folders, and its file API never exposes the agent's Hermes home apart from a working folder set inside it (roots, terminal.cwd, or a workspace/ folder it creates when the working folder would be the home itself). Download and drag into the chat use Hermes Desktop's own authenticated file download and @file/@folder references; the plugin adds no route for them. Desktop listens for the agent's tool-completion events to refresh the open folder. Apart from Desktop's calls to the gateway and the report skill's GitHub requests, its only network use is Google Drive, read-only, through the agent's own google-workspace skill, whose scripts (from skills/productivity/google-workspace in the agent's Hermes home, else the copy bundled with Hermes) it runs with the gateway's Python and a minimal environment without API keys, buffering their output in the gateway's temp directory; the plugin never reads the Google token. While Desktop is open it re-checks the plugin and Drive sign-in about once a minute. The report skill runs hermes --version, hermes plugins list and hermes logs (filtered to this plugin), may save its search words, title and draft as local files, and searches electricsheephq/hermes-cloud-file-manager issues with gh or a web tool before drafting; it posts a public issue or comment there only after the user approves the exact title and text."
+maintainer: 100yenadmin
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/electricsheephq/hermes-cloud-file-manager#readme
+version: "0.5.0"
+image: https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-page.png
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-upload.png
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-picker.png
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-drive-page.png
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-editor-review.png
+  - https://raw.githubusercontent.com/electricsheephq/hermes-cloud-file-manager/9678d440f0c1735996d2a0b1a5e97fe58013fddd/docs/media/screenshot-chat.png
+readme: true
+platforms: []
+known_issues:
+  - "In a split layout with two agents' chats side by side, a drag started while one agent's chat is in focus can be dropped into the other agent's chat; the reference then names a path on the wrong machine (no file moves between agents). Use Add to chat, or focus the target chat before dragging (electricsheephq/hermes-cloud-file-manager#55)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

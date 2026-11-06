@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: atlassian
+connector_slug: jira
 description: >-
   Jira issues and Confluence pages via Atlassian's hosted remote MCP.
 source: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/

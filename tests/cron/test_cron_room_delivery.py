@@ -1,0 +1,118 @@
+"""Cron ``deliver: room:<id>`` posts into a real hosted room store under a temp HERMES_HOME."""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import closing
+
+import pytest
+
+from cron import scheduler_delivery as delivery
+from gateway import hosted_rooms
+from hermes_constants import get_hermes_home
+
+ROOM_ID = "room-cron"
+MEMBERS = [{"member_id": f"m-{p}", "profile": p, "handle": p} for p in ("alpha", "beta")]
+
+
+def _create(db):
+    hosted_rooms.create_room(
+        db, room_id=ROOM_ID, name="Feed", members=MEMBERS,
+        authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+    return db
+
+
+def _posts(db) -> list[dict]:
+    return [e for e in hosted_rooms.read_events(db, room_id=ROOM_ID)["events"] if e["kind"] == "message.user"]
+
+
+@pytest.fixture
+def room_store():
+    return _create(hosted_rooms.default_db_path())
+
+
+def _job(**extra) -> dict:
+    return {"id": "j1", "name": "Digest", "deliver": f"room:{ROOM_ID}", "execution_id": "exec-1", **extra}
+
+
+def test_room_target_resolves_and_posts_job_output(room_store, monkeypatch):
+    monkeypatch.setattr(delivery._sched, "load_config", lambda: {"cron": {"wrap_response": True}})
+
+    assert delivery._resolve_delivery_targets(_job()) == [
+        {"platform": "room", "chat_id": ROOM_ID, "thread_id": None}]
+    assert delivery._deliver_result(_job(), "Three new issues today") is None
+    assert delivery._deliver_result(_job(), "Three new issues today") is None  # same run: one post
+
+    posts = _posts(room_store)
+    assert len(posts) == 1
+    assert posts[0]["payload"]["text"] == "Three new issues today"
+    assert posts[0]["actor"] == {"kind": "user", "id": "cron:j1", "display_name": "Digest"}
+
+
+def test_unknown_room_reports_a_delivery_error(room_store):
+    error = delivery._deliver_result(_job(deliver="room:nope"), "x")
+
+    assert error and "no live Group Chat" in error
+
+
+def test_malformed_room_token_resolves_to_nothing():
+    assert delivery._resolve_delivery_targets({"id": "j", "deliver": "room:"}) == []
+
+
+def test_post_skips_the_unserved_session_store_copy_left_by_the_shared_store_import(room_store):
+    leftover = _create(get_hermes_home() / "state.db")  # pre-isolation copy: no gateway owner entry
+
+    assert delivery._deliver_result(_job(), "Digest ready") is None
+
+    assert [p["payload"]["text"] for p in _posts(room_store)] == ["Digest ready"]
+    assert _posts(leftover) == []
+
+
+def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_store):
+    from gateway.session_hosted_service import _OWNER
+    owned = _create(get_hermes_home() / "state.db")
+    with closing(sqlite3.connect(owned)) as conn, conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS state_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO state_meta(key, value) VALUES (?, 'owner')", (_OWNER + ROOM_ID,))
+
+    assert delivery._deliver_result(_job(), "Digest ready") is None
+
+    assert [p["payload"]["text"] for p in _posts(owned)] == ["Digest ready"]
+    assert _posts(room_store) == []
+
+
+def test_named_profile_target_reaches_a_room_the_root_gateway_imported(room_store):
+    """The root gateway imported the standalone room (shared copy fenced, its own state.db owns it);
+    Room settings in the research view advertises room:<id>@research, which must post to that store."""
+    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    root_store = hosted_rooms.default_db_path().with_name("state.db")
+    with closing(sqlite3.connect(root_store)) as conn, conn:  # the root gateway's SessionDB owner table
+        conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    assert import_standalone_rooms(root_store) == 1
+    research = get_hermes_home() / "profiles" / "research"
+    research.mkdir(parents=True)
+    (research / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    assert delivery._deliver_result(_job(deliver=f"room:{ROOM_ID}@research"), "Digest ready") is None
+
+    assert [p["payload"]["text"] for p in _posts(root_store)] == ["Digest ready"]
+    assert _posts(room_store) == []
+
+
+def test_room_a_profile_gateway_took_over_names_the_profile_remedy(room_store):
+    from gateway.hosted_room_replicas import demote_room
+    state = hosted_rooms.room_state(room_store, room_id=ROOM_ID)
+    demote_room(room_store, room_id=ROOM_ID, observed_gateway_id=state["authority_gateway_id"] + ":gateway-store",
+                observed_epoch=int(state["authority_epoch"]) + 1)
+
+    error = delivery._deliver_result(_job(), "x")
+
+    assert error and "managed by another gateway" in error and f"room:{ROOM_ID}@<that profile>" in error
+    assert _posts(room_store) == []
+
+
+def test_unknown_profile_target_says_so(room_store):
+    error = delivery._deliver_result(_job(deliver=f"room:{ROOM_ID}@nosuch"), "x")
+
+    assert error and "no profile named 'nosuch'" in error
+    assert _posts(room_store) == []

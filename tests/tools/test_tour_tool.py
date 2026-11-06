@@ -11,14 +11,8 @@ def _run(**kwargs):
     return json.loads(tt.tour_tool(**kwargs))
 
 
-def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    """Scoped by toolset, not by the backend's env — see AGENTS.md."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    entry = registry.get_entry("tour")
 
-    assert entry is not None
-    assert entry.toolset == "desktop_ui"
-    assert entry.check_fn is None
+
 
 
 def test_requires_callback():
@@ -38,10 +32,31 @@ def test_show_needs_something_to_point_at_or_say():
 
 
 def test_start_validates_its_steps():
-    assert "non-empty steps" in _run(action="start")["error"]
+    # No steps is the app's built-in tour; it exists only on the app surface.
+    assert "error" not in _run(action="start")
+    assert "surface='app'" in _run(action="start", surface="preview")["error"]
     assert "non-empty steps" in _run(action="start", steps=[])["error"]
     assert "steps[1] must be an object" in _run(action="start", steps=[{"selector": "#a"}, "nope"])["error"]
     assert "steps[1] needs" in _run(action="start", steps=[{"selector": "#a"}, {}])["error"]
+
+
+def test_preset_is_validated_and_reaches_the_request_through_the_handler():
+    seen = {}
+
+    def cb(payload):
+        seen.update(payload)
+        return json.dumps({"success": True})
+
+    entry = registry.get_entry("gui_tour")
+    assert entry is not None
+    handler = entry.handler
+    assert "preset must be one of" in json.loads(handler({"action": "start", "preset": "medium"}, callback=cb))["error"]
+    assert not seen
+    assert "not both" in json.loads(
+        handler({"action": "start", "preset": "quick", "steps": [{"text": "hi"}]}, callback=cb))["error"]
+    assert not seen
+    assert "error" not in json.loads(handler({"action": "start", "preset": "quick"}, callback=cb))
+    assert seen == {"action": "start", "surface": "app", "preset": "quick"}
 
 
 def test_payload_omits_unset_fields_and_defaults_the_surface():

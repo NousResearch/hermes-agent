@@ -2,8 +2,13 @@
 
 import http.server
 import json
+import os
+import subprocess
 import threading
 import time
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.verify.environment import (
     load_manifest,
@@ -110,6 +115,75 @@ class TestRunner:
         result = run_verify(tmp_path, recipe, skip_start=True)
         assert result.ok
 
+
+class TestComposeGuard:
+    """#103567: a compose recipe must not build/up over a live deployment."""
+
+    def _compose_recipe(self):
+        return Recipe(
+            name="docker-compose project", kind="compose",
+            build=["docker compose build"], start="docker compose up",
+            evidence=["Detected docker-compose.yml"],
+        )
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout="myproject-db-1\nmyproject-web-1\n"), id="containers-running"),
+            pytest.param(subprocess.TimeoutExpired(cmd="docker", timeout=15), id="probe-timed-out"),
+            pytest.param(MagicMock(returncode=1, stdout="", stderr="permission denied on docker.sock"), id="probe-failed"),
+        ],
+    )
+    def test_refuses_and_spawns_nothing_mutating_when_live_state_cannot_be_ruled_out(
+        self, tmp_path, monkeypatch, probe
+    ):
+        calls: list[list[str] | str] = []
+
+        def tracking_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if isinstance(probe, BaseException):
+                raise probe
+            return probe
+
+        monkeypatch.setattr("subprocess.run", tracking_run)
+
+        result = run_verify(tmp_path, self._compose_recipe(), skip_start=False)
+
+        assert not result.ok
+        assert result.phases[0].exit_code == 1
+        # Only the read-only probe ran -- never build or up.
+        assert len(calls) == 1
+        assert calls[0][:3] == ["docker", "compose", "ps"]
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout=""), id="none-running"),
+            pytest.param(FileNotFoundError("docker not found"), id="docker-absent"),
+        ],
+    )
+    def test_proceeds_when_no_live_containers_or_docker_is_absent(self, tmp_path, monkeypatch, probe):
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=probe) if isinstance(probe, BaseException) else MagicMock(return_value=probe),
+        )
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="build")
+            run_verify(tmp_path, self._compose_recipe(), phases=("build",))
+
+        assert mock_phase.called
+
+    def test_guard_skipped_when_no_mutating_phase_selected(self, tmp_path, monkeypatch):
+        probe = MagicMock()
+        monkeypatch.setattr("agent.verify.runner._compose_live_state_reason", probe)
+
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="test")
+            run_verify(tmp_path, Recipe(name="x", kind="compose", test=["true"]), phases=("test",))
+
+        probe.assert_not_called()
+
     def test_result_to_dict(self, tmp_path):
         recipe = Recipe(name="x", test=["true"])
         payload = run_verify(tmp_path, recipe, skip_start=True).to_dict()
@@ -128,6 +202,7 @@ def _free_port() -> int:
 
 
 class TestReadiness:
+    @pytest.mark.platforms("linux")
     def test_readiness_against_live_server(self, tmp_path):
         port = _free_port()
         recipe = Recipe(
@@ -187,3 +262,68 @@ class TestReadiness:
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+class TestTerminateProcessGroupGuard:
+    """_terminate_process_group must never killpg a group the child does not
+    lead: a child spawned without start_new_session shares OUR process group,
+    and the group signal would take the verify runner down with it."""
+
+    def test_shared_group_child_gets_terminate_only(self, monkeypatch):
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = MagicMock()
+        proc.pid = 999
+        proc.poll.return_value = None
+        monkeypatch.setattr(_os, "getpgid", lambda pid: 555)  # != pid: shared group
+        killpg_calls = []
+        monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+
+        _terminate_process_group(proc)
+
+        assert killpg_calls == []
+        proc.terminate.assert_called_once()
+
+    def test_real_shared_group_child_does_not_signal_us(self):
+        """Real child in our own group: if killpg fired, this test process would
+        be dead before the assertion. The direct child still dies."""
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert _os.getpgid(proc.pid) == _os.getpgid(0)  # shared group precondition
+            _terminate_process_group(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_real_group_leader_child_is_group_killed(self):
+        """Control: a start_new_session child leads its own group and is killed
+        through the group signal path."""
+        import os as _os
+
+        from agent.verify.runner import _terminate_process_group
+
+        proc = subprocess.Popen(
+            ["sleep", "60"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            process_group=0,
+        )
+        try:
+            assert _os.getpgid(proc.pid) == proc.pid  # leader precondition
+            _terminate_process_group(proc)
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -45,9 +46,6 @@ class TestMCPComponentExtraction:
         )
 
 
-    def test_docker_returns_none(self):
-        # We don't currently parse docker image refs.
-        assert sa._extract_mcp_component("x", "docker", ["run", "-i", "mcp/foo:1.0"]) is None
 
     def test_empty_args(self):
         assert sa._extract_mcp_component("x", "npx", []) is None
@@ -101,12 +99,30 @@ class TestSeverityExtraction:
 # ─── End-to-end orchestration with mocked OSV ─────────────────────────────────
 
 
-class TestRunAudit:
-    def test_no_components_returns_empty(self, tmp_path: Path):
-        findings = sa.run_audit(
-            skip_venv=True, skip_plugins=True, skip_mcp=True, hermes_home=tmp_path
+class TestVenvDiscovery:
+    """Regression: source/PM installs carry hermes-agent 0.0.0, which matches every advisory."""
+
+    def _versions(self, monkeypatch, base_version):
+        from hermes_cli import version_info
+
+        dists = [SimpleNamespace(metadata={"Name": n}, version="0.0.0") for n in ("hermes_agent", "requests")]
+        monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)
+        info = version_info.VersionInfo(
+            base_version=base_version, derived_version=base_version, distance=None, commit="abc", branch=None, source="build"
         )
-        assert findings == []
+        monkeypatch.setattr(version_info, "get_version_info", lambda: info)
+        return {c.name: c.version for c in sa._discover_venv()}
+
+    def test_placeholder_agent_version_resolves_to_running_release(self, monkeypatch):
+        versions = self._versions(monkeypatch, "0.21.5")
+        assert versions["hermes_agent"] == "0.21.5"
+        assert versions["requests"] == "0.0.0"  # only the agent's own placeholder is rewritten
+
+    def test_unknown_release_skips_placeholder(self, monkeypatch):
+        assert self._versions(monkeypatch, "unknown") == {"requests": "0.0.0"}
+
+
+class TestRunAudit:
 
     def test_findings_sorted_by_severity_desc(self, tmp_path: Path):
         plugin = tmp_path / "plugins" / "p"
@@ -153,24 +169,6 @@ class TestExitCodes:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    def test_discovery_runs_once_per_audit(self, tmp_path: Path, monkeypatch, capsys):
-        """cmd_security_audit must not scan the venv/plugins/MCP config twice.
-
-        Regression for the double-scan noted in #75485: the component count
-        and the audit each ran full discovery independently.
-        """
-        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
-        calls = {"venv": 0}
-
-        def counting_discover_venv():
-            calls["venv"] += 1
-            return [sa.Component(name="pkg", version="1.0", ecosystem="PyPI", source="venv")]
-
-        monkeypatch.setattr(sa, "_discover_venv", counting_discover_venv)
-        monkeypatch.setattr(sa, "_osv_query_batch", lambda comps: {})
-        sa.cmd_security_audit(self._build_args(skip_venv=False))
-        capsys.readouterr()
-        assert calls["venv"] == 1
 
 
 

@@ -8,7 +8,19 @@ export interface TodoItem {
   status: TodoStatus
 }
 
+/** One item from a `merge: true` write. Content is optional so a status-only
+ *  patch still applies to an existing row. */
+export interface TodoPatch {
+  content?: string
+  id: string
+  status: TodoStatus
+}
+
 const STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled']
+
+/** The task tool is `todo_list` on the wire since the core-tool rename; `todo`
+ *  survives as the legacy alias in stored transcripts and older backends. */
+export const isTodoToolName = (name: unknown): boolean => name === 'todo_list' || name === 'todo'
 
 const isRecord = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v))
 const isStatus = (v: unknown): v is TodoStatus => (STATUSES as readonly string[]).includes(v as string)
@@ -24,6 +36,24 @@ function parseArray(value: unknown[]): TodoItem[] {
     const parent = String(item.parent ?? '').trim()
 
     return id && content ? [{ content, id, status: item.status, ...(parent && parent !== id ? { parent } : {}) }] : []
+  })
+}
+
+function parsePatchArray(value: unknown[]): TodoPatch[] {
+  return value.flatMap(item => {
+    if (!isRecord(item) || !isStatus(item.status)) {
+      return []
+    }
+
+    const id = String(item.id ?? '').trim()
+
+    if (!id) {
+      return []
+    }
+
+    const content = String(item.content ?? '').trim()
+
+    return content ? [{ content, id, status: item.status }] : [{ id, status: item.status }]
   })
 }
 
@@ -101,6 +131,109 @@ export function todoTree(todos: readonly TodoItem[]): [TodoItem, number][] {
   return out
 }
 
+function parsePatch(value: unknown, depth: number): null | TodoPatch[] {
+  if (depth > 2) {
+    return null
+  }
+
+  if (Array.isArray(value)) {
+    return parsePatchArray(value)
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      return parsePatch(JSON.parse(value), depth + 1)
+    } catch {
+      return null
+    }
+  }
+
+  if (isRecord(value) && Object.hasOwn(value, 'todos')) {
+    return parsePatch(value.todos, depth + 1)
+  }
+
+  return null
+}
+
+export const parseTodoPatch = (value: unknown): null | TodoPatch[] => parsePatch(value, 0)
+
+export const todoArgsWantMerge = (args: unknown): boolean => isRecord(args) && args.merge === true
+
+/** Same as TodoStore.write(merge=True): update by id, append new items. */
+export function mergeTodoItems(current: readonly TodoItem[], patch: readonly TodoPatch[]): TodoItem[] {
+  const next = current.map(item => ({ ...item }))
+  const indexById = new Map(next.map((item, index) => [item.id, index]))
+
+  for (const item of patch) {
+    const index = indexById.get(item.id)
+
+    if (index === undefined) {
+      next.push({ content: item.content?.trim() || '(no description)', id: item.id, status: item.status })
+      indexById.set(item.id, next.length - 1)
+
+      continue
+    }
+
+    if (item.content) {
+      next[index].content = item.content
+    }
+
+    next[index].status = item.status
+  }
+
+  return next
+}
+
+/** Live tool event to the next list. `payload.todos` / `result` is the full
+ *  store, so replace. `args` with `merge: true` patches by id so a status-only
+ *  start event does not wipe the rest of the checklist. */
+export function nextTodosFromToolEvent(
+  current: readonly TodoItem[],
+  payload: { args?: unknown; arguments?: unknown; result?: unknown; todos?: unknown }
+): null | TodoItem[] {
+  const fromResult = parseTodos(payload.todos) ?? parseTodos(payload.result)
+
+  if (fromResult) {
+    return fromResult
+  }
+
+  const args = payload.args ?? payload.arguments
+
+  if (todoArgsWantMerge(args)) {
+    const patch = parseTodoPatch(args)
+
+    return patch && patch.length > 0 ? mergeTodoItems(current, patch) : null
+  }
+
+  return parseTodos(args)
+}
+
+function parseRevision(value: unknown, depth: number): null | number {
+  if (depth > 2) {
+    return null
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      return parseRevision(JSON.parse(value), depth + 1)
+    } catch {
+      return null
+    }
+  }
+
+  if (!isRecord(value)) {
+    return null
+  }
+
+  if (typeof value.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision >= 0) {
+    return value.revision
+  }
+
+  return Object.hasOwn(value, 'result') ? parseRevision(value.result, depth + 1) : null
+}
+
+export const parseTodoRevision = (value: unknown): null | number => parseRevision(value, 0)
+
 /** Latest parseable todo list from one message's aui content parts (tool-call
  *  parts named `todo`; live parts carry `todos`, hydrated ones args/result). */
 export function todosFromMessageContent(content: unknown): null | TodoItem[] {
@@ -111,7 +244,7 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
   let latest: null | TodoItem[] = null
 
   for (const part of content) {
-    if (!isRecord(part) || part.type !== 'tool-call' || part.toolName !== 'todo') {
+    if (!isRecord(part) || part.type !== 'tool-call' || !isTodoToolName(part.toolName)) {
       continue
     }
 
@@ -123,6 +256,56 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
   }
 
   return latest
+}
+
+/** Latest completed Todo result; arguments alone are never durable evidence. */
+function isConfirmedTodoResultPart(part: Record<string, unknown>): boolean {
+  if (part.unpairedStoredToolResult === true) {
+    return false
+  }
+
+  if (isTodoToolName(part.toolName)) {
+    return part.storedResultToolName === undefined || isTodoToolName(part.storedResultToolName)
+  }
+
+  if (part.toolName !== 'tool_call' || !isRecord(part.args)) {
+    return false
+  }
+
+  return (
+    isTodoToolName(part.storedResultToolName) &&
+    Array.isArray(part.args.calls) &&
+    part.args.calls.some(call => isRecord(call) && isTodoToolName(call.name))
+  )
+}
+
+export function latestSessionTodoSnapshot(
+  messages: readonly { parts?: unknown }[]
+): null | { todos: TodoItem[]; revision: number } {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const parts = messages[i]?.parts
+
+    if (!Array.isArray(parts)) {
+      continue
+    }
+
+    for (let j = parts.length - 1; j >= 0; j -= 1) {
+      const part = parts[j]
+
+      if (!isRecord(part) || part.type !== 'tool-call' || !isConfirmedTodoResultPart(part)) {
+        continue
+      }
+
+      const todos = parseTodos(part.result)
+      const revision = parseTodoRevision(part.result)
+
+      if (todos !== null && revision !== null) {
+        return { todos, revision }
+      }
+    }
+  }
+
+  return null
 }
 
 /** Current todo state for a whole transcript — the last list wins. */

@@ -1,14 +1,14 @@
 ---
-title: "Core Testflight — Verify exact TestFlight readiness and device state"
+title: "Core Testflight — Verify exact TestFlight builds without auth or device loops"
 sidebar_label: "Core Testflight"
-description: "Verify exact TestFlight readiness and device state"
+description: "Verify exact TestFlight builds without auth or device loops"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Core Testflight
 
-Verify exact TestFlight readiness and device state.
+Verify exact TestFlight builds without auth or device loops.
 
 ## Skill metadata
 
@@ -16,12 +16,12 @@ Verify exact TestFlight readiness and device state.
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/core-testflight` |
 | Path | `optional-skills/devops/core-testflight` |
-| Version | `3.2.0` |
+| Version | `3.4.0` |
 | Author | Peter Beddow, Hermes Agent |
 | License | MIT |
 | Platforms | macos |
 | Tags | `Apple`, `TestFlight`, `App Store Connect`, `Xcode Cloud`, `verification` |
-| Related skills | [`accessiblecapture-app-install`](../../optional/devops/devops-accessiblecapture-app-install.md) |
+| Related skills | [`accessiblecapture-app-install`](/docs/user-guide/skills/optional/devops/devops-accessiblecapture-app-install) |
 
 ## Reference: full SKILL.md
 
@@ -31,146 +31,196 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Core TestFlight Skill
 
-Use this skill for Accessible Core iOS distribution and TestFlight work. It separates
-Apple-side distribution, the iPhone's TestFlight installation action, optional device
-control, and installed-build verification. A missing Mac-to-iPhone connection is not
-an Apple-side distribution failure.
+Use this skill for Accessible Core iOS distribution and TestFlight work. It preserves the
+Xcode Cloud → TestFlight pipeline, separates Apple distribution from phone control, and
+never replaces TestFlight with a local device installation. The central rule is to use
+the narrowest already-authenticated path for each operation and to resume an existing
+run instead of starting a duplicate.
 
 ## When to Use
 
-Use for an exact published iOS build when Peter asks to distribute, make available in
-TestFlight, install through TestFlight, or verify an installed build. Do not use a local
-IPA or direct-device install as a substitute for TestFlight.
+Use when Peter asks to distribute an exact iOS build, make it available in TestFlight,
+install it through TestFlight, or verify an installed build. Do not use a local IPA or
+direct-device installation as a substitute for TestFlight.
 
 ## Prerequisites
 
-- Exact bundle ID, marketing version, build number, source commit, GitHub ref, workflow,
-  intended beta group, and tester label from the current run.
-- The existing authenticated Core Secrets/App Store Connect client, or the already
-  authenticated App Store Connect browser session. Never create another credential path.
-- The native checkout's current release receipt template and provenance checker.
+Record these exact values before acting:
+
+- bundle ID, marketing version, requested build number, source commit, GitHub ref,
+  Xcode Cloud workflow, beta group, and tester label;
+- the native checkout and its current release receipt template/provenance checker;
+- the current delivery mode: `TESTFLIGHT` or `DIRECT_DEVICE`.
+
+Use the established authenticated tools already available on the workstation:
+
+- **GitHub/ref work:** the authenticated Git client or `gh` path. Resolve the named ref
+  and verify its full 40-character SHA. Do not use Core Secrets for GitHub operations.
+- **Xcode Cloud:** the existing authenticated Xcode Cloud/App Store Connect client or
+  approved build-start helper. Read the workflow, resolve the Git ref, start a run, and
+  poll that run through the same path. Do not invent a workflow or use a local archive.
+- **App Store Connect readiness:** the existing `scripts/app_store_connect.py` verifier.
+  When it genuinely needs Apple API credentials, resolve the literal
+  `apple/app-store-connect` reference through the existing `core-secrets` skill using
+  the `WKST-01` principal. Keep fields and short-lived JWTs in memory only.
+
+Never print or persist credentials, tokens, private keys, or connection strings.
+
+## Authorization and authentication boundary
+
+Approval is a state, not a prompt loop. When Peter has approved the bounded operation,
+record that approval in the current work state and do not ask again for the same build,
+workflow, ref, or run. If approval is absent for an externally visible write, ask once
+before starting it. Do not ask for credentials; use the established authenticated path.
+
+Use this order:
+
+1. Resolve GitHub refs with authenticated GitHub tools.
+2. Resolve and start/poll Xcode Cloud with its established authenticated path.
+3. Use Core Secrets only when the Apple API client actually requires the approved
+   `apple/app-store-connect` reference.
+4. Never open App Store Connect in a browser to repair an API or credential problem.
+   Browser login is allowed only for a named operation that the existing API cannot do,
+   after reporting that limitation.
+
+If an authenticated tool returns an authorization, credential, or transport failure,
+report the exact redacted cause and stop that operation. Do not retry with another secret
+store, request approval again, prompt for a password, or restart the workflow.
 
 ## Operations and evidence
 
-Keep these operations independent and label each one:
+Keep these stages independent and report each one:
 
-1. **Distribution** — source commit is on the authoritative ref, Xcode Cloud archive
-   succeeded, and the exact build exists in App Store Connect.
-2. **TestFlight availability** — processing/QC/compliance permit testing, exact build is
-   in the intended group, and an enrolled tester belongs to that group.
-3. **Installation** — the tester selects that exact build in TestFlight and taps Install
+1. **GitHub source** — the authoritative ref resolves to the requested commit.
+2. **Xcode Cloud run** — the exact workflow/run was accepted and its source commit
+   matches; an archive must succeed before a build exists.
+3. **Apple processing** — the exact App Store Connect build record has the requested
+   build number and acceptable processing state.
+4. **TestFlight availability** — compliance, beta state, expiration, exact group
+   membership, and tester eligibility permit testing.
+5. **Installation** — the tester selects that exact build in TestFlight and taps Install
    on PHN-01. This is an iPhone action, not a Mac-side CoreDevice action.
-4. **Device control** — an approved remote-UI or CoreDevice path can control or inspect
-   PHN-01. It is optional for TestFlight readiness.
-5. **Installed-build verification** — a current structured device record contains the
-   target bundle ID, marketing version, and exact `CFBundleVersion`.
+6. **Installed-build verification** — fresh structured device evidence matches the
+   bundle ID, marketing version, and exact `CFBundleVersion`.
 
-Never infer one operation from another. In particular, TestFlight visibility is not
-installed-build evidence, and an unavailable tunnel is not a TestFlight failure.
+Never infer one stage from another. TestFlight visibility is not installation evidence,
+and an unavailable phone tunnel is not an Apple distribution failure.
 
-## Delivery mode
+## Idempotent Xcode Cloud procedure
+
+1. **Recover before starting.** Read the current receipt, saved run ID, and recent API
+   state. If a run already exists for the requested commit/workflow, poll it; do not
+   start another run. If the run is terminal, read its terminal state before deciding
+   whether a new approved run is necessary.
+2. **Verify GitHub.** Use authenticated GitHub tools to resolve the exact named ref.
+   Require the returned SHA to equal the requested 40-character commit. If it does not,
+   stop with the mismatch and identify the ref that must be corrected.
+3. **Verify the Xcode Cloud target.** Read the existing workflow and its repository/ref
+   configuration through the established Xcode Cloud path. Require the requested commit
+   to be the source of the run. Do not create or alter a workflow.
+4. **Start once.** Only when no matching active run exists, start the existing workflow
+   for the exact ref/commit. Record the returned run ID immediately. A successful start
+   means only that the run was accepted; it is not archive or TestFlight success.
+5. **Poll one run.** Read the run until it is terminal. Record run status, source commit,
+   archive status, produced build number, and any redacted failure reason. Do not restart
+   because a run is pending or running.
+6. **Verify Apple processing.** Once a build number exists, use the exact build number
+   with `scripts/app_store_connect.py`; never select “latest” or by list position. Require
+   the build record, linked marketing version, processing state, expiration, QC,
+   export-compliance state, and beta state.
+7. **Verify TestFlight.** Confirm the exact build ID is in the intended beta group and
+   that at least one enrolled tester is eligible. Read back every bounded Apple write.
+8. **Handle installation.** In `TESTFLIGHT` mode, do not invoke `devicectl` merely to
+   install or prove Apple readiness. Report the exact build and
+   `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE` when the phone-side Install action is
+   outside available agent control. If the phone is paired but has no usable tunnel,
+   report `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE` and do not request reconnection.
+9. **Verify device state only when selected.** In `DIRECT_DEVICE` mode, use fresh
+   CoreDevice readback and require exact bundle ID, marketing version, and build number.
+   A missing/stale readback is unverified. Never install a local build.
+10. **Write a current receipt.** Preserve historical receipts. Record GitHub SHA/ref,
+    workflow/run IDs, source commit, archive result, App Store Connect record/build,
+    processing/QC/compliance, beta group/tester eligibility, delivery mode, installation
+    action or device evidence, capture time, and outcome. Run the existing receipt and
+    provenance checkers.
+
+## Read-only Apple verifier
+
+Run the verifier for the exact target:
+
+```text
+python3 scripts/app_store_connect.py \
+  --bundle-id <bundle-id> \
+  --build <build-number> \
+  --beta-group <exact-group-name>
+```
+
+It must return a redacted machine-readable result with `verification=API`. Require
+`processingState=VALID` (or an equivalent testable state), non-expired availability,
+complete compliance, exact beta-group membership, and an eligible tester. A successful
+API read does not prove that PHN-01 has installed the build.
+
+## Blocker contract
+
+A blocker is not a reason to restart. Stop and report:
+
+- **Exact cause:** the redacted tool/API result, stage, and target operation.
+- **One action:** the single owner or environment action that would remove that cause.
+- **What remains unchanged:** no duplicate run, credential, browser login, local install,
+  or unrelated device check was performed.
+
+Examples:
+
+- GitHub ref cannot resolve: owner action is to restore authenticated GitHub access or
+  correct the named ref; do not ask for Apple credentials.
+- Xcode Cloud start/poll is terminated before a response: owner action is to permit the
+  already-approved authenticated Xcode Cloud request in an environment with outbound
+  Apple API access; do not request approval again or start a second run.
+- App Store Connect rejects the API key: report the HTTP status/title/detail without
+  secrets; owner action is to repair that approved Apple API authorization.
+- PHN-01 has no usable tunnel in `TESTFLIGHT`: no owner action is required for Apple
+  readiness; report the exact build as available for TestFlight installation and do not
+  request a connection check.
+
+## Delivery mode and WKST-02 boundary
 
 Record `delivery_mode` before acting:
 
-- `TESTFLIGHT`: perform Apple-side checks without running `devicectl`. If the exact
-  build is ready but device control or readback is unavailable, report
-  `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE`. Tell Peter that the exact build is
-  available for installation directly through TestFlight on PHN-01. Do not request
-  reconnection merely to enable that installation.
-- `DIRECT_DEVICE`: CoreDevice is required for the selected direct-device operation.
-  If it fails, stop that operation and return to `TESTFLIGHT`; do not retry it or use
-  WKST-02 automatically.
+- `TESTFLIGHT`: Apple-side checks and TestFlight state only. Phone control is optional.
+- `DIRECT_DEVICE`: CoreDevice is required for the explicitly selected direct-device
+  operation. If it fails, stop that operation and return to `TESTFLIGHT`; do not retry
+  automatically or use WKST-02.
 
-The AccessibleCapture caller selects `TESTFLIGHT` immediately when local discovery
-finds PHN-01 unavailable or paired without a usable tunnel. Do not run another
-CoreDevice-dependent TestFlight launch after that decision.
-
-## Procedure
-
-1. **Record the exact target.** Capture the current source commit and ref, bundle ID,
-   marketing version, build, workflow, intended group, and tester label. A stale
-   receipt cannot fill a current field.
-2. **Verify source and distribution.** In the native checkout, check the worktree,
-   diff, exact commit, branch, and authoritative ref. Read the exact Xcode Cloud run
-   and require matching source commit, successful archive, and requested build.
-3. **Verify Apple-side readiness.** Through the existing authenticated integration:
-   - find exactly one app by bundle ID;
-   - select the build whose `attributes.version` equals the requested build;
-   - read its linked marketing version, processing state, beta state, expiration,
-     QC, export compliance, and build record ID;
-   - read the intended beta group and confirm the exact build ID is a member;
-   - read group testers without exposing identity and confirm an enrolled tester has
-     that group membership.
-   Require `processingState=VALID` (or an equivalent testable state), non-expired
-   availability, compliance complete, group membership, and tester eligibility.
-4. **Apply only bounded Apple writes.** If a fresh read shows missing export compliance
-   or group membership, use the existing authorized integration, write only that exact
-   correction, and read the exact target back. Never create credentials, a workflow,
-   or a build-number workaround.
-5. **Classify the device plane separately.** Use
-   `scripts/delivery_state.py` with Apple readiness and any current device evidence.
-   A paired device with no tunnel must produce
-   `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE`, not `BLOCKED`, `FAILED`, or an
-   installation failure. A direct installed-build readback may produce `DONE` only
-   when its exact build is current and verified.
-6. **Handle installation honestly.** If an approved remote-UI capability is available,
-   it may perform the TestFlight selection and Install action. Otherwise report
-   `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE` together with the exact build, or
-   the more specific `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE` when device
-   control/readback is unavailable. Do not claim that Build N is installed.
-7. **Verify installation only with fresh readback.** CoreDevice is required here only
-   when it is the chosen reliable readback path:
-
-   ```text
-   xcrun devicectl device info apps --device <device> --bundle-id <bundle> --include-all-apps --json-output device-apps.json
-   ```
-
-   Require the current bundle ID, marketing version, and `CFBundleVersion` to match.
-   Missing or stale readback means unverified, never installed.
-8. **Write a current receipt.** Create a new receipt from the repository template with
-   source, workflow, exact App Store Connect record, processing/QC/compliance, group,
-   tester eligibility, installation method, device evidence, capture time, and outcome.
-   Validate installability with the existing receipt checker. Validate installed state
-   only when exact device evidence exists. Preserve historical receipts.
+WKST-02 is never an automatic fallback. Use it only when Peter explicitly names that
+remote route, preserving its existing restrictions and authentication.
 
 ## Status contract
 
 Use these outcomes exactly:
 
-- `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE`: Apple-side readiness is verified;
-  the phone-side TestFlight install remains available, but Hermes cannot control or
-  read back PHN-01 from the current workstation. This is not a distribution failure.
-- `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE`: Apple-side readiness is verified and
-  an iPhone Install action remains outside available agent control.
-- `DONE`: only after current installed-build evidence matches the target build.
-- `BLOCKED`: only for a missing required owner input, unavailable authorized Apple
-  authentication, or a failed direct-device operation in `DIRECT_DEVICE` mode.
-- `FAILED`: Apple-side distribution or a bounded write genuinely failed.
+- `DONE`: current installed-build evidence matches the target build.
+- `TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE`: Apple readiness is verified, but Hermes
+  cannot control/read PHN-01 from the current workstation.
+- `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE`: Apple readiness is verified and the
+  phone-side TestFlight Install action remains outside available agent control.
+- `BLOCKED`: required owner input/approval, authorized Apple authentication, or a named
+  direct-device operation is unavailable.
+- `FAILED`: Apple distribution or a bounded Apple write genuinely failed.
 
 Do not combine device-control status with Apple distribution status.
 
-## WKST-02 boundary
-
-WKST-02 is never an automatic fallback. Use it only when Peter explicitly names that
-remote route. Preserve its existing restrictions and authentication. Local WKST-01
-unavailability selects TestFlight; it does not authorize tunnel repair, reconnection,
-remote SSH, or direct installation.
-
 ## Verification report
 
-Report the following fields separately:
+Report these fields separately and do not omit a stage:
 
 ```text
 GitHub commit: <40-character SHA>
-Xcode Cloud: <workflow/run/source/archive/build>
-TestFlight: <record/processing/QC/compliance/group/tester>
+GitHub ref: <exact ref and resolved SHA>
+Xcode Cloud: <workflow/run/source/archive/build/status>
+App Store Connect: <record/build/processing/QC/compliance>
+TestFlight: <group/tester/availability>
 Target: <marketing version/build/bundle>
 Installation: <TestFlight action or verified exact device readback>
-Device control: <available/unavailable and why>
-Outcome: DONE / TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE / INSTALL_ACTION_REQUIRED / BLOCKED / FAILED
+Device control: <available/unavailable and exact reason>
+Outcome: DONE / TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE / INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE / BLOCKED / FAILED
 ```
-
-For the paired-but-tunnel-unavailable case, the acceptance result is
-`TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE` when the Apple-side fields pass. State
-plainly that the exact build is available for installation directly through TestFlight
-on PHN-01, and do not ask Peter to reconnect the phone merely to enable that action.

@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Callable, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -95,22 +94,6 @@ def _names_external_provider(profile_dir: Path) -> bool:
     return False
 
 
-def _drop_hook_only_registrations(name: str) -> None:
-    """Drop the fallback hooks a hook-only provider load registered on this profile's manager: they
-    proxy into the plugin host that is about to stop. The provider's next real load registers them
-    again (``plugins.memory`` drops and re-adds the same group)."""
-    from hermes_cli.plugins import get_plugin_manager
-    from hermes_cli.plugins_ledger import _hook_source_of
-    from plugins.memory import find_provider_dir
-
-    provider_dir = find_provider_dir(name)
-    if provider_dir is None:
-        return
-    manager = get_plugin_manager()
-    with manager._discovery_lock:
-        manager._drop_fallback_hooks(_hook_source_of(name, SimpleNamespace(__file__=str(provider_dir / "__init__.py"))))
-
-
 def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], None]) -> None:
     """Run ``call`` on the memory provider *profile_dir*'s config selects, with that profile's home AND
     its own secrets bound (a profile lifecycle hook): ``get_secret`` reads the target profile's
@@ -129,7 +112,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
             return  # the common case: no provider, so no secret scope, effective config or load
         from agent.secret_scope import build_profile_secret_scope, set_secret_scope
         from hermes_cli.plugin_isolation import transient_plugin_host
-        from plugins.memory import load_memory_provider
+        from plugins.memory import load_memory_provider, provider_registration_scope
         # Secrets first: the effective config (managed scope, ``${VAR}`` refs) expands through them.
         # Its configured secret sources too (1Password etc.); a brand-new profile was never hydrated.
         from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -139,7 +122,7 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
         name = active_memory_provider(load_config_readonly())
         if not name:
             return
-        with transient_plugin_host(before_stop=lambda: _drop_hook_only_registrations(name)):
+        with provider_registration_scope(name) as release, transient_plugin_host(before_stop=release):
             provider = load_memory_provider(name, register_skills=False)
             if provider is not None:
                 call(provider)

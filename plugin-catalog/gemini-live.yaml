@@ -1,7 +1,7 @@
 name: gemini-live
 title: Gemini Live for Hermes
 repo: https://github.com/cineglobe/hermes-gemini-live
-sha: 39e19c8f7382253c7a34b7df060426fe054e18f6
+sha: 23ac2f11c332b755a571ba7a565b177c66835d9d
 description: >-
   Full-duplex Gemini Live voice calls in Hermes Desktop and the web dashboard. The voice takes the
   profile's name and hands real work to your Hermes agent while you keep talking. It can steer
@@ -23,10 +23,10 @@ category: voice
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/cineglobe/hermes-gemini-live#readme
 version: "1.0.0"
-image: https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/39e19c8f7382253c7a34b7df060426fe054e18f6/docs/assets/banner.png
+image: https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/23ac2f11c332b755a571ba7a565b177c66835d9d/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/39e19c8f7382253c7a34b7df060426fe054e18f6/docs/assets/approval.png
-  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/39e19c8f7382253c7a34b7df060426fe054e18f6/docs/assets/transcript.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/23ac2f11c332b755a571ba7a565b177c66835d9d/docs/assets/approval.png
+  - https://raw.githubusercontent.com/cineglobe/hermes-gemini-live/23ac2f11c332b755a571ba7a565b177c66835d9d/docs/assets/transcript.png
 platforms: []
 capabilities:
   provides_tools: []

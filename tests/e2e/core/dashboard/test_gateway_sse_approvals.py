@@ -11,15 +11,15 @@ The scenario, run once per module: a streaming client posts ``/v1/chat/completio
 key, polls ``GET /v1/runs/{id}``: it must see the same execution state (``waiting_for_approval``)
 and the same pending control (prompt id, generation, command). A reply for a stale generation is
 refused and leaves the control pending. The second client then approves; the first stream carries
-the model's final answer and ``[DONE]``, the command ran exactly once (the directory is gone only
-after the approval), and a fresh client sees the run completed with nothing pending.
+the model's final answer and ``[DONE]``, the command runs only after the approval (the directory
+is still there while pending and after the stale reply, and gone once approved), and a fresh client
+sees the run completed with nothing pending.
 """
 
 from __future__ import annotations
 
 import json
 import secrets
-import sys
 import threading
 import time
 from pathlib import Path
@@ -33,7 +33,7 @@ from tests.e2e.core.dashboard._issue_helpers import GatewayApiServer
 from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.waiting import wait_until
 
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reaper reads /proc")
+pytestmark = pytest.mark.platforms("linux")  # the reaper reads /proc
 TURN_TIMEOUT = 90.0
 REPLY = "sse-approval-final-" + secrets.token_hex(4)
 TERMINAL = {"completed", "failed", "cancelled"}

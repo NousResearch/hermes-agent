@@ -29,3 +29,16 @@ def test_restart_deferral_crosses_real_completion_process(transition):
     assert {"prepare", "build", "maintenance", "deferred", "emergency_resume"} <= set(events)
     assert "restart" not in events and "verify" not in events
     assert marker.read_text() == "pending"
+
+
+def test_no_gateway_restart_help_describes_stop_and_process_boundary():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    build_update_parser(subparsers, cmd_update=lambda args: None)
+
+    update_parser = subparsers.choices["update"]
+    option = next(option for option in update_parser._actions if "--no-gateway-restart" in option.option_strings)
+
+    assert "Stop the fleet" in option.help
+    assert "does not keep gateways online" in option.help
+    assert "separate shell" in option.help

@@ -1096,6 +1096,17 @@ def _commit_tool_result(
             function_result = agent._append_guardrail_observation(
                 function_name, function_args, function_result, failed=is_error, tool_call_id=tool_call_id,
             )
+    from hermes_cli.plugins import _delivery_manager
+
+    function_result, withheld = _delivery_manager().filter_tool_result(
+        tool_name=function_name, args=function_args, result=function_result,
+        duration_ms=int(tool_duration * 1000), status="error" if is_error else "ok",
+        **tool_hook_ids(agent, effective_task_id, tool_call_id),
+    )
+    if withheld:
+        function_result = json.dumps({"error": "Tool result withheld by output policy"})
+        is_error = True
+    if observed:
         if is_error:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
         elif success_log_chars is not None:
@@ -1639,6 +1650,9 @@ def _start_quiet_tool_spinner(agent, function_name: str, function_args: dict, *,
 def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args: dict, tool_duration: float, result) -> None:
     """Stop the spinner with the cute completion line, or print it when no spinner ran."""
     if spinner or agent._should_emit_quiet_tool_messages():
+        from hermes_cli.lifecycle import has_hook
+        if has_hook("filter_tool_result"):
+            result = None  # Completion precedes the final result policy.
         cute = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=result)
         spinner.stop(cute) if spinner else agent._vprint(f"  {cute}")
 

@@ -451,6 +451,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
+| `filter_tool_result` | Policy transform | At final executor commit, before result persistence, model context and completion UI. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status` | Filters see previous adopted text; faults withhold the result. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
@@ -1705,6 +1706,39 @@ def register(ctx):
 ```
 
 Applies to every tool. For terminal-only rewriting see `transform_terminal_output` below — it is narrower, runs before `transform_tool_result`, and its replacement is still subject to the terminal tool's final output limit.
+
+---
+
+### `filter_tool_result`
+
+Use this hook when a result must pass an inspection before delivery. It runs at
+the shared final result commit for sequential and concurrent tool execution,
+including inline tools and completed error, timeout and cancellation results.
+It receives the existing tool transforms and guardrail observations, before the
+result is spilled, appended to model context or projected to completion callbacks.
+
+```python
+def inspect_result(tool_name, result, **context):
+    # Return inspected text, or None to retain the current value.
+    return inspect_and_redact(result)
+
+def register(ctx):
+    ctx.register_hook("filter_tool_result", inspect_result)
+```
+
+Callbacks run in registration order. Each sees a copy of the previous filter's
+adopted result; returning a string replaces it and `None` leaves it unchanged.
+An exception, timeout or other return type withholds the entire result and
+commits a fixed error placeholder. Later filters do not run for that result.
+Normal native callback timeout and suppression limits apply. Subsequent tool
+calls continue through the same checks. The native tool's error state is retained;
+a withheld result is reported as an error.
+
+Early spinner completion omits result-derived text while a filter is registered.
+The final model row, spill file and UI completion use the adopted result. Native
+context hints added after result storage keep their existing context-file rules.
+Raw tool-side logging and observer hooks retain their existing trusted-plugin
+semantics. `transform_tool_result` keeps its best-effort first-string behavior.
 
 ---
 

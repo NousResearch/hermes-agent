@@ -62,6 +62,7 @@ behavior-affecting hooks:
 | `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message, or `{"action": "block", "message": "..."}` to end the turn before any inference request (the message becomes the reply and the prompt is stored as a withheld placeholder; see [Event Hooks](../user-guide/features/hooks.md)). A callback that raises or times out is skipped, so it never blocks. |
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
+| `filter_tool_result` | Ordered final result policy before model/UI/persistence; faults withhold the result. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
 
 Telemetry plugins should treat these behavior-affecting returns as optional
@@ -177,6 +178,7 @@ Tool hooks describe individual tool calls:
 | `pre_tool_call` | Before guardrail-approved tool dispatch. |
 | `post_tool_call` | After tool dispatch, cancellation, block, or error completion. |
 | `transform_tool_result` | After `post_tool_call`, before the result is appended to model context. |
+| `filter_tool_result` | Shared executor commit after transforms/guardrail observations, before spill, model append and UI completion. |
 
 `pre_tool_call` includes `tool_name`, `args`, `task_id`, `session_id`,
 `tool_call_id`, `turn_id`, and `api_request_id`.

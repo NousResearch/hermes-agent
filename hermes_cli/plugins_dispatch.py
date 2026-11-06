@@ -40,7 +40,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
-    "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
+    "post_tool_call", "transform_terminal_output", "transform_tool_result", "filter_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
@@ -609,6 +609,30 @@ class PluginDispatchMixin:
             if isinstance(ret, str) and ret:
                 return ret, False
         return None, bool(failed)
+
+    def filter_tool_result(self, **kwargs: Any) -> tuple[Any, bool]:
+        """Chain final result filters; failed/invalid callbacks withhold the entire result.
+
+        The snapshot and copied payload prevent reload or an abandoned callback
+        from changing the value subsequently delivered to model/UI/persistence.
+        """
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        result = kwargs["result"]
+        if safe_worker_enabled():
+            return result, False
+        with self._discovery_lock:
+            callbacks = tuple(self._hooks.get("filter_tool_result", []))
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        for callback in callbacks:
+            failed: list = []
+            payload = copy.deepcopy({**kwargs, "result": result})
+            replies = self._run_hook_callbacks("filter_tool_result", [callback], payload, failed)
+            if failed or any(not isinstance(reply, str) for reply in replies):
+                return None, True
+            if replies:
+                result = replies[0]
+        return result, False
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.

@@ -43,6 +43,66 @@ def register(ctx):
     ctx.register_platform("x", "X", adapter_factory=lambda cfg: None, check_fn=lambda: True)
 '''
 
+BLUEPRINT_PLUGIN = '''
+import os
+import hermes_constants
+hermes_constants._foreign_blueprint_import_pid = os.getpid()
+
+def register(ctx):
+    hermes_constants._foreign_blueprint_register_pid = os.getpid()
+    ctx.register_automation_blueprint("probe", title="Probe", description="Probe",
+        schedule_template="0 9 * * *", prompt_template="Hello {subject}",
+        slots=[{"name": "subject", "type": "text", "label": "Subject", "default": "world"}])
+'''
+
+
+def test_foreign_cron_discovery_reuses_profile_host_and_preserves_blueprints(tmp_path, monkeypatch):
+    import hermes_constants
+    from cron.blueprint_plugins import plugin_blueprints
+    from cron.scheduler_delivery import _iter_home_target_platforms
+    from cron.scheduler_provider import _profile_cron_scope
+
+    launch = _home_with_plugins(tmp_path, monkeypatch, {}, isolation="in_process")
+    foreign = launch / "profiles" / "foreign"
+    directory = foreign / "plugins" / "foreignblueprint"
+    directory.mkdir(parents=True)
+    (directory / "plugin.yaml").write_text("name: foreignblueprint\nversion: 1.0\n", encoding="utf-8")
+    (directory / "__init__.py").write_text(BLUEPRINT_PLUGIN, encoding="utf-8")
+    (foreign / "config.yaml").write_text(json.dumps({
+        "plugins": {"enabled": ["foreignblueprint"], "isolation": "in_process"}
+    }), encoding="utf-8")
+    monkeypatch.setattr(hermes_constants, "_PINNED_PROCESS_HERMES_HOME", str(launch))
+    plugins_mod._reset_plugin_managers_for_tests()
+    try:
+        from hermes_cli.plugin_isolation import isolation_mode
+        assert isolation_mode() == "in_process"
+        with _profile_cron_scope(foreign):
+            list(_iter_home_target_platforms())
+            manager = plugins_mod.get_plugin_manager()
+            host = manager._plugin_host()
+            [blueprint] = plugin_blueprints()
+            assert blueprint.key == "foreignblueprint:probe"
+            assert blueprint.slots[0].default == "world"
+            assert manager._plugin_host() is host
+            assert host.alive
+            assert not any("foreignblueprint" in name for name in sys.modules)
+            assert not hasattr(hermes_constants, "_foreign_blueprint_import_pid")
+            assert not hasattr(hermes_constants, "_foreign_blueprint_register_pid")
+        assert plugin_blueprints() == []
+        assert isolation_mode() == "in_process"
+        assert host.alive
+        # Explicit reload and crash recovery can run after the ticker's operation scope exits.
+        manager.discover_and_load(force=True)
+        assert manager._plugins["foreignblueprint"].error is None
+        host._restart(["foreignblueprint"])
+        assert manager._plugins["foreignblueprint"].error is None
+        assert not any("foreignblueprint" in name for name in sys.modules)
+        assert not hasattr(hermes_constants, "_foreign_blueprint_import_pid")
+        assert not hasattr(hermes_constants, "_foreign_blueprint_register_pid")
+    finally:
+        plugins_mod._reset_plugin_managers_for_tests()
+
+
 
 def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
     home = tmp_path / ".hermes"

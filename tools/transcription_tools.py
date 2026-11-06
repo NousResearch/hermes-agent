@@ -567,8 +567,8 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
-    from tools.hosted_tool_policy import host_refusal
-    if refusal := host_refusal("Transcription", "it reads the audio file and runs speech engines on this host"):
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("transcription", "Transcription"):
         return {"success": False, "transcript": "", "error": refusal}
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)

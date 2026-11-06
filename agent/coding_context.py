@@ -538,8 +538,8 @@ WORKSPACE_BLOCK_HEADER = "Workspace (snapshot at session start — re-check with
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """Workspace snapshot for the system prompt (empty outside a workspace): git state when
     in a repo, plus project facts — so marker-only (non-git) projects still get one."""
-    from tools.environments.sandbox_scope import hosted_scope
-    if hosted_scope() is not None:
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("workspace_snapshot"):
         return ""  # the agent's workspace is in its sandbox; this host's cwd says nothing about it
     git_root, root = _workspace_roots(cwd)
     if root is None:

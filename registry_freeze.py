@@ -24,14 +24,51 @@ _frozen = False
 _sealers: list[Callable[[], Callable[[], None] | None]] = []
 
 
+# Registries whose boot can leave work that only completes by registering later (a deferred
+# platform loader registers its adapter on first lookup) report what is still pending; the freeze
+# refuses while anything is, because that registration would then be refused and the entry lost.
+_completeness_checks: list[Callable[[], list[str]]] = []
+
+
 class RegistryFrozen(RuntimeError):
     """A registry was changed after the hosted boot froze the registries."""
 
 
+class RegistriesIncomplete(RuntimeError):
+    """:func:`freeze_registries` was called while a registry still had registrations pending."""
+
+
+def check_at_freeze(pending: Callable[[], list[str]]) -> None:
+    """Have :func:`assert_registries_complete` (and so :func:`freeze_registries`) call *pending*,
+    which names the registrations a registry still owes (empty when complete)."""
+    _completeness_checks.append(pending)
+
+
+def assert_registries_complete() -> None:
+    """Raise :class:`RegistriesIncomplete` naming every registration still pending (an unresolved
+    deferred platform loader). The hosted boot materialises each platform it serves, and drops the
+    rest, before it freezes."""
+    pending = sorted(name for check in _completeness_checks for name in check())
+    if pending:
+        raise RegistriesIncomplete(
+            "cannot freeze the registries while registrations are pending: " + ", ".join(pending)
+            + ". Resolve them during boot (a deferred platform: look it up once) or drop them first")
+
+
 def freeze_registries() -> None:
     """Make the tool, MCP, provider and plugin registries immutable for the rest of the process.
-    Called once by the hosted boot after it has loaded everything it serves."""
+    Called once by the hosted boot after it has loaded everything it serves.
+
+    Refuses (:class:`RegistriesIncomplete`, nothing frozen) while a registration is still pending,
+    such as a deferred platform loader nobody has looked up: after the freeze its adapter could not
+    register. Hooks are global too: a per-agent memory provider constructed after the freeze must
+    not register global hooks (``ctx.register_hook``); its plugin registers them during boot, and
+    stable dispatch to per-agent provider instances is a follow-up, not something the freeze
+    provides."""
     global _frozen
+    if _frozen:
+        return
+    assert_registries_complete()
     _frozen = True  # first: a registration racing the freeze is refused, so sealing sees the final set
     for ref in _sealers:
         seal = ref()

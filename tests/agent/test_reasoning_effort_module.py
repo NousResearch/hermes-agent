@@ -20,6 +20,8 @@ from agent.reasoning_effort import (
     EFFORT_LADDER,
     GLM52_EFFORTS,
     GLM52_OVERRIDES,
+    GLM53_EFFORTS,
+    GLM53_OVERRIDES,
     KIMI_K2_EFFORTS,
     KIMI_K3_EFFORTS,
     KIMI_K3_OVERRIDES,
@@ -133,6 +135,18 @@ class TestGlm52Vocabulary:
         # GLM's floor is high — weaker asks land there.
         assert clamp_effort("low", GLM52_EFFORTS, GLM52_OVERRIDES) == "high"
         assert clamp_effort("medium", GLM52_EFFORTS, GLM52_OVERRIDES) == "high"
+
+
+class TestGlm53Vocabulary:
+    def test_three_level_set(self):
+        """#140239: medium is a 400/1210 on glm-5.3 — it steps down to low, never to the wire."""
+        assert "medium" not in GLM53_EFFORTS
+        assert clamp_effort("medium", GLM53_EFFORTS, GLM53_OVERRIDES) == "low"
+        assert clamp_effort("minimal", GLM53_EFFORTS, GLM53_OVERRIDES) == "low"
+        assert clamp_effort("xhigh", GLM53_EFFORTS, GLM53_OVERRIDES) == "max"
+        assert clamp_effort("ultra", GLM53_EFFORTS, GLM53_OVERRIDES) == "max"
+        for level in ("low", "high", "max"):
+            assert clamp_effort(level, GLM53_EFFORTS, GLM53_OVERRIDES) == level
 
 
 class TestCodexVocabulary:

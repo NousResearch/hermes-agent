@@ -182,7 +182,8 @@ def _namespace_keys(tree: ast.Module) -> dict[int, str]:
 
 
 def _imported_object_writes(writes: list[Write]) -> Iterator[int]:
-    """Import lines of names bound by ``from m import X`` that a function changes in place
+    """Import lines of names bound by ``from m import X`` (or ``from . import X``) that a function
+    changes in place, each on the line of the import that binding resolves to
     (``X[k] = v``, ``X.append(v)``, ``X.attr = v``). ``m`` cannot see these writes, so they are
     reported here, on the import line. A write through a module (``os.environ[k] = v``,
     ``m.X[k] = v``) is that module's business, as before."""

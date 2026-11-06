@@ -412,25 +412,12 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('opens the pet picker for /pet list only', () => {
+  it('opens the pet picker for /pet list', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/pet list')).toBe(true)
     expect(getOverlayState().petPicker).toBe(true)
     expect(gatewayWork(ctx)).toEqual([])
-
-    resetOverlayState()
-    expect(createSlashHandler(ctx)('/pet')).toBe(true)
-    expect(getOverlayState().petPicker).toBe(false)
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet' }))
-
-    resetOverlayState()
-    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
-    expect(getOverlayState().petPicker).toBe(false)
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
-      'slash.exec',
-      expect.objectContaining({ command: 'pet toggle' })
-    )
   })
 
   it('routes /skills browse [page] to skills.manage with a numeric page', () => {

@@ -56,7 +56,14 @@ export const slashCmdSessionEn = {
       defaultValue: 'default'
     },
     pet: {
+      adopted: (name: string) => `${name} is out!`,
+      disabled: 'Pet put away.',
+      failed: (error: string) =>
+        `/pet: ${error} — use /pet list to browse pets or /pet [toggle | off | scale <n> | <slug>].`,
       noOutput: '/pet: no output',
+      noneInstalled: 'No pets installed — /pet list to browse, or /pet <slug> to adopt.',
+      scaled: (scale: number) => `Pet scale set to ${scale}.`,
+      usage: 'usage: /pet [toggle | off | list | scale <n> | <slug>]',
       // {0}=warning text, {1}=command output
       warning: (warning: string, body: string) => `warning: ${warning}\n${body}`
     },

@@ -23,6 +23,13 @@ def _running_venv_site_packages() -> Path:
     return Path(sys.prefix) / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
 
 
+# Windows has no pwd fallback for a scrubbed home: without USERPROFILE (or
+# HOMEDRIVE+HOMEPATH) the env builders raise "Could not determine home
+# directory" before the strip contract under test is exercised (#137196).
+# POSIX keeps resolving the seed HOME instead, so this stays empty there.
+_WIN_HOME_ENV = {k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH") if k in os.environ}
+
+
 def _physical_repo_root(tmp_path: Path) -> Path:
     """Create the physical repo checkout directory for junction tests."""
     physical_root = tmp_path / "physical-home" / "hermes-agent"
@@ -902,7 +909,7 @@ class TestNativeEnvironmentContracts:
             "HOME": "/home/user",
             "PYTHONPATH": os.pathsep.join([venv_sp, "/home/user/my-lib"]),
         }
-        with patch.dict(os.environ, seed, clear=True):
+        with patch.dict(os.environ, {**seed, **_WIN_HOME_ENV}, clear=True):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
@@ -1324,7 +1331,7 @@ class TestPythonhomeSanitized:
             "HOME": "/home/user",
             "PYTHONHOME": "/opt/hermes-venv",
         }
-        with patch.dict(os.environ, seed, clear=True):
+        with patch.dict(os.environ, {**seed, **_WIN_HOME_ENV}, clear=True):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
@@ -1569,7 +1576,7 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _SANE_PATH, _make_run_env
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", list)
         minimal_env = {"PATH": "/some/custom/bin"}
-        with patch.dict(os.environ, minimal_env, clear=True):
+        with patch.dict(os.environ, {**minimal_env, **_WIN_HOME_ENV}, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)
         assert path_entries[0] == "/some/custom/bin"

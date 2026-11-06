@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 __all__ = [
     "CATALOG",
@@ -32,7 +33,8 @@ class BlueprintFillError(ValueError):
 
 
 # Slot types the renderers understand.
-_SLOT_TYPES = frozenset({"time", "enum", "text", "weekdays"})
+_SLOT_TYPES = frozenset({"time", "enum", "text", "url", "weekdays"})
+_URL_MAX_LENGTH = 2048
 
 # Named weekday recurrences -> cron day-of-week field.
 WEEKDAY_PRESETS: dict[str, str] = {
@@ -563,13 +565,29 @@ def list_blueprints() -> list[AutomationBlueprint]:
 
 
 def get_blueprint(key: str) -> Optional[AutomationBlueprint]:
-    """Look up a built-in or (``<plugin>:<key>``) one of the active profile's plugin blueprints."""
+    """Look up a built-in or active profile plugin blueprint by its catalog key."""
     blueprint = _CATALOG_BY_KEY.get(key)
-    if blueprint is None and ":" in (key or ""):
+    if blueprint is None:
         from cron.blueprint_plugins import plugin_blueprints
 
         blueprint = next((b for b in plugin_blueprints() if b.key == key), None)
     return blueprint
+
+
+def _validate_url_slot(name: str, raw: Any) -> str:
+    if not isinstance(raw, str) or len(raw) > _URL_MAX_LENGTH:
+        raise BlueprintFillError(f"{name} must be an HTTP(S) URL up to {_URL_MAX_LENGTH} characters")
+    try:
+        parsed = urlparse(raw)
+    except ValueError as exc:
+        raise BlueprintFillError(f"{name} must be an HTTP(S) URL") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise BlueprintFillError(f"{name} must be an HTTP(S) URL")
+    from tools.url_safety import is_safe_url
+
+    if not is_safe_url(raw):
+        raise BlueprintFillError(f"{name} must be a safe URL")
+    return raw
 
 
 def _slot(
@@ -769,6 +787,8 @@ def fill_blueprint(
             raise BlueprintFillError(
                 f"{s.name}={raw!r} not allowed — one of {', '.join(map(str, s.options))}"
             )
+        if s.type == "url":
+            raw = _validate_url_slot(s.name, raw)
         resolved[s.name] = raw
 
     schedule = _resolve_schedule(blueprint, resolved)

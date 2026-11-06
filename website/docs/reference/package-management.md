@@ -660,9 +660,13 @@ without upload times, it stops with `has no publish time`; use
 
 JavaScript workspace dependencies follow the same rule through
 `minimumReleaseAge` in `pnpm-workspace.yaml` (in minutes: `20160` is 14 days).
-An exemption goes in `minimumReleaseAgeExclude` as an exact `name@version`
-(never a bare name or a glob, which would exempt every future release), with the
-reason as an inline comment on the same line. The update drops an entry
+When a range's only matches are younger than that, `hermes pm update --pnpm`
+stops and prints the entries that would let it through, for example
+`- pele@1.13.0  # <why it cannot wait>` (it lists them by repeating the update
+on a scratch copy of the manifests and lock). To exempt one, add it to
+`minimumReleaseAgeExclude` as that exact `name@version` (never a bare name or a
+glob, which would exempt every future release), with the reason as an inline
+comment on the same line, then run the update again. The update drops an entry
 once the lockfile no longer holds that version, in the same change as the lock.
 pnpm's own `minimumReleaseAgeExcludePrune` stays off, because it would rewrite
 `pnpm-workspace.yaml` on every install, users' builds included. CI enforces the

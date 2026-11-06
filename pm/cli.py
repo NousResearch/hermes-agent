@@ -767,11 +767,10 @@ def _refresh_pnpm_lock() -> int:
     code, tail = _run_live(command, cwd=str(repo_root()), env=env)
     if code != 0:
         print(f"✗ pnpm update failed:\n{tail}")
-        # --no-save turns the "only too-young versions match" case into the
-        # REQUIRES_SAVE error: pnpm would otherwise write the exclude itself.
-        if "ERR_PNPM_NO_MATURE_MATCHING_VERSION" in tail or "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE" in tail:
-            print("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): "
-                  "wait for them to age, or add the exact name@version to minimumReleaseAgeExclude")
+        # --no-save turns "only too-young versions match" into an error that names no package.
+        if pnpm_release_age.is_release_age_failure(tail):
+            picks = pnpm_release_age.immature_picks(str(pnpm.binary), repo_root(), env)
+            print(pnpm_release_age.exclude_hint(picks))
         return 1
     # pnpm's minimumReleaseAgeExcludePrune would fire on every install, user builds included, and
     # rewrite the tracked pnpm-workspace.yaml there; the excludes the new lock no longer holds leave

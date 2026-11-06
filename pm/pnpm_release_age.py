@@ -1,8 +1,74 @@
-"""Release-age exclude upkeep for `hermes pm update --pnpm`."""
+"""Name the picks pnpm's minimumReleaseAge refuses during `hermes pm update --pnpm`.
+
+`pnpm update --no-save` reports a too-young pick only as ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE,
+which names no package (pnpm 12 returns before it formats the violations). The same update with
+saving allowed and no terminal to prompt on lists them as ERR_PNPM_NO_MATURE_MATCHING_VERSION; it
+may write the manifests, so it runs on a scratch copy of the workspace's resolution inputs.
+"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
+
+from pm.filesystem import native
+
+REQUIRES_SAVE = "ERR_PNPM_STRICT_MIN_RELEASE_AGE_REQUIRES_SAVE"
+NO_MATURE = "ERR_PNPM_NO_MATURE_MATCHING_VERSION"
+_VIOLATION = re.compile(r"^\s+(\S+@\S+) was published at ", re.MULTILINE)
+# What a lockfile-only resolution reads at the workspace root besides each project's package.json.
+_ROOT_INPUTS = ("pnpm-workspace.yaml", "pnpm-lock.yaml", ".npmrc", ".pnpmfile.cjs", ".pnpmfile.mjs")
+
+
+def is_release_age_failure(output: str) -> bool:
+    return REQUIRES_SAVE in output or NO_MATURE in output
+
+
+def _run(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess:
+    # No terminal on stdin: pnpm fails with the list instead of prompting to write it.
+    return subprocess.run(command, check=False, cwd=native(cwd), env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def _stage_inputs(pnpm: str, root: Path, scratch: Path, env: dict[str, str]) -> None:
+    listed = _run([pnpm, "list", "--recursive", "--depth", "-1", "--json"], cwd=root, env=env, timeout=120)
+    if listed.returncode != 0:
+        raise RuntimeError(listed.stdout + listed.stderr)
+    for project in json.loads(listed.stdout):
+        relative = Path(project["path"]).resolve().relative_to(root.resolve())
+        (scratch / relative).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / relative / "package.json", scratch / relative / "package.json")
+    for name in _ROOT_INPUTS:
+        if (root / name).is_file():
+            shutil.copy2(root / name, scratch / name)
+
+
+def immature_picks(pnpm: str, root: Path, env: dict[str, str], *, timeout: int = 3600) -> list[str]:
+    """Each `name@version` the recursive lockfile-only update would need excluded; never writes `root`.
+
+    Empty when the scratch copy cannot be made or its update fails for another reason.
+    """
+    with tempfile.TemporaryDirectory(prefix="pm-pnpm-release-age-") as temporary:
+        scratch = Path(temporary)
+        try:
+            _stage_inputs(pnpm, root, scratch, env)
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            print(f"  could not copy the workspace to list the too-young versions: {exc}")
+            return []
+        result = _run([pnpm, "update", "--recursive", "--lockfile-only", "--reporter=ndjson"],
+                      cwd=scratch, env=env, timeout=timeout)
+    picks = set()
+    for line in (result.stdout + "\n" + result.stderr).splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("code") == NO_MATURE:
+            picks.update(_VIOLATION.findall(str(record.get("message", ""))))
+    return sorted(picks)
 
 
 def _locked_versions(lock_text: str) -> dict[str, set[str]]:
@@ -56,3 +122,10 @@ def prune_excludes(workspace_yaml: Path, lock_yaml: Path) -> list[str]:
     return dropped
 
 
+def exclude_hint(picks: list[str]) -> str:
+    if not picks:
+        return ("  a range's only matches are newer than minimumReleaseAge (pnpm-workspace.yaml): wait for them\n"
+                "  to age, or add each exact name@version to minimumReleaseAgeExclude")
+    entries = "\n".join(f"    - {pick}  # <why it cannot wait>" for pick in picks)
+    return ("  only versions newer than minimumReleaseAge (pnpm-workspace.yaml) match: wait for them to age,\n"
+            f"  or add them to minimumReleaseAgeExclude:\n{entries}")

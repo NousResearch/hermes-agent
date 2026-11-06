@@ -264,7 +264,7 @@ def young_release_registry():
 
 
 @pytest.mark.platforms('windows', 'posix')
-def test_pnpm_refresh_prunes_unlocked_excludes_with_their_reasons(monkeypatch, capsys):
+def test_pnpm_refresh_prunes_unlocked_excludes_and_names_too_young_picks(monkeypatch, capsys):
     with pnpm_project(monkeypatch) as ctx, young_release_registry() as registry_url:
         repo, monkeypatch = ctx.repo, ctx.monkeypatch
         monkeypatch.setenv('PATH', str(Path(os.environ.get('SYSTEMROOT', '/')) / 'System32') if os.name == 'nt' else '/usr/bin:/bin')
@@ -281,3 +281,14 @@ def test_pnpm_refresh_prunes_unlocked_excludes_with_their_reasons(monkeypatch, c
         # The unlocked entry leaves with its own reason; the locked one keeps its.
         assert (repo / 'pnpm-workspace.yaml').read_text(encoding='utf-8') == (
             'minimumReleaseAge: 20160\nminimumReleaseAgeExclude:\n  - aging-fixture@1.0.0  # reason for aging\n')
+        capsys.readouterr()
+
+        # A range only a too-young release satisfies: the hint names the entry to add, and the
+        # listing run leaves the project's files as they were.
+        manifest['dependencies']['aging-fixture'] = '^1.1.0'
+        (repo / 'package.json').write_text(json.dumps(manifest), encoding='utf-8')
+        before = {name: (repo / name).read_bytes() for name in ('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml')}
+        assert cli.cmd_update(args) == 1
+        out = capsys.readouterr().out
+        assert '- aging-fixture@1.1.0  # ' in out, out
+        assert {name: (repo / name).read_bytes() for name in before} == before

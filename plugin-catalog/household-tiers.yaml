@@ -1,7 +1,7 @@
 name: household-tiers
 repo: https://github.com/chevlume/household-tiers
-sha: "8beda6412117f7a77faeaf8ad0e104b3cb9b039f"
-description: "One shared Hermes bot for a household: per-person tiers, owner memory kept out of other prompts, bedtime hours with a parent alert, a homework note, and /family."
+sha: "da75c61fc0b834607c729edb24b0fc0d0232b9ee"
+description: "Per-person tool tiers for one shared Hermes bot, with a family preset for curfew, a parent alert, and a homework note: built-in owner memory (MEMORY.md/USER.md) withheld from non-owner prompts; external memory providers and compaction summaries are not filtered."
 maintainer: chevlume
 category: platform
 requires_hermes: ">=0.22.7"
@@ -12,7 +12,9 @@ known_issues:
   - "Shared sessions (a thread with thread_sessions_per_user false, or a group with group_sessions_per_user false) carry replies to other people. Non-owner tiers are refused there by default (shared_threads refuse) and asked to use a direct message."
   - "If household-tiers.json is unreadable, tool calls are blocked and memory blocks are withheld from every request, including the owner's, and every gateway turn gets a short error reply until the file is fixed."
   - "HTTP redirects onto the local network, and DNS names that change address between check and connect, are not re-validated. A non-owner web tool resolves the hostname once with the system resolver and does not fetch the URL. See the README known issues."
-  - "Memory stripping and tool filtering were executed on chat_completions, anthropic_messages, codex_responses, and bedrock_converse payloads from Hermes commit ed1afb08, including multi-paragraph entries joined with §. The strip stops at the memory block; the date line and runtime block stay. A kid message that quotes an entry does not refuse the turn. Gemini conversion was not executed. Relative paths use Hermes _resolve_base_dir and os.path.realpath. Case-folding was tested with a monkeypatched normcase on Linux, not on macOS."
+  - "Memory stripping and tool filtering were executed on chat_completions, anthropic_messages, codex_responses, and bedrock_converse payloads from Hermes commit ed1afb08, including multi-paragraph entries joined with §. The strip stops at the memory block; the date line and runtime block stay. A kid message that quotes an entry does not refuse the turn. Gemini conversion was not executed. Relative paths use ctx.session_cwd() and os.path.realpath. Case-folding was tested with a monkeypatched normcase on Linux, not on macOS."
+  - "Desktop and TUI turns resolve to guest once the process has served a messaging turn. A turn with no sender is then guest, not the local owner."
+  - "The default user tier has no read_file or search_files. A non-owner tier that adds them may only read file_roots (default empty, so no path is allowed). The active profile home, credential directories, and browser profiles are always refused, including a search root that contains them. The check follows a symlink in the tool path. It does not walk an allowed directory for a symlink that points at a blocked folder. file_roots does not apply to other tools, such as terminal."
   - "Context compaction's auxiliary summary (agent/context_compressor.py, MEMORY PROVIDER CONTEXT) does not pass through llm_request. post_compaction is observer-only and does not receive the summary. That path was not executed."
   - "An external memory provider system_prompt_block() (byterover, retaindb, or another) is not removed. A simulated block still reached the kid. Pieces of 8 or more characters from MEMORY.md or USER.md are redacted anywhere in the injected system prompt, including SOUL, AGENTS.md, and skills text when they match."
 capabilities:

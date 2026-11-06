@@ -2,7 +2,7 @@ name: recall
 title: recall
 version: "0.2.0"
 repo: https://github.com/memeshee/hermes-recall
-sha: 8685397ae4c83f9cc75248a8c07a9cfaa8e9c74d
+sha: 421b3206f255405311af611944d535b6e961dade
 description: >-
   Local file recall: a private on-device index of the documents already on the user's machine, with
   a search tool over file content (SQLite FTS5, no network and no embedding service), a
@@ -27,11 +27,11 @@ tier: community
 category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/memeshee/hermes-recall#readme
-image: https://raw.githubusercontent.com/memeshee/hermes-recall/8685397ae4c83f9cc75248a8c07a9cfaa8e9c74d/docs/answer.png
+image: https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/answer.png
 screenshots:
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/8685397ae4c83f9cc75248a8c07a9cfaa8e9c74d/docs/answer.png
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/8685397ae4c83f9cc75248a8c07a9cfaa8e9c74d/docs/refusal.png
-  - https://raw.githubusercontent.com/memeshee/hermes-recall/8685397ae4c83f9cc75248a8c07a9cfaa8e9c74d/docs/title.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/answer.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/refusal.png
+  - https://raw.githubusercontent.com/memeshee/hermes-recall/421b3206f255405311af611944d535b6e961dade/docs/title.png
 platforms: []
 known_issues:
   - Scanned PDFs and images are indexed by filename only - there is no OCR, and recall_stats reports the skip reasons.

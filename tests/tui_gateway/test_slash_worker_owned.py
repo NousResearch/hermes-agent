@@ -23,7 +23,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from tests.waiting import wait_until
+from tests.waiting import pid_gone, wait_until
 from hermes_cli import process_identity
 from tui_gateway import server, slash_worker
 
@@ -275,7 +275,7 @@ def test_a_worker_launched_by_a_pre_update_gateway_still_dies_with_it(tmp_path):
         worker = psutil.Process(int(owner.stdout.readline()))
         owner.kill()
         owner.wait(timeout=10)
-        wait_until(lambda: not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE, timeout=30,
+        wait_until(lambda: pid_gone(worker), timeout=30,
                    what="the legacy-launched worker to exit after its parent's kill -9")
     finally:
         os.close(w)

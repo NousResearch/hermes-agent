@@ -21,7 +21,10 @@ import asyncio
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    import psutil
 
 T = TypeVar("T")
 
@@ -76,16 +79,17 @@ async def async_wait_until(predicate: Callable[[], T], timeout: float = DEFAULT_
         await asyncio.sleep(interval)
 
 
-def pid_gone(pid: int) -> bool:
-    """True once ``pid`` has exited (gone, or a zombie nobody reaped yet).
+def pid_gone(target: int | psutil.Process) -> bool:
+    """True once ``target`` (a pid or a ``psutil.Process``) has exited: gone, or a zombie nobody reaped yet.
 
-    ``pid_exists(pid) and Process(pid)...`` is a check-then-act race: an exited child's zombie can
-    be reaped between the two calls, and ``Process(pid)`` then raises ``NoSuchProcess``.
+    ``is_running() and status()`` / ``pid_exists(pid) and Process(pid)...`` are check-then-act races: an
+    exited child's zombie can be reaped between the two calls, and the second raises ``NoSuchProcess``.
     """
     import psutil
 
     try:
-        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+        proc = target if isinstance(target, psutil.Process) else psutil.Process(target)
+        return not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return True
 

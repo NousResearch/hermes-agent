@@ -278,7 +278,8 @@ _AUTH_COPY: dict[str, str] = {
 CONTENT_POLICY_NEXT_STEPS = (
     "That message has been left out of this conversation, so you're not stuck — just ask "
     "something else and you can keep going. Rewording it, removing any sensitive attachments, "
-    "or switching models with /model can also help."
+    "or switching models with /model can also help. If every message is still refused, the "
+    "conversation itself trips the filter: start a fresh chat."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------

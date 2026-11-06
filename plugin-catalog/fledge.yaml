@@ -1,7 +1,7 @@
 name: fledge
 title: Fledge
 repo: https://github.com/12burb/hermes-fledge
-sha: a7b6c4900828b30f7193beaa97f392d9bd2956b9
+sha: ac65b416d34381acba8642133cfa1d286e052028
 version: "0.1.0"
 description: >-
   Skills have to earn their wings. Before Hermes saves or rewrites a skill, Fledge checks what actually
@@ -29,7 +29,7 @@ description: >-
   and tools.skill_usage (the functions behind /skills pending and hermes curator archive/lock) because no
   public seam exists yet, each guarded; no network, no model calls, no credentials, no shell commands,
   never approves anything. Needs plugins.isolation in_process to tell background-review writes from
-  foreground ones. Measured on 2026-11-05: 143 tests passed on Python 3.14 and 3.11; `hermes plugins validate`
+  foreground ones. Measured on 2026-11-05: 150 tests passed on Python 3.14 and 3.11; `hermes plugins validate`
   passes on Hermes 0.23.0 and 0.22.7 with only the private-import warnings above; live sessions with a real
   model in isolated HERMES_HOMEs (bad-run hold, approve onto probation, grounding after a correction,
   hand-edit proposal and approval prompt, watch mode, 13 clean writes with 0 holds, fail-open under a locked

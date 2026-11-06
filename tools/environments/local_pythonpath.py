@@ -125,6 +125,15 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
+    from pm.environments import install_state_dir, site_packages as pm_site_packages
+    envs_dir = install_state_dir(local._hermes_repo_root) / "environments"
+    if envs_dir.is_dir():
+        for gen_dir in envs_dir.iterdir():
+            gen_venv = gen_dir / "venv"
+            if (gen_venv / "pyvenv.cfg").is_file():
+                gen_sp = pm_site_packages(gen_venv)
+                if not any(_same_path(gen_sp, existing) for existing in result):
+                    result.append(gen_sp)
     return result
 
 

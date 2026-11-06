@@ -373,3 +373,34 @@ def test_managed_uv_helpers_exist():
 
     assert callable(managed_uv.resolve_uv)
     assert callable(managed_uv.ensure_uv)
+
+
+def test_pm_generation_venvs_recognized_across_rebuilds(tmp_path, monkeypatch):
+    """All PM generation venvs under install_state_dir / 'environments' are
+    recognized as Hermes-managed site-packages and bin dirs, even when
+    facts.json points to a newer generation."""
+    from pm import environments as pm_env
+    from tools import mcp_tool_config
+    from tools.environments import local_pythonpath
+
+    state_dir = tmp_path / "install-state"
+    gen_old = state_dir / "environments" / "gen-py311" / "venv"
+    gen_new = state_dir / "environments" / "gen-py314" / "venv"
+    gen_old.mkdir(parents=True)
+    gen_new.mkdir(parents=True)
+    (gen_old / "pyvenv.cfg").write_text("version = 3.11.9\n", encoding="utf-8")
+    (gen_new / "pyvenv.cfg").write_text("version = 3.14.0\n", encoding="utf-8")
+    old_site = pm_env.site_packages(gen_old)
+    new_site = pm_env.site_packages(gen_new)
+    old_bin = pm_env.venv_bin_dir(gen_old)
+    old_site.mkdir(parents=True, exist_ok=True)
+    new_site.mkdir(parents=True, exist_ok=True)
+    old_bin.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pm_env, "install_state_dir", lambda _root=None: state_dir)
+    monkeypatch.setattr(local_pythonpath, "_validated_runtime_venv", lambda _env: gen_new)
+
+    sites = local_pythonpath._get_hermes_site_packages({})
+    assert any(local_pythonpath._same_path(old_site, s) for s in sites)
+    assert any(local_pythonpath._same_path(new_site, s) for s in sites)
+    assert mcp_tool_config._is_hermes_managed_bin_dir(str(old_bin)) is True

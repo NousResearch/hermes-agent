@@ -1784,7 +1784,7 @@ profile file, so a client whose gateway runs on another machine calls it where t
 
 | Option | Description |
 |--------|-------------|
-| `--out PATH` | File to write (required). Parent directories are created. The image is extracted into a temporary file in the same directory and then renamed onto `PATH`, so on any failure an existing `PATH` is left as it was. |
+| `--out PATH` | File to write (required). Parent directories are created. The image is extracted into a temporary file in the same directory and then renamed onto `PATH`, so on any failure an existing `PATH` is left as it was. An existing file keeps its permission bits (a 0600 temp file stays private); a symlink at `PATH` is replaced by a regular file. |
 | `--json` | Print one JSON object on stdout. Without it, success prints the path and failure prints one stderr line. |
 
 | Exit code | `reason` | Meaning |

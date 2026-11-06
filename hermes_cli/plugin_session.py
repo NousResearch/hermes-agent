@@ -48,3 +48,46 @@ def context_surface(manager) -> str:
 def context_cwd(manager) -> str:
     """``session_cwd()`` for a plugin context: the classic CLI process keeps its launch directory."""
     return os.getcwd() if manager._cli_ref is not None else session_cwd()
+
+
+class PluginSessionContextMixin:
+    """Public task-local session and cancellation helpers for PluginContext."""
+
+    def session_key(self) -> str:
+        """The calling conversation's routing key, or ``""`` outside a session.
+
+        Capture this in a hook or tool before starting background work, then pass it
+        to ``inject_message(session_key=...)``. A session id is not a routing key.
+        """
+        from gateway.session_context import bound_session_key
+        return bound_session_key()
+
+    def session_cwd(self) -> str:
+        """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
+        from hermes_cli.plugin_session import context_cwd
+        return context_cwd(self._manager)
+
+    def session_supports_async_delivery(self) -> bool:
+        """Whether the calling surface can receive input after its current turn.
+
+        This is a surface capability, not permission to inject a message. Stateless
+        API and finite automation contexts can explicitly opt out of delivery.
+        """
+        from gateway.session_context import async_delivery_supported
+        from gateway.session_finite import finite_turn_required
+        return async_delivery_supported() and finite_turn_required() is not True
+
+    def is_interrupted(self) -> bool:
+        """Whether the originating tool worker was interrupted, including in a plugin host.
+
+        Long waits should poll this on the executing handler and release any
+        pending external wait before returning. A fresh background task has no
+        authority to borrow another worker's cancellation state.
+        """
+        from tools.interrupt import is_interrupted
+        return is_interrupted()
+
+    def session_surface(self) -> str:
+        """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
+        from hermes_cli.plugin_session import context_surface
+        return context_surface(self._manager)

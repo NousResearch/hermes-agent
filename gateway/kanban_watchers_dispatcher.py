@@ -42,6 +42,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    default_max_runtime_seconds: int = 0
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -92,6 +93,24 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
                        "disabling stale detection", raw_stale)
         stale_timeout_seconds = 0
 
+    # Wall-clock cap for a card that carries no max_runtime_seconds of its own. The
+    # stale detector cannot see a wedged tool call: the worker wrapper heartbeats every
+    # 60 s while it hangs, so last_heartbeat_at stays fresh (4 h 59 measured on
+    # 2026-11-05). 0 disables, which keeps every existing install unchanged.
+    raw_default_runtime = kanban_cfg.get("default_max_runtime_seconds", 0)
+    try:
+        default_max_runtime_seconds = max(0, int(raw_default_runtime or 0))
+    except (TypeError, ValueError):
+        logger.warning("kanban dispatcher: invalid kanban.default_max_runtime_seconds=%r; "
+                       "disabling the default runtime cap", raw_default_runtime)
+        default_max_runtime_seconds = 0
+    if default_max_runtime_seconds:
+        logger.info(
+            "kanban dispatcher: default_max_runtime_seconds=%d (cards without their own "
+            "max_runtime_seconds are terminated past it)",
+            default_max_runtime_seconds,
+        )
+
     # Fallback profile for tasks created without an assignee (e.g. via the
     # dashboard). Empty (the schema default) keeps skipping them.
     # When set, the dispatcher applies it to unassigned ready tasks instead of skipping them indefinitely
@@ -115,6 +134,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Wall-clock cap for cards that carry none: the only guard that survives a wedged
+        # tool call, whose wrapper heartbeats keep the stale detector asleep. 0 = off.
+        default_max_runtime_seconds=default_max_runtime_seconds,
     )
 
 

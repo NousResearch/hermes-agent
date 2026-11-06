@@ -1928,6 +1928,15 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
+        # Wall-clock cap (seconds) applied to a running card that carries no max_runtime_seconds of
+        # its own; the worker is SIGTERMed past it, the run closes 'timed_out' and the card is
+        # re-queued. This is the only guard that ignores heartbeats, so it is what catches a tool
+        # call that hangs: the wrapper heartbeats every 60 s while the call is stuck, which keeps
+        # last_heartbeat_at fresh and both dispatch_stale_timeout_seconds and the 1 h heartbeat gap
+        # asleep (measured 2026-11-05: 4 h 59 wedged inside one manage_connections call, 312
+        # heartbeats). A card's own max_runtime_seconds overrides it. 0 = off, the historical
+        # behaviour: only cards that ask for a cap are bounded.
+        "default_max_runtime_seconds": 0,
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.

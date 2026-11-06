@@ -119,6 +119,37 @@ def test_client_direct_gate_forces_relay(voice_home, monkeypatch):
     assert "client_direct" in result["stt"]["reason"]
 
 
+@pytest.mark.parametrize("value", [0, [], "maybe"])
+def test_client_direct_unknown_values_relay(voice_home, monkeypatch, value):
+    voice_home({"voice": {"client_direct": value}, "stt": {"provider": "groq"}})
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")
+    result = _resolve()
+    assert result["stt"]["mode"] == "relay"
+    assert "client_direct" in result["stt"]["reason"]
+
+
+@pytest.mark.parametrize("value", [1, "yes", " On "])
+def test_client_direct_truthy_values_stay_on(voice_home, value):
+    voice_home({"voice": {"client_direct": value}})
+    from tools.voice_client_config import _client_direct_enabled
+
+    assert _client_direct_enabled() is True
+
+
+def test_client_direct_relays_when_config_cannot_be_read(voice_home, monkeypatch):
+    voice_home({"stt": {"provider": "groq"}})
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")
+    import hermes_cli.config
+
+    def unreadable():
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(hermes_cli.config, "load_config", unreadable)
+    result = _resolve()
+    assert result["stt"]["mode"] == "relay"
+    assert "client_direct" in result["stt"]["reason"]
+
+
 def test_stt_disabled_relays(voice_home, monkeypatch):
     voice_home({"stt": {"enabled": False, "provider": "groq"}})
     monkeypatch.setenv("GROQ_API_KEY", "gsk_env456")

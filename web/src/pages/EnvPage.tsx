@@ -16,7 +16,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { EnvVarInfo } from "@/lib/api";
+import type { EnvPropagationRow, EnvVarInfo } from "@/lib/api";
 import { removeDeletedEnvVarFromState } from "@/lib/env-state";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -40,6 +40,21 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+
+/**
+ * English fallbacks for the multi-profile key-propagation prompt. The catalog keys are
+ * OPTIONAL in `Translations` on purpose: a new string must not force 17 locale files to
+ * change before it can ship, and every non-English locale inherits these until translated.
+ */
+const PROPAGATION_FALLBACK = {
+  offer: "Update {count} other profile(s) that still have the old key?",
+  hint: "Each profile keeps its own .env. Only profiles that already had this key are touched, and a failed profile never stops the others.",
+  apply: "Update profiles",
+  dismiss: "Not now",
+  done: "{count} other profile(s) updated",
+  failed: "{updated} updated, {failed} failed — see details",
+  title: "Other profiles",
+};
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -613,6 +628,17 @@ export default function EnvPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  /** Opt-in prompt: siblings still holding an older value for ``key``. */
+  const [propagationOffer, setPropagationOffer] = useState<{
+    key: string;
+    value: string;
+    count: number;
+  } | null>(null);
+  /** Per-profile outcomes of the last fan-out the user approved. */
+  const [propagationResults, setPropagationResults] = useState<{
+    key: string;
+    results: EnvPropagationRow[];
+  } | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
   const { t } = useI18n();
@@ -682,6 +708,20 @@ export default function EnvPage() {
     };
   }, [vars, sections, setAfterTitle]);
 
+  /** Dry run: enumerate the sibling profiles still holding an older value. No writes. */
+  const offerPropagationToSiblings = async (key: string, value: string) => {
+    try {
+      const preview = await api.setEnvVar(key, value, "dry_run");
+      const pending =
+        preview.propagation?.results.filter((row) => row.status === "pending") ?? [];
+      if (pending.length > 0) {
+        setPropagationOffer({ key, value, count: pending.length });
+      }
+    } catch {
+      // The offer is advisory: a failed preview must never surface as a save failure.
+    }
+  };
+
   const handleSave = async (key: string) => {
     const value = edits[key];
     if (!value) return;
@@ -711,8 +751,44 @@ export default function EnvPage() {
         return n;
       });
       showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      // The save above rotated THIS profile only. Ask the backend — read-only — whether any
+      // sibling profile still holds an older value, and offer (never perform) the fan-out.
+      void offerPropagationToSiblings(key, value);
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${errorMessage(e)}`, "error");
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  /** The user said yes: rotate the sibling profiles too and report every outcome. */
+  const applyPropagationToSiblings = async () => {
+    const offer = propagationOffer;
+    if (!offer) return;
+    setPropagationOffer(null);
+    setSaving(offer.key);
+    try {
+      const resp = await api.setEnvVar(offer.key, offer.value, "apply");
+      const propagation = resp.propagation;
+      setPropagationResults({
+        key: offer.key,
+        results: propagation?.results ?? [],
+      });
+      const failed = propagation?.failed ?? 0;
+      const updated = propagation?.updated ?? 0;
+      showToast(
+        failed > 0
+          ? (t.env.propagationFailed ?? PROPAGATION_FALLBACK.failed)
+              .replace("{updated}", String(updated))
+              .replace("{failed}", String(failed))
+          : (t.env.propagationDone ?? PROPAGATION_FALLBACK.done).replace(
+              "{count}",
+              String(updated),
+            ),
+        failed > 0 ? "error" : "success",
+      );
+    } catch (e) {
+      showToast(`${t.config.failedToSave} ${offer.key}: ${errorMessage(e)}`, "error");
     } finally {
       setSaving(null);
     }
@@ -897,6 +973,73 @@ export default function EnvPage() {
     <div className="flex flex-col gap-6">
       <PluginSlot name="env:top" />
       <Toast toast={toast} />
+
+      {propagationOffer && (
+        <Card className="border-primary/40">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-medium">
+                <code className="font-mondwest">{propagationOffer.key}</code>{" "}
+                {(t.env.propagationOffer ?? PROPAGATION_FALLBACK.offer).replace(
+                  "{count}",
+                  String(propagationOffer.count),
+                )}
+              </p>
+              <p className="text-xs text-text-tertiary">
+                {t.env.propagationHint ?? PROPAGATION_FALLBACK.hint}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button size="sm" onClick={applyPropagationToSiblings} disabled={saving !== null}>
+                {t.env.propagationApply ?? PROPAGATION_FALLBACK.apply}
+              </Button>
+              <Button
+                size="sm"
+                outlined
+                onClick={() => setPropagationOffer(null)}
+                disabled={saving !== null}
+              >
+                {t.env.propagationDismiss ?? PROPAGATION_FALLBACK.dismiss}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {propagationResults && (
+        <Card>
+          <CardContent className="flex flex-col gap-2 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-sm font-medium">
+                {t.env.propagationResultTitle ?? PROPAGATION_FALLBACK.title} —{" "}
+                <code className="font-mondwest">{propagationResults.key}</code>
+              </p>
+              <Button size="sm" outlined onClick={() => setPropagationResults(null)}>
+                {t.common.close}
+              </Button>
+            </div>
+            <ul className="flex flex-col gap-1">
+              {propagationResults.results.map((row) => (
+                <li key={row.home} className="flex flex-wrap items-baseline gap-2">
+                  <Badge tone={row.status === "updated" ? "success" : "outline"}>
+                    {row.status}
+                  </Badge>
+                  <span className="font-mondwest text-xs">{row.profile}</span>
+                  <span
+                    className={
+                      row.status === "failed"
+                        ? "text-xs text-destructive"
+                        : "text-xs text-text-tertiary"
+                    }
+                  >
+                    {row.reason}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <DeleteConfirmDialog
         open={keyClear.isOpen}

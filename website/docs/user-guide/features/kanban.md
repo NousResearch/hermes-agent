@@ -6,7 +6,7 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 # Kanban — Multi-Agent Profile Collaboration
 
-> **Want a walkthrough?** Read the [Kanban tutorial](./kanban-tutorial) — four user stories (solo dev, fleet farming, role pipeline with retry, circuit breaker) with dashboard screenshots of each. This page is the reference; the tutorial is the narrative.
+> **Want a walkthrough?** Read the [Kanban tutorial](./kanban-tutorial) — three agent-composition stories (solo dev, fleet farming, role pipeline with retry) plus one dispatcher-reliability walkthrough (circuit breaker and crash recovery), with dashboard screenshots of each. This page is the reference; the tutorial is the narrative.
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 

@@ -1026,6 +1026,19 @@ def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now
         capture_transition_locked(conn, record["room_id"])
 
 
+def drop_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], run_id: str) -> bool:
+    """Forget one attempt's receipt, only while it still names *run_id*: the member gateway
+    answered that it holds no such run (its admission was refused after the receipt was saved)."""
+    with _transaction(db_path, immediate=True) as conn:
+        dropped = conn.execute(
+            f"DELETE FROM hosted_room_remote_runs WHERE {_REMOTE_RUN_WHERE} AND run_id=?",
+            (*_remote_run_identity(record), run_id)).rowcount
+        if dropped:
+            from gateway.hosted_room_work_records import capture_transition_locked
+            capture_transition_locked(conn, record["room_id"])
+    return bool(dropped)
+
+
 def list_remote_run_receipts(
     db_path: DbPath, *, room_id: str | None = None, target_profile: str | None = None, session_id: str | None = None
 ) -> list[dict[str, Any]]:

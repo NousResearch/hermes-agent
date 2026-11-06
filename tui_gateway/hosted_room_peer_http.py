@@ -667,6 +667,20 @@ class PeerRunsHTTPClient:
         return self.stop_receipt(
             task_id=checked.task_id, execution_generation=checked.execution_generation, grant=grant)
 
+    def forget_receipt(self, *, task_id: str, execution_generation: int, run_id: str) -> bool:
+        """Drop this attempt's receipt while it still names *run_id*, which its member gateway
+        answered it does not hold (an admission refused after Discard found its reservation)."""
+        key = (str(task_id), int(execution_generation))
+        if str((self._runs.get(key) or {}).get("run_id") or "") == run_id:
+            self._runs.pop(key, None)
+        self._status_cache.pop(run_id, None)
+        self._terminal_receipts.discard(key)
+        if self.receipt_db_path is None or self._room_scope is None:
+            return True
+        from gateway import hosted_rooms
+        return hosted_rooms.drop_remote_run_receipt(self.receipt_db_path, record={
+            **self._room_scope, "task_id": key[0], "execution_generation": key[1]}, run_id=run_id)
+
     def stop_receipt(
         self, *, task_id: str, execution_generation: int, grant: str) -> Mapping[str, Any] | None:
         """Stop the exact durable remote run after a home restart."""

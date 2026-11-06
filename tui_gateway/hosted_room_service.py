@@ -1022,9 +1022,26 @@ class HostedRoomService:
             result = stop(task_id=task["identity"].task_id,
                           execution_generation=int(task["execution_generation"]), grant=route.grant)
         except PeerRunsHTTPError as exc:
+            if exc.error_code == "run_not_found" and self._close_missing_peer_run(room_id, task, client):
+                return True
             self.runtime._record_error(f"stop of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
             return False
         return result is not None and str(result.get("status") or "") in _PEER_RUN_ENDED
+
+    def _close_missing_peer_run(self, room_id: str, task: Mapping[str, Any], client: Any) -> bool:
+        """The member gateway holds no run under this home's receipt: its admission was refused
+        after Discard found the reservation. Drop that receipt and ask by key again, which closes
+        the key when nothing ran under it (``close_peer_admission``), never replaying the turn."""
+        receipt, forget = self.peer_admission_receipt(room_id, task), _hook(client, "forget_receipt")
+        if receipt is None or forget is None:
+            return False
+        forget(task_id=task["identity"].task_id, execution_generation=int(task["execution_generation"]),
+               run_id=str(receipt["run_id"]))
+        try:
+            return self.close_peer_admission(HostedRoomBinding(room_id, *self._owned_authority(room_id)), task)
+        except (PeerRunsHTTPError, RuntimeError) as exc:
+            self.runtime._record_error(f"close of deferred task {task['identity'].task_id} is unconfirmed: {exc}")
+            return False
 
     def retry_room_task(
         self, room_id: str, *, task_id: str, member_id: str | None = None,

@@ -141,9 +141,8 @@ def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
     try:
-        from hermes_cli.version_info import get_code_identity
-        sha = (get_code_identity(refresh=True) or {}).get("sha")
-        return str(sha) if sha else None
+        from hermes_cli.version_info import read_checkout_sha
+        return read_checkout_sha()
     except Exception:
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
 
@@ -701,10 +700,11 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
     # Property reads need no manage-units privileges: narrow sudoers may permit
     # restart/reset-failed but deny show. Keep the same user/system manager scope.
-    from hermes_cli.update_cmd_fleet_unit_budget import systemd_restart_timeout
-    timeout = systemd_restart_timeout(scope_cmd if scope_cmd is not None else manage_cmd, svc_name)
+    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, systemd_restart_timeout
+    scope_cmd = scope_cmd if scope_cmd is not None else manage_cmd
+    timeout = systemd_restart_timeout(scope_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
-    return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
+    return run_unit_job(manage_cmd, scope_cmd, "restart", svc_name, timeout=timeout)
 
 
 def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
@@ -715,23 +715,23 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
     if home is not None and home_in_update_scope(home):
         return True
-    print(describe_skipped_runtime("systemd unit", svc_name, home))
+    announce_skipped_runtime("systemd unit", svc_name, home)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
     if not quiet:
         for pid, home in foreign:
-            print(describe_skipped_runtime("gateway process", f"PID {pid}", home))
+            announce_skipped_runtime("gateway process", f"PID {pid}", home)
     return [pid for pid in pids if pid in keep or pid in owned]
 
 
@@ -1268,17 +1268,15 @@ def _restart_one_systemd_gateway_unit(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
 
     if _graceful_ok:
-        from hermes_cli.update_cmd_fleet_unit_budget import service_restart_sec, systemd_restart_timeout
+        from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
         # ``Restart=always`` respawns only after RestartSec (60s in our unit; dead time for a
         # voluntary restart). ``reset-failed`` + ``start`` skips it (~1-3s); if RestartSec already
         # elapsed, ``start`` is a no-op and we fall through to the poll. Needs manage-units
         # privileges; without them auto-restart still fires after RestartSec.
         if _manage_cmd is not None:
             _systemctl(_manage_cmd + ["reset-failed", svc_name], timeout=10)
-            _systemctl(
-                _manage_cmd + ["start", svc_name],
-                timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True),
-            )
+            run_unit_job(_manage_cmd, scope_cmd, "start", svc_name,
+                         timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True))
             if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
                 restarted_services.append(svc_name)
                 return
@@ -1469,6 +1467,11 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: Units the restart phase itself could not restart. Verification warns about the ones its fleet
+    #: probe does not prove current: a timed-out ``systemctl`` call can still bring its unit up. Not
+    #: ``failed_or_stale_units``: the Windows resume merge and an aborted phase add to that list, and
+    #: neither gets this systemctl/launchctl advice.
+    unrestarted_units: list = field(default_factory=list)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1689,6 +1692,9 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     every planned gateway is verifiably covered.
     """
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_stage import publish_stage
+
+    publish_stage("Restarting Hermes services")  # also after a failed build: the code is committed
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
     # can read it even if the phase raises early. ``pre_restart_gateway_pids`` stays empty
     # until we are about to stop/drain, so an early exception has nothing to fail closed on,
@@ -1750,7 +1756,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         if out.failed_or_stale_units:
             # Owed restart (C3): verification records the follow-up; the /update marker stays committed.
             out.incomplete = True
-        _warn_incomplete_gateway_fleet_restart(out.failed_or_stale_units)
+        out.unrestarted_units = list(out.failed_or_stale_units)
         out.record_receipt()
         _force_kill_stuck_gateways(out.killed_pids)
 

@@ -178,3 +178,22 @@ def test_timestamps_toggle_persists_display_timestamps(tmp_path):
                 assert _display(home)['timestamps'] is False
                 assert (await rpc(ws, 'config.set', key='timestamps', value='maybe'))['error']['message'] == 'invalid_params'
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_daybreak_is_a_profile_switch_read_back_and_validated(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                assert (await rpc(ws, 'config.get', key='daybreak'))['result'] == {'value': False}
+                assert (await rpc(ws, 'config.set', key='daybreak', value='on'))['result'] == {
+                    'key': 'daybreak', 'value': True}
+                agent_cfg = yaml.safe_load((home / 'config.yaml').read_text())['agent']
+                assert agent_cfg['daybreak'] is True
+                assert (await rpc(ws, 'config.get', key='daybreak'))['result'] == {'value': True}
+                assert (await rpc(ws, 'config.set', key='daybreak', value='maybe')).get(
+                    'error', {}).get('message') == 'invalid_params'
+                assert (await rpc(ws, 'config.set', key='daybreak', value=False))['result']['value'] is False
+                assert (await rpc(ws, 'config.get', key='daybreak'))['result'] == {'value': False}
+                assert not admissions(home) and not peer.requests
+        asyncio.run(probe())

@@ -26,9 +26,9 @@ _CONFIG = ('model:\n  default: frozen-model\n  provider: custom\n  base_url: htt
 
 
 def _owner(profile_id, transport='socket'):
-    from gateway.session_contract import Principal
-    return Principal('owner', str(profile_id),
-                     frozenset({'session:create', 'session:read', 'session:control'}), transport)
+    from gateway.session_contract import SessionActor
+    return SessionActor('owner', str(profile_id),
+                        frozenset({'session:create', 'session:read', 'session:control'}), transport)
 
 
 def _actor(authority, transport='socket'):

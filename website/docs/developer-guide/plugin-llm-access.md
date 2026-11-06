@@ -329,6 +329,38 @@ invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's
 tasks. Omit `task=` (or use `"auto"`) to keep the active main provider/model.
 
+#### From the plugin's frontend: `llm.oneshot`
+
+A plugin's frontend (a Desktop page, a chat frontend attached to the
+gateway) runs the same task over the gateway's `llm.oneshot` JSON-RPC
+method, without a Python subprocess:
+
+```json
+{"method": "llm.oneshot", "params": {
+  "task": "classifier",
+  "instructions": "Classify the ticket.",
+  "input": "<ticket text>",
+  "schema": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"]},
+  "redact": true
+}}
+```
+
+- `task` is a built-in auxiliary task or one a loaded plugin registered; it
+  resolves through `auxiliary.<task>` like `ctx.llm`. An unknown key is
+  refused (`invalid_params`, `field: task`) instead of running on the main
+  model. Omitted, it is `title_generation`.
+- `schema` (a JSON Schema object) asks for JSON through the prompt and the
+  provider's JSON mode. The reply is `{"text": ..., "parsed": <value>}`. An
+  answer that is not JSON, or does not match the schema, is an error. An
+  install without the `jsonschema` package (not a core dependency) refuses
+  a `schema` request before the model is called.
+- `redact: true` masks secrets in `input` with the agent's redactor before
+  the model sees it.
+- A `session_id` lends that session's model to a task that does not name
+  its own: when `auxiliary.<task>.provider` is `auto` (the default). A task
+  configured with an explicit provider or model keeps it; explicit settings
+  win over the session's route, as for `ctx.llm`.
+
 #### Inheriting a built-in slot
 
 `inherit_from` names a built-in auxiliary task (`compression`, `mcp`,
@@ -518,6 +550,95 @@ don't have to:
 * **Cost.** Every call runs against the user's paid provider. Don't
   loop on `complete()` for every gateway message without thinking
   about token spend.
+
+## Asking the session's own agent (`ctx.side_question`)
+
+`ctx.llm` runs a fresh call that knows only what the plugin sends it.
+`ctx.side_question` asks the session's *own* agent instead: the same
+model, the same system prompt (memory included) and the whole
+conversation so far, plus one question from the plugin. It replays
+the request the turn just sent, so the provider's prompt cache is
+still warm and the call is mostly cache reads.
+
+Reach for it when the answer depends on the conversation itself:
+suggesting the user's next prompt, labelling what the turn did,
+deciding whether the session needs a follow-up. For anything that
+doesn't need the session, use `ctx.llm`: it is cheaper and has no
+lease rules.
+
+```python
+import threading
+
+
+def register(ctx):
+    def on_post_llm_call(**kwargs):
+        token = kwargs.get("side_question_token")
+        if token is None:  # no consented plugin loaded, or not a user turn
+            return
+        # post_llm_call is time-bounded: never wait for the model inside the hook.
+        threading.Thread(target=_suggest, args=(token,), daemon=True).start()
+
+    def _suggest(token):
+        answer = ctx.side_question(
+            token, "Suggest the user's most likely next prompt in one short line.")
+        if answer:
+            ctx.state.set("next_prompt", answer)
+
+    ctx.register_hook("post_llm_call", on_post_llm_call)
+```
+
+The plugin must declare the capability in `plugin.yaml` and the user
+must grant it (the consent screen shows: "Ask your agent a short
+question after each turn. It sees the whole session, including
+memory, and spends your main model's tokens."):
+
+```yaml
+capabilities:
+  - llm.side_question
+```
+
+### Lease rules
+
+* `post_llm_call` receives `side_question_token` (a string) when at
+  least one loaded plugin holds the capability, else `None`. Cron runs
+  and delegated subagent turns always get `None`: nobody is waiting on
+  them, so a side question would only spend tokens.
+* **One attempt per turn, shared by every plugin.** Every plugin's
+  hook gets the same token; the first `ctx.side_question` call spends
+  it, whether it succeeds or not. A plugin without the capability gets
+  `None` back and does not spend it.
+* The token expires after **60 seconds**, and as soon as the session
+  starts its next turn.
+* The token belongs to the profile whose turn issued it; a plugin
+  context of another profile gets `None` and does not spend it.
+* `prompt` is a non-empty string of at most **4096 characters**.
+* `timeout` defaults to **15 seconds** and is capped at 60. It covers
+  the whole call, including setting up the request.
+
+### What you get back
+
+The text of the agent's reply, or `None`. `None` means the call was
+refused or failed: a Mixture-of-Agents runtime, an agent-as-provider
+runtime (ACP, external-process providers, the Codex app-server), a
+session whose model changed since the turn (a voice-chat turn routed to
+`auxiliary.voice_chat` switches back right after it), a request that
+carries provider-executed (server-side) tools, a timeout, a provider
+error, or an empty reply. There are no retries
+and no fallback model.
+
+The call never runs a tool (tool calls in the reply are dropped) and
+never writes to the transcript. Its tokens are billed to the session
+whose turn issued the token (even if the session id has since rotated)
+and recorded in its usage as `plugin_side_question:<plugin id>`, apart
+from `/btw`'s `side_question`. You can't pick the
+model, tools, system prompt or output length: changing any of them
+would miss the warm cache. Ask for brevity in the prompt.
+
+Observability plugins see the call as an auxiliary call:
+`pre_auxiliary_call` / `post_auxiliary_call` fire with
+`aux_task="plugin_side_question"` and `plugin_id` set to the asking
+plugin, and the turn-scoped `pre_api_request` /
+`post_api_request` do not fire for it.
 
 ## Where this fits in the plugin surface
 

@@ -43,6 +43,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('isTapbackDoubleClick', () => {
@@ -67,6 +70,28 @@ describe('isTapbackDoubleClick', () => {
 })
 
 describe('double-click to heart an assistant message', () => {
+  it('leaves touch double-tap selection intact instead of claiming it as a reaction', async () => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query.includes('pointer'),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn()
+      }))
+    )
+    $reactionsEnabled.set(true)
+    render(<Harness />)
+    const text = await screen.findByText('done')
+    const range = document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()!.addRange(range)
+    fireEvent.doubleClick(text, { detail: 2 })
+    expect(window.getSelection()!.toString()).toBe('done')
+    expect($localReactions.get()['assistant-1']).toBeUndefined()
+    window.getSelection()!.removeAllRanges()
+  })
   it('hearts the message, and a second double-click retracts it', async () => {
     $reactionsEnabled.set(true)
     render(<Harness />)

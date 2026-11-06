@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
 import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { isTimeoutError } from '@/lib/with-timeout'
 import { type ErrorToastCategory, recordFriction } from '@/store/desktop-metrics'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
@@ -109,6 +110,10 @@ export const RECOVERY_ACTIONS = {
     label: translateNow('notifications.updateHermes'),
     onClick: () => void import('@/store/updates').then(({ openUpdatesWindow }) => openUpdatesWindow())
   }),
+  reload: (): NotificationAction => ({
+    label: translateNow('commandCenter.reloadWindow'),
+    onClick: () => window.location.reload()
+  }),
   restartHermes: (): NotificationAction => ({
     label: translateNow('notifications.actions.restartHermes'),
     onClick: requestBackendRestart
@@ -204,7 +209,8 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     category: 'rpc_out_of_sync',
     test: msg => isOutOfSyncRpcParams(msg),
     summarize: () => translateNow('notifications.errors.rpcOutOfSync'),
-    action: () => RECOVERY_ACTIONS.openUpdates()
+    // A Webapp served by Hermes Cloud has no updater: reloading picks up the agent's new app.
+    action: () => (servedByHermesCloud() ? RECOVERY_ACTIONS.reload() : RECOVERY_ACTIONS.openUpdates())
   },
   {
     category: 'restart_required',
@@ -249,6 +255,19 @@ function staleRewindRefusal(error: unknown): 'compacted' | 'stale' | null {
   return typeof detail === 'string' && detail.startsWith('compacted:') ? 'compacted' : 'stale'
 }
 
+// The owner refuses every model pick and turn on a chat whose launch API key changed or was removed
+// (gateway/session_policy_credentials.py): `data.reason` on an RPC error, or the bare code a deferred
+// pick's refusal event carries.
+function isLaunchCredentialsRefusal(error: unknown): boolean {
+  const data = error && typeof error === 'object' ? (error as { data?: { reason?: unknown } }).data : undefined
+
+  if (data && typeof data === 'object' && data.reason === 'launch_credentials_unavailable') {
+    return true
+  }
+
+  return error instanceof Error && error.message.trim() === 'launch_credentials_unavailable'
+}
+
 // Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
 export function readableError(
@@ -261,6 +280,19 @@ export function readableError(
     const key = staleRewind === 'compacted' ? 'compactedTurnUnavailable' : 'staleTurnUnavailable'
 
     return { message: translateNow(`promptNotices.${key}`), category: 'other' }
+  }
+
+  if (isLaunchCredentialsRefusal(error)) {
+    // Same sentence and button as the chat's error card: a model pick, retry or option change on
+    // this chat repeats the refusal until the user starts a new one.
+    return {
+      message: translateNow('assistant.thread.errorCodes.launch_credentials_unavailable.body'),
+      action: {
+        label: translateNow('assistant.thread.errorStartNewSession'),
+        onClick: () => void import('@/store/profile').then(({ requestFreshSession }) => requestFreshSession())
+      },
+      category: 'other'
+    }
   }
 
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback

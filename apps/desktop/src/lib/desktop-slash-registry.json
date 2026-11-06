@@ -89,6 +89,7 @@
   "/resume": null,
   "/retry": null,
   "/review": null,
+  "/rewind": "terminal",
   "/rollback": null,
   "/s": null,
   "/save": null,

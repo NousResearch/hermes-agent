@@ -33,8 +33,8 @@ def register(ctx):
 
     def switch(raw_args, session_key=""):
         names = [b["name"] for b in ctx.delegation_backends.list_backends()]
-        ctx.delegation_backends.set_session_backend(session_key, raw_args.strip())
-        return f"{os.getpid()} {','.join(names)} -> {ctx.delegation_backends.get_session_backend(session_key)}"
+        ctx.delegation_backends.set_global_backend(raw_args.strip(), session_key=session_key, apply_now=True)
+        return f"{os.getpid()} {','.join(names)}"
     ctx.register_command("deleg-switch", switch)
 '''
 
@@ -80,15 +80,17 @@ def test_hosted_delegation_provider_extends_schema_and_routes_from_the_host(tmp_
         assert err is None and "b is closed" in refused[0].error
         assert json.dumps(params) == json.dumps(schema_extension(config)[0])
 
-        # The /delegation seam acts on THIS process's sessions (ctx.delegation_backends is a host remote facade).
-        from agent.delegation_backends import get_session_backend, set_session_backend
+        # The /delegation seam acts on THIS process (ctx.delegation_backends is a host remote facade): its
+        # config.yaml, and the --now rebuild THIS process's session runs at its next turn.
+        from agent import delegation_backends
         from hermes_cli.plugin_command_dispatch import invoke_plugin_command
         out = invoke_plugin_command(plugins_mod.get_plugin_command_handler("deleg-switch"), "default",
                                     session_key="chat-a")
         pid, listed = out.split(" ", 1)
-        assert int(pid) != os.getpid() and listed == "default,hosted-map -> default"
-        assert get_session_backend("chat-a") == "default"
-        set_session_backend("chat-a", None)
+        assert int(pid) != os.getpid() and listed == "default,hosted-map"
+        assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "default"
+        assert delegation_backends._rebuild_requests == {"chat-a"}
+        delegation_backends._rebuild_requests.clear()
     finally:
         manager.unload()
         manager._plugin_host().shutdown()

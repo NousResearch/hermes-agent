@@ -29,10 +29,10 @@ async def test_observer_arriving_after_a_fast_settle_returns_the_committed_resul
 
 @pytest.mark.asyncio
 async def test_observer_arriving_after_a_cancel_reports_the_cancellation(api, owner):
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     admitted = admit_api_turn(api, session_id='gone', user_message='hello', conversation_history=[])
     authority, ref, row = admitted
-    actor = Principal('api', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'api-run:x')
+    actor = SessionActor('api', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'api-run:x')
     await authority.cancel_queued(actor, ref, row['admission_id'])
     result, usage = await asyncio.wait_for(observe_api_turn(admitted), 5)
     assert result == {'final_response': '', 'interrupted': True, 'completed': False} and usage == {}

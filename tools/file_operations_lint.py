@@ -243,16 +243,11 @@ class LintMixin:
         ))
 
     def _lsp_local_only(self) -> bool:
-        """True iff wired to a local backend. LSP servers run on the host and
-        can't see files inside Docker/Modal/SSH/Daytona sandboxes."""
-        env = getattr(self, "env", None)  # tests may build via __new__ without __init__
-        if env is None:
-            return False
-        try:
-            from tools.environments.local import LocalEnvironment
-        except Exception:
-            return False
-        return isinstance(env, LocalEnvironment)
+        """True iff the backend's files are the host's (``uses_host_filesystem``). LSP servers run on
+        the host and can't see files inside Docker/Modal/SSH/Daytona or a confining local sandbox."""
+        from tools.environments.base import env_uses_host_filesystem
+
+        return env_uses_host_filesystem(getattr(self, "env", None))  # tests may build via __new__
 
     def _local_workspace_untrusted(self) -> bool:
         """True iff on a local backend the linter's cwd lies outside every trusted workspace

@@ -25,11 +25,10 @@ _STT_SUMMARY_DEFAULT = ("Local Whisper", "faster_whisper", "run 'hermes tools' â
 
 # Browser "missing" hint keyed by the configured provider; anything else gets the generic hint.
 _BROWSER_MISSING_HINTS = {
-    "Browserbase": "npm install -g agent-browser and set BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
-    "Browser Use": "npm install -g agent-browser and set BROWSER_USE_API_KEY",
-    "Camofox": "CAMOFOX_URL",
-    "Local browser": "hermes pm install agent-browser"}
-_BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+    "Browserbase": "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID",
+    "Browser Use": "BROWSER_USE_API_KEY",
+    "Local browser": "Chromium: run 'hermes pm install chromium'"}
+_BROWSER_MISSING_DEFAULT = "Chromium (run 'hermes pm install chromium'), or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
                 "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
 
@@ -112,7 +111,7 @@ def _web_row(config, feats):
 
 
 def _browser_row(config, feats):
-    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
+    # Browser tools (local Chromium, Lightpanda, Browserbase, Browser Use, or Firecrawl)
     hint = _BROWSER_MISSING_HINTS.get(feats.browser.current_provider, _BROWSER_MISSING_DEFAULT)
     return _managed_or_provider_row(feats.browser, "Browser Automation", "Nous Browser Use", hint)
 

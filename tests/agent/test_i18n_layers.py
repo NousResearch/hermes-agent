@@ -143,7 +143,8 @@ def test_manifest_only_pack_registers_language_and_display_language_resolves(hom
     assert i18n.get_language() == "pl"
     assert i18n.t(_KEY) == "Zatwierdzenie"
     option = next(o for o in i18n.language_options() if o["id"] == "pl")
-    assert option == {"id": "pl", "endonym": "pl", "rtl": False, "source": "plugin:hermes-lang-pl"}
+    assert option == {"id": "pl", "endonym": "pl", "rtl": False, "source": "plugin:hermes-lang-pl",
+                      "surfaces": ["core", "tui", "desktop"]}
 
 
 def test_pack_with_register_function_and_metadata(home):

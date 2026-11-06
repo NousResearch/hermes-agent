@@ -36,6 +36,7 @@ from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
 from agent.lsp import deferred as lsp_deferred
+from agent.prompt_cache_scope import conversation_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -44,6 +45,7 @@ from agent.inline_tool_executors import (
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
+from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -359,34 +361,23 @@ def _append_skipped_tool_results(
 def _tool_search_scoped_names(agent) -> frozenset:
     """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
+    validate against this set. Read through the ``get_tool_definitions`` memo on every call
+    and never copied onto the agent: the memo expires with the check_fn verdicts it was
+    filtered on, a per-agent copy keyed on registry generation would not, and a recovered
+    MCP server's tools would stay uncallable for the agent's lifetime."""
     try:
         import model_tools
         from tools import tool_search as _ts
-        from tools.registry import registry as _registry
     except Exception:
         return frozenset()
-
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        _registry.current_scope_key(),
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
     try:
-        names = _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True,
+        return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True, skip_tool_search_assembly=True,
         ) or [])
     except Exception:
-        names = frozenset()
-    with contextlib.suppress(Exception):
-        agent._tool_search_scope_cache = (cache_key, names)
-    return names
+        return frozenset()
 
 
 def _canonical_tool_name(function_name: str) -> str:
@@ -810,6 +801,7 @@ def _run_agent_tool_execution_middleware(
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
+            original_args=function_args,
             skip_relay=True,
             **tool_hook_ids(agent, effective_task_id, tool_call_id),
         )
@@ -1225,6 +1217,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     contents_before = [message.get("content") for message in batch]
     enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)
+    sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
@@ -1724,6 +1717,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
+                conversation_id=conversation_id(agent),
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

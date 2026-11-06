@@ -1,14 +1,5 @@
 {
   "packages": {
-    "agent-browser": {
-      "artifacts": {
-        "any": {
-          "sha256": "8a48cf4110d7dc2c12c1c4d6d25e0babdfa31604b537f05df0dc835fe2f854bf",
-          "url": "https://registry.npmjs.org/agent-browser/-/agent-browser-0.26.0.tgz"
-        }
-      },
-      "version": "0.26.0"
-    },
     "bws": {
       "artifacts": {
         "darwin-arm64": {
@@ -517,6 +508,91 @@
         }
       },
       "version": "12.0.2"
+    },
+    "pnpm": {
+      "artifacts": {
+        "darwin-arm64": [
+          {
+            "sha256": "fab38e479012776fa3810313bd8c7e1fd39f883f915c111ca980112f0695515e",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-arm64/-/exe.darwin-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "darwin-x64": [
+          {
+            "sha256": "22ed4197d26923300ccda62b12a3d4b27ed00cd7996cde416883c6b81359eda6",
+            "url": "https://registry.npmjs.org/@pnpm/exe.darwin-x64/-/exe.darwin-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64": [
+          {
+            "sha256": "8117d65f28e627e949d5fc65d63342266326826a56fa374317bf13fe1166a50e",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "cf6d6d7a08107743ef0c768389c2935c1ffb7002b02ab00682d2ee5650e0483d",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "402f7045b1e0587acb1542f18d38afbccb6babf3c7451394e6fb3d9f0160c6ca",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "linux-x64-musl": [
+          {
+            "sha256": "f1a7ff47e20ad534f0cea26709b9ca7cc24b15ec66151dfb915271e546ae4e08",
+            "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "win32-arm64": [
+          {
+            "sha256": "6b33bef9e52268c8d3f98fb8018a0c66e3c4d565209d6aacd4851239554f359a",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-arm64/-/exe.win32-arm64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ],
+        "win32-x64": [
+          {
+            "sha256": "330357f1c8227b90fb016d28713b024318c60ef06ef97aa38e81394823c47556",
+            "url": "https://registry.npmjs.org/@pnpm/exe.win32-x64/-/exe.win32-x64-12.15.0.tgz"
+          },
+          {
+            "sha256": "f5173f6127cc505cdb36ec17719fe54a8511c6fd8560c7ceb4bf7c73e3b4458b",
+            "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.15.0.tgz"
+          }
+        ]
+      },
+      "version": "12.15.0"
     },
     "python": {
       "artifacts": {

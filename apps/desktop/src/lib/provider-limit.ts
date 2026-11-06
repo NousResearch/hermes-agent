@@ -83,6 +83,8 @@ export interface PoolAccountView {
   label: string
   state: ProviderUsageAccount['state']
   resetMs: null | number
+  /** An idle account's sign-in token lapsed, which is why its usage is unknown. */
+  tokenExpired: boolean
   windows: UsageWindowView[]
 }
 
@@ -100,12 +102,15 @@ export function poolUsage(provider: ModelOptionProvider, nowMs = Date.now()) {
     const expired = resetMs !== null && resetMs <= nowMs
     const stale = entry.state === 'ready' && windows.length === 0
 
+    const tokenMs = parseMs(entry.token_expires_at)
+
     return {
       id: entry.id,
       label: entry.label ?? '',
       windows,
       resetMs,
-      state: expired || stale ? 'unknown' : entry.state
+      state: expired || stale ? 'unknown' : entry.state,
+      tokenExpired: tokenMs !== null && tokenMs <= nowMs
     }
   })
 

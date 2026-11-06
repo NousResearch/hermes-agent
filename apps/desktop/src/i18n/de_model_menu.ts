@@ -35,6 +35,7 @@ export const deModelMenu = {
   poolAccount: (number: number) => `Konto ${number}`,
   poolUnknown: 'Nutzung nicht verfügbar',
   poolUnavailable: 'Erneut anmelden',
+  poolIdle: 'Inaktiv: Token abgelaufen',
   usageTip: (provider: string) => `${provider} ist fast am Nutzungslimit.`,
   usageWindow: (label: string, percent: number, time: null | string) =>
     time ? `${label}: ${percent} % übrig, zurückgesetzt ${time}` : `${label}: ${percent} % übrig`

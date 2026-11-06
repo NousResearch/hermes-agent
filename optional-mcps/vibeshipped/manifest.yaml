@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: vibeshipped
+description: Sourced, dated facts on AI coding tools, agent harnesses and apps built with them.
+source: https://vibeshipped.io/agents
+
+# Vendor-hosted remote MCP (URL-only — Hermes never spawns a local process
+# for this entry). Stateless Streamable HTTP; no authentication required
+# (verified live: initialize and tools/call succeed anonymously).
+
+transport:
+  type: http
+  url: https://vibeshipped.io/api/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - vibeshipped
+    - vibe shipped
+    - vibe coding
+    - agent harness
+  hosts:
+    - vibeshipped.io
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts. Ask which AI coding tool or agent harness to use, compare
+  two tools, or what changed recently; answers link to dated sources.

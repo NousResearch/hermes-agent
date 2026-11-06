@@ -34,3 +34,16 @@ def test_uncontested_runtime_import_keeps_normalization_contract(stores, raw_id)
     assert result["imported"] == 2
     assert local.get_session("123") is not None
     assert ownership.snapshot(sibling) == before_foreign
+
+
+def test_runtime_import_preserves_rejection_of_non_list_collection(stores):
+    from hermes_state_runtime import RuntimeStoreError
+
+    local, sibling = stores
+    epoch = begin_runtime_epoch(local, instance_id="input-shape-control")
+    before = ownership.snapshot(local), ownership.snapshot(sibling)
+    with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        ownership.mutate(local, epoch, "new", "import", {"sessions": (
+            {"id": "new", "source": "cli", "messages": []},
+        )})
+    assert (ownership.snapshot(local), ownership.snapshot(sibling)) == before

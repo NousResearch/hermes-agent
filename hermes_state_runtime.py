@@ -501,7 +501,9 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         _text(value)
     if type(expected_revision) is not int or expected_revision < 0:
         raise RuntimeStoreError('invalid_params')
-    from hermes_state_mutations import validate_runtime_action, apply_action
+    from hermes_state_mutations import validate_action, validate_runtime_action, apply_action
+    # Preserve caller container types before JSON can normalize them.
+    validate_action(operation, payload)
     # Validate the same immutable snapshot ownership discovery and the writer use.
     payload = json.loads(_json(payload))
     validate_runtime_action(db, operation, payload)

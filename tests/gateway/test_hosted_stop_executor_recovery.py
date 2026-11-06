@@ -303,3 +303,50 @@ def test_saved_stop_publishes_a_retained_completed_answer_once_not_cancelled(mux
     assert (canonical['status'], canonical['outcome']) == ('terminal', 'completed')
     assert service.status(binding.room_id)['working'] is False
     assert not rpc.callbacks
+
+
+@pytest.mark.platforms('linux')
+def test_replayed_discard_returns_the_committed_answer(mux):
+    """An exact Discard replay after the first committed a recovered answer gets that answer back
+    (an operator Discard that timed out after the commit can still finish)."""
+    from gateway.session_settlement_recovery import _mark_unknown
+    from hermes_state_runtime import claim_session_input
+
+    _, _, identity, rpc, sid = _seed_old_stopping_cross_profile_task(mux)
+    runner, homes, _, _ = mux
+    target = runner.session_authorities.require(homes['beta'])
+    row = claim_session_input(target.db, epoch=target.epoch, session_id=sid)
+    target.pending_results[row['admission_id']] = {
+        'result': {'final_response': 'Recovered once.', 'completed': True}, 'usage': {}}
+    assert _mark_unknown(target, row) == 'unknown'
+    args = dict(profile='beta', source='bot_room', session_id=sid,
+                expected_task_id=identity.task_id, execution_generation=1)
+    first, replay = rpc.discard(**args), rpc.discard(**args)
+    assert first['status'] == replay['status'] == 'settled'
+    assert first['text'] == replay['text'] == 'Recovered once.'
+
+
+@pytest.mark.platforms('linux')
+def test_room_status_answers_while_a_room_checkpoint_is_slow(mux, monkeypatch):
+    """Desktop's room status (groups.state) must not wait behind one room's slow preparation:
+    the reporter's view timed out after 30 s while a room's checkpoint work held the policy lock."""
+    service, binding, _, _, _ = _seed_old_stopping_cross_profile_task(mux, 'slow-room')
+    entered, release = threading.Event(), threading.Event()
+    original = service.policy_checkpoint.snapshot
+
+    def slow_checkpoint(**kwargs):
+        if kwargs['room_id'] == binding.room_id and not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return original(**kwargs)
+
+    monkeypatch.setattr(service.policy_checkpoint, 'snapshot', slow_checkpoint)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        preparing = pool.submit(service.prepare_room, binding)
+        assert entered.wait(5)
+        try:
+            snapshot = pool.submit(service.status, binding.room_id).result(timeout=3)
+            assert snapshot['counts'].get('stopping') == 1
+        finally:
+            release.set()
+            preparing.result(timeout=5)

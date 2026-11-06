@@ -134,7 +134,7 @@ class HostedRoomAuthorityRPC:
             result.append((row, identity, generation))
         return result
 
-    def _terminal(self, row, task, generation):
+    def _terminal(self, row, task, generation, *, notify=True):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
         # Unknown discard and queued cancellation never ran: no result exists to recover.
@@ -146,7 +146,7 @@ class HostedRoomAuthorityRPC:
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
         callback = self.callbacks.pop(row['admission_id'], None)
-        if callback is not None:
+        if callback is not None and notify:
             callback(receipt)
         return receipt
 
@@ -280,7 +280,9 @@ class HostedRoomAuthorityRPC:
         if type(generation) is not int or generation < 1:
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
-                   if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
+                   # A terminal row is an earlier discard's committed outcome (interrupted, or the retained
+                   # answer it recovered): replaying the exact call returns that same receipt.
+                   if row['status'] in {'unknown', 'terminal'}
                    and task.task_id == params['expected_task_id']
                    and hosted_generation == generation]
         if len(matches) != 1:
@@ -293,7 +295,10 @@ class HostedRoomAuthorityRPC:
             # Resolution commits a retained captured answer as ``completed``, not interrupted:
             # report the outcome it committed, so the room settles that answer, never a cancel.
             row = next(r for r, _, _ in self._rows() if r['admission_id'] == row['admission_id'])
-        return {**self._terminal(row, task, generation), 'discarded': True}
+        # The discarding caller settles the room task from this reply. The attempt's own terminal
+        # callback would settle it a second time and, for a local member, re-enter the room's
+        # preparation from the loop while the caller waits on this reply.
+        return {**self._terminal(row, task, generation, notify=False), 'discarded': True}
 
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:

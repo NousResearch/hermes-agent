@@ -192,4 +192,19 @@ describe('client-direct speech prefetch', () => {
     MockAudio.instances[0].emit('ended')
     await expect(session!.done).resolves.toBe('done')
   })
+
+  it('reports fallback when the first synthesis fails before any audio played', async () => {
+    const session = await startSpeechStream({ messageId: 'reply-1', source: 'read-aloud' })
+    expect(session).not.toBeNull()
+
+    session!.append(`${firstSentence} `)
+    await flushPromises()
+    expect(mocks.synthesizeSpeechClientDirect).toHaveBeenCalledTimes(1)
+
+    syntheses[0].reject(new Error('provider unavailable'))
+    await flushPromises()
+
+    await expect(session!.done).resolves.toBe('fallback')
+    expect(MockAudio.instances).toHaveLength(0)
+  })
 })

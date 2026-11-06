@@ -4,13 +4,13 @@
 // the last confirmed selection (or the newest pick still in flight), never
 // that snapshot.
 
-import type { ComposerModelSource } from '@/store/session'
+import type { ComposerModelSelection } from '@/store/session'
 
 export interface ModelPickSnapshot {
+  composerSelection: ComposerModelSelection
   model: string
   provider: string
   reasoningEffortWire: string
-  source: ComposerModelSource
 }
 
 interface PendingPick {

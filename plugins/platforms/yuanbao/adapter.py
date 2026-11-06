@@ -2678,7 +2678,10 @@ class YuanbaoAdapter(BasePlatformAdapter):
                 return True
             if policy.dm_policy == "pairing":
                 from gateway.pairing import PairingStore
-                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+                # A secondary multiplex profile keeps its own pairing whitelist: read the owner's store.
+                owner = self._owner_transport_profile()
+                store = PairingStore(profile=owner) if owner else PairingStore()
+                return store.is_approved(Platform.YUANBAO.value, sender)
             return False
         group_code = str(ctx.group_code or "").strip()
         if ctx.chat_type != "group" or not group_code:

@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Этими элементами управления может пользоваться только авторизованный пользователь Matrix."
       not_requester: "Этими элементами управления может пользоваться только тот, кто запросил это действие."
   feishu:
+    clarify:
+      title: "Hermes нужен ваш ответ"
+      other: "✏️ Другое (ввести ответ)"
+      awaiting_typed: "Ожидаю текстовый ответ от {user}…"
+    picker:
+      apply_error: "Ошибка применения выбора: {error}"
     approval:
       action_session: "На сеанс"
       action_always: "Всегда"
@@ -1474,6 +1480,8 @@ platform:
     prompt_other: "✏️ Другое (ввести ответ)"
     prompt_expired: ⌛ Этот запрос больше не ожидает ответа. Отправьте ответ обычным сообщением.
 slash:
+  rewind:
+    description: "Откатиться к более раннему запросу, чтобы изменить и отправить его заново, или ответвиться оттуда (Esc Esc)"
   approve:
     description: "Одобрить ожидающую опасную команду"
   bg:
@@ -1701,6 +1709,20 @@ slash:
   quit:
     description: "Выйти из CLI (с --delete также удаляется история сеанса)"
 cli:
+  backtrack:
+    title: "↺ Откат — выберите более ранний запрос"
+    keys_hint: "↑/↓ выбор · Enter изменить и отправить заново · f ответвиться отсюда · Esc закрыть"
+    preview_label: "Запрос {number} из {total}:"
+    more_lines: "… (ещё строк: {count})"
+    editing_hint: "↺ Редактирование запроса {number} — Enter откатывает сюда и отправляет · Esc Esc отменяет"
+    edit_cancelled: "↺ Откат отменён; ничего не удалено."
+    rewound: "↺ Откат к запросу {number} (сообщений в архиве: {count}); отправка изменённого запроса."
+    forked: "⑂ Ответвление перед запросом {number}; исходный сеанс {parent} не изменён. Отредактируйте запрос ниже и нажмите Enter для отправки."
+    nothing: "(._.) Нет более ранних запросов для отката."
+    target_changed: "(x_x) Сеанс изменился с момента выбора запроса {number}; ничего не удалено. Ваша правка возвращена в поле ввода."
+    invalid: "(._.) Нет запроса {value} — выберите от 1 до {total}."
+    usage: "Использование: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Не удалось выполнить откат; история не изменена: {error}"
   modern:
     thought_for: "Размышлял {seconds} с"
     thought: "Размышлял"
@@ -2164,6 +2186,7 @@ cli:
     images_attached_other: "📎 Изображений прикреплено: {count}"
     command_interrupted: "Команда прервана."
     welcome: "Добро пожаловать в Hermes Agent! Введите сообщение или /help для списка команд."
+    vscode_images_hint: "VS Code может показывать здесь изображения в полном разрешении: включите terminal.integrated.enableImages в настройках."
     activated_skills_label: "Активированные навыки:"
     redaction_disabled_title: "⚠  Скрытие секретов ВЫКЛЮЧЕНО"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-ключи и токены могут появляться в открытом виде в выводе чата, JSON-файлах сеансов и логах. Чтобы включить снова, задайте {setting} в config.yaml."
@@ -2618,6 +2641,7 @@ cli:
     goal_turns: "⊙ цель {used}/{max}"
     goal: "⊙ цель"
     ctx_pinned: " закреплён"
+    ctx_fallback: " по умолчанию"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Отложено ({count} элемент)"
@@ -3957,3 +3981,8 @@ plan_usage:
   large_notice_limit: "Крупная модель: достигнут {name} ({resets})."
   large_notice_limit_stops: "Крупная модель: достигнут {name} ({resets}), до сброса она не запустится."
   large_notice_percent: "Крупная модель: расходует больше лимита плана на сообщение. Месячный лимит крупных моделей: использовано {percent}."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Файлы, изменённые в отменённых ходах: {files}. Выполните /rollback, чтобы увидеть контрольные точки и восстановить одну."
+    more: "ещё {count}"

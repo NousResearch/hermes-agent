@@ -630,6 +630,22 @@ async def admit_managed(authority, ref, row, policy):
     return await execute_managed(authority, ref, row, policy)
 
 
+async def _finalize_managed_refusal(authority, session_id, accepted):
+    """Owner-side drop of a managed worker's safety-refused turn (Bot Chat / safe-mode).
+
+    The worker flushed the refused turn to the SHARED transcript and has now exited (its lease
+    released), but a managed worker cannot rewind its own transcript — so the refused turn must be
+    dropped HERE or the next worker reloads it and the deterministic safety filter re-refuses every
+    later message (the "stuck session" report; #149708 review). No cached owner agent to evict (the
+    subprocess is gone), so session_key is None. Best-effort: a refusal must never crash settlement.
+    """
+    if accepted.get('failure_reason') != 'content_policy_blocked':
+        return
+    with suppress(Exception):
+        await authority.runner._hmwa_retain_content_policy_refused_turn(
+            session_id, None, accepted.get('refused_turn_boundary_row_id'))
+
+
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
@@ -706,6 +722,7 @@ async def execute_managed(authority, ref, row, policy):
                 with suppress(subprocess.TimeoutExpired):
                     await asyncio.to_thread(process.wait, 10)
                 accepted = _with_stop_cause(accepted, worker)
+                await _finalize_managed_refusal(authority, scope['session_id'], accepted)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 authority.pending_results[row['admission_id']] = {
                     'result': {**accepted, 'local_viewer': True}, 'usage': usage,

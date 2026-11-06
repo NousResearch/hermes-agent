@@ -17,7 +17,7 @@ function fixture() {
   roots.push(source)
   const out = path.join(source, 'work')
   fs.mkdirSync(path.join(source, 'apps/desktop'), { recursive: true })
-  fs.writeFileSync(path.join(source, 'package-lock.json'), '{}')
+  fs.writeFileSync(path.join(source, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
   fs.writeFileSync(path.join(source, 'apps/desktop/package.json'), '{}')
   fs.writeFileSync(path.join(source, 'apps/desktop/electron-builder.config.cjs'), 'module.exports = {}')
   const electron = path.join(out, 'electron.zip')

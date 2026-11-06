@@ -14,7 +14,7 @@
  *
  * CROSS_GATEWAY_LEG=main records the picker (the repro: Homelab's bot absent)
  * and stops. CROSS_GATEWAY_SHOTS=<dir> saves screenshots; PROBE_RESULT lines
- * carry the evidence. Needs `npm run build` (dist/) first.
+ * carry the evidence. Needs `pnpm run build` (dist/) first.
  */
 
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'

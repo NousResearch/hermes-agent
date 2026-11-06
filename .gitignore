@@ -128,7 +128,7 @@ apps/desktop/.staging-*/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
-# `npm run sync-assets` (see web/package.json).
+# `pnpm run sync-assets` (see web/package.json).
 web/public/fonts/
 web/public/ds-assets/
 
@@ -309,7 +309,7 @@ apps/desktop/demo/
 # Spelling variants are listed because a single `infographic/` pattern was
 # sidestepped by an `infograficos/` directory (#70552). .gitignore is only
 # the first line of defence and cannot stop `git add -f` at all — the
-# infographic-check CI job is what actually enforces this.
+# infographic step of the repo-guards CI job is what actually enforces this.
 infographic/
 infographics/
 infograficos/

@@ -189,14 +189,14 @@ remain session-scoped; composer model changes use `session.mutate`, never global
 
 ```bash
 cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run typecheck # tsc --noEmit
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+pnpm install       # first time
+pnpm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+pnpm start         # production
+pnpm run build     # full build (hermes-ink + tsc)
+pnpm run typecheck # tsc --noEmit
+pnpm run lint      # eslint
+pnpm run fmt       # prettier
+pnpm test          # vitest
 ```
 
 Python tests: `tests/tui_gateway/` via `scripts/run_tests.sh`. TS tests: vitest in `ui-tui`. A

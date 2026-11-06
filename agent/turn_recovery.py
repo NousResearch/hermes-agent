@@ -23,7 +23,8 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
+    _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
 )
@@ -287,9 +288,11 @@ def recover_before_classification(
             # request would loop on the same error.
             if _strip_request_images_and_retry(agent, api_messages):
                 return True, active_system_prompt
-        else:
+        elif _messages_carry_images(api_messages or messages):
             # Record the model; the retry re-enters build_api_request with the same
             # api_messages and strip_images_for_rejecting_model strips them there.
+            # A request with no image never marks: a 4xx body can echo the user's own text
+            # ("X is not a multimodal model"), and a wrong mark blinds a vision model until /new.
             _rejected.add(_model_key)
             _vlines(
                 agent,
@@ -1028,7 +1031,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
-    delivered: str = "",
+    delivered: str = "", current_turn_user_idx: Any = None,
 ) -> dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1106,6 +1109,22 @@ def nonretryable_client_error_result(
             "        for localhost, or add the server's cert to your trust store.",
         )
     logger.error("%sNon-retryable client error: %s", agent.log_prefix, api_error)
+    if classified.reason == FailoverReason.content_policy_blocked:
+        # Safety refusal that arrived as an exception (400 / APIError) rather than an HTTP-200
+        # finish_reason. Treat it exactly like the HTTP-200 refusal handler: do NOT persist the
+        # refused turn, and hand back the PRE-refusal history so an in-memory surface (CLI/TUI/ACP
+        # keep result["messages"] as live history) carries nothing forward. A refusal is
+        # deterministic for the unchanged conversation, so a persisted refused turn re-trips the
+        # filter on every later message and locks the chat (the "stuck session" report); the owner
+        # erases the durable turn-start row after the lease releases. Mirrors #1630.
+        from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+        _clean = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
+        return _content_policy_blocked_result(
+            _clean, api_call_count,
+            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+            error_detail=_nonretryable_summary,
+            boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
+        )
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.
     # Persisting the failed user message would make the session even larger, causing the same failure on the
@@ -1114,12 +1133,6 @@ def nonretryable_client_error_result(
         _vlines(agent, "⚠️  Skipping session persistence for large failed session to prevent growth loop.")
     else:
         agent._persist_session(messages, conversation_history)
-    if classified.reason == FailoverReason.content_policy_blocked:
-        return _content_policy_blocked_result(
-            messages, api_call_count,
-            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
-            error_detail=_nonretryable_summary,
-        )
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:

@@ -191,6 +191,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
@@ -437,7 +438,8 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
-import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { registerPreviewGuestIpc } from './preview-guest-ipc'
+import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
@@ -577,10 +579,11 @@ import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
+import { registerStreamWorkClock } from './stream-work-clock'
 import { installSystemCaTrust } from './system-ca'
 import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
-import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
+import { applyTitleBarOverlay, isHexColor, nativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
   applyWindowsBackdrop,
   defaultTranslucencyState,
@@ -791,7 +794,7 @@ let f12Blocked = false
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
-// Dev (`npm run dev`) and prod both load the esbuild output from dist/.
+// Dev (`pnpm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-preload.js')
 
@@ -864,7 +867,7 @@ if (IS_WINDOWS) {
   }
 }
 
-// Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
+// Renderer debugging port. On for dev-server runs (`hgui` / `pnpm run dev`) so
 // the CDP tooling in scripts/ can attach; never for a packaged build — see
 // electron/dev-cdp.ts. Must run before app `ready` like the switches above;
 // Chromium binds it at launch.
@@ -1226,10 +1229,10 @@ ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 // the renderer's visibility-gated backstop polls and clock ticks into
 // always-on timers. A completely idle, minimized Hermes burned ~20% CPU
 // around the clock. Throttling is now a runtime dial scoped to streaming:
-// see createStreamThrottle() — chat windows are unthrottled while any turn is
-// in flight (so a live answer keeps painting while blurred, occluded, or
-// minimized, exactly as before) and return to Chromium's default throttling
-// once the work settles.
+// see createStreamThrottle() — visible chat windows are unthrottled while any
+// turn is in flight, including blurred or occluded windows. Hidden/minimized
+// windows retain default throttling unless bounded native work holds them awake.
+// All windows return to default throttling once the work settles.
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
@@ -1612,10 +1615,6 @@ function chatWindowSurfaceOptions() {
   }
 }
 
-function isHexColor(value) {
-  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
-}
-
 // Background color to paint a window with BEFORE its renderer loads, so a new
 // (or reopened) window doesn't flash white/light in dark mode. Prefer the theme
 // the renderer last reported; fall back to the OS preference on first launch.
@@ -1648,25 +1647,6 @@ function getTitleBarOverlayOptions(win?) {
     // its height tracks the zoomed renderer titlebar (#81086).
     zoomFactor: win?.webContents?.getZoomFactor?.()
   })
-}
-
-// Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
-function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions(win)
-
-  if (!options || typeof options !== 'object') {
-    return
-  }
-
-  try {
-    win?.setTitleBarOverlay?.(options)
-  } catch {
-    // Overlay not supported on this platform/build — leave the frameless
-    // titlebar as-is.
-  }
 }
 
 const MEDIA_MIME_TYPES = {
@@ -4873,7 +4853,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 2. Development source -- when running `npm run dev` from a checkout, the
+  // 2. Development source -- when running `pnpm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
@@ -6050,7 +6030,7 @@ function getWindowButtonPosition(win = mainWindow) {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
+  return nativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
 function getWindowState(win = mainWindow) {
@@ -6590,7 +6570,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 
   // The native window-controls overlay doesn't scale with the page; re-apply
   // it at the new zoom so its height tracks the zoomed titlebar (#81086).
-  applyTitleBarOverlay(window)
+  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
 
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
@@ -6630,7 +6610,7 @@ function restorePersistedZoomLevel(window) {
     }
 
     applyZoomLevel(window.webContents, saved)
-    applyTitleBarOverlay(window)
+    applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
 
     return
   }
@@ -6639,7 +6619,7 @@ function restorePersistedZoomLevel(window) {
   // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
   // and overwrite if a legacy value is there.
   applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
-  applyTitleBarOverlay(window)
+  applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
 
   window.webContents
     .executeJavaScript(
@@ -6653,7 +6633,7 @@ function restorePersistedZoomLevel(window) {
       const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
       const applied = applyZoomLevel(window.webContents, level)
       writeZoomState(applied)
-      applyTitleBarOverlay(window)
+      applyTitleBarOverlay(window, getTitleBarOverlayOptions(window))
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -13587,8 +13567,8 @@ function createWindow() {
     show: false,
     // Shared with the secondary session windows (chatWindowWebPreferences);
     // stream-aware throttling is applied per-window via streamThrottle so a
-    // live answer keeps painting while the window is blurred or minimized,
-    // without pinning visibilityState to 'visible' at idle. See
+    // live answer keeps painting while visible but blurred or occluded,
+    // without forcing hidden/minimized windows to paint. See
     // session-windows.ts and stream-throttle.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
@@ -13623,7 +13603,7 @@ function createWindow() {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
         for (const win of BrowserWindow.getAllWindows()) {
-          applyTitleBarOverlay(win)
+          applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
         }
       })
     }
@@ -14926,40 +14906,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               : []
 
             const profileMetadata = Array.isArray(body?.profiles)
-              ? Object.fromEntries(
-                  body.profiles
-                    .map(profile => {
-                      const name = String(profile?.name || '').trim()
-
-                      if (!name) {
-                        return null
-                      }
-
-                      const metadata: RosterProfileMetadata = {}
-
-                      if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
-                        metadata.display_name = profile.display_name.trim()
-                      }
-
-                      // `/api/profiles` names the Bot Mode title `bot_title`. Carried even
-                      // when empty: "this backend has no title" is what lets the renderer
-                      // drop a stale local one instead of painting it on this bot.
-                      if (typeof profile?.bot_title === 'string') {
-                        metadata.title = profile.bot_title.trim()
-                      }
-
-                      if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
-                        metadata.ui_meta = profile.ui_meta
-                      }
-
-                      if (typeof profile?.has_avatar === 'boolean') {
-                        metadata.has_avatar = profile.has_avatar
-                      }
-
-                      return [name, metadata] as const
-                    })
-                    .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
-                )
+              ? profileMetadataFromApiProfiles(body.profiles)
               : undefined
 
             // The root HERMES_HOME is an agent too; enumerations that omit it
@@ -15557,15 +15504,7 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })
 
-// The host renderer reports which of its Browser guests are off screen (a
-// hidden session's kept-alive page), so focused-guest gestures skip them.
-ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
-  notePreviewGuestHidden(
-    event.sender,
-    electronWebContents.fromId(Number(payload?.webContentsId)),
-    Boolean(payload?.hidden)
-  )
-})
+registerPreviewGuestIpc(owner => streamThrottle.holdWindow(owner))
 
 ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
   if (active) {
@@ -16514,15 +16453,16 @@ function hasOtherChatWindows(window: BrowserWindow): boolean {
   return [...chatWindows].some(candidate => candidate !== window && !candidate.isDestroyed())
 }
 
-// The same merged picture drives background throttling: chat windows run
-// unthrottled while any turn is in flight (streaming must paint while hidden)
-// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
+// The same merged picture drives background throttling: visible chat windows
+// run unthrottled while any turn is in flight; hidden windows require a native
+// activity hold to stay awake. Idle uses default throttling. See stream-throttle.ts.
 const streamThrottle = createStreamThrottle(undefined, undefined, {
   // #94865 is specific to native Wayland fullscreen surfaces. Reuse the same
   // Ozone resolver as the rest of Desktop so XWayland/macOS/Windows retain the
   // normal idle throttling contract.
   keepFullscreenPainting: process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'wayland'
 })
+registerStreamWorkClock(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 function isAnyTurnInFlight() {
   return mergeActiveWork(activeWorkByWebContents.values()).count > 0
@@ -16539,6 +16479,7 @@ function updateStreamThrottleFromActiveWork() {
 
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
+  const owner = BrowserWindow.fromWebContents(event.sender)
 
   if (!activeWorkByWebContents.has(id)) {
     const forget = () => {
@@ -16547,6 +16488,9 @@ ipcMain.on('hermes:active-work', (event, payload) => {
       event.sender.off('destroyed', forget)
       event.sender.off('render-process-gone', forget)
       activeWorkByWebContents.delete(id)
+      if (owner) {
+        streamThrottle.setVoiceActive(owner, false)
+      }
       updateStreamThrottleFromActiveWork()
     }
 
@@ -16560,6 +16504,9 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   const work = normalizeActiveWork(payload)
   activeWorkByWebContents.set(id, work)
   lastActiveWorkSeen = work
+  if (owner?.webContents === event.sender && event.senderFrame === event.sender.mainFrame) {
+    streamThrottle.setVoiceActive(owner, payload?.voiceActive === true)
+  }
   updateStreamThrottleFromActiveWork()
 })
 
@@ -16577,7 +16524,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
   // window, not just the primary — instance peers and session windows share the
   // one app theme. applyTitleBarOverlay no-ops on the frameless pet overlay.
   for (const win of BrowserWindow.getAllWindows()) {
-    applyTitleBarOverlay(win)
+    applyTitleBarOverlay(win, getTitleBarOverlayOptions(win))
   }
 })
 
@@ -17188,7 +17135,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // True when the bundle on disk is not the one this process loaded — a
     // plain app restart (no rebuild, no installer) clears the skew above.
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
+    // under a running `pnpm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
     bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
   }

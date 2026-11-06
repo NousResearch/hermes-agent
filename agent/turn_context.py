@@ -321,6 +321,39 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
     return fallback
 
 
+def history_before_current_turn(
+    messages: Any, current_turn_user_idx: Any, fallback: Any = None,
+) -> list[Any]:
+    """The pre-turn boundary: the conversation history BEFORE the current turn's user row.
+
+    Hands a refused turn's caller a CLEAN in-memory history (the refused request + its tool rounds
+    dropped), robust to in-place compaction. The loop's ``conversation_history`` is the flush
+    baseline, which in-place compaction rewrites into ``list(messages)`` — the WHOLE poisoned working
+    set, including the current (refused) turn (#149708 review). ``messages`` is already the compacted
+    working set and ``current_turn_user_idx`` the re-anchored index of this turn's user row, so the
+    slice before it is the real clean prefix. Falls back to ``fallback`` only when the index is
+    unusable.
+    """
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx <= len(messages)):
+        return list(messages[:current_turn_user_idx])
+    return list(fallback) if isinstance(fallback, list) else []
+
+
+def refused_turn_boundary_row_id(messages: Any, current_turn_user_idx: Any) -> Optional[int]:
+    """The durable row id that STARTED the current (refused) turn, or ``None``.
+
+    The owner uses it to soft-delete the EXACT refused run from the transcript: the newest user turn
+    is the wrong target when a mid-turn steer appended a newer user row, or the refused input was a
+    hidden/internal row (#149708 review). Reads the committed row id of this turn's user message.
+    """
+    from agent.persisted_turn_receipt import committed_row_id
+    if (isinstance(messages, list) and isinstance(current_turn_user_idx, int)
+            and 0 <= current_turn_user_idx < len(messages)):
+        return committed_row_id(messages[current_turn_user_idx])
+    return None
+
+
 def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> Any:
     """Stamp ``{turn_id, current_turn_user_idx}`` on a result envelope, proven against the
     exact ``result["messages"]`` projection it travels with.
@@ -1121,6 +1154,9 @@ def build_turn_context(
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
+    from agent.bot_chain import on_turn_start as _bot_chain_turn_start
+    _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.

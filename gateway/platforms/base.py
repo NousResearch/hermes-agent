@@ -1282,11 +1282,31 @@ def _match_extensionless_path(scan_text: str, match: re.Match) -> Optional[tuple
         if not token:
             break
         tok_end = pos + token.end()
-        safe = validate_media_delivery_path(_normalize_media_tag_path(segment[:tok_end]))
-        if safe:
-            return safe, start + tok_end
+        candidate = _normalize_media_tag_path(segment[:tok_end])
+        # The candidate as written, then the same candidate with a detached extension
+        # rejoined ("report. pdf" / "report .pdf" -> "report.pdf"): models regularly put a
+        # space between the name and its extension, which no filename on disk carries, and
+        # the tag then failed every pass and leaked into the chat as raw text.
+        for variant in dict.fromkeys((candidate, _rejoin_detached_extension(candidate))):
+            if not variant:
+                continue
+            safe = validate_media_delivery_path(variant)
+            if safe:
+                return safe, start + tok_end
         pos = tok_end
     return None
+
+
+# Whitespace around a dot is never part of a filename; used to rejoin an extension the
+# model detached from its basename ("propunere. pdf"). Only a validated candidate is used.
+_DOT_GAP_RE = re.compile(r"[ \t]*\.[ \t]*")
+
+
+def _rejoin_detached_extension(path: str) -> str:
+    """``path`` with whitespace around its dots removed (``X. pdf`` -> ``X.pdf``); unchanged
+    when there is none, so callers can try it as a second candidate."""
+    rejoined = _DOT_GAP_RE.sub(".", path)
+    return rejoined if rejoined != path else ""
 
 
 def _normalize_media_tag_path(raw: str) -> str:
@@ -1416,6 +1436,18 @@ def _strip_media_tag_directives(text: str) -> str:
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
     return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
+
+
+def _unresolved_media_tag_paths(text: str) -> list:
+    """Raw paths of the MEDIA tags still present in ``text`` after extraction — the ones no
+    pass could deliver. The tags stay visible by contract (#34517); this reading exists so the
+    gateway log names them instead of leaving an undelivered attachment silent.
+    """
+    if "MEDIA:" not in text:
+        return []
+    masked = _mask_media_scan_text(text)
+    return [path for path in (_normalize_media_tag_path(m.group("path"))
+                              for m in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked)) if path]
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -3238,6 +3270,13 @@ class BasePlatformAdapter(ABC):
             spans = _deliverable_tag_spans(cleaned)
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
+        # A tag no pass could deliver stays visible by contract (#34517) — but a silent
+        # undelivered attachment is how a broken path reaches the member as raw text with no
+        # trace on the operator side, so name it here.
+        undelivered = _unresolved_media_tag_paths(cleaned)
+        if undelivered:
+            logger.info("MEDIA tag(s) left undelivered (no file on disk): %s",
+                        ", ".join(_log_safe_path(p) for p in undelivered[:3]))
         return media, cleaned
 
     @staticmethod

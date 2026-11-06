@@ -35,3 +35,4 @@ capabilities:
   provides_tools: [construct_start, construct_edit, construct_check, construct_inspect, construct_build,
     construct_review, construct_export, construct_film, construct_job, construct_command, construct_netlogo_run,
     construct_netlogo_draw]
+  provides_hooks: [pre_tool_call]

@@ -160,3 +160,213 @@ def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     # The nudge offers every worker exit, not just close-out; a card that must go
     # through review must never be steered to ``kanban_complete`` alone.
     assert "kanban_request_review" in nudge and "kanban_block" in nudge
+
+
+def test_nudge_after_rejected_terminal_handoff(clear_kanban_env):
+    """Regression (#136843): a rejected handoff must not end worker ownership.
+
+    The handler returned a structured tool error and the board state is
+    unchanged, but the transcript contains the tool call and result row, so the
+    name-only scan read the run as already handed off and the guard went silent
+    for the rest of the session — a narrated stop then exits rc=0 as a
+    protocol_violation with no nudge at the moment it is most needed.
+    """
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_rejected")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": '{"error": "kanban_complete blocked: the following created_cards '
+                       'do not exist or were not created by this worker: [card_x]. '
+                       'Your task is still in-flight (no state change)."}',
+        },
+        {"role": "assistant", "content": "Let me gather more evidence instead.", "tool_calls": []},
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    nudge = build_kanban_stop_nudge(messages=messages, attempts=0)
+    assert nudge is not None
+    assert "kanban_block" in nudge
+
+
+def test_nudge_after_timeout_failure_string(clear_kanban_env):
+    """A failed terminal call can also surface as the executor's plain failure
+    string (no JSON body), e.g. a handler stalling to the tool timeout."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_timeout")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_request_changes", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_request_changes",
+            "tool_call_id": "1",
+            "content": "Error executing tool 'kanban_request_changes': timed out after 420.0s",
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
+
+
+def test_no_nudge_after_successful_handoff_result(clear_kanban_env):
+    """The success shape the fix must keep treating as terminal: a structured
+    ok payload on the result row (no blank-body assumptions)."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_ok_payload")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_request_review", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_request_review",
+            "tool_call_id": "1",
+            "content": '{"ok": true, "task_id": "t_ok_payload", "run_id": 3507, "status": "review"}',
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_rejected_then_retried_successfully_stays_terminal(clear_kanban_env):
+    """A call rejected early and retried successfully later in the session must
+    still read as terminal: a rejection suppresses only its own call id."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_retry_ok")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": '{"error": "kanban_complete: summary is required"}',
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "2",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "2",
+            "content": '{"ok": true, "task_id": "t_retry_ok", "status": "done"}',
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_rejection_after_success_keeps_guard_silent(clear_kanban_env):
+    """Order independence: success earlier in the session ends ownership even
+    if a later terminal call is rejected (same session, new lifecycle)."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_success_first")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": '{"ok": true, "task_id": "t_success_first", "status": "done"}',
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "2",
+                    "type": "function",
+                    "function": {"name": "kanban_request_review", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_request_review",
+            "tool_call_id": "2",
+            "content": '{"error": "kanban_request_review: task not in running/ready"}',
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_rejection_with_appended_harness_notice(clear_kanban_env):
+    """The persisted rejection can carry a harness notice AFTER the JSON body
+    (``[Tool loop warning: ...]``), so whole-string ``json.loads`` fails; the
+    leading-JSON fallback must still read the underlying ``{"error": ...}``."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_loop_suffix")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "kanban_complete", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "kanban_complete",
+            "tool_call_id": "1",
+            "content": '{"error": "kanban_complete: summary is required"}\n\n'
+                       '[Tool loop warning: repeated_exact_failure_warning; count=2; '
+                       'kanban_complete has failed 2 times with identical arguments.]',
+        },
+    ]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None

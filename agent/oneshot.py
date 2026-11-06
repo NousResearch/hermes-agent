@@ -154,6 +154,10 @@ def oneshot_reply(*, schema: Optional[dict[str, Any]] = None, **kwargs: Any) -> 
     parsed, kind = _parse_structured_text(text=text, json_mode=False, json_schema=schema)
     if kind != "json":
         raise ValueError("the model did not answer with JSON")
+    try:
+        json.dumps(parsed, allow_nan=False)  # Python parses NaN/Infinity; a client's JSON.parse does not
+    except ValueError:
+        raise ValueError("the model answered with NaN or Infinity, which JSON does not allow") from None
     return {"text": text, "parsed": parsed}
 
 

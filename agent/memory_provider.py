@@ -196,7 +196,8 @@ class MemoryProvider(ABC):
         return ""
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
-        """PARENT-side observation of a completed delegation (the subagent has no provider session)."""
+        """PARENT-side observation of a completed delegation. The subagent's own manager never sends it: a
+        subagent runs provider-less, or checkpoint-only under ``compression.checkpoint_required``."""
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         """Setup fields for ``hermes memory setup`` ([] if none): ``key``, ``description``,

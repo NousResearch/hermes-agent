@@ -200,9 +200,6 @@ class TestProactivePruneLoopWiring:
         rewrite, so the loop never consults it (the control is the test above)."""
         calls = []
         agent.compression_checkpoint_required = True
-        # The suppression counter is shared with the on_turn_complete gate; a declared observer
-        # keeps this test about the prune.
-        agent.context_compressor.compacts_outside_compress = False
         agent.context_compressor.prune_tool_results_only = (
             lambda messages, current_tokens=None: (calls.append(current_tokens), (messages[:-1], 1))[1]
         )

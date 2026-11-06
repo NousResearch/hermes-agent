@@ -39,6 +39,9 @@ class MonitorOutcome:
     first_run: bool = False
     context_block: Optional[str] = None
     error: Optional[str] = None
+    # Changed output may still decline an agent run with the script wake-gate contract
+    # (last non-empty line ``{"wakeAgent": false}``); the new hash is persisted either way.
+    wake_agent: bool = True
 
 
 def hash_monitor_output(output: str) -> str:
@@ -165,7 +168,12 @@ def check_monitor(job: dict) -> MonitorOutcome:
         )
 
     _persist_monitor_state(job_id, new_hash, output)
-    return MonitorOutcome(ok=True, changed=True, first_run=first_run, context_block=context_block)
+    from cron.scheduler_prompt import _parse_wake_gate
+
+    return MonitorOutcome(
+        ok=True, changed=True, first_run=first_run, context_block=context_block,
+        wake_agent=_parse_wake_gate(output),
+    )
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:

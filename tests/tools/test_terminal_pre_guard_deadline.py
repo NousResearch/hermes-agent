@@ -89,3 +89,68 @@ def test_pre_execution_guard_on_the_deadline_worker_sees_the_tool_threads_interr
 
     assert seen == [True], "guard on the deadline worker was blind to the tool thread's interrupt bit"
     assert is_interrupted() is False, "the tool thread's own interrupt view must not leak past the guard"
+
+
+def test_guard_wait_is_capped_well_under_a_long_command_deadline(monkeypatch, stubbed_pipeline):
+    """A wedged probe must not inherit a long command's whole deadline (#board-497: 60-400s spent
+    per refused call, one abandoned thread each). The guard's share is capped; the refusal is the same."""
+    seen: list[float] = []
+
+    def _bounded(fn, timeout, *, label="operation", **_k):
+        seen.append(timeout)
+        fn()
+        return SimpleNamespace(timed_out=False)
+
+    monkeypatch.setattr(
+        terminal_module, "_plan_execution", lambda *_a, **_k: _plan(timeout=600.0),
+    )
+    monkeypatch.setattr("agent.deadline.run_bounded_sync", _bounded)
+    monkeypatch.setattr(terminal_module, "_pre_exec_block", lambda *_a, **_k: None)
+
+    terminal_module.terminal_tool("echo ok")
+
+    assert seen == [terminal_module._PRE_EXEC_GUARD_MAX_TIMEOUT_S]
+    assert seen[0] <= 30, f"guard inherited a {seen[0]}s wait from the command deadline"
+
+
+def test_supervised_gateway_verdict_is_probed_once_per_process(monkeypatch):
+    """The identity probe is invariant for a process, and every terminal command used to pay for
+    it: when one probe wedges, each call parks another guard thread in the same open() (#board-497)."""
+    import os
+
+    import gateway.restart
+    import gateway.status
+    import tools.process_registry as registry
+
+    probe_calls: list[int] = []
+
+    def _counted_running_pid(*_a, **_k):
+        probe_calls.append(1)
+        return os.getpid()
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setattr(gateway.restart, "is_supervised_gateway_launch", lambda *_a, **_k: True)
+    monkeypatch.setattr(gateway.status, "get_running_pid", _counted_running_pid)
+    registry._reset_supervised_gateway_verdict_cache()
+
+    assert registry._is_supervised_gateway_process() is True
+    assert registry._is_supervised_gateway_process() is True
+    assert len(probe_calls) == 1, "the identity probe re-ran on a cached verdict"
+
+    # A changed marker is a different identity question (re-exec, tests, launcher shapes): re-probe.
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+    assert registry._is_supervised_gateway_process() is True
+    assert len(probe_calls) == 2
+
+    # An exception must never be cached as "not supervised".
+    monkeypatch.setattr(
+        gateway.status, "get_running_pid",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("pid file unreadable")),
+    )
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "2")
+    assert registry._is_supervised_gateway_process() is False
+    monkeypatch.setattr(gateway.status, "get_running_pid", _counted_running_pid)
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "3")
+    assert registry._is_supervised_gateway_process() is True
+    registry._reset_supervised_gateway_verdict_cache()

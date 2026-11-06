@@ -45,6 +45,18 @@ def test_image_written_reports_path_type_and_size(tmp_path, monkeypatch, capsys)
     assert dest.read_bytes() == _PNG
 
 
+@pytest.mark.parametrize("data, mime", [
+    (b"\xff\xd8\xff\xe0" + b"\x00" * 12, "image/jpeg"), (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp")],
+    ids=["jpeg", "webp"])
+def test_a_copied_image_file_reports_its_own_type(tmp_path, monkeypatch, capsys, data, mime):
+    """A Windows/WSL file drop is copied as it is, so the type comes from the written bytes."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(data))
+
+    code, out, _ = _run(capsys, "--out", str(tmp_path / "paste.png"), "--json")
+
+    assert (code, json.loads(out)["mime"]) == (0, mime)
+
+
 def test_no_image_is_a_stable_reason(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(None))
     monkeypatch.setattr(clipboard, "clipboard_image_tools", lambda: (sys.executable,))
@@ -111,7 +123,7 @@ def _existing(tmp_path, mode=0o644):
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
 def test_read_only_destination_is_write_failed_and_kept(tmp_path, monkeypatch, capsys):
     _stub_xclip(tmp_path, monkeypatch, output_ok=True)
     dest = _existing(tmp_path, 0o444)

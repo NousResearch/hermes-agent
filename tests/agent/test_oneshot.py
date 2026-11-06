@@ -87,6 +87,15 @@ class TestRunOneshot:
                 oneshot_reply(instructions="sys", user_input="x", task="tern_charts", schema=schema)
         llm.assert_not_called()
 
+    def test_a_schema_reply_whose_strings_hold_code_fences_parses(self):
+        """A valid JSON answer is parsed as a whole, not from a ``` block inside one of its strings;
+        a fenced answer still parses from its fence."""
+        schema = {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}
+        answers = ['{"code": "```hello```"}', 'Here it is:\n```json\n{"code": "x"}\n```']
+        with patch("agent.oneshot.call_llm", side_effect=[self._mock_response(a) for a in answers]):
+            assert oneshot_reply(instructions="s", user_input="u", schema=schema)["parsed"] == {"code": "```hello```"}
+            assert oneshot_reply(instructions="s", user_input="u", schema=schema)["parsed"] == {"code": "x"}
+
 class TestHelpers:
 
     def test_truncate_over_limit_marks_truncation(self):

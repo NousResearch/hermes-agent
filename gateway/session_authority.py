@@ -196,6 +196,15 @@ class SessionAuthority:
         # route -> the compression-exhaustion auto-reset its LOCAL turn deferred: the store refuses a
         # reset while that turn's admission is started, so the drain runs it once the turn settles.
         self.deferred_resets = {}
+        # (principal_id, session_id) -> pending owner-death orphan reap task
+        # (gateway/session_controls); attach() by that principal to that session cancels it.
+        self._pending_orphan_reaps = {}
+
+    def _cancel_orphan_reap(self, subject, session_id):
+        """The principal attached again: its earlier close was a reload, not a death."""
+        task = self._pending_orphan_reaps.pop((subject, session_id), None)
+        if task is not None and not task.done():
+            task.cancel()
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -359,6 +368,7 @@ class SessionAuthority:
         skipped; for a viewer that pages the transcript itself (Desktop over REST).
         *replay_from*: ``(epoch, sequence)`` this connection's reconnect replay answered (SessionEvents.catch_up)."""
         self.authorize(actor, ref, 'session:read')
+        self._cancel_orphan_reap(actor.subject, ref.session_id)
         from gateway.session_local_recovery import local_history, prepare_history, transcript_target
         # The lineage read stays off the loop and the lock; without history the target is resolved under it.
         prepared = await prepare_history(self, ref) if history else None

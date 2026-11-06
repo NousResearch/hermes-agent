@@ -128,6 +128,7 @@ fields; callers may initialize a provider without an agent or a session database
 | `cwd` | Non-empty logical workspace supplied as `AIAgent(cwd=...)`, available before provider initialization. Omitted for `None` or an empty string. |
 | `gateway_session_key` | Stable messaging-chat identity for per-chat session isolation. |
 | `user_id`, `user_id_alt`, `user_name`, `chat_id` | Gateway identity fields, included when present. |
+| `user_is_owner` | `True` when `user_id` is the machine owner (`uid:<n>` / `sid:<sid>`: Desktop, the Webapp, the TUI, signed-in phones); omitted otherwise. Map it to the provider's own configured owner rather than a separate user, and never infer ownership from the id's format. |
 | `agent_identity` | Active profile name, when available. |
 | `agent_workspace`, `agent_context` | Runtime agent scope. `agent_workspace` is `hermes`; `agent_context` is `cron` for scheduler runs, `subagent` for `delegate_task` children, else `primary` — skip automatic writes for the non-primary values. |
 

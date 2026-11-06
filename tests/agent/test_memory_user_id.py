@@ -5,7 +5,10 @@ so each gateway user gets their own memory bucket instead of sharing a static on
 """
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -90,6 +93,25 @@ class TestMemoryManagerUserIdThreading:
         assert p1._init_kwargs.get("platform") == "slack"
         assert p2._init_kwargs.get("user_id") == "slack_U12345"
         assert p2._init_kwargs.get("platform") == "slack"
+
+    @pytest.mark.parametrize("user_id, expected", [
+        (None, False),            # CLI: no runtime identity
+        ("626137386", False),     # messaging user
+        ("uid:-1", False),        # another OS user
+        ("OWNER", True),          # the machine owner
+    ])
+    def test_user_is_owner_marks_only_the_machine_owner(self, user_id, expected):
+        from agent.agent_init import _memory_provider_init_kwargs
+        from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
+        from gateway.owner_identity import host_owner_subject
+
+        agent = SimpleNamespace(session_id="s", _session_db=None, session_cwd=None,
+                                **{f"_{name}": None for name in _GATEWAY_IDENTITY_PARAMS})
+        agent._user_id = host_owner_subject() if user_id == "OWNER" else user_id
+
+        kwargs = _memory_provider_init_kwargs(agent, "gui")
+
+        assert kwargs.get("user_is_owner", False) is expected
 
     def test_session_title_provenance_and_cwd_reach_provider(self, tmp_path):
         from run_agent import AIAgent

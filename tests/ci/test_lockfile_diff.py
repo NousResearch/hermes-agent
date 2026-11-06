@@ -11,6 +11,8 @@ base/head bump, add and remove packages; repin-base/repin-head only move
 dependencies between versions that both stay locked; so do alias-base/alias-head,
 through ``npm:`` aliases (a project's ``my-ms``, and ``@isaacs/cliui``'s
 ``string-width-cjs`` via an override) and a packageExtensions edge added to debug.
+extra-key keeps a foreign top-level ``bit:`` block, which pnpm writes between
+``packages`` and ``snapshots``.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ REPIN_BASE = (_ROOT / "tests/fixtures/pnpm_lock/repin-base.yaml").read_text(enco
 REPIN_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/repin-head.yaml").read_text(encoding="utf-8")
 ALIAS_BASE = (_ROOT / "tests/fixtures/pnpm_lock/alias-base.yaml").read_text(encoding="utf-8")
 ALIAS_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/alias-head.yaml").read_text(encoding="utf-8")
+EXTRA_KEY = (_ROOT / "tests/fixtures/pnpm_lock/extra-key.yaml").read_text(encoding="utf-8")
 
 
 def _lock(packages: dict[str, dict]) -> str:
@@ -167,13 +170,29 @@ def test_pnpm_project_that_appears_or_disappears_is_one_row():
     }
 
 
-@pytest.mark.parametrize("stray", ["# a note", "<<<<<<< HEAD", "\tdependencies:", "unknownKey: 1"])
-def test_pnpm_section_ends_only_at_a_known_top_level_key(stray):
+@pytest.mark.parametrize("stray", ["# a note", "<<<<<<< HEAD", "=======", "\tdependencies:", "- item"])
+def test_pnpm_section_refuses_a_column_0_line_that_is_not_a_key(stray):
     # A column-0 line that is not a lock key would otherwise end importers early,
     # and every project after it would be reported as removed.
     broken = REPIN_BASE.replace("\n  pkg:\n", f"\n{stray}\n  pkg:\n")
     with pytest.raises(ValueError, match="unreadable importers line"):
         _mod.diff_pnpm_locks(REPIN_BASE, broken)
+
+
+def test_pnpm_section_ends_at_a_top_level_key_pnpm_does_not_define():
+    # pnpm round-trips root keys it does not define (Bit's ``bit:``) and sorts them
+    # after packages, so such a key must end a section like any pnpm key.
+    from scripts.ci.pnpm_lock import section, section_keys
+
+    assert "\nbit:\n  approved:\n    - ms\n\nsnapshots:\n" in EXTRA_KEY
+    assert section_keys(EXTRA_KEY, "importers") == [".", "packages/a"]
+    assert section_keys(EXTRA_KEY, "packages")[-1] == "yallist@4.0.0"
+    assert section(EXTRA_KEY, "snapshots")["semver@7.6.0"] == {"dependencies": {"lru-cache": "6.0.0"}}
+    without_bit = EXTRA_KEY.replace("bit:\n  approved:\n    - ms\n\n", "")
+    assert _mod.diff_pnpm_locks(without_bit, EXTRA_KEY) == {"added": [], "removed": [], "updated": []}
+    # An empty workspace: the foreign key directly follows importers.
+    empty = "lockfileVersion: '9.0'\n\nimporters:\n\n  .: {}\n\nbit:\n  approved: []\n"
+    assert section_keys(empty, "importers") == ["."]
 
 
 @pytest.mark.parametrize(("old", "new"), [

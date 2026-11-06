@@ -13,14 +13,11 @@ import re
 _KEY = re.compile(r"^  (\S.*?):(?: .*)?$")
 # A key (quoted, or plain up to the first ``: ``) and its inline value, if any.
 _ENTRY = re.compile(r"""^('(?:[^']|'')*'|"(?:[^"\\]|\\.)*"|[^'"\s].*?):(?: (.*))?$""")
-# The top-level keys pnpm 9-format locks carry (pnpm's Lockfile struct); only one of
-# them ends a section, so a stray column-0 line (a comment, a conflict marker, a
+# Any top-level key (plain, or quoted as pnpm's emitter quotes ambiguous keys) ends
+# a section: pnpm keeps root keys it does not define (Bit's ``bit:`` block) and adds
+# new ones over time. Any other column-0 line (a comment, a conflict marker, a
 # tab-indented field) fails instead of silently truncating the section.
-_TOP_LEVEL = re.compile(
-    r"^(lockfileVersion|settings|catalogs|overrides|packageExtensionsChecksum|pnpmfileChecksum"
-    r"|ignoredOptionalDependencies|untrackedPnpmfileReadPackageHook|patchedDependencies"
-    r"|importers|packages|snapshots|time):(?: .*)?$"
-)
+_TOP_LEVEL = re.compile(r"""^(?:\w.*?|'(?:[^']|'')*'|"(?:[^"\\]|\\.)*"):(?: .*)?$""")
 
 
 def _unquote(key: str) -> str:

@@ -1036,6 +1036,10 @@ _WS_ISOLATION_LOCK = threading.Lock()
 _WS_ISOLATION_INSTALLED = False
 _ws_isolation_state = threading.local()  # per WS thread: .loop and .connect_kwargs
 _WS_ENDPOINT_HTTP_TIMEOUT_SECONDS = (10, 30)  # (connect, read) for the SDK's endpoint-discovery POST
+_WS_STUCK_ERROR_CODE = "feishu_ws_stuck"
+_WS_STUCK_AFTER_SECONDS = 600.0  # continuous ``retrying`` before the gateway's reconnect queue takes over
+_WS_STUCK_BUSY_RECHECK_SECONDS = 60.0  # a running turn still sends through this adapter, so wait for it ...
+_WS_STUCK_BUSY_LIMIT_SECONDS = 1800.0  # ... but a wedged session must not keep the link deaf forever
 
 
 class _ThreadLocalLoopProxy:
@@ -1336,6 +1340,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._sdk_executor_closing = False  # set on disconnect so a real teardown isn't resurrected
         self._ws_client = self._ws_future = self._ws_supervisor = self._ws_thread_loop = None
         self._ws_restart_backoff = 5.0
+        self._ws_stuck_timer: Optional[asyncio.TimerHandle] = None
+        self._ws_retrying_since = 0.0
+        self._ws_stuck_notify_task: Optional[asyncio.Future] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner = self._webhook_site = self._event_handler = None
         self._seen_message_ids: dict[str, float] = {}  # message_id → seen_at (time.time())
@@ -1574,6 +1581,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        self._cancel_ws_stuck_timer()
         if self._ws_supervisor is not None:
             self._ws_supervisor.cancel()
             self._ws_supervisor = None
@@ -1605,7 +1613,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # Send the CLOSE frame BEFORE tearing down the thread loop; otherwise Feishu keeps
         # routing to the stale endpoint until server-side CLOSE-WAIT expires (minutes to hours).
         loop_alive = ws_thread_loop is not None and not ws_thread_loop.is_closed()
-        if ws_client is not None and loop_alive and hasattr(ws_client, "_disconnect"):
+        # A stuck link has no socket to CLOSE and possibly a thread that will never exit. Waiting for
+        # either outlives the runner's disconnect budget, and a detached disconnect finishing after the
+        # replacement connected would release the app lock the replacement now holds.
+        link_stuck = self.fatal_error_code == _WS_STUCK_ERROR_CODE
+        if ws_client is not None and loop_alive and not link_stuck and hasattr(ws_client, "_disconnect"):
             try:
                 future = asyncio.run_coroutine_threadsafe(ws_client._disconnect(), ws_thread_loop)
                 # A CLOSE frame is one control frame; if 5s isn't enough the link is already wedged.
@@ -1633,7 +1645,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
 
         ws_future = self._ws_future
-        if ws_future is not None:
+        if ws_future is not None and link_stuck:
+            # Nobody awaits it now; its eventual CancelledError is expected, not an unretrieved failure.
+            ws_future.add_done_callback(lambda done: done.cancelled() or done.exception())
+        elif ws_future is not None:
             try:
                 logger.debug("[Feishu] Waiting for websocket thread to exit (timeout=10s)")
                 await asyncio.wait_for(asyncio.shield(ws_future), timeout=10.0)
@@ -3907,6 +3922,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                     "ws_link_lost", platform_state="retrying", error_code=None,
                     error_message="Feishu websocket link lost; rebuilding",
                 )
+                self._arm_ws_stuck_timer()
             await asyncio.sleep(backoff)
             if not self._running:
                 return
@@ -3920,6 +3936,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     def _ws_link_up(self, ws_client: Any) -> None:
         """WS thread reports its link is up (SDK receive loop scheduled); re-stamp ``connected`` after a rebuild."""
         if self._running and self._ws_client is ws_client:
+            self._cancel_ws_stuck_timer()
             self._mark_connected()
 
     def _ws_link_retrying(self, ws_client: Any) -> None:
@@ -3929,6 +3946,37 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
                 "ws_link_lost", platform_state="retrying", error_code=None,
                 error_message="Feishu websocket link lost; reconnecting",
             )
+            self._arm_ws_stuck_timer()
+
+    def _arm_ws_stuck_timer(self) -> None:
+        """Bound ``retrying``: a wedged SDK call neither exits the WS thread nor reaches ``_ws_link_up``.
+
+        Runs on the loop clock, which stops while the machine sleeps, so sleep can't look like a stuck link.
+        """
+        if self._ws_stuck_timer is None:
+            loop = asyncio.get_running_loop()
+            self._ws_retrying_since = loop.time()
+            self._ws_stuck_timer = loop.call_later(_WS_STUCK_AFTER_SECONDS, self._on_ws_stuck_timer)
+
+    def _cancel_ws_stuck_timer(self) -> None:
+        if self._ws_stuck_timer is not None:
+            self._ws_stuck_timer.cancel()
+            self._ws_stuck_timer = None
+
+    def _on_ws_stuck_timer(self) -> None:
+        """Hand a link that stayed ``retrying`` to the gateway, which rebuilds the adapter with its own backoff."""
+        self._ws_stuck_timer = None
+        if not self._running:
+            return
+        loop = asyncio.get_running_loop()
+        stuck_for = loop.time() - self._ws_retrying_since
+        if self._active_sessions and stuck_for < _WS_STUCK_BUSY_LIMIT_SECONDS:
+            self._ws_stuck_timer = loop.call_later(_WS_STUCK_BUSY_RECHECK_SECONDS, self._on_ws_stuck_timer)
+            return
+        message = f"Feishu websocket stayed in reconnect for {stuck_for:.0f}s; rebuilding the adapter"
+        logger.error("[Feishu] %s", message)
+        self._set_fatal_error(_WS_STUCK_ERROR_CODE, message, retryable=True)
+        self._ws_stuck_notify_task = asyncio.ensure_future(self._notify_fatal_error())
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:

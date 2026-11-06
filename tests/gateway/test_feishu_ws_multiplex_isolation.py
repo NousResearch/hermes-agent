@@ -14,10 +14,11 @@ import sys
 import threading
 import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import requests
 
+from gateway.config import PlatformConfig
 from plugins.platforms.feishu import adapter as feishu_adapter
 
 
@@ -254,6 +255,7 @@ def test_sdk_reconnect_ladder_publishes_retrying(monkeypatch):
     stub = _adapter_stub(_loop=adapter_loop, _running=True, _ws_client=client, status_writes=[])
     stub._write_runtime_status_safe = lambda context, **kw: stub.status_writes.append(kw["platform_state"])
     stub._ws_link_retrying = types.MethodType(feishu_adapter.FeishuAdapter._ws_link_retrying, stub)
+    stub._arm_ws_stuck_timer = lambda: None
 
     thread = threading.Thread(target=feishu_adapter._run_official_feishu_ws_client, args=(client, stub), daemon=True)
     thread.start()
@@ -313,6 +315,7 @@ def _supervisor_stub():
         status_writes=[],
     )
     stub._write_runtime_status_safe = lambda context, **kw: stub.status_writes.append(kw["platform_state"])
+    stub._arm_ws_stuck_timer = lambda: None
 
     async def _connect_websocket():
         stub.connect_calls += 1
@@ -377,3 +380,128 @@ def test_supervisor_stops_when_disconnect_nils_the_client():
     stub, task = asyncio.run(scenario())
     assert task.done()
     assert stub.connect_calls == 0
+
+
+def _real_adapter():
+    """A real adapter with a live link registered. Tests fire the stuck timer themselves, not the clock."""
+    adapter = feishu_adapter.FeishuAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "app_secret": "b"}))
+    adapter._running = True
+    adapter._ws_client = object()
+    adapter.fatal_notifications = []
+
+    async def _on_fatal(failed):
+        adapter.fatal_notifications.append(failed.fatal_error_code)
+
+    adapter.set_fatal_error_handler(_on_fatal)
+    return adapter
+
+
+def test_link_stuck_in_retrying_goes_to_the_gateway_reconnect_queue():
+    """A wedged SDK call neither exits the WS thread nor reports the link up, so the
+    profile stayed deaf behind ``retrying`` for hours with nothing escalating it."""
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._ws_link_retrying(adapter._ws_client)
+        adapter._on_ws_stuck_timer()
+        await adapter._ws_stuck_notify_task
+
+    asyncio.run(scenario())
+    assert adapter.fatal_error_code == feishu_adapter._WS_STUCK_ERROR_CODE
+    assert adapter.fatal_error_retryable is True  # non-retryable would never be rebuilt
+    assert adapter.fatal_notifications == [feishu_adapter._WS_STUCK_ERROR_CODE]
+
+
+def test_retrying_ladder_rungs_do_not_restart_the_stuck_clock():
+    """Only continuous failure escalates, so repeated ``retrying`` reports keep the first deadline."""
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._ws_link_retrying(adapter._ws_client)
+        first = adapter._ws_stuck_timer
+        adapter._ws_link_retrying(adapter._ws_client)
+        assert adapter._ws_stuck_timer is first
+        assert not first.cancelled()
+        adapter._cancel_ws_stuck_timer()
+
+    asyncio.run(scenario())
+
+
+def test_link_recovering_in_time_is_not_escalated():
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._ws_link_retrying(adapter._ws_client)
+        pending = adapter._ws_stuck_timer
+        adapter._ws_link_up(adapter._ws_client)
+        assert pending.cancelled()
+
+    asyncio.run(scenario())
+    assert adapter.fatal_error_code is None
+
+
+def test_running_turn_defers_the_rebuild_until_it_ends():
+    """The turn's reply still goes out through this adapter (REST works without the WS link)."""
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._active_sessions["session"] = asyncio.Event()
+        adapter._ws_link_retrying(adapter._ws_client)
+        adapter._on_ws_stuck_timer()
+        assert adapter.fatal_error_code is None
+        assert adapter._ws_stuck_timer is not None  # still watching
+        adapter._active_sessions.clear()
+        adapter._on_ws_stuck_timer()
+        await adapter._ws_stuck_notify_task
+
+    asyncio.run(scenario())
+    assert adapter.fatal_notifications == [feishu_adapter._WS_STUCK_ERROR_CODE]
+
+
+def test_wedged_session_cannot_defer_the_rebuild_forever():
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._active_sessions["session"] = asyncio.Event()
+        adapter._ws_link_retrying(adapter._ws_client)
+        adapter._ws_retrying_since -= feishu_adapter._WS_STUCK_BUSY_LIMIT_SECONDS
+        adapter._on_ws_stuck_timer()
+        await adapter._ws_stuck_notify_task
+
+    asyncio.run(scenario())
+    assert adapter.fatal_notifications == [feishu_adapter._WS_STUCK_ERROR_CODE]
+
+
+def test_disconnect_stops_the_stuck_watch():
+    """A deliberate shutdown must not report a stuck link later."""
+    adapter = _real_adapter()
+
+    async def scenario():
+        adapter._ws_link_retrying(adapter._ws_client)
+        pending = adapter._ws_stuck_timer
+        await adapter.disconnect()
+        assert pending.cancelled()
+
+    asyncio.run(scenario())
+    assert adapter.fatal_error_code is None
+
+
+def test_stuck_link_teardown_does_not_wait_on_the_wedged_thread():
+    """The runner gives disconnect() 5s, then detaches it. A detached disconnect that ends after the
+    replacement connected would release the app lock the replacement holds, so it must finish in time."""
+    adapter = _real_adapter()
+    adapter._fatal_error_code = feishu_adapter._WS_STUCK_ERROR_CODE
+    close_link = AsyncMock()
+    wedged_thread_loop = asyncio.new_event_loop()  # never runs, like a loop whose thread is blocked
+
+    async def scenario():
+        adapter._ws_future = asyncio.get_running_loop().create_future()  # the thread never exits
+        teardown = asyncio.ensure_future(
+            adapter._teardown_ws_thread(SimpleNamespace(_disconnect=close_link), wedged_thread_loop)
+        )
+        await asyncio.sleep(0)
+        assert teardown.done()  # both waits skipped: it never yielded to a timeout
+
+    asyncio.run(scenario())
+    wedged_thread_loop.close()
+    close_link.assert_not_called()  # the SDK already dropped the socket; there is nothing to CLOSE

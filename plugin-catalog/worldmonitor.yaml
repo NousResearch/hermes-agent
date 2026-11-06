@@ -1,0 +1,18 @@
+name: worldmonitor
+title: WorldMonitor
+repo: https://github.com/koala73/worldmonitor-hermes-plugin
+sha: 8db8fb2f5ea71d464c2f380a7c8564868c678986
+version: "0.1.0"
+description: "Source-aware global intelligence through WorldMonitor's hosted MCP: country risk, conflicts, markets, energy, shipping and natural hazards. Configuration-only Agent Plugins v1 package with one skill. Public source inventory works without credentials; other intelligence requires a signed-in account and some tools require a subscription. Disclosure: connects to worldmonitor.app; remote tools are dynamic and not frozen by this SHA; authenticated calls may use account allowance. Requests Hermes untrusted-server approval for tools not annotated read-only. No local runtime code, hooks, background service, telemetry collector or self-updater."
+maintainer: koala73
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://worldmonitor.app/mcp
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

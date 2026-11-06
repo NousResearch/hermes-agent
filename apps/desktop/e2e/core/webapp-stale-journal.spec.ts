@@ -13,29 +13,24 @@
  * the other Webapp journeys; needs `pnpm run build:webapp` and a Chromium Playwright can launch.
  */
 
-import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { type Browser, type BrowserContext, chromium, expect, type Page, test } from '@playwright/test'
+import { type Browser, type BrowserContext, expect, type Page, test } from '@playwright/test'
 
 import {
   backendProcesses,
   composer,
   type CoreSandbox,
-  createCoreSandbox,
   currentSessionId,
-  DESKTOP_ROOT,
-  freePort,
   recordWebSockets,
   renderedTranscript,
-  sandboxProcesses,
   send,
   storedSessionForMarker,
   webappLaunchLink,
-  writeProviderHome
+  withWebapp
 } from './harness'
-import { gate, type Gate, type ScriptedProvider, startScriptedProvider } from './provider'
+import { gate, type Gate, type ScriptedProvider } from './provider'
 
 const nonce = Math.random()
   .toString(36)
@@ -217,45 +212,6 @@ async function phoneReopens(phone: Phone, sandbox: CoreSandbox): Promise<{ tab: 
   await expect.poll(() => currentSessionId(tab)).toBe(phone.sessionId)
 
   return { tab, newestPage }
-}
-
-async function withWebapp(
-  label: string,
-  body: (sandbox: CoreSandbox, provider: ScriptedProvider, browser: Browser) => Promise<void>
-) {
-  test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
-  expect(
-    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (pnpm run build:webapp)'
-  ).toBe(true)
-
-  const provider = await startScriptedProvider()
-  const sandbox = createCoreSandbox(label)
-  writeProviderHome(sandbox.hermesHome, provider.url)
-  // todo_list is deferred behind tool_search by default; the scripted model calls it directly.
-  fs.appendFileSync(
-    path.join(sandbox.hermesHome, 'config.yaml'),
-    `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\ntools:\n  tool_search:\n    defer: []\n`
-  )
-  let browser: Browser | null = null
-
-  try {
-    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
-    await body(sandbox, provider, browser)
-  } finally {
-    await browser?.close().catch(() => undefined)
-
-    for (const proc of sandboxProcesses(sandbox)) {
-      try {
-        process.kill(proc.pid, 'SIGKILL')
-      } catch {
-        /* already gone */
-      }
-    }
-
-    await provider.close()
-    sandbox.cleanup()
-  }
 }
 
 test('a Webapp tab that died mid-turn does not replay that turn after the newest reply', async () => {

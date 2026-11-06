@@ -47,6 +47,8 @@ class OAuthClient:
     hosts: tuple[str, ...]
     client_secret_env: str = ""
     authorize_params: tuple[tuple[str, str], ...] = ()
+    grant_type: str = "authorization_code"
+    token_params: tuple[tuple[str, str], ...] = ()
 
     @property
     def fingerprint(self) -> str:
@@ -91,11 +93,20 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     oauth_id = entry.get("id")
     problems = [] if isinstance(oauth_id, str) and _ID_RE.match(oauth_id) else [
         f"{where}.id: {entry.get('id')!r} must be lowercase letters, digits and dashes"]
-    for field in ("authorize_url", "token_url"):
-        problems += _url_problems(f"{where}.{field}", entry.get(field))
-    scopes = entry.get("scopes")
-    if not (isinstance(scopes, list) and scopes and all(isinstance(s, str) and s.strip() for s in scopes)):
-        problems.append(f"{where}.scopes: must be a non-empty list of scope strings")
+    grant_type = entry.get("grant_type", "authorization_code")
+    if grant_type not in {"authorization_code", "client_credentials"}:
+        problems.append(f"{where}.grant_type: must be authorization_code or client_credentials")
+    if grant_type == "authorization_code":
+        problems += _url_problems(f"{where}.authorize_url", entry.get("authorize_url"))
+    elif "authorize_url" in entry:
+        problems.append(f"{where}.authorize_url: is not used by client_credentials")
+    problems += _url_problems(f"{where}.token_url", entry.get("token_url"))
+    scopes = entry.get("scopes", [])
+    if grant_type == "authorization_code":
+        if not (isinstance(scopes, list) and scopes and all(isinstance(s, str) and s.strip() for s in scopes)):
+            problems.append(f"{where}.scopes: must be a non-empty list of scope strings")
+    elif not (isinstance(scopes, list) and all(isinstance(s, str) and s.strip() for s in scopes)):
+        problems.append(f"{where}.scopes: must be a list of scope strings")
     for field, required in (("client_id_env", True), ("client_secret_env", False)):
         name = entry.get(field)
         if (required or name) and not (isinstance(name, str) and _ENV_RE.match(name)):
@@ -108,15 +119,22 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
     params = entry.get("authorize_params") or {}
     if not (isinstance(params, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in params.items())):
         problems.append(f"{where}.authorize_params: must map strings to strings")
+    token_params = entry.get("token_params") or {}
+    if not (isinstance(token_params, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in token_params.items())):
+        problems.append(f"{where}.token_params: must map strings to strings")
+    if grant_type == "client_credentials" and not entry.get("client_secret_env"):
+        problems.append(f"{where}.client_secret_env: is required for client_credentials")
     return problems
 
 
 def _client(entry: dict) -> OAuthClient:
     return OAuthClient(
-        id=entry["id"], authorize_url=entry["authorize_url"], token_url=entry["token_url"],
-        scopes=tuple(entry["scopes"]), client_id_env=entry["client_id_env"], hosts=tuple(entry["hosts"]),
+        id=entry["id"], authorize_url=entry.get("authorize_url", ""), token_url=entry["token_url"],
+        scopes=tuple(entry.get("scopes") or ()), client_id_env=entry["client_id_env"], hosts=tuple(entry["hosts"]),
         client_secret_env=entry.get("client_secret_env") or "",
-        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())))
+        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())),
+        grant_type=entry.get("grant_type", "authorization_code"),
+        token_params=tuple(sorted((entry.get("token_params") or {}).items())))
 
 
 def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient], list[str]]:
@@ -387,9 +405,29 @@ def _live_token(row: Mapping[str, Any]) -> str:
     return token if token and live else ""
 
 
+def _client_credentials_token(client: OAuthClient, key: str) -> str:
+    """Acquire and persist a machine token while the caller holds the auth-store lock."""
+    fields = dict(client.token_params)
+    fields["grant_type"] = "client_credentials"
+    payload = _token_request(client, key)(fields)
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise _auth_error(key, "the token endpoint returned no access token.", "oauth_refresh_failed")
+    try:
+        expires_in = max(0, int(payload.get("expires_in", 0)))
+    except (TypeError, ValueError):
+        expires_in = 0
+    row = {"access_token": token, "expires_at_ms": int(time.time() * 1000) + expires_in * 1000,
+           "fingerprint": client.fingerprint}
+    _write_grant(key, row)
+    return token
+
+
 def _refresh(client: OAuthClient, key: str, row: dict) -> str:
     """Rotate the grant; the caller holds the auth-store lock, so a peer process waits instead of spending
     the same refresh token, and a logout cannot be undone by a refresh in flight."""
+    if client.grant_type == "client_credentials":
+        return _client_credentials_token(client, key)
     from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     from hermes_cli.auth_constants import AuthError
     from hermes_cli.auth_oauth_pkce_plugin import _post_token
@@ -415,7 +453,12 @@ def _bearer(plugin_dir: Path, client: OAuthClient) -> str:
     from hermes_cli.auth import _auth_store_lock
 
     key = f"{plugin_key(plugin_dir)}:{client.id}"
-    token = _live_token(_usable_grant(_read_grant(key), client, key))
+    row = _read_grant(key)
+    if client.grant_type == "client_credentials" and row is None:
+        with _auth_store_lock():
+            row = _read_grant(key)
+            return _live_token(row) or _client_credentials_token(client, key)
+    token = _live_token(_usable_grant(row, client, key))
     if token:
         return token
     with _auth_store_lock():
@@ -474,6 +517,17 @@ def _cli_add(args: Any, client: OAuthClient, key: str) -> bool:
     if _unattended():
         raise SystemExit(f"`hermes auth add {key}` signs you in through a browser; run it in your own terminal, "
                          "not from a gateway, cron job or agent session.")
+    if client.grant_type == "client_credentials":
+        print(f"Plugin '{key.rsplit(':', 1)[0]}' obtains a Hermes-managed machine token from "
+              f"{urlparse(client.token_url).hostname}; the token is sent only to {', '.join(client.hosts)}.")
+        try:
+            from hermes_cli.auth import _auth_store_lock
+            with _auth_store_lock():
+                _client_credentials_token(client, key)
+        except AuthError as exc:
+            raise SystemExit(f"Login failed: {exc}") from None
+        print(f"Configured {client.id} for plugin '{key.rsplit(':', 1)[0]}' in this Hermes profile.")
+        return True
     secret = " and the client secret" if client.client_secret_env else ""
     print(f"Plugin '{key.rsplit(':', 1)[0]}' signs in to {client.id} at {urlparse(client.authorize_url).hostname}. "
           f"The sign-in code{secret} go to {urlparse(client.token_url).hostname}; the token is sent only to "
@@ -512,7 +566,10 @@ def _cli_refresh(args: Any, client: OAuthClient, key: str) -> bool:
 
     try:
         with _auth_store_lock():
-            _refresh(client, key, _usable_grant(_read_grant(key), client, key))
+            if client.grant_type == "client_credentials":
+                _client_credentials_token(client, key)
+            else:
+                _refresh(client, key, _usable_grant(_read_grant(key), client, key))
     except (AuthError, ProviderNotSignedIn) as exc:
         raise SystemExit(f"Refresh failed: {exc}") from None
     print(f"{key}: refreshed")

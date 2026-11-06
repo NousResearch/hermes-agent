@@ -1,5 +1,12 @@
+import type { OwnerScope } from '@/api/client'
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import {
+  isArtifactFilePath,
+  mediaExternalUrl,
+  mediaPathFromMarkdownHref,
+  pathToLocalFileUrl,
+  resolveMediaDisplaySrc
+} from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -14,6 +21,7 @@ export interface ArtifactRecord {
   label: string
   sessionId: string
   profile?: string
+  owner?: OwnerScope
   sessionTitle: string
   timestamp: number
 }
@@ -234,26 +242,27 @@ function artifactKind(value: string): ArtifactKind {
   return 'link'
 }
 
-function artifactHref(value: string): string {
+function artifactHref(value: string, owner?: OwnerScope): string {
   if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')) {
     return value
   }
 
   if (value.startsWith('file://') || value.startsWith('/') || isWindowsPath(value)) {
-    return mediaExternalUrl(value)
+    // A known producer must not inherit the foreground gateway's URL/token.
+    return owner?.connectionId ? pathToLocalFileUrl(value) : mediaExternalUrl(value)
   }
 
   return value
 }
 
-export async function artifactImageSrc(value: string): Promise<string> {
+export async function artifactImageSrc(value: string, owner?: OwnerScope): Promise<string> {
   // Delegate the whole local/remote ladder to the shared media resolver:
   // inline (http/data) stays as-is, remote gateway goes through the
   // authenticated fs bridge, local desktop through the Electron
   // readFileDataUrl, and bare non-path link values fall through untouched.
   // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
   // and regress one of its legs (#83380).
-  return resolveMediaDisplaySrc(value)
+  return resolveMediaDisplaySrc(value, owner)
 }
 
 function artifactLabel(value: string): string {
@@ -497,6 +506,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
 export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = artifactSessionTitle(session)
+  const owner = session.connection_id ? { connectionId: session.connection_id, profile: session.profile } : undefined
 
   for (const message of messages) {
     if (message.role !== 'assistant' && message.role !== 'tool') {
@@ -510,7 +520,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         return
       }
 
-      const key = `${session.id}:${value}`
+      const key = JSON.stringify([session.connection_id ?? null, session.profile ?? null, session.id, value])
 
       if (found.has(key)) {
         return
@@ -520,10 +530,11 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         id: key,
         kind: artifactKind(value),
         value,
-        href: artifactHref(value),
+        href: artifactHref(value, owner),
         label: artifactLabel(value),
         sessionId: session.id,
         profile: session.profile,
+        owner,
         sessionTitle: title,
         timestamp: artifactTimestamp(message, session)
       })

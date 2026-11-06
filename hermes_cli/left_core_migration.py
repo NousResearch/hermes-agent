@@ -240,14 +240,18 @@ def agent_imports_in_use(home: Path, *, process_env: bool = False) -> bool:
 
 
 def _home_env(home: Path, name: str, *, process_env: bool) -> str:
-    """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`),
+    """*name* as *home*'s dotenv layers resolve it (:func:`~hermes_cli.env_loader.resolve_home_dotenv`), else
+    from the secret scope bound for *home* (a multiplexed secondary's external secret sources live only there),
     else, with *process_env* and for the launch home only, the process environment."""
+    from agent.secret_scope import current_secret_scope, current_secret_scope_home
     from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     value = resolve_home_dotenv(home).get(name, "").strip()
-    if not value and process_env:
-        from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-        if hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
-            value = os.environ.get(name, "").strip()
+    scope_home = current_secret_scope_home()
+    if not value and scope_home and hermes_home_key(scope_home) == hermes_home_key(home):
+        value = str((current_secret_scope() or {}).get(name) or "").strip()
+    if not value and process_env and hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home()):
+        value = os.environ.get(name, "").strip()
     return value
 
 

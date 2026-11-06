@@ -21,8 +21,9 @@ DEFAULT_WINDOW_SECONDS = 60
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
 #: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
-#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
-STATIC_TIERS = frozenset({"priority", "ultrafast"})
+#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model; flex is the
+#: cheaper latency-tolerant tier on OpenAI and tier-eligible Gemini models.
+STATIC_TIERS = frozenset({"priority", "ultrafast", "flex"})
 # Codex app-server names for wire tiers it accepts (turn/start.serviceTier); a tier missing here is not sent.
 CODEX_TIER_WORDS: dict[str, str] = {"priority": "fast"}
 NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
@@ -30,7 +31,7 @@ NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "ultra": "ultrafast", "auto": "auto", "cold": "cold",
+    "ultrafast": "ultrafast", "ultra": "ultrafast", "flex": "flex", "auto": "auto", "cold": "cold",
 }
 # Typed /fast shorthands -> canonical /fast word (pickers always send the canonical value).
 FAST_ARG_ALIASES: dict[str, str] = {"ultra": "ultrafast"}
@@ -54,6 +55,21 @@ def parse_exact_service_tier(raw: Any) -> str:
 def service_tier_word(tier: Any) -> str:
     """The user-facing word for a stored tier (``priority`` -> ``fast``, None/"" -> ``normal``)."""
     return {"priority": "fast", None: "normal", "": "normal"}.get(tier, tier)
+
+
+def static_tier_request_overrides(
+    tier: Any, model: Any, *, provider: str | None = None, base_url: str | None = None,
+) -> dict[str, Any]:
+    """The request_overrides a STATIC tier pins for the session (``{}`` for normal/auto/cold and for a
+    model without fast capacity). The one translation every surface that builds an agent from a chosen
+    tier goes through, so a composer pick and a config default cannot disagree (#135672)."""
+    if tier not in STATIC_TIERS:
+        return {}
+    from hermes_cli.models import resolve_fast_mode_overrides
+    try:
+        return resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier) or {}
+    except Exception:  # health: allow BLE001 -- a tier is a preference: a broken catalog lookup must never fail an agent build
+        return {}
 
 
 def begin_turn(agent: Any, conversation_history: Any) -> None:

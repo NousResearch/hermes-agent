@@ -285,3 +285,61 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def _share_args(api_module, **overrides):
+    values = {"file_id": "file1", "role": "reader", "type": "user",
+              "email": "alice@example.com", "domain": "", "notify": False}
+    values.update(overrides)
+    return api_module.argparse.Namespace(**values)
+
+
+def test_drive_share_owner_sets_transfer_ownership_gws(api_module, monkeypatch, capsys):
+    """role=owner must send transferOwnership (Drive rejects it otherwise) and notify."""
+    captured = {}
+
+    def fake_run(parts, params=None, body=None):
+        captured.update(parts=parts, params=params, body=body)
+        return {"id": "perm1"}
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_run)
+    api_module.drive_share(_share_args(api_module, role="owner"))
+
+    assert captured["parts"] == ["drive", "permissions", "create"]
+    assert captured["params"]["transferOwnership"] is True
+    assert captured["params"]["sendNotificationEmail"] is True
+    assert captured["body"] == {"type": "user", "role": "owner", "emailAddress": "alice@example.com"}
+    assert json.loads(capsys.readouterr().out)["role"] == "owner"
+
+
+def test_drive_share_non_owner_omits_transfer_ownership_gws(api_module, monkeypatch, capsys):
+    captured = {}
+    monkeypatch.setattr(
+        api_module, "_run_gws",
+        lambda parts, params=None, body=None: captured.update(params=params) or {"id": "p"},
+    )
+    api_module.drive_share(_share_args(api_module, role="writer"))
+    assert "transferOwnership" not in captured["params"]
+    assert captured["params"]["sendNotificationEmail"] is False
+    capsys.readouterr()
+
+
+def test_drive_share_owner_sets_transfer_ownership_python_sdk(api_module, monkeypatch, capsys):
+    service = MagicMock()
+    service.permissions().create().execute.return_value = {"id": "perm1"}
+    service.permissions().create.reset_mock()
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+
+    api_module.drive_share(_share_args(api_module, role="owner"))
+
+    kwargs = service.permissions().create.call_args.kwargs
+    assert kwargs["transferOwnership"] is True
+    assert kwargs["sendNotificationEmail"] is True
+    capsys.readouterr()
+
+
+def test_drive_share_owner_requires_user_type(api_module, monkeypatch):
+    monkeypatch.setattr(api_module, "_run_gws", lambda *a, **k: pytest.fail("must not call Drive"))
+    with pytest.raises(SystemExit):
+        api_module.drive_share(_share_args(api_module, role="owner", type="anyone", email=""))

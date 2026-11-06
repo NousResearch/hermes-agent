@@ -138,14 +138,22 @@ def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
 
 
-# Every platform whose core default composite never carried the yb_* tools: core put them in
-# ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core).
-_YUANBAO_OFF_PLATFORMS = (
-    "cli", "telegram", "discord", "slack", "whatsapp", "whatsapp_cloud", "signal", "bluebubbles", "email",
-    "mattermost", "matrix", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin", "qqbot", "webhook",
-    "api_server", "cron", "acp", "sms", "a2a", "buzz", "google_chat", "irc", "line", "ntfy", "photon", "raft",
-    "simplex", "teams",
-)
+def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
+    """Every platform name core knows, minus *platform*: the ``hermes_cli.platforms`` table, the shipped
+    ``plugins/platforms/<name>`` dirs (the dir is the registered name), the ``acp`` surface and *others*
+    (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
+    from hermes_cli.platforms import PLATFORMS
+    try:
+        bundled = {p.name for p in (Path(__file__).resolve().parents[1] / "plugins" / "platforms").iterdir()
+                   if (p / "plugin.yaml").is_file()}
+    except OSError:
+        bundled = set()
+    return tuple(sorted({*PLATFORMS, *bundled, "acp", *others} - {platform}))
+
+
+# Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
+# platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
+_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
 
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")

@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -94,6 +95,12 @@ def start_loop_liveness_watchdog(
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
     opt-out."""
     stop_event = threading.Event()
+    # The thread a post-mortem has to read first is the loop's own. ``BaseEventLoop`` records it
+    # while the loop runs, and this starter runs on the loop thread, so its own ident covers the
+    # mock and not-yet-running cases.
+    loop_thread_id = getattr(loop, "_thread_id", None)
+    if not isinstance(loop_thread_id, int):
+        loop_thread_id = threading.get_ident()
 
     def _watchdog() -> None:
         strikes = 0
@@ -133,7 +140,7 @@ def start_loop_liveness_watchdog(
             _write_watchdog_dump(
                 get_shutdown_watchdog_dump_path(), delay_s=probe_timeout * strikes,
                 snapshot={"strikes": strikes, "probe_interval_s": probe_interval},
-                event="loop_liveness_watchdog_fired")
+                event="loop_liveness_watchdog_fired", loop_thread_id=loop_thread_id)
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
@@ -207,6 +214,11 @@ def get_shutdown_watchdog_dump_path(home: Optional[Path] = None) -> Path:
     return _home(home).joinpath(*_WATCHDOG_DUMP_RELATIVE)
 
 
+def _thread_name(ident: Optional[int]) -> Optional[str]:
+    """Name of the live thread with this ident, or None once it has exited."""
+    return next((thread.name for thread in threading.enumerate() if thread.ident == ident), None)
+
+
 def write_loop_heartbeat(
     *, pid: Optional[int] = None, start_time: Optional[float] = None,
     home: Optional[Path] = None, extra: Optional[dict[str, Any]] = None) -> Path:
@@ -239,14 +251,30 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
-                         event: str = "shutdown_watchdog_fired") -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""
-    header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
-              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+                         event: str = "shutdown_watchdog_fired",
+                         loop_thread_id: Optional[int] = None) -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr).
+
+    ``loop_thread_id`` names the monitored event loop's thread, whose own stack is written before
+    the all-threads dump: that dump does not say which thread runs the loop, which is the first
+    thing a post-mortem of a liveness death needs.
+    """
+    header: dict[str, Any] = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
+                              "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+    if loop_thread_id is not None:
+        header["monitored_loop_thread_id"] = loop_thread_id
+        header["monitored_loop_thread_name"] = _thread_name(loop_thread_id)
     with contextlib.suppress(OSError):  # unwritable dir: skip only the file copy, stderr still runs
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
+        fh.write(json.dumps(header, default=str) + "\n")
+        if loop_thread_id is not None:
+            fh.write("--- monitored gateway loop thread stack ---\n")
+            frame = sys._current_frames().get(loop_thread_id)
+            fh.write("".join(traceback.format_stack(frame)) if frame is not None
+                     else "(monitored loop thread stack unavailable: thread may have exited)\n")
+            fh.flush()
+        fh.write("--- faulthandler dump (all threads) ---\n")
         fh.flush()
         try:
             faulthandler.dump_traceback(file=fh, all_threads=True)

@@ -164,3 +164,48 @@ def test_restore_keeps_its_target_alive_while_taking_the_safety_snapshot(history
     result = manager.restore(str(project), target)
     assert result["success"], result
     assert (project / "old.bin").stat().st_size == 1_300_000
+
+
+def test_size_round_skips_an_unwalkable_ref_and_prunes_the_rest(tmp_path, monkeypatch, caplog):
+    """A ref whose history cannot be walked (e.g. a missing parent object, #136935) must be
+    skipped by the size round, not abort it for every other project in the shared store."""
+    from tools.checkpoint_pruning import GC_PENDING_NAME
+
+    base = tmp_path / "checkpoints"
+    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", base)
+    projects = sorted(
+        (tmp_path / name for name in ("project-a", "project-b")),
+        key=lambda path: checkpoints._project_hash(str(path)),
+    )
+    for project in projects:
+        project.mkdir()
+    manager = checkpoints.CheckpointManager(enabled=True, max_total_size_mb=0)
+    for project in projects:
+        blob = project / "old.bin"
+        blob.write_bytes(os.urandom(1_300_000))
+        assert manager.ensure_checkpoint(str(project), "large-oldest")
+        blob.unlink()
+        (project / "small.txt").write_text("newer", encoding="utf-8")
+        manager.new_turn()
+        assert manager.ensure_checkpoint(str(project), "small-newer")
+    store = checkpoints._store_path(base)
+    broken_ref = checkpoints._ref_name(checkpoints._project_hash(str(projects[0])))
+    ok, out, _ = checkpoints._run_git(["rev-list", broken_ref], store, str(base))
+    assert ok
+    root = out.splitlines()[-1]  # rev-list is newest-first; the root commit is the oldest.
+    (store / "objects" / root[:2] / root[2:]).unlink()
+    # The ref now cannot be walked at all — the reported broken-store state.
+    ok, _, _ = checkpoints._run_git(["rev-list", "--reverse", broken_ref], store, str(base))
+    assert not ok
+
+    manager.max_total_size_mb = 1
+    (projects[1] / "newest.txt").write_text("newest", encoding="utf-8")
+    manager.new_turn()
+    assert manager.ensure_checkpoint(str(projects[1]), "newest")
+
+    # The round dropped the healthy project's oldest snapshot instead of stopping at the
+    # broken sibling, and left the gc to the periodic prune as usual.
+    assert (store / GC_PENDING_NAME).exists()
+    assert [row["reason"] for row in manager.list_checkpoints(str(projects[1]))] == \
+        ["newest", "small-newer"]
+    assert "unprunable checkpoint ref" in caplog.text

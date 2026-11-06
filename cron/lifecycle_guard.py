@@ -37,7 +37,15 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # See #77173.
     # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
     # same command, so the suffix is optional here.
-    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    # The in-tree self-update verb belongs in this refusal too: it drains the gateway
+    # this command is running inside (every inbound message on every served profile is
+    # refused with ``runtime_draining`` for the whole drain budget), SIGKILLs it, replaces
+    # the code tree under the running process and migrates ``config.yaml``. That is
+    # strictly more destructive than the restart this branch already refuses.
+    # ``-c`` is a real spelling (``hermes -c update``) and must sit before the
+    # whitespace class. A hyphen may NOT separate the token from the verb:
+    # ``hermes-update-guard.md`` is a filename, not an invocation (#144547).
+    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?(?:\s+-c)?\s+(?:gateway\s+)?(?:restart|stop|uninstall|update|upgrade)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by

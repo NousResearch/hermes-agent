@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main_install_repair import _is_windows_npm_path, _resolve_node_runtime_npm
 
 
@@ -18,6 +20,7 @@ def test_windows_npm_path_refuses_windows_shims_but_not_native_data_mounts():
     assert not _is_windows_npm_path("/usr/bin/npm")
 
 
+@pytest.mark.platforms("posix")
 def test_resolve_node_runtime_npm_never_rescans_path_past_a_windows_shim(monkeypatch):
     """A Windows npm shim is refused on a POSIX host, and no other npm is hunted down on the
     user's PATH: Hermes runs only its PM-managed toolchain."""

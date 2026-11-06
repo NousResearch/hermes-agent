@@ -9,14 +9,18 @@ is independent, and must be at most 400 lines.
 ## Outcome and provenance
 
 Exactly one outcome: `WRITE(site=(start,end), new_text=bytes)` where `site` is
-zero-based half-open in the **original file**, and `new_text` is the **entire
+zero-based half-open **line indices**, not bytes or character offsets, in the
+original file; `new_text` is the **entire
 resulting file**, including exact terminators; `REFUSE(code)`; or
 `OUT_OF_DOMAIN`. Refusal leaves all original files unchanged. Codes in this
 version: `NOT_FOUND` and `AMBIGUOUS`; these are stable categories, not source
 text or production diagnostic strings. Unsupported operations, syntax,
 features, encodings, or situations are `OUT_OF_DOMAIN`, never `REFUSE`.
-The harness maps production diagnostics to the category and reports an
-unmappable result as a finding; it must not require textual diagnostic equality.
+For baseline diagnostics, map a structured count of two or more matches to
+`AMBIGUOUS` before considering a generic `not found` label; a plain not-found
+without a match count maps to `NOT_FOUND`. Empty-search or any unmappable
+message is a finding, not either refusal code. Diagnostic classification must
+never change the oracle's independently determined result.
 
 For a successful whole-line replacement or deletion, `site` describes the
 consumed original lines (including their individual terminators). One input line
@@ -29,7 +33,8 @@ contract for this narrow domain, not an observation about the baseline.
 ## Generator-owned closed grammar
 
 Generate a tagged case, then independently check membership, not vice versa.
-All strings below are literal bytes; files contain 1–8 physical lines, each
+All strings below use Python bytes-literal escaping: `\t` denotes byte 0x09,
+not backslash followed by `t`. Files contain 1–4 physical lines, each
 content chosen from `{a,b,c,x,y,old,new,keep,tail,"", "a b", "a\tb"}`. File style is `LF` or
 `CRLF`, uniformly across present terminators; final termination is either
 `terminated` or `unterminated` (at least one terminator must be present to
@@ -49,19 +54,35 @@ production substring cannot match unless the generator checks it too. Reject a
 file from this grammar if any non-equal content contains the search as a
 substring; for empty search, nonempty contents are not substring candidates.
 
-Each case has tags `rule`, `style=LF|CRLF`, `final=terminated|unterminated`,
-`kind=replace|delete`, `target=blank|nonblank`, and
-`cardinality=zero|one|many`. These tags are generator metadata, not advice to
+Each case has tags `rules` (a nonempty set drawn from 1,2,3,5,6, determined
+by which behavior is asserted, so a case may count for multiple rules),
+`style=LF|CRLF`, `final=terminated|unterminated`,
+`kind=replace|delete`, `target=blank|nonblank`,
+`tier=exact|normalized|none`, `position=final|nonfinal|none`, and
+`cardinality=zero|one|many`. `position=none` iff cardinality is not one;
+`tier=none` iff cardinality is zero. The feasibility list consists of all
+combinations realizable under the grammar, determined by exhaustive enumeration
+of the bounded grammar before random sampling, and persisted with seed/counts. These tags are generator metadata, not advice to
 the oracle. Generator assertions validate the grammar and tags from actual
 bytes; every generated case must be independently accepted by the oracle and
 must not return `OUT_OF_DOMAIN`. Count cases per rule and tag combination;
 require nonzero count for every advertised feasible in-domain class and publish
 the seed and counts. Rule 4 has no generated in-domain class in this version;
 record its count as zero rather than fabricating coverage. Compare production outcome and exact resulting file bytes;
-compare a reported site only if it is observed directly from planner output,
-not guessed from final bytes. A production difference is a finding, never a
+compare a reported site when the planner's structured result or an unambiguous
+unified diff proves its location; otherwise record site comparison as unavailable,
+not as a pass. Repeated equal lines may make a diff non-unique. A production
+difference is a finding, never a
 reason to discard a generated input or alter its expected value. Validate oracle
 membership using separately constructed negative cases too.
+
+For this grammar, an independently implemented recognizer first checks all
+structural constraints above and returns `OUT_OF_DOMAIN` if any fail, before
+performing search. For example `b'xold\n'` with `-old/+new` is OOD due to a
+substring decoy; `b'old\n'` with `-old/+old` is OOD because it is a no-op.
+A blank `+` is replacement by a terminated blank line, distinct from no `+`,
+which deletes the line. For example `b'a\nold\nb\n'` with `-old/+` yields
+`WRITE((1,2), b'a\n\nb\n')`; deletion instead yields `b'a\nb\n'`.
 
 For this grammar, enumerate all exact whole-line candidates globally; if none,
 enumerate candidates under the fixed normalization pair. No
@@ -102,6 +123,7 @@ fallback are not covered; the spec does not invent their general relation.
 * F=`b'a\nb\n'`; same P → R(NOT_FOUND), original `b'a\nb\n'`.
 * F=`b'a\tb\n'`; P=`b'-a b\n+new\n'` → W((0,1), `b'new\n'`).
 * F=`b'a\tb\na b\n'`; same P → W((1,2), `b'a\tb\nnew\n'`).
+* F=`b'a\tb\na\tb\n'`; same P → R(AMBIGUOUS), original `b'a\tb\na\tb\n'`.
 
 ### 3. Uniqueness and hints
 
@@ -169,8 +191,8 @@ be equated to an oracle outcome for them.
 ## Baseline red matrix (do not skip)
 
 Run `tests/tools/test_patch_planner_targeting_matrix.py` on the exact baseline.
-Expected-red node IDs, pinned at `74c994fd` (a red is a finding against the
-proposed contract, not an xfail or a skipped test):
+Expected-red node IDs, pinned at `74c994fd` (a red is a finding against
+`docs/v4a-targeting-contract.md`, not an xfail or a skipped test):
 
 * `test_success[exact-decoy-before]`
 * `test_success[normalized-tab-decoy]`

@@ -67,6 +67,7 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
 @pytest.mark.parametrize("keep_retrying", [False, True])
 def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypatch, phase, keep_retrying):
     payload = b"keep these bytes"
+    retry_after = "1000000000000" if keep_retrying else "30"
     RangeHandler.payloads["/tool"] = payload
     RangeHandler.no_range = phase == "single"
     original_get = RangeHandler.do_GET
@@ -79,7 +80,7 @@ def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypat
         requests.append(request_range)
         if (request_range == "bytes=0-0") == (phase == "probe"):
             handler.send_response(503)
-            handler.send_header("Retry-After", "30")
+            handler.send_header("Retry-After", retry_after)
             handler.send_header("Content-Length", "0")
             handler.end_headers()
             return
@@ -107,5 +108,6 @@ def test_pause_interrupts_real_http_retry_backoff(tmp_path, dl_server, monkeypat
         finally:
             dl.pause()
     assert len([value for value in requests if (value == "bytes=0-0") == (phase == "probe")]) == 1
-    assert len(waits) == 1 and 0 < waits[0] <= network._MAX_DELAY
+    expected = int(retry_after) if keep_retrying and phase != "single" else network._MAX_DELAY
+    assert waits == [expected]
     assert not dest.exists()

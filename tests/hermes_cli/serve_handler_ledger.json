@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 327
+   "undecided": 328
   },
   "rpc": {
    "authority": 103,
@@ -51,6 +51,7 @@
   {"current_path": "hermes_cli.web_routers.audio:get_voice_live_status", "decision": "undecided", "handler": "GET /api/audio/voice-live/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_me", "decision": "undecided", "handler": "GET /api/auth/me", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_providers", "decision": "undecided", "handler": "GET /api/auth/providers", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.chat_session:get_active_chat_session", "decision": "undecided", "handler": "GET /api/chat/active-session", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_workspaces:get_chat_workspaces", "decision": "undecided", "handler": "GET /api/chat/workspaces", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_config", "decision": "undecided", "handler": "GET /api/config", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_defaults", "decision": "undecided", "handler": "GET /api/config/defaults", "kind": "http", "ref": ""},

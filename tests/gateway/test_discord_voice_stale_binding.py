@@ -203,6 +203,10 @@ async def test_a_programmatic_join_while_connected_applies_the_requested_binding
     adapter, receiver = _listening_adapter()
     adapter._client = MagicMock()
     adapter._voice_clients[_GUILD] = vc = _ConnectedVoiceClient(900)
+    receiver._running = True
+    listener = MagicMock()
+    listener.done.return_value = False
+    adapter._voice_listen_tasks[_GUILD] = listener
     adapter._voice_sources[_GUILD] = {"chat_id": "700"}
     _speak(receiver, 0.6)
     target = SimpleNamespace(id=voice_channel, guild=SimpleNamespace(id=_GUILD))

@@ -1,6 +1,6 @@
 name: va-claims
 repo: https://github.com/lEWFkRAD/va-claims-hermes-plugin
-sha: 1c6e50528ed02355d7997fa283a5dfdb1fa5465c
+sha: 030553a98cf323211fa890d5d51aedf668b7c41a
 title: VA Benefits
 description: >-
   File and track VA disability claims (21-526EZ) the way 38 CFR actually works,
@@ -17,7 +17,7 @@ description: >-
   key path, reference API key) come through plugin settings and Hermes secret
   scope. One Python dependency: pyjwt[crypto]. No hooks, middleware, shell
   commands, background processes, or telemetry.
-image: https://raw.githubusercontent.com/lEWFkRAD/va-claims-hermes-plugin/1c6e50528ed02355d7997fa283a5dfdb1fa5465c/docs/screenshots/hero.png
+image: https://raw.githubusercontent.com/lEWFkRAD/va-claims-hermes-plugin/030553a98cf323211fa890d5d51aedf668b7c41a/docs/screenshots/hero.png
 maintainer: lEWFkRAD
 tier: community
 category: tools

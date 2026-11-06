@@ -772,6 +772,46 @@ class TestEnvironmentHints:
         for leaked in ("User:", "Home:", "Working directory:", "alice", "/srv/secret"):
             assert leaked not in hint
 
+    def test_probe_remote_backend_disabled_by_environment_probe(self, monkeypatch):
+        """THE BUG (#131409): ``agent.environment_probe: false`` only gated the tools/env_probe
+        line — the system-prompt backend probe still built and force-removed a
+        ``prompt-backend-probe`` container (and ran the orphan reaper via
+        ``_build_docker_env``) on every fresh process against the shared Docker
+        daemon. The switch must stop this probe before any backend is touched."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_config_readonly",
+                            lambda _what: {"agent": {"environment_probe": False}})
+        created = []
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: created.append(kw))
+
+        assert _pb._probe_remote_backend("docker") is None
+        # No container lifecycle at all — not even a cached failure entry.
+        assert created == []
+        assert _pb._BACKEND_PROBE_CACHE == {}
+
+    def test_remote_backend_hint_disabled_probe_keeps_fallback(self, monkeypatch):
+        """With the probe switched off the backend block must still render — the fallback
+        tells the model the sandbox state is unknown from here and to probe directly,
+        so a config-off degrades the hint instead of dropping it."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_config_readonly",
+                            lambda _what: {"agent": {"environment_probe": False}})
+        created = []
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: created.append(kw))
+
+        hint = _pb._remote_backend_hint("docker")
+        assert created == []
+        assert "Terminal backend: docker" in hint
+        assert "probe directly with a terminal call" in hint
+
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
 

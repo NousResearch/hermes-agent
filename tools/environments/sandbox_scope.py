@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
+import posixpath
 from dataclasses import dataclass, field, replace
 from typing import IO, Any, Callable, Optional
 from urllib.parse import quote
@@ -100,6 +102,17 @@ def sandbox_visible(sandbox_key: str) -> bool:
     hosted agent's (it binds that agent's scope first). Anything else is indistinguishable from a
     missing record."""
     return sandbox_key == current_sandbox_key()
+
+
+def sandbox_lexical_path(path: Any) -> Optional[str]:
+    """In a hosted scope, the form a host path policy (credential denylists, protected files) judges
+    *path* by: its lexical normal form. The path names a file in the agent's sandbox, so this host's
+    symlinks, and whether the path exists here, say nothing about it, and resolving it here would
+    stat and dereference a tenant-chosen host path. ``None`` outside a hosted scope: the caller keeps
+    its host resolution."""
+    if hosted_scope() is None:
+        return None
+    return posixpath.normpath(os.fspath(path) or ".")
 
 
 def producer_fields(sandbox_key: str) -> dict:

@@ -35,7 +35,7 @@ def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
 
 
 def open_exclusive(path: Path, *, private: bool = True, overwrite: bool = False,
-                   encoding: str = "utf-8", errors: str = "strict") -> IO[str]:
+                   encoding: str = "utf-8", errors: str = "strict", newline: str | None = None) -> IO[str]:
     """Open ``path`` for writing via exclusive create; never follows a link. ``overwrite=True``
     first unlinks an existing path (``lstat``-checked, so only the link itself is removed and
     directories are refused), then creates exclusively — the overwrite path cannot be
@@ -53,15 +53,15 @@ def open_exclusive(path: Path, *, private: bool = True, overwrite: bool = False,
     mode = 0o600 if private else 0o666  # non-private honors umask
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, mode)
     try:
-        return os.fdopen(fd, "w", encoding=encoding, errors=errors)
+        return os.fdopen(fd, "w", encoding=encoding, errors=errors, newline=newline)
     except Exception:
         os.close(fd)
         raise
 
 
 def write_text_exclusive(path: Path, text: str, *, private: bool = True, overwrite: bool = False,
-                         encoding: str = "utf-8", errors: str = "strict") -> None:
+                         encoding: str = "utf-8", errors: str = "strict", newline: str | None = None) -> None:
     """``Path.write_text`` equivalent that refuses to follow symlinks."""
     with open_exclusive(path, private=private, overwrite=overwrite, encoding=encoding,
-                        errors=errors) as fh:
+                        errors=errors, newline=newline) as fh:
         fh.write(text)

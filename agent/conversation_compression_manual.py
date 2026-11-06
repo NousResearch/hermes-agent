@@ -130,7 +130,12 @@ def compress_now(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
             defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
             **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
-            **({"verbatim_tail": tail_rows} if tail_rows else {}))
+            **({"verbatim_tail": tail_rows} if tail_rows else {}),
+            # The caller-chosen boundary already decides what stays verbatim; re-applying
+            # the compressor's own protect_last_n window to the head would keep the very
+            # messages the boundary form exists to summarize (#144423). Plain /compress
+            # (no boundary) passes nothing and keeps the configured window.
+            **({"protect_last_n_override": 0} if tail else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)
         raise

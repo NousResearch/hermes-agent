@@ -15,7 +15,7 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
   return { end, showLead: start > 0, showTail: end < queueLen, start }
 }
 
-export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessagesProps) {
+export function QueuedMessages({ cols, queueEditIdx, queued, queueRecoveryHint, t }: QueuedMessagesProps) {
   const T = useT().chatBits.queued
 
   if (!queued.length) {
@@ -29,6 +29,12 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
       <Text color={t.color.muted} dimColor>
         {`${T.header(queued.length)}${queueEditIdx !== null ? T.editing(queueEditIdx + 1) : ''}`}
       </Text>
+
+      {queueRecoveryHint && (
+        <Text color={t.color.muted} wrap="wrap">
+          {queueRecoveryHint}
+        </Text>
+      )}
 
       {q.showLead && (
         <Text color={t.color.muted} dimColor>
@@ -62,5 +68,6 @@ interface QueuedMessagesProps {
   cols: number
   queueEditIdx: number | null
   queued: string[]
+  queueRecoveryHint?: string
   t: Theme
 }

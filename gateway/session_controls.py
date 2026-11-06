@@ -565,17 +565,24 @@ class AuthorityConnection:
         return await snapshot_info(self.authority, ref)
 
     async def list_sessions(self, ref, params):
+        if self.actor.profile_id != self.authority.profile_id:
+            raise RuntimeStoreError('profile_mismatch')
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         limit = params.get('limit', 200)
-        if set(params) - {'limit', 'title', 'include_hidden', 'scope'} or type(limit) is not int or not 1 <= limit <= 200:
+        offset = params.get('offset', 0)
+        metadata = {'offset': offset, 'limit': limit, 'has_more': False}
+        if (set(params) - {'limit', 'offset', 'title', 'include_hidden', 'scope'}
+                or type(limit) is not int or not 1 <= limit <= 200
+                or type(offset) is not int or not 0 <= offset <= 9007199254740991
+                or ('title' in params and offset != 0)):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope', 'live') not in {'live', 'stored'} or ('title' in params and 'scope' in params):
             raise RuntimeStoreError('invalid_params')
         if params.get('scope') == 'stored':
             from gateway.session_listing import stored_picker_sessions
             return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
-                limit=limit, include_hidden=params.get('include_hidden', False))
+                limit=limit, offset=offset, include_hidden=params.get('include_hidden', False))
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
@@ -583,7 +590,7 @@ class AuthorityConnection:
             from gateway.session_local_title import resolve_titled_session
             found = resolve_titled_session(self.authority, self.actor, params['title'], missing_ok=True)
             if found is None:
-                return {'sessions': [], 'scope': 'stored'}
+                return {'sessions': [], 'scope': 'stored', **metadata}
             row = self.authority.db.get_session(found.session_id) or {}
             root = self.authority.db.get_session(
                 self.authority.db.resolve_session_by_title(params['title']) or found.session_id) or row
@@ -593,7 +600,7 @@ class AuthorityConnection:
                                   'started_at': row.get('started_at'),
                                   'message_count': row.get('message_count', 0),
                                   'running': found.session_id in self.authority.sessions}],
-                    'scope': 'stored'}
+                    'scope': 'stored', **metadata}
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
         from gateway.session_live_listing import live_entries
         sessions = []
@@ -609,8 +616,9 @@ class AuthorityConnection:
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': entry.handle.execution_state == 'running'})
-        sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
-        return {'sessions': sessions[:limit], 'scope': 'live'}
+        sessions.sort(key=lambda row: (row['started_at'] or 0, row['session_id']), reverse=True)
+        return {'sessions': sessions[offset:offset + limit], 'scope': 'live',
+                **metadata, 'has_more': len(sessions) > offset + limit}
 
     async def resume(self, ref, params):
         from gateway.session_local_inventory import snapshot_info
@@ -636,6 +644,14 @@ class AuthorityConnection:
             from gateway.session_local_migration import adopts_client_history, resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+            # Validate provenance before refresh or route recovery can publish any state.
+            row = self.authority.db.get_session(ref.session_id)
+            if row is not None:
+                from hermes_state_local_migration import validate_delegated_history
+                with self.authority.db._read_ctx() as conn:
+                    validate_delegated_history(conn, row, subject=self.actor.subject,
+                        profile_id=self.actor.profile_id,
+                        profile_name=self.authority.db._own_profile_name() or 'default')
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)

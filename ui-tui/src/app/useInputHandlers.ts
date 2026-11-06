@@ -35,6 +35,7 @@ import {
   SENSITIVE_PROMPTS
 } from './overlayStore.js'
 import { togglePasteSections } from './pasteStore.js'
+import { discardEditedQueueItem, retryQueuedInput } from './queueInputActions.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -795,9 +796,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
-      cActions.removeQueue(cState.queueEditIdx)
-
-      return cActions.clearIn()
+      return discardEditedQueueItem(cActions, cState.queueEditIdx)
     }
 
     if (isCtrl(key, ch, 'x')) {
@@ -922,14 +921,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue(true)
-
-      if (next) {
-        cActions.setQueueEdit(null)
-        actions.dispatchSubmission(next)
-      }
-    }
+    retryQueuedInput(key, ch, composer, live.sid, actions.dispatchSubmission)
   })
 
   return { pagerPageSize }

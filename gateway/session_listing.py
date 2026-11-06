@@ -1,5 +1,7 @@
 """Read-only native picker history; enumeration never adopts a transcript."""
-from hermes_state_local_migration import client_history_row, validate_legacy_row
+from hermes_state_local_migration import (
+    client_history_row, delegated_history, validate_delegated_history, validate_legacy_row,
+)
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
 
@@ -7,7 +9,7 @@ from gateway.owner_identity import same_owner
 from gateway.session_route_recovery import _messaging_platform, mountable
 
 # Local labels (a cron run is a canonical local session whose last viewer is its own fire).
-_LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
+_LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron', 'subagent')
 
 
 def _excluded_sources():
@@ -18,72 +20,107 @@ def _excluded_sources():
     return [*INTERNAL_LISTING_SOURCES, 'api_server']
 
 
+def _show_subagents(db):
+    from pathlib import Path
+    from os import PathLike
+    from hermes_cli.session_listing import show_subagent_sessions
+    path = getattr(db, 'db_path', None)
+    if not isinstance(path, (str, PathLike)):
+        return False
+    path = str(path)
+    if not path or path == ':memory:' or path.startswith('file:'):
+        return False
+    return show_subagent_sessions(Path(path).parent)
+
+
 def _picker_row(row, tip, sid):
     return {'id': row['id'], 'session_id': sid, 'resolved_id': sid, 'title': row.get('title') or '',
+            'preview': row.get('preview') or tip.get('preview') or '',
             'source': tip['source'], 'started_at': row.get('started_at'),
             'message_count': row.get('message_count', 0), 'model': tip.get('model'), 'running': False}
 
 
-def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
+def stored_picker_sessions(authority, actor, *, limit, offset=0, include_hidden=False):
     """Offer legacy local rows only to the same native transport that may resume them.
 
     Canonical sessions are already in the live feed. Old local rows have no policy
     receipt until explicit resume; listing them must not claim or restore anything.
     """
+    if type(offset) is not int or not 0 <= offset <= 9007199254740991 or type(limit) is not int or not 1 <= limit <= 200:
+        raise RuntimeStoreError('invalid_params')
+    metadata = {'offset': offset, 'limit': limit, 'has_more': False}
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
             or not {'session:read', 'session:create'} <= actor.capabilities):
-        return {'sessions': [], 'scope': 'stored'}
+        return {'sessions': [], 'scope': 'stored', **metadata}
     db = authority.db
     own_profile = db._own_profile_name() or 'default'
-    sessions, offset, seen = [], 0, set()
-    while len(sessions) < limit:
-        rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=offset,
-            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden)
+    include_subagents = _show_subagents(db)
+    sessions, db_offset, skipped, seen = [], 0, 0, set()
+    while True:
+        rows = db.list_sessions_rich(exclude_sources=_excluded_sources(), limit=200, offset=db_offset,
+            order_by_last_active=True, compact_rows=True, include_hidden=include_hidden,
+            include_subagents=include_subagents)
+        # Rich projection replaces each fetched row; it does not compact the window.
+        db_offset += len(rows)
         for row in rows:
-            local = row['source'] in _LOCAL_SOURCES or client_history_row(row)
-            if not local and _messaging_platform(row['source']) is None:
-                continue  # neither a local nor a messaging label (acp, unknown, ...): nothing this picker resumes
-            sid = db.get_compression_tip(row['id']) or row['id']
-            tip = db.get_session(sid)
-            if tip is None:
+            candidate = _stored_picker_row(authority, actor, row, own_profile, include_subagents)
+            if candidate is None or candidate['resolved_id'] in seen:
                 continue
-            if not local:
-                # A messaging conversation, under its lineage root (the cold mount; the listing
-                # projects a compressed lineage onto its tip): this profile's rows the mount opens.
-                root = row.get('_lineage_root_id') or row['id']
-                if (row.get('profile_name') in (None, '', own_profile) and mountable(authority, root)
-                        and root not in seen):
-                    seen.add(root)
-                    sessions.append(_picker_row({**row, 'id': root}, tip, root))
-                if len(sessions) == limit:
-                    break
-                continue
-            closed = _closed_local_session(authority, actor, row, tip)
-            if closed is not None:
-                if closed['id'] not in seen:
-                    seen.add(closed['id'])
-                    sessions.append(closed)
-                if len(sessions) == limit:
-                    break
-                continue
-            try:
-                validate_legacy_row(db, tip, subject=actor.subject)
-                with db._read_ctx() as conn:
-                    if not authorize_history(conn, actor, sid):
-                        continue
-            except RuntimeStoreError as exc:
-                if exc.reason not in {'not_found', 'permission_denied'}:
-                    raise
-                continue
-            sessions.append(_picker_row(row, tip, sid))
-            if len(sessions) == limit:
-                break
+            seen.add(candidate['resolved_id'])
+            if skipped < offset:
+                skipped += 1
+            elif len(sessions) < limit:
+                sessions.append(candidate)
+            else:
+                return {'sessions': sessions, 'scope': 'stored', **metadata, 'has_more': True}
         if len(rows) < 200:
-            break
-        offset += len(rows)
-    return {'sessions': sessions, 'scope': 'stored'}
+            return {'sessions': sessions, 'scope': 'stored', **metadata}
+
+
+def _stored_picker_row(authority, actor, row, own_profile, include_subagents):
+    """Resolve one eligible history row without adopting or restoring its transcript."""
+    db = authority.db
+    local = row['source'] in _LOCAL_SOURCES or client_history_row(row)
+    if not local and _messaging_platform(row['source']) is None:
+        return None
+    sid = db.get_compression_tip(row['id']) or row['id']
+    tip = db.get_session(sid)
+    if tip is None:
+        return None
+    delegated = delegated_history(tip)
+    if delegated:
+        if not include_subagents:
+            return None
+        try:
+            with db._read_ctx() as conn:
+                validate_delegated_history(conn, tip, subject=actor.subject,
+                    profile_id=actor.profile_id, profile_name=own_profile)
+        except RuntimeStoreError:
+            return None
+    if not local:
+        # Messaging history is projected onto the lineage root the cold mount opens.
+        root = row.get('_lineage_root_id') or row['id']
+        if row.get('profile_name') in (None, '', own_profile) and mountable(authority, root):
+            return _picker_row({**row, 'id': root}, tip, root)
+        return None
+    if delegated and tip.get('chat_id'):
+        # Existing adoption was validated above; enumeration must not restore adapters.
+        return _picker_row(row, tip, sid)
+    closed = _closed_local_session(authority, actor, row, tip)
+    if closed is not None:
+        return closed
+    try:
+        validate_legacy_row(db, tip, subject=actor.subject, profile_id=actor.profile_id)
+        with db._read_ctx() as conn:
+            if not authorize_history(conn, actor, sid):
+                return None
+    except RuntimeStoreError as exc:
+        if exc.reason not in {'not_found', 'permission_denied'}:
+            raise
+        return None
+    return _picker_row(row, tip, sid)
 
 
 def _closed_local_session(authority, actor, row, tip):
@@ -105,6 +142,7 @@ def _closed_local_session(authority, actor, row, tip):
         if not closed_and_unviewed(authority, owner, handle):
             return None
     return {'id': owner, 'session_id': owner, 'resolved_id': owner, 'title': tip.get('title') or row.get('title') or '',
+            'preview': row.get('preview') or tip.get('preview') or '',
             'source': tip['source'], 'started_at': row.get('started_at'),
             'message_count': row.get('message_count', 0), 'model': tip.get('model'), 'running': False}
 

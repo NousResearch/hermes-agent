@@ -8994,7 +8994,16 @@
           },
           "limit": {
             "default": 200,
+            "maximum": 200,
+            "minimum": 1,
             "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Offset",
             "type": "integer"
           },
           "title": {
@@ -9035,6 +9044,21 @@
             ],
             "title": "Scope",
             "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
           }
         },
         "required": [
@@ -10487,6 +10511,18 @@
             ],
             "default": null,
             "title": "Root Title"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview"
           }
         },
         "required": [
@@ -38392,6 +38428,8 @@
           "limit": {
             "anyOf": [
               {
+                "maximum": 200,
+                "minimum": 1,
                 "type": "integer"
               },
               {
@@ -38400,6 +38438,13 @@
             ],
             "default": null,
             "title": "Limit"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
           },
           "include_hidden": {
             "default": false,
@@ -38419,6 +38464,21 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 200,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
           }
         },
         "required": [

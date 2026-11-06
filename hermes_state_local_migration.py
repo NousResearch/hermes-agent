@@ -13,9 +13,9 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
 # ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
-# Legacy labels that are not creation sources of their own (session_policy.SURFACES).
-LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp', 'subagent'})
+# Delegated history is admitted only after ancestry validation, never as a creation surface.
+LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'subagent': 'cli'}
 # Labels a routeless row can carry that never name a chat app: automation and recovery rows, a
 # retired platform, and a third-party WebUI that runs its own agent on this state.db (adopting its rows
 # would legitimise a second writer, so they stay read-only: gateway/session_history_mount.py).
@@ -64,6 +64,121 @@ def legacy_creation_source(row):
     return 'gui' if client_history_row(row) else LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
 
 
+def delegated_history(row):
+    """Literal children and inherited-source children share the same trust boundary."""
+    from hermes_state_sessions import _parse_model_config
+    return row.get('source') == 'subagent' or '_delegate_from' in _parse_model_config(row.get('model_config'))
+
+
+def _delegated_local_receipt(conn, row, profile_id, subject):
+    from gateway.owner_identity import same_owner
+    from hermes_state_local import POLICY_PREFIX, local_lineage_owner
+    owner = row.get('chat_id')
+    if not owner:
+        raise RuntimeStoreError('not_found')
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + owner,)).fetchone()
+    try:
+        if local_lineage_owner(conn, row['id']) != owner:
+            raise ValueError('foreign local lineage')
+        receipt = json.loads(saved[0]) if saved else {}
+        if (receipt['profile_id'] != profile_id or not same_owner(receipt['principal_id'], subject)
+                or receipt['session_id'] != owner or receipt['route'] != row.get('session_key')
+                or not same_owner(row.get('user_id'), subject)):
+            raise ValueError('foreign local receipt')
+        if delegated_history(row):
+            legacy = conn.execute('SELECT value FROM state_meta WHERE key=?', (LEGACY_PREFIX + owner,)).fetchone()
+            expected = {'session_id': owner, 'legacy_session_id': owner,
+                        'profile_id': profile_id, 'principal_id': receipt['principal_id']}
+            if legacy is None or json.loads(legacy[0]) != expected or receipt.get('legacy_session_id') != owner:
+                raise ValueError('missing delegated adoption receipt')
+        origin = json.loads(row.get('origin_json') or '{}')
+        if origin != receipt['entry']['origin'] or origin.get('platform') != 'local':
+            raise ValueError('foreign local origin')
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise RuntimeStoreError('not_found') from exc
+
+
+def _delegated_registry_idle(conn, session_ids):
+    """Inspect the DB profile's liveness registry without pruning or creating files."""
+    from pathlib import Path
+    from hermes_cli.active_sessions import ActiveSessionRegistryError, _prune_dead, _read_entries
+    path = next((r[2] for r in conn.execute('PRAGMA database_list') if r[1] == 'main'), '')
+    if not path:
+        raise RuntimeStoreError('not_found')
+    try:
+        entries = _read_entries(Path(path).parent / 'runtime' / 'active_sessions.json', strict=True)
+        # Scope unknown-owner refusals to this ancestry; unrelated leases grant no authority.
+        relevant = [entry for entry in entries if entry['session_id'] in session_ids]
+        if _prune_dead(relevant, strict=True):
+            raise RuntimeStoreError('not_found')
+    except ActiveSessionRegistryError as exc:
+        raise RuntimeStoreError('not_found') from exc
+
+
+def validate_delegated_history(conn, row, *, subject, profile_id, profile_name=None):
+    """Read-only, bounded ancestry authorization, also used inside the adoption transaction.
+
+    Markers establish provenance, never ownership. Every ancestor independently passes the
+    same local-owner boundary; an existing import binding cannot override a foreign ancestor.
+    """
+    row = dict(row)
+    if not delegated_history(row):
+        return
+    from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
+    from hermes_state_sessions import _parse_model_config
+    if profile_name is None:
+        from pathlib import Path
+        path = next((r[2] for r in conn.execute('PRAGMA database_list') if r[1] == 'main'), '')
+        home = Path(path).parent
+        profile_name = home.name if home.parent.name == 'profiles' else 'default'
+    seen = set()
+    registry_ids = set()
+    for hop in range(33):
+        sid = row['id']
+        if sid in seen or row.get('profile_name') not in (None, '', profile_name):
+            raise RuntimeStoreError('not_found')
+        seen.add(sid)
+        child = delegated_history(row)
+        if (not (legacy_history_row(row) or row.get('source') == 'local')
+                or (child and row.get('source') in {'tool', 'oneshot'})):
+            raise RuntimeStoreError('not_found')
+        owner = row.get('user_id')
+        # Delegation deliberately does not inherit routing/user stamps. Unstamped local
+        # history follows the native claim boundary; any explicit owner must still match.
+        if owner and owner != subject and not login_owned_by(row, subject):
+            raise RuntimeStoreError('not_found')
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone()
+        try:
+            if saved is not None and not binding_names(saved[0], profile_id, subject):
+                raise ValueError('foreign control binding')
+        except (ValueError, TypeError) as exc:
+            raise RuntimeStoreError('not_found') from exc
+        routed = any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
+        if routed:
+            _delegated_local_receipt(conn, row, profile_id, subject)
+        # A live parent is not a settled authorization anchor, nor can a live child be mounted.
+        if (conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')", (sid,)).fetchone()
+                or conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown')", (sid,)).fetchone()
+                or conn.execute('SELECT 1 FROM session_turn_leases WHERE conversation_id IN (?,?) AND expires_at>?',
+                                (sid, row.get('chat_id') or sid, time.time())).fetchone()):
+            raise RuntimeStoreError('not_found')
+        registry_ids.update((sid, row.get('chat_id') or sid))
+        if child and row.get('ended_at') is None:
+            raise RuntimeStoreError('not_found')
+        if not child:
+            _delegated_registry_idle(conn, registry_ids)
+            return
+        marker = _parse_model_config(row.get('model_config')).get('_delegate_from')
+        if (hop == 32 or not isinstance(marker, str) or not marker.strip()
+                or marker == sid or row.get('parent_session_id') != marker):
+            raise RuntimeStoreError('not_found')
+        parent = conn.execute('SELECT * FROM sessions WHERE id=?', (marker,)).fetchone()
+        if parent is None:
+            raise RuntimeStoreError('not_found')
+        row = dict(parent)
+    raise RuntimeStoreError('not_found')
+
+
 def legacy_account_label(row):
     # main's Desktop stamped the signed-in Nous account on its chats. That is a label, not a route or
     # an authenticated owner, so it does not block adoption of an otherwise unrouted Desktop row.
@@ -86,7 +201,7 @@ def login_owned_by(row, subject):
     return same_owner(user_id, subject)
 
 
-def validate_legacy_row(db, row, *, subject=None):
+def validate_legacy_row(db, row, *, subject=None, profile_id=None, conn=None):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
     # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
@@ -99,6 +214,19 @@ def validate_legacy_row(db, row, *, subject=None):
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 
+    if delegated_history(row):
+        if subject is None:
+            raise RuntimeStoreError('not_found')
+        if not profile_id:
+            raise RuntimeStoreError('not_found')
+        kwargs = {'subject': subject, 'profile_id': profile_id,
+                  'profile_name': db._own_profile_name() or 'default'}
+        if conn is not None:
+            validate_delegated_history(conn, row, **kwargs)
+        else:
+            with db._read_ctx() as read_conn:
+                validate_delegated_history(read_conn, row, **kwargs)
+
 
 def bind_legacy_target(db, conn, receipt):
     target = receipt['legacy_session_id']
@@ -107,7 +235,8 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    validate_legacy_row(db, dict(row), subject=receipt['principal_id'],
+                        profile_id=receipt['profile_id'], conn=conn)
     from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and not binding_names(imported[0], receipt['profile_id'], receipt['principal_id']):

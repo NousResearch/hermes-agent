@@ -4,7 +4,7 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
-from pydantic import RootModel
+from pydantic import Field, RootModel
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
@@ -163,7 +163,8 @@ class CanonicalSnapshot(Result):
 
 class CanonicalListParams(ProfileParams):
     scope: Literal['live', 'stored'] = 'live'
-    limit: int = 200
+    limit: int = Field(default=200, strict=True, ge=1, le=200)
+    offset: int = Field(default=0, strict=True, ge=0, le=9007199254740991)
     title: str | None = None
     include_hidden: bool = False
 
@@ -179,11 +180,15 @@ class CanonicalSessionListRow(Result):
     model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
+    preview: str | None = None
 
 
 class CanonicalListResult(Result):
     sessions: list[CanonicalSessionListRow]
     scope: Literal['stored', 'live']
+    offset: int = 0
+    limit: int = 200
+    has_more: bool = False
 
 
 class CanonicalAttachment(Params):

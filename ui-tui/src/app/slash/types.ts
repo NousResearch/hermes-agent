@@ -3,6 +3,8 @@ import type { MutableRefObject } from 'react'
 import type { SlashHandlerContext, UiState } from '../interfaces.js'
 
 export interface SlashRunCtx extends SlashHandlerContext {
+  attachments?: Array<{ path: string; mime: string }>
+  expand?: (text: string) => string
   flight: number
   guarded: <T>(fn: (r: T) => void) => (r: null | T) => void
   guardedErr: (e: unknown) => void

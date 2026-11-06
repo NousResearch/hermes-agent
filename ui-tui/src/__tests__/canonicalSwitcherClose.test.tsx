@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -11,6 +11,7 @@ import { getUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
 import { canonicalRequest, canonicalResult } from '../canonicalGateway.js'
 import { ActiveSessionSwitcher } from '../components/activeSessionSwitcher.js'
+import { messages } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 // #139536: on a canonical gateway the switcher's `^d` close sent no request at all (`session.close`
@@ -206,5 +207,47 @@ it('keeps main\'s "already closed" for a receipt that refuses the close', async 
     expect(m.out.text).toContain('error: session was already closed')
   } finally {
     m.instance.unmount()
+  }
+}, MOUNTED_TEST_TIMEOUT)
+
+// Captured from strict AuthorityConnection.dispatch by test_session_listing_preview.py.
+const previewDispatch = JSON.parse(readFileSync(new URL('./fixtures/sessionListingPreview.json', import.meta.url), 'utf8'))
+
+it.each([
+  ['preview', 'First user preview', 'preview'],
+  ['titled', 'Explicit title', 'title'],
+  ['empty', null, 'empty'],
+  ['empty', null, 'null'],
+  ['empty', null, 'missing']
+])('renders the real serialized stored row with %s/%s/%s fallback', async (id, expected, variant) => {
+  const captured = previewDispatch.result.sessions.find((row: { id: string }) => row.id === id)
+  expect(captured).toBeDefined()
+  const row = { ...captured }
+
+  if (variant === 'null') {row.preview = null}
+  if (variant === 'missing') {delete row.preview}
+
+  const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+    expect(method).toBe('session.list')
+
+    return params.scope === 'stored' ? { ...previewDispatch.result, sessions: [row] } : { scope: 'live', sessions: [] }
+  })
+  const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn(), ref: vi.fn(), unref: vi.fn() })
+  const stdout = Object.assign(new PassThrough(), { columns: 120, rows: 30, isTTY: false })
+  let output = ''
+
+  stdout.on('data', chunk => {output += chunk.toString()})
+  const instance = renderSync(<ActiveSessionSwitcher currentSessionId={null} gw={{ isCanonical: true, request } as any}
+    onCancel={vi.fn()} onClose={vi.fn()} onNew={vi.fn()} onNewPrompt={vi.fn()}
+    onResume={vi.fn()} onSelect={vi.fn()} t={DEFAULT_THEME} />,
+  { stdin: stdin as any, stdout: stdout as any, stderr: new PassThrough() as any, patchConsole: false })
+
+  try {
+    await vi.waitFor(() => expect(output).toContain(expected ?? messages().pickers.session.row.untitled), WAIT)
+    expect(request).toHaveBeenCalledWith('session.list', { limit: 200, scope: 'stored' })
+    expect(output).not.toContain('Preview loses to title')
+    expect(output).not.toContain('FORBIDDEN_')
+  } finally {
+    instance.unmount()
   }
 }, MOUNTED_TEST_TIMEOUT)

@@ -85,6 +85,49 @@ def sent_server_requests() -> set[str]:
     return names
 
 
+@pytest.mark.parametrize('preview', [None, '', 'First user preview'])
+def test_canonical_session_preview_is_optional_nullable_and_strict(preview):
+    from pydantic import ValidationError
+    from tui_gateway.contracts.canonical_sessions import CanonicalSessionListRow
+    from tui_gateway.contracts.sessions import SessionListRow
+    row = dict(id='old', session_id='old', title='', source='tui', started_at=1,
+               message_count=0, running=False)
+    assert CanonicalSessionListRow.model_validate(row).preview is None
+    assert CanonicalSessionListRow.model_validate(dict(row, preview=preview)).preview == preview
+    with pytest.raises(ValidationError):
+        CanonicalSessionListRow.model_validate(dict(row, preview=42))
+    legacy = dict(id='legacy', source='tui', started_at=1, message_count=0)
+    assert SessionListRow.model_validate(legacy).preview == ''
+    if preview is None:
+        with pytest.raises(ValidationError):
+            SessionListRow.model_validate(dict(legacy, preview=None))
+    else:
+        assert SessionListRow.model_validate(dict(legacy, preview=preview)).preview == preview
+
+
+@pytest.mark.parametrize('model_name', ['canonical', 'legacy'])
+def test_session_page_contract_bounds_and_old_defaults(model_name):
+    from pydantic import ValidationError
+    from tui_gateway.contracts.canonical_sessions import CanonicalListParams, CanonicalListResult
+    from tui_gateway.contracts.sessions import SessionListParams, SessionListResult
+    params, result = ((CanonicalListParams, CanonicalListResult) if model_name == 'canonical'
+                      else (SessionListParams, SessionListResult))
+    assert params().offset == 0
+    assert params(offset=200, limit=50).offset == 200
+    old = result.model_validate({'sessions': [], **({'scope': 'live'} if model_name == 'canonical' else {})})
+    assert (old.offset, old.limit, old.has_more) == (0, 200, False)
+    for field, values in [('offset', [-1, True, False, 1.5, '1', None, 9007199254740992]),
+                          ('limit', [0, 201, True, False, '50', 1.5])]:
+        for value in values:
+            with pytest.raises(ValidationError):
+                params.model_validate({field: value})
+    if model_name == 'canonical':
+        with pytest.raises(ValidationError):
+            params(limit=None)
+    else:
+        assert params(limit=None).limit is None
+
+
 def test_catalog_covers_the_whole_wire():
     """Every registered method, every emitted event and every sent server request has a contract,
     and no contract is orphaned (a deleted handler must take its contract with it)."""

@@ -173,6 +173,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     queueEditRef,
     queueDraft,
     queuedDisplay,
+    queueRecoveryHint,
     queueEditIdx,
     enqueue,
     dequeue,
@@ -702,9 +703,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pasteExpanded,
       queueEditIdx,
       queuedDisplay,
+      queueRecoveryHint,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, queueRecoveryHint, tokens]
   )
 
   return {

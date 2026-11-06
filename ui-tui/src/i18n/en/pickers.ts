@@ -130,6 +130,13 @@ export const pickersEn = {
         alreadyClosed: 'session was already closed',
         notAttached: 'this view is not attached to that session — nothing was closed'
       },
+      pagination: {
+        older: 'Older sessions',
+        newer: 'Newer sessions',
+        olderGatewayNotice: 'older gateway — paging unavailable',
+        loadingPage: 'loading page…',
+        retry: 'press Enter to retry'
+      },
       row: {
         new: 'new',
         draft: '✎ draft',
@@ -139,7 +146,9 @@ export const pickersEn = {
         closing: 'closing…',
         deleting: 'deleting…',
         pressDAgain: 'press d again to delete',
-        messageCount: (count: number) => `${count} msgs`
+        messageCount: (count: number) => `${count} msgs`,
+        olderSessions: 'Older sessions',
+        newerSessions: 'Newer sessions'
       },
       noOtherSessions: 'no other sessions — Enter on +new to start one',
       promptLabel: 'prompt › ',
@@ -163,7 +172,10 @@ export const pickersEn = {
         close: ' close',
         move: ' move · ',
         new: ' new · ',
-        refresh: ' refresh · '
+        refresh: ' refresh · ',
+        pageLabel: 'Page:',
+        pageNavigate: ' load page · ',
+        pageRetry: ' retry · '
       }
     },
     pet: {

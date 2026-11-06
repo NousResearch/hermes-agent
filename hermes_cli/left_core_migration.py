@@ -484,6 +484,11 @@ class LeftCoreFeature:
     # them off in the home: a saved platform list naming one names the plugin's toolsets instead, and
     # ``agent.disabled_toolsets`` takes them for platforms on a default composite.
     replaces_toolsets: tuple[str, ...] = ()
+    # Core-era toolset names that went away with core and resolved to the plugin's tools (core's
+    # ``hermes-yuanbao`` bundle: the core tools plus the yb_* tools). ``agent.disabled_toolsets`` naming
+    # one disabled those tools, and the name is unknown now, so the one-time scope conversion disables
+    # the plugin's toolsets there too. Unlike *replaces_toolsets*, nothing else is turned off.
+    legacy_toolsets: tuple[str, ...] = ()
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
     platform: str = ""
     # Channel ownership core declared for that platform, kept while the plugin is absent (migration
@@ -615,7 +620,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_DM_POLICY", "YUANBAO_DM_ALLOW_FROM", "YUANBAO_GROUP_POLICY", "YUANBAO_GROUP_ALLOW_FROM",
                      "YUANBAO_ALLOWED_USERS", "YUANBAO_ALLOW_ALL_USERS", "YUANBAO_HOME_CHANNEL",
                      "YUANBAO_HOME_CHANNEL_NAME"),
-        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
+        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS, legacy_toolsets=("hermes-yuanbao",),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
 )
@@ -980,6 +985,17 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
     config["agent"] = agent
 
 
+def _keep_legacy_disable(config: dict, feature: LeftCoreFeature) -> None:
+    """``agent.disabled_toolsets`` naming one of *feature*'s ``legacy_toolsets`` also names its toolsets."""
+    from agent.skill_utils import parse_config_string_list
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
+    if set(feature.legacy_toolsets).isdisjoint(disabled):
+        return
+    agent["disabled_toolsets"] = [*disabled, *(ts for ts in feature.toolsets if ts not in disabled)]
+    config["agent"] = agent
+
+
 def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     """Keep *feature*'s core-era toolset scope, and mark it installed once its plugin is in *home*,
     in one config write.
@@ -1023,6 +1039,7 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
             config["known_plugin_toolsets"] = known
         if feature.replaces_toolsets:
             _turn_off_replaced(config, feature)
+        _keep_legacy_disable(config, feature)
         _mark(config, _SCOPED_KEY, feature)
     if created:
         _stamp_created(home, config)

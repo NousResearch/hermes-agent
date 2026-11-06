@@ -514,6 +514,15 @@ This returns the webhook URL and an auto-generated HMAC secret. Configure your s
 hermes webhook list
 ```
 
+### Disable or re-enable a subscription
+
+```bash
+hermes webhook disable github-issues
+hermes webhook enable github-issues
+```
+
+Disabling a dynamic subscription pauses incoming events without deleting its configuration. It remains visible in `hermes webhook list` and can be re-enabled without restarting the gateway. Static routes from `config.yaml` must be enabled or disabled by editing that file.
+
 ### Remove a subscription
 
 ```bash
@@ -535,6 +544,8 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 - Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)
 - Create, update, enable/disable, and remove operations are serialized and atomically replace the store; a stale concurrent update is rejected rather than restoring a route another operation removed or disabled
 - Rebinding an existing route with `--route-profile` rotates its HMAC secret automatically. A caller with the old profile's secret cannot authenticate the rebound route; pass a different `--secret` only when the receiving service requires an operator-chosen value
+- Static route names from `config.yaml` always reserve their URL and take precedence over dynamic ones with the same name, even while disabled
+- Disabled subscriptions remain stored until they are re-enabled or removed
 - No gateway restart required — subscribe and it's immediately live
 
 ### Agent-driven subscriptions

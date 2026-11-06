@@ -54,7 +54,7 @@ import {
   useGroupCapability
 } from './canonical-group-capabilities'
 import type { GroupCreationEngine } from './canonical-group-capabilities'
-import { createGroupAcrossConnections, type GroupCreationIntent, peerJoinText, usePeerTargets } from './canonical-group-peers'
+import { createGroupAcrossConnections, type GroupCreationIntent, usePeerTargets } from './canonical-group-peers'
 import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupCreateError, createCanonicalGroup } from './canonical-groups'
@@ -1364,6 +1364,7 @@ function GroupEngineNote({ connectionId, engine, selected, reason, owner, ownerC
     <p className="text-xs text-(--ui-text-secondary)" data-group-engine={engine} role="note">
       {engine === 'gateway-peer' ? b.crossGateway.gatewayPeer(owner, localOwner) : engine === 'checking' ? b.crossGateway.checkingPeers :
         engine === 'unavailable' ? (reason === 'unreachable' ? b.crossGateway.peerCheckFailed(owner, localOwner) : b.canonical.driverUnavailable) : engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
+      {desktopDriven && reason === 'default_profile_required' && <span> {b.crossGateway.namedProfileFallback}</span>}
       {desktopDriven && reason && !['peer_owner_unavailable', 'default_profile_required'].includes(reason) && <span> {b.canonical.peerTargetSetup.replace('{connection}', localOwner ? b.bot.thisDevice : owner).replace('{reason}', reason)}</span>}
     </p>
   )
@@ -1463,10 +1464,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
       intent.current = {}
-
-      for (const { member, error } of created.unjoined) {
-        host.notify({ kind: 'error', message: peerJoinText(error, member.display_name || member.handle, b.canonical) })
-      }
 
       const key = registerCanonicalGroup(route, created.room, { created: true })
       refreshGatewayGroupRooms()

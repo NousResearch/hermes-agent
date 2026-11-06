@@ -123,8 +123,11 @@ export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: Cano
     driver.pending_actions?.length === 0 && Object.entries(driver.counts).every(([status, count]) =>
       count === 0 || ['settled', 'cancelled', 'failed'].includes(status))
 
+  const cycle = roomCycle(log, activity, driver?.max_rounds, focus, stopConfirmed)
+
   return {
-    cycle: roomCycle(log, activity, driver?.max_rounds, focus, stopConfirmed),
+    // "Settled" isn't true while a turn waits on a person: its Retry and Discard say what's next.
+    cycle: cycle?.kind === 'settled' && driver?.pending_actions?.length ? null : cycle,
     statuses: new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes, now)])),
     working: !!driver?.working || !!activity?.length
   }

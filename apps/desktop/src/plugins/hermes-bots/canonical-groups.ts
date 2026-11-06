@@ -194,13 +194,14 @@ function connectionSuffix(member: GroupMember, rivals: GroupMember[]) {
   return mine[rung < 0 ? 2 : rung]
 }
 
-/** A peer's name in the room: its title, else its own name (a default profile reads "Hermes"), then
- *  the connection it runs on, so two computers' default Bots never read alike. */
-function peerLabel(member: GroupMember) {
-  const name = String(member.title || member.display_name || '').trim() ||
-    (member.name.trim().toLowerCase() === 'default' ? 'Hermes' : member.name)
+/** A Bot's own name: its title, else its name (a default profile reads "Hermes"). */
+const botLabel = (member: GroupMember) => String(member.title || member.display_name || '').trim() ||
+  (member.name.trim().toLowerCase() === 'default' ? 'Hermes' : member.name)
 
-  return member.connectionLabel ? `${name} · ${member.connectionLabel}` : name
+/** A peer's name in the room: its own, then the connection it runs on, so two computers' default
+ *  Bots never read alike. */
+function peerLabel(member: GroupMember) {
+  return member.connectionLabel ? `${botLabel(member)} · ${member.connectionLabel}` : botLabel(member)
 }
 
 const baseHandle = (member: GroupMember) => member.handle ?? member.route?.targetProfile ?? member.targetProfile ?? member.name
@@ -214,7 +215,8 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
 
   if (!pin) {
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
-    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? peerLabel(member) : undefined)
+    // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
+    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
 
     return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
       ...(display ? { display_name: display } : {}) }

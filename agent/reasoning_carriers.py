@@ -206,7 +206,12 @@ def _shape(msg: Any, route: _WireRoute) -> Any:
     # Live history carries the keys top-level; a resumed row only has the persisted record.
     values = {**(record or {}), **{k: msg[k] for k in keys if k in msg}}
     if record is not None:
-        rest = [d for d in details if d is not record]
+        from agent.message_sanitization import REASONING_ISSUER_TYPE
+
+        rest = [
+            d for d in details
+            if d is not record and not (isinstance(d, dict) and d.get("type") == REASONING_ISSUER_TYPE)
+        ]
         if rest:
             out["reasoning_details"] = rest
         else:

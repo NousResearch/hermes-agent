@@ -1,6 +1,6 @@
-"""Stored reasoning is replayed to every chat-completions route that can read it, on the
-carriers that route reads; strict schemas never receive a reasoning key; a route that still
-rejects one is learned per (provider, host, model) and stripped on a single retry."""
+"""Chat-completions reasoning is replayed only to the route that produced it; strict schemas
+never receive a reasoning key; a route that still rejects one is learned per (provider, host,
+model) and stripped on a single retry."""
 
 from copy import deepcopy
 from types import SimpleNamespace
@@ -64,6 +64,35 @@ def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     assert bare["reasoning_content"] == " "  # DeepSeek 400s without it; "" is rejected too
     gemini_alias, _ = _wire("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "my-alias")
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
+
+
+def test_provenance_blocks_reasoning_after_model_switch_and_fallback():
+    """Regression for #136783: a DeepSeek thought is not sent to OpenRouter Claude."""
+    issued = {
+        "type": "hermes.reasoning_route.native_assistant",
+        "provider": "deepseek",
+        "host": "api.deepseek.com",
+        "model": "deepseek-chat",
+    }
+    source = {
+        "role": "assistant", "content": "", "reasoning_content": "DEEPSEEK_COT",
+        "reasoning": "DEEPSEEK_COT", "reasoning_details": [issued],
+        "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+    }
+    target = reasoning_replay_route(
+        "chat_completions", "openrouter", "anthropic/claude-sonnet-4", "https://openrouter.ai/api/v1"
+    )
+    switched = deepcopy(source)
+    apply_reasoning_content_policy(source, switched, *target)
+    assert not {key for key in ("reasoning_content", "reasoning") if key in switched}
+
+    primary = reasoning_replay_route(
+        "chat_completions", "deepseek", "deepseek-chat", "https://api.deepseek.com/v1"
+    )
+    built = deepcopy(source)
+    apply_reasoning_content_policy(source, built, *primary)
+    reapply_reasoning_echo([built], *target)
+    assert not {key for key in ("reasoning_content", "reasoning") if key in built}
 
 
 class _Rejection(Exception):

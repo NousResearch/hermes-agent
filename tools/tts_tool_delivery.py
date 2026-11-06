@@ -257,6 +257,27 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
+def _gemini_audio_as_wav(audio: bytes) -> bytes:
+    """WAV bytes for a Gemini TTS ``inlineData`` payload.
+
+    2.5/3.1 models return headerless L16 PCM. 3.8 models return a complete RIFF WAV whose trailing
+    chunk is a C2PA provenance manifest; wrapping that as PCM plays the 44-byte header as a click
+    and the manifest as a full-scale burst at the end. Keep only the ``fmt `` and ``data`` chunks."""
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return _wrap_pcm_as_wav(audio)
+    chunks: dict[bytes, bytes] = {}
+    pos = 12
+    while pos + 8 <= len(audio):
+        chunk_id, size = struct.unpack_from("<4sI", audio, pos)
+        chunks.setdefault(chunk_id, audio[pos + 8:pos + 8 + size])
+        pos += 8 + size + (size & 1)
+    fmt, data = chunks.get(b"fmt "), chunks.get(b"data")
+    if fmt is None or data is None:
+        raise RuntimeError("Gemini TTS returned a WAV without fmt/data chunks")
+    body = struct.pack("<4sI", b"fmt ", len(fmt)) + fmt + struct.pack("<4sI", b"data", len(data)) + data
+    return struct.pack("<4sI4s", b"RIFF", 4 + len(body), b"WAVE") + body
+
+
 def _write_wav_bytes_as(wav_bytes: bytes, output_path: str) -> str:
     """Write in-memory WAV to *output_path*, ffmpeg-converting to its container. ``.ogg`` is forced
     to Opus (ffmpeg's .ogg default is Vorbis, which voice bubbles reject). A failed conversion

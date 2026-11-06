@@ -293,3 +293,45 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# unguard: operator escape hatch for the active_pr respawn guard
+# ---------------------------------------------------------------------------
+
+
+def test_unguard_cli_lifts_the_respawn_guard(kanban_home, capsys):
+    """``hermes kanban unguard <id>`` records the event and returns 0.
+
+    It is the sanctioned lever for a single-owner or report card that cannot be
+    reassigned to another profile; a worker may not lift its own guard.
+    """
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unguard me", assignee="dev",
+                             completion_contract="example/repo")
+        kb.add_comment(conn, tid, author="dev",
+                       body="Opened https://github.com/example/repo/pull/44")
+        # Older than the unguard event the CLI is about to write (strict-after).
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET created_at = created_at - 60 WHERE task_id = ?",
+                (tid,),
+            )
+        # A worker must not be able to lift its own guard.
+        assert "unguard" in kc._DELEGATED_CHILD_DENIED_ACTIONS
+
+    rc = kc.kanban_command(parser.parse_args(["kanban", "unguard", tid]))
+    assert rc == 0
+    assert f"Lifted the respawn guard on {tid}" in capsys.readouterr().out
+
+    with kbc.connect() as conn:
+        kinds = [row["kind"] for row in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id", (tid,))]
+        assert "unguarded" in kinds
+
+    rc = kc.kanban_command(parser.parse_args(["kanban", "unguard", "t_deadbeefcafe"]))
+    assert rc == 1
+    assert "no such task" in capsys.readouterr().err
+
+

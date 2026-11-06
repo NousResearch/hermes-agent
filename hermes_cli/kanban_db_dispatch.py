@@ -26,6 +26,12 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.kanban_db_pr_guard import (
+    _pr_guard_reason,
+    _reset_pr_state_cache,  # re-export: tests isolate the lookup cache on the dispatcher
+    _resolve_pr_state,
+    _resolve_respawn_guard_pr_window_seconds,
+)
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -76,13 +82,8 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
-_RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
-
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
-    re.IGNORECASE,
-)
+# The ``active_pr`` window, the bounded ``gh`` PR-state lookup, the card-lane
+# heuristic and the handoff rule live in ``kanban_db_pr_guard``.
 
 
 @dataclass
@@ -1573,9 +1574,15 @@ def check_respawn_guard(
     PR). The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
+
+    ``active_pr`` is lane- and PR-state aware (``kanban_db_pr_guard``): a
+    ``local-only`` report card is never guarded, every referenced PR being
+    merged or closed lifts it, an unresolved lookup fails closed, the window
+    comes from ``kanban.respawn_guard_pr_window_seconds`` (``0`` disables the
+    step) and ``hermes kanban unguard <id>`` is the operator lever.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, completion_contract FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1638,21 +1645,13 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
-    pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
-                                          cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
-                if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
-    if pr_times:
-        # Strictly after: a same-second tie stays guarded (fail closed).
-        if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
-                conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
-            return None
-        return "active_pr"
+    #    ``_pr_guard_reason`` owns the handoff exception (#111910), the report
+    #    lane exemption, PR-state awareness and the ``unguarded`` operator lever.
+    window = _resolve_respawn_guard_pr_window_seconds()
+    if window > 0:
+        reason = _pr_guard_reason(conn, task_id, row, now, window, _resolve_pr_state)
+        if reason is not None:
+            return reason
 
     return None
 
@@ -1673,22 +1672,6 @@ def _rows_since(conn: sqlite3.Connection, table: str, task_id: str, since: int, 
         t = unreadable if t is None else t
         if t is not None and (t > since if strict else t >= since):
             yield t, row
-
-
-def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
-    """Only an ``assigned`` event that moves the card to a DIFFERENT profile is
-    a handoff. A no-op re-assign (dev→dev via CLI/dashboard/``reassign
-    --reclaim``), an unassign, or the dispatcher's own
-    ``kanban.default_assignee`` write would otherwise lift ``active_pr`` for
-    the very implementer that opened the PR. Events without ``from`` (written
-    before it was recorded) are not trusted as handoffs — fail closed."""
-    if kind != "assigned":
-        return True
-    data = _kb._json_or(payload, {})
-    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
-        return False
-    to = data.get("assignee")
-    return bool(to) and "from" in data and data["from"] != to
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

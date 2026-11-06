@@ -421,15 +421,22 @@ def test_dispatcher_sweeps_survive_iso_text_timestamps(conn, monkeypatch) -> Non
     assert kbd.detect_crashed_workers(conn) == [garbled]
 
 
-def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
+def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn, monkeypatch) -> None:
     """SQLite sorts TEXT above every INTEGER, so ISO stamps (#97455) must not pass
     the guards' SQL windows by type: an old ISO success does not hold a card, an
     old ISO PR comment does not either, and an ISO handoff OLDER than an int PR
     comment does not lift ``active_pr``."""
+    # Pin the PR state: no test may shell out to ``gh`` (no auth in CI).
+    monkeypatch.setattr(kbd, "_resolve_pr_state", lambda _url: "OPEN")
     now, iso = int(time.time()), _iso
 
-    def card(title):
-        task_id = kb.create_task(conn, title=title, assignee="dev")
+    def card(title, contract="local-only"):
+        # ``create_task`` normalises an omitted contract to ``local-only`` (the
+        # report/notify lane, no PR to duplicate). The PR-bearing cards below
+        # declare a repo contract explicitly; ``old_success`` stays local-only so
+        # completing it does not run GitHub PR acceptance.
+        task_id = kb.create_task(conn, title=title, assignee="dev",
+                                 completion_contract=contract)
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         return task_id
 
@@ -450,7 +457,7 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
     assert kbd.check_respawn_guard(conn, old_success) == "recent_success"  # a readable recent ISO still holds
 
     with kb.write_txn(conn):
-        old_pr, guarded = card("old pr"), card("guarded")
+        old_pr, guarded = card("old pr", "example/repo"), card("guarded", "example/repo")
         comment(old_pr, iso(90 * 86400))
         comment(guarded, now - 60)
         conn.execute("INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "

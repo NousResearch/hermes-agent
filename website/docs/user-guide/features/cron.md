@@ -777,6 +777,20 @@ cron:
   wrap_response: false
 ```
 
+#### Per-job override
+
+A single job can override the global setting, for example to get one briefing delivered clean while every other job keeps its header. An override set on the job always wins; a job without one follows `cron.wrap_response`.
+
+From the CLI:
+
+```bash
+hermes cron create "0 8 * * *" "Morning briefing" --no-wrap-response   # deliver raw
+hermes cron edit <job_id> --wrap-response                               # force the wrapper on
+hermes cron edit <job_id> --inherit-wrap-response                       # follow the global setting again
+```
+
+Through the `cronjob` tool, set `wrap_response` to `on`, `off` or `inherit`. Leaving it out keeps the job's current setting, and a new job inherits. The dashboard API accepts `true`, `false` or `null` (inherit); any other value, including the string `"false"`, is rejected rather than stored.
+
 ### Push notifications (`cron.delivery.notify`)
 
 Cron output is a *final* delivery, not a progress message, so by default it is

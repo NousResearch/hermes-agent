@@ -79,6 +79,32 @@ def test_proactive_prune_is_suppressed_when_checkpoint_required():
     assert agent._checkpoint_gate_suppression_count == 1
 
 
+@pytest.mark.parametrize(
+    ("persist_disabled", "session_db", "exempt"),
+    [(True, None, True), (True, object(), False), (False, None, False)],
+    ids=["detached-fork", "persist-disabled-with-db", "persisting-agent"],
+)
+def test_prune_gate_exempts_exactly_the_forks_compaction_exempts(persist_disabled, session_db, exempt):
+    """A detached review or ``/btw`` fork (persistence-isolated, no manager, no session DB) compacts
+    without a checkpoint by design; its prune is withheld no harder than its compaction."""
+    from agent.conversation_compression import _pre_compress_memory_context
+
+    agent = SimpleNamespace(compression_checkpoint_required=True, _persist_disabled=persist_disabled,
+                            _memory_manager=None, _session_db=session_db)
+    compressor = _CountingPruneCompressor()
+
+    with patch("agent.compaction_events.publish_prune"):
+        _proactive_tool_result_prune(agent, compressor, [{"role": "user", "content": "scan"}], 400_000)
+
+    assert compressor.calls == (1 if exempt else 0)
+    assert getattr(agent, "_checkpoint_gate_suppression_count", 0) == (0 if exempt else 1)
+    if exempt:
+        assert _pre_compress_memory_context(agent, [], True) == ""
+    else:
+        with pytest.raises(gate.CompressionCheckpointUnavailable):
+            _pre_compress_memory_context(agent, [], True)
+
+
 def test_proactive_prune_still_runs_when_gate_is_off():
     """Sabotage control: gate off, the harness really reaches the prune."""
     compressor = _CountingPruneCompressor()

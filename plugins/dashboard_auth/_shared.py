@@ -25,7 +25,17 @@ from hermes_cli.dashboard_auth import (
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
 TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
-JSON_HEADERS = {"Accept": "application/json"}
+
+# ``Accept-Encoding: identity`` — the auth bodies (token grant, OIDC discovery,
+# revocation) are tiny and security-sensitive, so we ask the IdP/edge NOT to
+# compress them. httpx otherwise defaults to ``gzip, deflate, br`` and a CDN in
+# front of the portal (Nous runs on Vercel) that tags a response ``Content-Encoding:
+# gzip`` without emitting a valid gzip stream makes the on-the-fly decompressor in
+# ``iter_bytes`` raise ``DecodingError`` ("incorrect header check"), which httpx
+# classes as a RequestError and the exchange mislabels as "unreachable" (a 503).
+# Verified the portal honours identity, so pinning it sidesteps the decompressor
+# at the source for every caller of this module.
+JSON_HEADERS = {"Accept": "application/json", "Accept-Encoding": "identity"}
 
 # Clock-skew leeway (seconds) for JWT time-claim verification (RFC 7519 §4.1.4-4.1.6
 # allow "some small leeway, usually no more than a few minutes"). Applied symmetrically
@@ -171,6 +181,18 @@ def exchange_token(
     """
     try:
         response = httpx.post(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
+    except httpx.DecodingError as exc:
+        # The endpoint answered; the body (or its claimed Content-Encoding) was
+        # unparseable. NOT a transport failure: saying "unreachable" here sent
+        # users to debug their network while the CDN in front of the IdP served a
+        # response tagged gzip that wasn't. DecodingError subclasses RequestError,
+        # so this arm must precede the one below. ProviderError (503) is the right
+        # surface: middleware keeps cookies/rotated tokens on 503 (#47815), so a
+        # plain re-login retried from a fresh edge is safe.
+        # (Local re-application of the fix upstream reverted in 8a33891: the
+        # Accept-Encoding: identity pin in JSON_HEADERS is the primary defence;
+        # this arm is the safety net if an edge ignores it.)
+        raise ProviderError(f"{endpoint} returned a malformed response body: {exc}") from exc
     except httpx.RequestError as exc:
         raise ProviderError(f"{endpoint} unreachable: {exc}") from exc
     if response.status_code == 400:

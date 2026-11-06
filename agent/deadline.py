@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 
+from hermes_loop_dump import format_loop_thread_block
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -243,7 +245,7 @@ async def _run_abandon_cleanup(on_abandon: Callable[[], Awaitable[Any]]) -> None
         logger.debug("deadline abandon-cleanup failed", exc_info=True)
 
 
-def _dump_blocked_loop_diagnostics(label: str, timeout_s: float) -> None:
+def _dump_blocked_loop_diagnostics(label: str, timeout_s: float, *, loop_thread_ident: Optional[int] = None) -> None:
     logger.warning(
         "[deadline] %r deadline (%.0fs) expired but the event loop has not processed the expiry "
         "after a further %.0fs — the loop thread appears BLOCKED in a synchronous call, which is "
@@ -251,6 +253,14 @@ def _dump_blocked_loop_diagnostics(label: str, timeout_s: float) -> None:
         "blocking frame.",
         label, timeout_s, _LOOP_BLOCKED_DUMP_GRACE_S,
     )
+    # The loop thread's stack goes FIRST and by ident: ``faulthandler``'s all-threads dump is
+    # capped at the 100 newest-first threads, so in a process of a few hundred threads the loop —
+    # the oldest one — is the thread it drops, and the reason for this dump becomes unattributable.
+    try:
+        sys.stderr.write(format_loop_thread_block(loop_thread_ident))
+        sys.stderr.flush()
+    except Exception:
+        logger.debug("loop thread stack write failed", exc_info=True)
     try:
         faulthandler.dump_traceback(all_threads=True)
     except Exception:
@@ -278,6 +288,9 @@ async def run_bounded_async(
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
+    # This coroutine runs on the loop, so this IS the loop thread's ident — the one thread the
+    # capped all-threads dump is guaranteed to omit once the process is large.
+    loop_thread_ident = threading.get_ident()
     deadline: asyncio.Future[None] = loop.create_future()
     loop_processed_expiry = threading.Event()
 
@@ -288,7 +301,7 @@ async def run_bounded_async(
 
     def _watchdog_check() -> None:
         if not loop_processed_expiry.is_set():
-            _dump_blocked_loop_diagnostics(label, timeout_s)
+            _dump_blocked_loop_diagnostics(label, timeout_s, loop_thread_ident=loop_thread_ident)
 
     timers = [threading.Timer(timeout_s, lambda: loop.call_soon_threadsafe(_mark_expired))]
     if dump_on_blocked_loop:

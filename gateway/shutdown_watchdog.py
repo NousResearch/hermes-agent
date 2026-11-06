@@ -24,9 +24,15 @@ from typing import Any, Callable, Dict, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_loop_dump import capture_loop_thread_ident, write_loop_thread_block
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+# Ident of the gateway loop thread, captured while the loop can still answer (see
+# ``hermes_loop_dump``): ``faulthandler``'s all-threads dump is capped at 100 newest-first threads
+# and therefore drops this one from any process big enough to need the dump.
+_loop_thread_ident: Optional[int] = None
 
 # Extra leash beyond ``agent.restart_drain_timeout`` so a slow-but-progressing drain survives.
 # Matches the issue #66892 suggested hardening.
@@ -93,6 +99,11 @@ def start_loop_liveness_watchdog(
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
     opt-out."""
+    global _loop_thread_ident
+    # Capture the loop's own ident NOW: a dump taken while the loop is wedged cannot ask it, and
+    # ``faulthandler``'s capped all-threads dump omits the oldest thread — the loop — in any
+    # process running more than 100 threads.
+    _loop_thread_ident = capture_loop_thread_ident(loop)
     stop_event = threading.Event()
 
     def _watchdog() -> None:
@@ -239,14 +250,24 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
-                         event: str = "shutdown_watchdog_fired") -> None:
-    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""
+                         event: str = "shutdown_watchdog_fired",
+                         loop_thread_ident: Optional[int] = None) -> None:
+    """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr).
+
+    The loop thread's stack goes FIRST: ``faulthandler``'s all-threads dump is capped at 100
+    newest-first threads, so the loop — the oldest thread in a busy gateway — is exactly the one
+    it drops (#120356 is why the file copy exists at all; this is why the file was unreadable for
+    a loop stall).
+    """
     header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
               "fired_at": datetime.now(UTC).isoformat(), "snapshot": snapshot or {}}
+    ident = _loop_thread_ident if loop_thread_ident is None else loop_thread_ident
     with contextlib.suppress(OSError):  # unwritable dir: skip only the file copy, stderr still runs
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
+        fh.write(json.dumps(header, default=str) + "\n")
+        write_loop_thread_block(fh, ident)
+        fh.write("--- faulthandler dump (all threads) ---\n")
         fh.flush()
         try:
             faulthandler.dump_traceback(file=fh, all_threads=True)
@@ -258,6 +279,7 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[
         sys.stderr.write(f"Gateway {event.replace('_', ' ')} after {delay_s:.0f}s "
                          f"(pid={os.getpid()}); dumping all thread stacks.\n")
         sys.stderr.flush()
+        write_loop_thread_block(sys.stderr, ident)
         faulthandler.dump_traceback(all_threads=True)
 
 

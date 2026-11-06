@@ -1,0 +1,17 @@
+name: gooseworks
+title: GooseWorks
+repo: https://github.com/gooseworks-ai/agent-plugin
+sha: a025a84c5ff128c8241988db0650aa3ac70741bb
+version: "1.0.11"
+description: Research brands, customers and competitors; create image ads and product photos; plan video ads using saved brand context.
+maintainer: gooseworks-ai
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://docs.gooseworks.ai/help-center/troubleshooting
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

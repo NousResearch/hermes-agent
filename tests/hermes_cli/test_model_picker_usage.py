@@ -71,7 +71,8 @@ def test_usage_multiplier_reads_only_a_finite_positive_number():
     assert usage_multiplier({"usage_multiplier": 3}) == 3.0
     assert usage_multiplier({"usage_multiplier": 0.5}) == 0.5
     assert usage_multiplier({"usage_multiplier": 100_000}) == 100_000.0
-    for bad in (True, False, 0, -1, float("nan"), float("inf"), 100_001, 1e308, "3", None):
+    # 10**400: a JSON integer too big for a float (math.isfinite would raise on it).
+    for bad in (True, False, 0, -1, float("nan"), float("inf"), 100_001, 1e308, 10**400, "3", None):
         assert usage_multiplier({"usage_multiplier": bad}) is None, bad
     assert usage_multiplier({}) is None and usage_multiplier(None) is None
 

@@ -251,7 +251,8 @@ def usage_multiplier(pricing_row: Any) -> Optional[float]:
     value = pricing_row.get("usage_multiplier") if isinstance(pricing_row, dict) else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) and 0 < value <= MAX_USAGE_MULTIPLIER else None
+    # Range first: a huge JSON integer would make math.isfinite raise OverflowError (NaN fails both checks).
+    return float(value) if 0 < value <= MAX_USAGE_MULTIPLIER and math.isfinite(value) else None
 
 
 def format_usage_multiplier(value: float) -> str:

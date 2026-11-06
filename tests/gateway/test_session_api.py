@@ -160,10 +160,11 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
         assert {"parent", "child"} <= ids, ids
 
         session_db.create_session("solo", "api_server")
-        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+        with patch('hermes_state_api_fork.insert_session_row_in_transaction', side_effect=RuntimeError("boom")):
             resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
         assert resp.status >= 500
     assert session_db.get_session("solo")["end_reason"] is None
+    assert session_db.get_session("never") is None
 
 
 @pytest.mark.asyncio

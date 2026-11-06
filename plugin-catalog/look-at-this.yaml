@@ -1,0 +1,53 @@
+name: look-at-this
+repo: https://github.com/Elshayib/look-at-this
+sha: 653757f9f1eb58176a8d0ae40f64b663ce1d72f3
+readme: true
+title: Look At This
+image: https://raw.githubusercontent.com/Elshayib/look-at-this/653757f9f1eb58176a8d0ae40f64b663ce1d72f3/assets/look-at-this.png
+description: >-
+  One-shot "explain this" context capture: a hotkey, the composer's attach menu or
+  /look grabs the window you were just in (screenshot, accessibility tree, active
+  URL, selected text, app/window title) and attaches it as one redactable,
+  ephemeral packet to your next Hermes message. User-initiated only; the packet
+  expires after 300 seconds, is consumed by one turn, refuses excluded windows
+  (password managers, incognito) before capturing, and redacts secrets in the text
+  fields. Disclosure — captures only on request; the packet text is held in memory
+  (the companion for hotkey captures, the gateway for /look captures); only a
+  metadata marker (id/session/expiry) and the PNG touch disk; the PNG is deleted at
+  TTL, /look clear, or replacement; the packet text goes to the configured model
+  provider with that turn; redaction is text-only.
+maintainer: Elshayib
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Elshayib/look-at-this#readme
+version: "0.1.0"
+platforms:
+  - windows
+  - macos
+  - linux
+capabilities:
+  provides_tools:
+    - lat_grab
+    - lat_status
+    - lat_clear
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - The system-wide hotkey is Windows-only and owned by companion/lat_companion.py with
+    --hotkey; the Desktop plugin SDK has no global-shortcut door. The companion must be
+    running, the packet is held in its memory and fetched by the gateway, and a remote
+    gateway needs companion_url/companion_token. The desktop chip relays the focused session
+    id to the companion (over companion_url/companion_token when the gateway is remote), so a
+    hotkey packet binds to that chat. The in-app keybind covers the focused-Hermes case.
+  - The desktop half of a unified package inventories disabled and must be toggled on once in
+    Capabilities -> Plugins.
+  - /look runs in the gateway process. On a remote gateway, set capture_backend=companion and
+    run companion/lat_companion.py on the machine to capture; the companion must be reachable
+    from the gateway.
+  - Redaction is text-only; the screenshot is not altered.
+  - Windows UIPI prevents a medium-integrity agent from enumerating elevated (admin) windows.
+    Window context is unavailable on Windows ARM64, and native Wayland restricts capture and
+    global shortcuts.

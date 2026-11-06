@@ -12,6 +12,11 @@ _LOADER = (
     "cannot open shared object file: No such file or directory"
 )
 
+_DARWIN_LIBCPP = (
+    "dyld: Symbol not found: __ZNSt3__122__libcpp_verbose_abortEPKcz\n"
+    "  Expected in: /usr/lib/libc++.1.dylib"
+)
+
 
 def _node_script(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +44,31 @@ def test_staged_repair_installs_libatomic_then_reprobes(tmp_path, monkeypatch):
 
     assert calls["n"] == 1
     assert repaired == ("", "")
+
+
+def test_darwin_libcpp_probe_explains_macos_compatibility(monkeypatch):
+    """Regression for #137512: Monterey's loader error is actionable."""
+    monkeypatch.setattr("pm.packages.current_target", lambda: "darwin-x64")
+    monkeypatch.setattr("pm.packages.BinaryPackage.verify", lambda *_args: _DARWIN_LIBCPP)
+
+    assert Nodejs().verify(Path("/staged"), "darwin-x64") == (
+        "Node requires a newer macOS libc++ than this host provides; "
+        "the staged Node binary cannot run"
+    )
+
+
+def test_darwin_libcpp_install_failure_has_upgrade_remedy(monkeypatch):
+    monkeypatch.setattr("pm.packages.current_target", lambda: "darwin-x64")
+    package = Nodejs()
+    reason = (
+        "Node requires a newer macOS libc++ than this host provides; "
+        "the staged Node binary cannot run"
+    )
+
+    assert package.repair_staged_verification(Path("/staged"), "darwin-x64", reason) == (
+        reason,
+        "upgrade macOS to a version supported by this Node release, then retry",
+    )
 
 
 def test_auto_repair_never_reads_a_tty(monkeypatch):

@@ -129,6 +129,27 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n\n".join(p for p in parts if p).strip()
 
 
+def _research_prompt(query: str) -> str:
+    """Wrap a bare query in a citation-forcing research instruction.
+
+    A bare query makes Grok answer from its own weights: xAI returns 200 with a
+    synthesized answer and an empty top-level ``citations`` list, so the caller
+    sees ``citations: []`` and (with filters) ``degraded: true`` even though the
+    server-side x_search tool never ran. Asking for real posts plus source URLs
+    is what makes the tool execute and attach ``url_citation`` annotations.
+    """
+    q = " ".join(query.split())
+    if any("\u3040" <= ch <= "\u9fff" for ch in q):
+        return (
+            f"X（旧Twitter）で「{q}」について実際に投稿されたポストを調べ、引用元URLを必ず付けて、"
+            "件数と傾向をまとめてください。宣伝目的の投稿は除き、賛否の両方を拾ってください。"
+        )
+    return (
+        f"Search X for real posts about: {q}. Cite the source URL of every post you rely on, "
+        "summarize how many posts you found and what the sentiment is, and skip promotional posts."
+    )
+
+
 def _extract_inline_citations(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
@@ -238,7 +259,7 @@ def x_search_tool(
     try:
         payload = {
             "model": str(_load_x_search_config().get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL,
-            "input": [{"role": "user", "content": query.strip()}],
+            "input": [{"role": "user", "content": _research_prompt(query)}],
             "tools": [tool_def],
             "store": False,
         }
@@ -251,13 +272,22 @@ def x_search_tool(
         data = _post_with_retries(f"{base_url}/responses", headers, payload).json()
         citations = list(data.get("citations") or [])
         inline_citations = _extract_inline_citations(data)
+        # xAI puts url_citation annotations on the message body and leaves the top-level
+        # `citations` field empty, so a caller that only reads `citations` sees zero
+        # sources even when the search ran. Mirror the annotations so both fields agree.
+        if not citations and inline_citations:
+            citations = [
+                {"url": c.get("url", ""), "title": c.get("title", "")}
+                for c in inline_citations if c.get("url")
+            ]
+        grounded = bool(citations or inline_citations)
         # xAI returns 200 with a synthesized answer even when no posts match the narrowing
         # filters; with both citation channels empty the answer came from training data.
         degraded = bool(active_filters) and not citations and not inline_citations
         result = {
             "success": True, "provider": "xai", "credential_source": source, "tool": "x_search",
             "model": payload["model"], "query": query.strip(), "answer": _extract_response_text(data),
-            "citations": citations, "inline_citations": inline_citations, "degraded": degraded,
+            "citations": citations, "inline_citations": inline_citations, "grounded": grounded, "degraded": degraded,
             "degraded_reason": (
                 f"no citations returned despite filters: {', '.join(active_filters)}" if degraded else None
             ),

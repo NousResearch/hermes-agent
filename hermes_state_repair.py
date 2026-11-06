@@ -64,7 +64,7 @@ _FINGERPRINT_VOLATILE_HEADER_RANGES = ((24, 28), (92, 96))
 # the volume, clamped to a modest floor. See #69603.
 _REPAIR_BACKUP_MIN_FREE_BYTES = 256 * 1024 * 1024  # 256 MiB absolute floor
 _REPAIR_BACKUP_FREE_FRACTION = 0.02  # plus 2% of the volume
-_FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+_FTS_TABLES = ("messages_fts", "messages_fts_trigram")
 _MANUAL_RECOVER_HINT = ("Free disk space, then retry (or recover manually with "
                         "`hermes sessions recover --source {db_path} --inspect-only` first).")
 
@@ -776,7 +776,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
     See #50502.
     """
-    from hermes_state import SessionDB, load_fts5_cjk_extension
+    from hermes_state import SessionDB
+    from hermes_state_fts import drop_retired_cjk_index
     # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ── PRAGMA integrity_check can report "wrong #
     # of entries in index" when a B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
     # base table. REINDEX rewrites the index b-tree from the canonical table rows using the existing index
@@ -784,10 +785,9 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     conn = _connect_repair_durable(db_path)
     try:
         with contextlib.closing(conn):
-            # Best-effort tokenizer load: messages_fts_cjk needs cjk_unicode61 before any statement can touch it;
-            # tokenizer absence must never classify as corruption.
-            load_fts5_cjk_extension(conn)
             conn.execute("PRAGMA journal_mode").fetchone()
+            # A leftover index whose tokenizer no process loads would fail every probe below.
+            drop_retired_cjk_index(conn.cursor())
             rows = conn.execute("PRAGMA integrity_check").fetchall()
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
@@ -831,10 +831,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             except sqlite3.DatabaseError as exc:
                 # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
                 # latter let the trigram-segment collision report "healthy".
-                # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
-                # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
-                # SessionDB drops the triggers itself.
-                if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
+                # Missing messages/sessions tables = brand new file mid-init, not corruption.
+                if _schema_not_built(exc):
                     return None
                 return f"fts5 write probe failed: {exc}"
             finally:
@@ -1095,11 +1093,8 @@ def _edit_sqlite_master(conn: sqlite3.Connection, edit) -> None:
 def _strategy_rebuild_fts(conn: sqlite3.Connection) -> None:
     """FTS5 'rebuild' rewrites each index from the content table: the least-
     destructive fix for an index that rejects writes while reads work."""
-    from hermes_state import load_fts5_cjk_extension
-    # The cjk index can only be rebuilt with its tokenizer loaded (best-effort).
-    load_fts5_cjk_extension(conn)
     for table_name in _FTS_TABLES:
-        with contextlib.suppress(sqlite3.OperationalError):  # table absent (FTS disabled / trigram off / cjk absent)
+        with contextlib.suppress(sqlite3.OperationalError):  # table absent (FTS disabled / trigram off)
             conn.execute(f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')")
 
 

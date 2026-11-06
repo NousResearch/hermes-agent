@@ -228,7 +228,8 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   const { onCreated } = await submitDialog()
   expect(onCreated).toHaveBeenCalledOnce()
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
-  expect(updateGroupChat).toHaveBeenCalledOnce()
+  expect(updateGroupChat).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(updateGroupChat).mock.calls[1][1]({ log: [], watermarks: {} }).engine).toMatchObject({ kind: 'gateway', connectionId: 'local' })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
 })
 

@@ -9,7 +9,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { afterEach } from 'vitest'
+
+import type { CanonicalRoom } from './canonical-groups'
 
 interface Schema {
   properties: Record<string, unknown>
@@ -84,6 +87,59 @@ export const CANONICAL_GROUP_CAPABILITIES = declaredCapabilities({
   max_log_limit: 500
 })
 
+const CATALOG_DIGEST = 'c'.repeat(64)
+
+/** `groups.capabilities` of a gateway that also hosts Bots of other gateways' rooms and seats theirs
+ *  (gateway/session_group_peers.py): the `groups.peer.*` methods, `peer_renewal_horizon`, and a
+ *  `room_link` that is enabled, with the catalog a room pins its member to. */
+export function peerGroupCapabilities(gateway = 'install:peer') {
+  const endpoint = { available: true, url: `https://${gateway.slice(8)}.example.ts.net:8642`, transport_security: 'tls' }
+
+  return declaredCapabilities({
+    ...CANONICAL_GROUP_CAPABILITIES,
+    authority_gateway_id: gateway,
+    room_link: {
+      enabled: true, profile: 'default', endpoint,
+      catalog: { installation_id: gateway, protocol_versions: [2], link_modes: ['direct'], persistent_process: true, text: true,
+        attachments: false, execution_policy: { target_profile: 'default', policy_digest: 'p'.repeat(64) },
+        catalog_digest: CATALOG_DIGEST, endpoint }
+    },
+    features: [...CANONICAL_GROUP_CAPABILITIES.features, 'peer_renewal_horizon'],
+    methods: [...CANONICAL_GROUP_CAPABILITIES.methods, 'groups.peer.register', 'groups.peer.invite', 'groups.peer.revoke']
+  })
+}
+
+/** The doubles of a home (`install:a18b0000000000000000000000000000`) seating the default Bot of `install:3f2a0000000000000000000000000000`. */
+export const PEER_HOME = peerGroupCapabilities('install:a18b0000000000000000000000000000')
+export const PEER_MINI = peerGroupCapabilities('install:3f2a0000000000000000000000000000')
+export const PEER_REGISTERED = { registered: true, mode: 'direct', transport_security: 'tls', target_install_id: 'install:3f2a0000000000000000000000000000', target_profile: 'default' }
+export const peerInvitation = (grant = 'grant', endpoint: unknown = PEER_MINI.room_link.endpoint) =>
+  ({ grant, target_profile: 'default', catalog: PEER_MINI.room_link.catalog, endpoint })
+
+/** A roster row for Bot `name` on another connection. */
+export const peerRosterRow = (connectionId: string, connectionLabel: string, name = 'default') => ({
+  name, connectionId, connectionLabel, remoteSource: true, sourceScoped: true,
+  installId: connectionId === 'mini' ? '3f2a0000000000000000000000000000' : 'b27c0000000000000000000000000000',
+  route: { connectionId, mode: 'remote' as const, profile: name, targetProfile: name }
+})
+
+type Answer = (method: string, params: Record<string, any>) => unknown
+
+/** Answer each `request(route, method, params)` from `answers[route.connectionId]` (`local` without a
+ *  route): a value, a promise, or an Error to reject with. Any other request fails the test. */
+export function answerGroupRequests(request: { mockImplementation: (fn: ProfileRequest) => unknown }, answers: Record<string, Answer>) {
+  request.mockImplementation(async (route, method, params) => {
+    const connection = (route as { connectionId?: string } | null)?.connectionId ?? 'local'
+    const answer = await answers[connection]?.(method, params ?? {})
+
+    if (answer === undefined) {throw new Error(`Unexpected RPC: ${connection} ${method}`)}
+
+    if (answer instanceof Error) {throw answer}
+
+    return answer
+  })
+}
+
 /** The standalone server's answer (`hermes serve`, `hermes dashboard`; tui_gateway/methods_groups.py
  *  `_METHODS`): it starts its own room driver at boot, so `driver` is true too. */
 export const STANDALONE_GROUP_CAPABILITIES = declaredCapabilities({
@@ -130,7 +186,7 @@ export function standaloneGroupProblems({ method, params }: GroupRequestCall): s
  *  unknown key in a method it lists. */
 export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
   for (const { method, params } of calls) {
-    const declared = CANONICAL_GROUP_CAPABILITIES.methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
+    const declared = peerGroupCapabilities().methods.includes(method) ? declaredGroupMethod(method)?.params : undefined
 
     if (!declared) {
       throw new Error(`Undeclared canonical group method: ${method}`)
@@ -151,7 +207,8 @@ export function assertCanonicalGroupCalls(calls: GroupRequestCall[]): void {
       }
     }
 
-    const refused = standaloneGroupProblems({ method, params })
+    // The renewal horizon is sent only when the lender advertises peer_renewal_horizon.
+    const refused = standaloneGroupProblems({ method, params }).filter(field => field !== 'groups.peer.invite.status_ttl_seconds')
 
     if (refused.length) {
       throw new Error(`The standalone server refuses group field: ${refused.join(', ')}`)
@@ -179,4 +236,50 @@ export function captureGroupRequests(request: ProfileRequest) {
       return request(...args)
     }
   }
+}
+
+/** `@hermes/plugin-sdk` for a dialog or gate on the `local` connection's default profile, with its
+ *  group requests going to `request` (contract-checked), Bot Mode words from `translate()` (read at
+ *  render, since the plugin's bundle imports this module) and `host` overrides. */
+export async function localGatewaySdkMock(sdk: typeof HermesSdk, request: ProfileRequest, translate: () => unknown,
+  host: Record<string, unknown> = {}) {
+  const { en } = await import('@/i18n/en')
+
+  return {
+    ...sdk,
+    gatewayActivationEpoch: () => 1,
+    useGatewayActivationEpoch: () => 1,
+    host: {
+      ...sdk.host, requestProfile: captureGroupRequests(request).request,
+      request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
+      state: { ...sdk.host.state, connectionId: sdk.atom<string | null>('local'), profile: sdk.atom('default'), gateway: sdk.atom('open') },
+      ...host
+    },
+    useI18n: () => ({ locale: 'en', t: en }),
+    usePluginI18n: () => translate()
+  }
+}
+
+/** Mirrors hosted_rooms.create_room: an ID cannot change payload or resurrect an ended room. */
+export function strictGroupCreation() {
+  const rooms = new Map<string, CanonicalRoom>()
+
+  const create = (params: Record<string, any>) => {
+    const existing = rooms.get(params.room_id)
+
+    if (existing?.disbanded_at != null) {throw new Error('room_id belongs to a disbanded room')}
+
+    if (existing && (existing.name !== params.name || JSON.stringify(existing.members) !== JSON.stringify(params.members))) {
+      throw new Error('room_id already exists with different state')
+    }
+
+    const room = existing ?? { room_id: params.room_id, name: params.name, members: structuredClone(params.members),
+      authority_gateway_id: PEER_HOME.authority_gateway_id, authority_epoch: 1 }
+
+    rooms.set(room.room_id, room)
+
+    return { room }
+  }
+
+  return { rooms, create }
 }

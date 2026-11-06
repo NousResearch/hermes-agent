@@ -1,6 +1,6 @@
 name: email-steward
 repo: https://github.com/kaosjammo/hermes-email-steward
-sha: 6b4ff6916d6b376c4e65f6454f5d404c67bdc44d
+sha: a14b1c6ab76d23fb01e07a97b02990f6d4442273
 description: Owner-private Gmail triage, durable obligations and shared Desktop rules.
 maintainer: kaosjammo
 tier: community

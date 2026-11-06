@@ -144,3 +144,17 @@ def test_a_header_session_write_skips_the_cookie_write_checks(gated, token):
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json()["ticket"]
     assert "set-cookie" not in r.headers
+
+
+def test_session_header_reads_as_signed_in_on_the_webapps_status(gated, token, tmp_path, monkeypatch):
+    """``/api/status`` is public, so the gate never checks it, and on the gateway's Webapp it shows a
+    signed-out caller only liveness. The header, like the bearer, reads as signed in there:
+    Desktop reads the gateway's served profiles from that body."""
+    client = gated()
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(web_server.app.state, "webapp_home", str(tmp_path), raising=False)
+    signed_out = client.get("/api/status").json()
+    bearer = client.get("/api/status", headers={"Authorization": f"Bearer {token}"}).json()
+    header = client.get("/api/status", headers={_HEADER: token}).json()
+    assert set(signed_out) < set(bearer)
+    assert set(header) == set(bearer)

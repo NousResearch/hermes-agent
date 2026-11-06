@@ -205,6 +205,8 @@ def peek_session(request: Request):
     else:
         gateway = webapp_sign_in.cookie_gateway(request)
         access_token, _rt = read_session_cookies(request, gateway)
+        if not access_token and not _rt:
+            return _session_token_header_session(request)
         if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
             return None
         provider_hint = read_session_provider(request, gateway)

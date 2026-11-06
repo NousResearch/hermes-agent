@@ -497,7 +497,9 @@ const SEMANTIC_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'statusGood',
   'statusWarn',
   'statusBad',
-  'statusCritical'
+  'statusCritical',
+  'diffAddedWord',
+  'diffRemovedWord'
 ]
 
 const ADAPTIVE_BACKGROUNDS: readonly (keyof ThemeColors)[] = [
@@ -506,7 +508,9 @@ const ADAPTIVE_BACKGROUNDS: readonly (keyof ThemeColors)[] = [
   'completionMetaBg',
   'completionMetaCurrentBg',
   'statusBg',
-  'selectionBg'
+  'selectionBg',
+  'diffAdded',
+  'diffRemoved'
 ]
 
 // Fill polarity limits: on light terminals a fill must stay light, and vice
@@ -537,6 +541,40 @@ function adaptColorsToBackground(colors: ThemeColors, isLight: boolean, base: Th
     if (isLight ? luminance < LIGHT_BG_MIN_LUMINANCE : luminance > DARK_BG_MAX_LUMINANCE) {
       out[key] = base[key]
     }
+  }
+
+  return out
+}
+
+/** Ensure diff foreground/background pairs have at least 2:1 contrast.
+ *  A skin can ship identical diff_added/diff_added_word (or removed) values;
+ *  if both already clear the terminal-background floor, adaptColorsToBackground
+ *  leaves them byte-identical. Nudge the foreground toward the opposite
+ *  luminance pole so the pair never collapses to zero contrast. */
+function ensureDiffPairContrast(colors: ThemeColors): ThemeColors {
+  const pairs: [string, string, keyof ThemeColors][] = [
+    [colors.diffAdded, colors.diffAddedWord, 'diffAddedWord'],
+    [colors.diffRemoved, colors.diffRemovedWord, 'diffRemovedWord'],
+  ]
+
+  const out = { ...colors }
+
+  for (const [bg, fg, key] of pairs) {
+    const ratio = contrastRatio(fg, bg)
+
+    if (ratio === null || ratio >= 2) {
+      continue
+    }
+
+    const bgLum = relativeLuminance(bg)
+
+    if (bgLum === null) {
+      continue
+    }
+
+    // Mix the foreground toward the opposite pole of the fill.
+    const pole = bgLum < 0.5 ? '#ffffff' : '#000000'
+    out[key] = mix(fg, pole, 0.15)
   }
 
   return out
@@ -941,16 +979,22 @@ export function fromSkin(
     ? assembled
     : adaptColorsToBackground(assembled, isLight, derived, bg)
 
+  // 4b. Guard: diff foreground/background pairs must have contrast with
+  //      each other. A skin can ship identical diff_added/diff_added_word
+  //      (or removed) values; if both already clear the terminal-background
+  //      floor, adaptColorsToBackground leaves them byte-identical.
+  const diffAdapted = ensureDiffPairContrast(adapted)
+
   return normalizeThemeForAnsiLightTerminal(
     {
       // The element tokens theme-sdk introduced (ui_primary, ui_text,
       // ui_border, ui_ok/warn/error, ui_tool, ui_thinking, shell_dollar,
       // status_bar_*, diff_*) are read into `seeds`/`assembled` above and
-      // flow through buildPalette → adaptColorsToBackground, so `adapted`
-      // already honors them AND applies #20379's contrast/polarity machinery.
-      // Emitting a hand-mapped color block here would bypass that adaptation
-      // and regress theme quality.
-      color: adapted,
+      // flow through buildPalette → adaptColorsToBackground → ensureDiffPairContrast,
+      // so `diffAdapted` already honors them AND applies #20379's contrast/polarity
+      // machinery. Emitting a hand-mapped color block here would bypass that
+      // adaptation and regress theme quality.
+      color: diffAdapted,
 
       brand: {
         name: branding.agent_name ?? d.brand.name,

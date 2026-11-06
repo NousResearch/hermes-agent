@@ -287,7 +287,7 @@ import { downloadViaOauthSessionToFile, downloadViaTokenToFile } from './gateway
 import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
-import { windowsGitCandidates } from './git-binary-candidates'
+import { binaryRuns, findPathCandidates, selectWindowsGitBinary } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import {
   assertExistingPathForOpen,
@@ -3151,44 +3151,6 @@ function getVenvPython(venvRoot) {
 // then PATH. Cached after first probe.
 let _gitBinaryCache = null
 
-// A binary can exist on disk and still be unlaunchable — on macOS an
-// Intel-only build ahead on PATH (e.g. a pre-Rosetta-removal Homebrew)
-// fails at spawn time with errno -86 (EBADARCH), which callers then report
-// as an update-server/network problem. Probing `git --version` before
-// committing to a candidate skips such entries; the existence-only
-// fallback keeps behaviour unchanged where the probe itself cannot run.
-function binaryRuns(candidate) {
-  try {
-    execFileSync(candidate, ['--version'], {
-      stdio: 'ignore',
-      timeout: 5000,
-      windowsHide: true
-    })
-
-    return true
-  } catch {
-    return false
-  }
-}
-
-function findPathCandidates(command) {
-  const pathEntries = String(process.env.PATH || '')
-    .split(path.delimiter)
-    .filter(Boolean)
-
-  const candidates = []
-
-  for (const entry of pathEntries) {
-    const candidate = path.join(entry, command)
-
-    if (fileExists(candidate)) {
-      candidates.push(candidate)
-    }
-  }
-
-  return candidates
-}
-
 function resolveGitBinary() {
   if (_gitBinaryCache) {
     return _gitBinaryCache
@@ -3198,7 +3160,7 @@ function resolveGitBinary() {
     // Every PATH hit, probed — the first entry that merely exists can be
     // unlaunchable while a working system git sits later on the same PATH.
     const selected = selectRunnableBinary({
-      candidates: findPathCandidates('git'),
+      candidates: findPathCandidates('git', String(process.env.PATH || ''), fileExists),
       fileExists,
       binaryRuns
     })
@@ -3214,16 +3176,21 @@ function resolveGitBinary() {
   // app-* version, so it can only be found by enumerating the dir). UGit's
   // git.exe is usually on PATH, but an Explorer-launched Electron inherits the
   // login-time environment block and can miss it (#61494).
-  const candidates = windowsGitCandidates(
-    {
+  //
+  // Every candidate is probed, not just the first that exists: the PM-pinned
+  // git leads the list and an update can leave it unlaunchable, which
+  // existence-only selection would commit to (#134600).
+  const selected = selectWindowsGitBinary({
+    env: {
       localAppData,
       programFiles: process.env['ProgramFiles'] || 'C:\\Program Files',
       programFilesX86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
     },
-    { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) }
-  )
+    fs: { existsSync: fileExists, readdirSync: dir => fs.readdirSync(dir) },
+    binaryRuns
+  })
 
-  _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
+  _gitBinaryCache = selected || findOnPath('git') || 'git'
 
   return _gitBinaryCache
 }
@@ -3252,7 +3219,7 @@ function resolveGhBinary() {
     candidates.push('/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh', path.join(home, '.local', 'bin', 'gh'))
     // PATH hits go through the same probe: a bare findOnPath fallback would
     // re-select an unlaunchable first hit when none of the fixed locations exist.
-    candidates.push(...findPathCandidates('gh'))
+    candidates.push(...findPathCandidates('gh', String(process.env.PATH || ''), fileExists))
   }
 
   // Same selection rule as git: an existing-but-unlaunchable candidate (e.g.

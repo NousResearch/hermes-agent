@@ -410,6 +410,29 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
 _RESPAWN_LIVENESS_GRACE_SECONDS = 1.0
 
 
+def _spawn_detached_backend(command: list[str], log_f) -> subprocess.Popen:
+    """Start a respawned backend so it outlives the updater.
+
+    Windows ignores ``start_new_session``: the child would stay in the updater's job object, and a
+    Desktop-driven update runs inside Electron's job, whose teardown takes the restarted dashboard
+    with it. Break away from the job, retrying without breakaway when the job forbids it
+    (``ERROR_ACCESS_DENIED``), as the other detached spawns do."""
+    def _popen(**detach) -> subprocess.Popen:
+        return subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT, close_fds=True, **detach)
+
+    if sys.platform != "win32":
+        # detached-spawn: ok — dashboard service launch, meant to outlive the CLI that starts it
+        return _popen(start_new_session=True)
+    from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
+    try:
+        return _popen(creationflags=windows_detach_flags())
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        return _popen(creationflags=windows_detach_flags_without_breakaway())
+
+
 def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
     """Rebuild a captured ``[<interpreter>, <hermes launcher>, ...]`` argv on this install's launcher.
 
@@ -450,10 +473,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
             command = [*command, "--no-open"]
         try:
             with open(log_path, "ab") as log_f:
-                proc = subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
-                    # detached-spawn: ok — dashboard service launch, meant to outlive the CLI that starts it
-                    start_new_session=True, close_fds=True)
+                proc = _spawn_detached_backend(command, log_f)
             spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:
             failed.append((original, command, str(exc)))

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,118 @@ def _resident_runtime() -> tuple[Path, Path] | None:
             or (payload is not None and (not python.is_relative_to(payload) or not site.is_relative_to(runtime)))):
         raise InstallError("pm-runtime", "packaged PM paths are missing or escape the payload", "reinstall this application")
     return python, site
+
+
+def _pinned_python() -> str | None:
+    """The Python version PM's own lock pins, or None when it pins none."""
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+
+    return Lockfile(lockfile_path()).version("python") or None
+
+
+def _pinned_python_minor(version: str) -> str:
+    """The minor of a pinned Python version: "3.14.9+20251021" -> "3.14"."""
+    parts = version.partition("+")[0].split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else ""
+
+
+def _graph_minor() -> str:
+    """The Python minor PM's runtime graph admits.
+
+    ``pm/lock.json`` pins the interpreter PM installs (``3.14.9+20251021``),
+    the way ``scripts/install.sh`` reads it. When the pin names no minor, the
+    graph's own requirement (``pm/uv.lock``: ``==3.14.*``) says which one the
+    runtime may be staged with -- uv enforces that requirement, so it is the
+    authority on what an interpreter must be.
+    """
+    version = _pinned_python()
+    if version:
+        minor = _pinned_python_minor(version)
+        if minor:
+            return minor
+    lock = Path(__file__).resolve().parent / "uv.lock"
+    try:
+        header = lock.read_text(encoding="utf-8").split("[[package]]", 1)[0]
+    except OSError:
+        return ""
+    found = re.search(r'requires-python\s*=\s*"[^"]*?(\d+)\.(\d+)', header)
+    return f"{found.group(1)}.{found.group(2)}" if found else ""
+
+
+def _store_python(version: str, target: str) -> Path | None:
+    """The pinned interpreter PM's store holds, when it holds a sound one."""
+    from pm.paths import store_root
+    from pm.registry import get_package
+
+    package = get_package("python")
+    entry = store_root() / package.store_entry(version, target)
+    binary = package.binary(entry, target)
+    if binary is None or not binary.is_file():
+        return None
+    return None if package.verify(entry, target) else binary
+
+
+def _uv_python(uv: Path, minor: str) -> Path | None:
+    """A managed interpreter of *minor*, the way the installer finds one.
+
+    uv's own managed interpreter first, then a host one of that minor -- the
+    order ``scripts/install.sh`` bootstraps with. Neither lookup downloads:
+    this runs before PM may download anything.
+    """
+    for arguments, env in (
+        (["--managed-python", minor], dict(os.environ, UV_SYSTEM_PYTHON="1", UV_NO_PROJECT="1")),
+        (["--system", "--no-project", minor], dict(os.environ, UV_NO_PROJECT="1")),
+    ):
+        try:
+            found = subprocess.run(
+                [native(uv), "python", "find", *arguments],
+                env=env, capture_output=True, text=True, timeout=120, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if found.returncode != 0:
+            continue
+        lines = found.stdout.strip().splitlines()
+        if not lines:
+            continue
+        candidate = Path(lines[-1].strip())
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _bootstrap_python(uv: Path) -> Path:
+    """The interpreter PM's runtime graph is staged with, when the ambient one cannot.
+
+    PM's runtime graph is locked to one Python minor (``pm/uv.lock``: PM pins
+    ``==3.14.*``). Pairing it with an interpreter of another minor makes uv
+    refuse the lock outright ("The requested interpreter resolved to Python
+    3.11.15, which is incompatible with the project's Python requirement"), and
+    the caller only learns that after the environment the sync built has been
+    abandoned.
+
+    Resolve an interpreter of the pinned minor instead -- PM's own pinned one
+    when the store holds it, else the one uv manages -- the way
+    ``scripts/install.sh`` bootstraps one, and keep the ambient interpreter
+    only when it already has that minor.
+    """
+    minor = _graph_minor()
+    if not minor:
+        return Path(sys.executable)
+    if ".".join(str(part) for part in sys.version_info[:2]) == minor:
+        return Path(sys.executable)
+    from pm.store import current_target
+
+    version = _pinned_python()
+    candidates = []
+    if version:
+        candidates.append(_store_python(version, current_target()))
+    candidates.append(_uv_python(uv, minor))
+    for candidate in candidates:
+        if candidate is not None:
+            return candidate
+    return Path(sys.executable)
 
 
 def _validate(python: Path, env: dict[str, str]) -> str:
@@ -245,7 +358,7 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         target = current_target()
         staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
         if staged is not None and staged.is_file():
-            tools = staged, Path(sys.executable)
+            tools = staged, _bootstrap_python(staged)
         else:
             # Non-shell bootstrap callers (CI) already have a host interpreter.
             tools = _toolchain(explicit=True)

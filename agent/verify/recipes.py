@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,90 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
 
 _PYTHON_INSTALL = {"uv": "uv sync", "poetry": "poetry install", "pipenv": "pipenv install"}
 
+# Directory names that hold vendored code, virtualenvs or build output: files found
+# there belong to dependencies, not to the project, so they are never evidence.
+_VENDORED_DIRS = frozenset(
+    {
+        ".git", ".hg", ".svn", ".tox", ".nox", ".venv", "venv", "env",
+        "node_modules", "site-packages", "build", "dist", "__pycache__",
+    }
+)
+_TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "conftest.py")
+# An ASGI application object, not merely a dependency named fastapi.
+_ASGI_APP_RE = re.compile(r"^\s*(?:app|application)\s*=\s*(?:FastAPI|Starlette)\s*\(", re.MULTILINE)
+
+
+def _iter_project_files(root: Path, patterns: tuple[str, ...], max_depth: int = 2) -> list[Path]:
+    """Files matching ``patterns`` under ``root``, bounded in depth and count.
+
+    Vendored and generated trees are skipped so that a dependency of a dependency
+    cannot be mistaken for evidence about this project.
+    """
+    found: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack and len(found) < 200:
+        directory, depth = stack.pop()
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if depth < max_depth and entry.name not in _VENDORED_DIRS:
+                    stack.append((entry, depth + 1))
+                continue
+            if any(entry.match(pattern) for pattern in patterns):
+                found.append(entry)
+    return found
+
+
+def _runtime_dependency_text(pyproject: str | None, requirements: str | None) -> str:
+    """Dependency evidence about the app itself.
+
+    Only ``[project].dependencies`` and ``requirements.txt`` describe what the
+    application runs on. Optional dependencies, ``[dependency-groups]`` and
+    Poetry's dev groups describe extras, tooling and examples, so a FastAPI pin
+    there must not turn a library into a "FastAPI app".
+    """
+    evidence: list[str] = [requirements or ""]
+    if pyproject:
+        try:
+            parsed = tomllib.loads(pyproject)
+        except (tomllib.TOMLDecodeError, ValueError):
+            evidence.append(pyproject)  # unparseable: fall back to raw text
+        else:
+            project = parsed.get("project") if isinstance(parsed, dict) else None
+            dependencies = project.get("dependencies") if isinstance(project, dict) else None
+            evidence.extend(_as_strings(dependencies))
+            tool = parsed.get("tool") if isinstance(parsed, dict) else None
+            poetry = tool.get("poetry") if isinstance(tool, dict) else None
+            poetry_deps = poetry.get("dependencies") if isinstance(poetry, dict) else None
+            if isinstance(poetry_deps, dict):
+                evidence.extend(str(name) for name in poetry_deps)
+    return "\n".join(evidence).lower()
+
+
+def _find_asgi_module(root: Path) -> str | None:
+    """Dotted module path of a file that really defines an ASGI ``app``, else ``None``."""
+    for path in _iter_project_files(root, ("*.py",), max_depth=1):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _ASGI_APP_RE.search(text):
+            return ".".join(path.relative_to(root).with_suffix("").parts)
+    entry = _first_existing(root, ("main.py", "app.py"))
+    return entry.removesuffix(".py") if entry else None
+
+
+def _has_tests(root: Path, pyproject: str | None) -> bool:
+    """Real test files or an explicit pytest configuration, not merely a ``tests/`` dir."""
+    if pyproject and "[tool.pytest.ini_options]" in pyproject:
+        return True
+    if any("pytest" in (_read_text(root, name) or "").lower() for name in ("pytest.ini", "setup.cfg", "tox.ini")):
+        return True
+    return bool(_iter_project_files(root, _TEST_FILE_PATTERNS, max_depth=3))
+
 
 def _detect_python_recipe(root: Path) -> Recipe | None:
     pyproject = _read_text(root, "pyproject.toml")
@@ -179,38 +264,43 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
     if not (pyproject or requirements or manage_py or (root / "setup.py").exists()):
         return None
 
-    lower = f"{pyproject or ''}\n{requirements or ''}".lower()
+    dependencies = _runtime_dependency_text(pyproject, requirements)
     install = _PYTHON_INSTALL.get(detect_package_manager(root) or "") or (
         "pip install -e ." if pyproject and not requirements else "pip install -r requirements.txt"
     )
-    pytest_or_empty = ["pytest"] if (root / "tests").exists() else []
+    test_commands = ["pytest"] if _has_tests(root, pyproject) else []
+    no_entrypoint: list[str] = []
 
     # Precedence: Django, then FastAPI/uvicorn, then Flask, then generic.
-    if manage_py or "django" in lower:
+    if manage_py or "django" in dependencies:
         return Recipe(
             name="Django app", kind="django", bootstrap=[install], test=["python manage.py test"],
             start="python manage.py runserver 0.0.0.0:8000", port=8000,
             evidence=["Detected manage.py" if manage_py else "Detected Django dependency"]
             + (["Detected pyproject.toml"] if pyproject else []),
         )
-    if "fastapi" in lower or "uvicorn" in lower:
-        app_module = (_first_existing(root, ("main.py", "app.py")) or "main.py").removesuffix(".py") + ":app"
-        return Recipe(
-            name="FastAPI app", kind="fastapi", bootstrap=[install], test=pytest_or_empty,
-            start=f"uvicorn {app_module} --host 0.0.0.0 --port 8000", port=8000,
-            evidence=["Detected Python project", "Detected FastAPI/Uvicorn dependency"],
-        )
-    if "flask" in lower:
-        app_module = _first_existing(root, ("app.py", "main.py")) or "app.py"
-        return Recipe(
-            name="Flask app", kind="flask", bootstrap=[install], test=pytest_or_empty,
-            start=f"flask --app {app_module} run --host 0.0.0.0 --port 5000", port=5000,
-            evidence=["Detected Python project", "Detected Flask dependency"],
-        )
+    if "fastapi" in dependencies or "uvicorn" in dependencies:
+        app_module = _find_asgi_module(root)
+        if app_module:
+            return Recipe(
+                name="FastAPI app", kind="fastapi", bootstrap=[install], test=test_commands,
+                start=f"uvicorn {app_module}:app --host 0.0.0.0 --port 8000", port=8000,
+                evidence=["Detected Python project", "Detected FastAPI/Uvicorn dependency"]
+                + (["Detected ASGI application object"] if "." in app_module else []),
+            )
+        no_entrypoint = ["Detected FastAPI/Uvicorn dependency but no module defining `app`"]
+    if "flask" in dependencies:
+        app_module = _first_existing(root, ("app.py", "main.py"))
+        if app_module:
+            return Recipe(
+                name="Flask app", kind="flask", bootstrap=[install], test=test_commands,
+                start=f"flask --app {app_module} run --host 0.0.0.0 --port 5000", port=5000,
+                evidence=["Detected Python project", "Detected Flask dependency"],
+            )
+        no_entrypoint = no_entrypoint or ["Detected Flask dependency but no app.py or main.py"]
     return Recipe(
-        name="Python project", kind="python", bootstrap=[install],
-        test=pytest_or_empty or ["python -m unittest discover"],
-        evidence=["Detected Python project"],
+        name="Python project", kind="python", bootstrap=[install], test=test_commands,
+        evidence=["Detected Python project"] + no_entrypoint,
     )
 
 

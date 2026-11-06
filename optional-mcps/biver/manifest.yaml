@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: biver
+description: >-
+  Build, edit, and publish Biver landing pages, products, orders, and leads
+  via Biver's hosted remote MCP.
+source: https://biver.id/docs/mcp-ai-assistant
+
+# Official vendor-hosted remote MCP (URL-only). Streamable HTTP with native
+# OAuth 2.1 + Dynamic Client Registration and Client ID Metadata Documents.
+# Hermes's MCP client handles discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://mcp.biver.id/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - biver
+  hosts:
+    - biver.id
+
+post_install: |
+  On first connection Hermes opens a browser to sign in with Biver
+  (or run `hermes mcp login biver`). Choose a workspace and the access
+  level for each group, then approve. Restart the session so tools load.

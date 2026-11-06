@@ -97,3 +97,28 @@ def test_get_workflow(client):
     r = client.get("/k/workflow")
     assert r.status_code == 200
     assert r.json() == W.to_dict()
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_repeated_triage_status_is_a_noop_for_loop_provenance(client, bulk):
+    tid = _task_in(client, "ready")
+    with kbc.connect_closing() as conn:
+        assert kb.block_task(conn, tid, reason="owner busy", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+        assert kb.block_task(conn, tid, reason="owner busy", kind="needs_input")
+        before = len(kb.list_events(conn, tid))
+        assert kb._triage_resolution_allowed(conn, tid)
+
+    if bulk:
+        response = client.post(
+            "/k/tasks/bulk", json={"ids": [tid], "status": "triage"}
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["ok"] is True
+    else:
+        response = client.patch(f"/k/tasks/{tid}", json={"status": "triage"})
+        assert response.status_code == 200
+
+    with kbc.connect_closing() as conn:
+        assert len(kb.list_events(conn, tid)) == before
+        assert kb._triage_resolution_allowed(conn, tid)

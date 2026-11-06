@@ -755,6 +755,11 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             resume_status = kanban_db._retry_status_for_run(conn, task_id, prev["current_run_id"])
             if resume_status == "review":
                 effective_status = "review" if kanban_db._parents_satisfied(conn, task_id) else "todo"
+        # Repeated PATCH/bulk updates are successful no-ops, not new status
+        # generations. In particular, a stale triage -> triage write must not
+        # invalidate a genuine block-loop episode's recovery provenance.
+        if prev["status"] == effective_status:
+            return True
         # Never promote to 'ready' unless all parents are done/archived — otherwise the
         # dispatcher spawns a child whose upstream work hasn't completed.
         if effective_status == "ready" and not kanban_db._parents_satisfied(conn, task_id):

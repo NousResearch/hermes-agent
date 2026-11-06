@@ -30,6 +30,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_completion
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_transfer as kt
 from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
@@ -238,6 +239,32 @@ def test_unresolvable_workspaces_are_parked_not_dispatched(kanban_root, tmp_path
     # A scratch task needs no path — it regenerates one under this board.
     assert tasks["scratch task"]["status"] == "ready"
     assert tasks["scratch task"]["workspace_path"] is None
+
+
+def test_import_parking_invalidates_historical_loop_breaker_provenance(kanban_root, tmp_path):
+    kb.create_board("alpha", name="Alpha Board")
+    with kbc.connect_closing(board="alpha") as conn:
+        task_id = kb.create_task(
+            conn,
+            title="historically looped worktree",
+            workspace_kind="worktree",
+            workspace_path="/exporter/repo",
+        )
+        assert kb.block_task(conn, task_id, reason="owner busy", kind="needs_input")
+        assert kb.unblock_task(conn, task_id)
+        assert kb.block_task(conn, task_id, reason="owner busy", kind="needs_input")
+        looped_task = kb.get_task(conn, task_id)
+        assert looped_task is not None and looped_task.status == "triage"
+        assert kb.specify_triage_task(conn, task_id)
+
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+    kanban_root("target")
+    result = kt.import_board(archive)
+
+    with kbc.connect_closing(board=result["board"]) as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None and task.status == "triage"
+        assert not kanban_db_completion.triage_resolution_allowed(conn, task_id)
 
 
 def test_board_metadata_loses_exporter_local_paths(kanban_root, tmp_path):

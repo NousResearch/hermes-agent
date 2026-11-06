@@ -136,7 +136,11 @@ function refuseNonPlain(stat: fs.Stats) {
     refuse('not-a-file', 'That path is not a regular file.')
   }
 
-  if (stat.nlink > 1) {
+  refuseHardLinkedFile(stat)
+}
+
+function refuseHardLinkedFile(stat: fs.Stats) {
+  if (stat.isFile() && stat.nlink > 1) {
     refuse('protected', 'That file is hard-linked elsewhere, so the app cannot tell what it belongs to.')
   }
 }
@@ -162,8 +166,10 @@ async function refuseChanged(resolved: Resolved) {
   const now = real ? await lstatOrNull(real) : null
 
   if (parent !== resolved.parent || real !== resolved.target || !now || !sameFile(now, resolved.stat!)) {
-    refuse('outside-folder', 'The folder changed while it was being used.')
+    return refuse('outside-folder', 'The folder changed while it was being used.')
   }
+
+  return now
 }
 
 // Move `from` back to `to` only if nothing is at `to`: a file through a hard
@@ -461,7 +467,7 @@ export function createPluginFileOps({
       }
 
       refuseSensitive(resolved.entry, resolved.target)
-      await refuseChanged(resolved)
+      refuseHardLinkedFile(await refuseChanged(resolved))
       await trashItem(resolved.entry)
 
       return { ok: true }

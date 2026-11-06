@@ -14,7 +14,7 @@ description: "使用 Microsoft Graph webhook 配置 Microsoft Teams 会议摘要
 - Teams 投递模式
 - 流水线配置结构
 
-关于上线后的日常运维、上线检查及运维工作表，请参阅专项指南：[运维 Teams 会议流水线](/guides/operate-teams-meeting-pipeline)。
+关于上线后的日常运维、上线检查及运维工作表，请参阅专项指南：[运维 Teams 会议流水线](../../guides/operate-teams-meeting-pipeline.md)。
 
 ## 功能说明
 
@@ -38,7 +38,7 @@ hermes teams-pipeline maintain-subscriptions
 启用会议流水线前，请确保已具备：
 
 - 可正常运行的 Hermes 安装
-- 若需要 Teams 出站投递，需完成现有的 [Microsoft Teams bot 配置](/user-guide/messaging/teams)
+- 若需要 Teams 出站投递，需完成现有的 [Microsoft Teams bot 配置](./teams.md)
 - 具备订阅所需会议资源权限的 Microsoft Graph 应用凭据
 - Microsoft Graph 可调用的公网 HTTPS URL，用于 webhook 投递
 - 若需要录音加 STT 回退，需安装 `ffmpeg`
@@ -196,11 +196,11 @@ hermes teams-pipeline subscribe \
 
 :::warning Graph 订阅在 72 小时后过期
 
-Microsoft Graph 将 webhook 订阅上限设为 72 小时，且不会自动续期。你**必须**在上线前调度 `hermes teams-pipeline maintain-subscriptions`，否则通知将在手动创建订阅三天后静默停止。请参阅运维手册中的[自动化订阅续期](/guides/operate-teams-meeting-pipeline#automating-subscription-renewal-required-for-production)——提供三种方案（Hermes cron、systemd timer、普通 crontab）。
+Microsoft Graph 将 webhook 订阅上限设为 72 小时，且不会自动续期。你**必须**在上线前调度 `hermes teams-pipeline maintain-subscriptions`，否则通知将在手动创建订阅三天后静默停止。请参阅运维手册中的[自动化订阅续期](../../guides/operate-teams-meeting-pipeline.md#automating-subscription-renewal-required-for-production)——提供三种方案（Hermes cron、systemd timer、普通 crontab）。
 
 :::
 
-关于订阅维护和上线后的运维流程，请继续阅读指南：[运维 Teams 会议流水线](/guides/operate-teams-meeting-pipeline)。
+关于订阅维护和上线后的运维流程，请继续阅读指南：[运维 Teams 会议流水线](../../guides/operate-teams-meeting-pipeline.md)。
 
 ## 验证
 
@@ -229,5 +229,5 @@ hermes teams-pipeline subscriptions
 
 ## 相关文档
 
-- [Microsoft Teams bot 配置](/user-guide/messaging/teams)
-- [运维 Teams 会议流水线](/guides/operate-teams-meeting-pipeline)
+- [Microsoft Teams bot 配置](./teams.md)
+- [运维 Teams 会议流水线](../../guides/operate-teams-meeting-pipeline.md)

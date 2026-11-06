@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -9,6 +10,7 @@ import { cn } from '@/lib/utils'
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
   const { t } = useI18n()
+  const onboarding = useOnboardingChatActive()
   const [label, setLabel] = useState<null | string>(profile)
 
   useEffect(() => {
@@ -16,6 +18,12 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
       setLabel(profile)
     }
   }, [profile])
+
+  // The first run may swap into the default profile, which the user did not ask for.
+  // "Waking up default…" over the greeting reads as a stall in the moment that has to feel instant.
+  if (onboarding) {
+    return null
+  }
 
   return (
     <div

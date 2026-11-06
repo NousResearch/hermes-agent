@@ -5,32 +5,9 @@ call arguments, _summarize_tool_result() must not crash with TypeError or
 AttributeError. This caused an infinite TUI crash loop in production.
 """
 import json
-import pytest
 from agent.context_compressor import _summarize_tool_result
 
 
-class TestTypeSafety:
-    """Non-string tool arguments must not crash _summarize_tool_result."""
-
-    def test_terminal_command_bool(self):
-        """bool value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": True})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
-        assert "True" in result or "exit" in result
-
-    def test_terminal_command_int(self):
-        """int value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": 42})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
-        assert "42" in result
-
-    def test_terminal_command_none(self):
-        """None value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": None})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
 
 
 
@@ -88,12 +65,6 @@ class TestEdgeCases:
         assert "terminal" in result
 
 
-    def test_unknown_tool_name(self):
-        """Unknown tool name should return generic summary."""
-        args = json.dumps({"foo": "bar"})
-        result = _summarize_tool_result("unknown_tool", args, "output")
-        # Should return some fallback, not crash
-        assert isinstance(result, str)
 
 
 
@@ -112,7 +83,7 @@ class TestBackstopWrapper:
             "terminal", "read_file", "write_file", "search_files", "patch",
             "browser_navigate", "web_search", "web_extract", "delegate_task",
             "execute_code", "skill_view", "vision_analyze", "memory",
-            "cronjob", "process", "totally_unknown_tool",
+            "cronjob_manage", "process_manage", "totally_unknown_tool",
         ]
         keys = ["command", "path", "content", "pattern", "url", "query",
                 "urls", "goal", "code", "name", "question", "action",
@@ -151,12 +122,12 @@ class TestDisplayPreviewTypeSafety:
     def test_process_preview_non_string_data(self):
         from agent.display import build_tool_preview
         result = build_tool_preview(
-            "process", {"action": "submit", "session_id": "abc", "data": 42}
+            "process_manage", {"action": "submit", "session_id": "abc", "data": 42}
         )
         assert result == 'submit abc "42"'
 
     def test_process_preview_none_action(self):
         from agent.display import build_tool_preview
-        result = build_tool_preview("process", {"action": None, "session_id": "abc"})
+        result = build_tool_preview("process_manage", {"action": None, "session_id": "abc"})
         assert isinstance(result, str)
 

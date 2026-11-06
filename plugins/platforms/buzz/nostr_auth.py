@@ -1,4 +1,4 @@
-"""Dependency-free Nostr signing for Buzz WebSocket authentication."""
+"""Dependency-free Nostr signing (secp256k1 / BIP-340) for Buzz WebSocket authentication."""
 
 from __future__ import annotations
 
@@ -16,17 +16,17 @@ GENERATOR = (
     0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
 )
 BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_BECH32_GENERATORS = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
 
 Point = Optional[tuple[int, int]]
 
 
 def _bech32_polymod(values: list[int]) -> int:
-    generators = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
     checksum = 1
     for value in values:
         top = checksum >> 25
         checksum = ((checksum & 0x1FFFFFF) << 5) ^ value
-        for index, generator in enumerate(generators):
+        for index, generator in enumerate(_BECH32_GENERATORS):
             if (top >> index) & 1:
                 checksum ^= generator
     return checksum
@@ -52,9 +52,7 @@ def _decode_nsec(value: str) -> bytes:
         raise ValueError("invalid character in nsec") from exc
     if _bech32_polymod(_bech32_hrp_expand(hrp) + data) != 1:
         raise ValueError("invalid nsec checksum")
-
-    accumulator = 0
-    bits = 0
+    accumulator = bits = 0
     decoded = bytearray()
     for value5 in data[:-6]:
         accumulator = (accumulator << 5) | value5
@@ -87,10 +85,8 @@ def decode_private_key(value: str) -> int:
 
 
 def _point_add(left: Point, right: Point) -> Point:
-    if left is None:
-        return right
-    if right is None:
-        return left
+    if left is None or right is None:
+        return right if left is None else left
     x1, y1 = left
     x2, y2 = right
     if x1 == x2:
@@ -101,8 +97,7 @@ def _point_add(left: Point, right: Point) -> Point:
         slope = (y2 - y1) * pow(x2 - x1, FIELD_ORDER - 2, FIELD_ORDER)
     slope %= FIELD_ORDER
     x3 = (slope * slope - x1 - x2) % FIELD_ORDER
-    y3 = (slope * (x1 - x3) - y1) % FIELD_ORDER
-    return x3, y3
+    return x3, (slope * (x1 - x3) - y1) % FIELD_ORDER
 
 
 def _point_multiply(scalar: int, point: Point = GENERATOR) -> Point:
@@ -128,12 +123,7 @@ def public_key_hex(private_key: str) -> str:
     return point[0].to_bytes(32, "big").hex()
 
 
-def schnorr_sign(
-    message: bytes,
-    private_key: str,
-    *,
-    auxiliary_randomness: Optional[bytes] = None,
-) -> bytes:
+def schnorr_sign(message: bytes, private_key: str, *, auxiliary_randomness: Optional[bytes] = None) -> bytes:
     if len(message) != 32:
         raise ValueError("BIP-340 signs a 32-byte message")
     secret = decode_private_key(private_key)
@@ -142,89 +132,46 @@ def schnorr_sign(
         raise ValueError("invalid private key")
     public_x = public_point[0].to_bytes(32, "big")
     adjusted_secret = secret if public_point[1] % 2 == 0 else CURVE_ORDER - secret
-
-    aux = (
-        auxiliary_randomness
-        if auxiliary_randomness is not None
-        else secrets.token_bytes(32)
-    )
+    aux = auxiliary_randomness if auxiliary_randomness is not None else secrets.token_bytes(32)
     if len(aux) != 32:
         raise ValueError("auxiliary randomness must be 32 bytes")
-    masked = bytes(
-        left ^ right
-        for left, right in zip(
-            adjusted_secret.to_bytes(32, "big"),
-            _tagged_hash("BIP0340/aux", aux),
-        )
-    )
-    nonce = (
-        int.from_bytes(
-            _tagged_hash("BIP0340/nonce", masked + public_x + message), "big"
-        )
-        % CURVE_ORDER
-    )
+    masked = (adjusted_secret ^ int.from_bytes(_tagged_hash("BIP0340/aux", aux), "big")).to_bytes(32, "big")
+    nonce = int.from_bytes(_tagged_hash("BIP0340/nonce", masked + public_x + message), "big") % CURVE_ORDER
     if nonce == 0:
         raise RuntimeError("BIP-340 produced a zero nonce")
     nonce_point = _point_multiply(nonce)
     if nonce_point is None:  # pragma: no cover
         raise RuntimeError("BIP-340 produced an invalid nonce point")
-    adjusted_nonce = nonce if nonce_point[1] % 2 == 0 else CURVE_ORDER - nonce
     nonce_x = nonce_point[0].to_bytes(32, "big")
-    challenge = (
-        int.from_bytes(
-            _tagged_hash("BIP0340/challenge", nonce_x + public_x + message), "big"
-        )
-        % CURVE_ORDER
-    )
-    signature_scalar = (adjusted_nonce + challenge * adjusted_secret) % CURVE_ORDER
-    return nonce_x + signature_scalar.to_bytes(32, "big")
+    adjusted_nonce = nonce if nonce_point[1] % 2 == 0 else CURVE_ORDER - nonce
+    challenge = int.from_bytes(_tagged_hash("BIP0340/challenge", nonce_x + public_x + message), "big") % CURVE_ORDER
+    return nonce_x + ((adjusted_nonce + challenge * adjusted_secret) % CURVE_ORDER).to_bytes(32, "big")
+
+
+def parse_auth_tag(raw: Any, label: str) -> list[str]:
+    """Validate a NIP-OA owner-attestation tag (JSON text or list) -> ``["auth", a, b, c]``."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label} is not valid JSON") from exc
+    if not isinstance(raw, list) or len(raw) != 4 or raw[0] != "auth" or not all(isinstance(p, str) for p in raw):
+        raise ValueError(f"{label} must be a four-string auth tag")
+    return raw
 
 
 def build_auth_event(
-    *,
-    private_key: str,
-    challenge: str,
-    relay_url: str,
-    auth_tag_json: str = "",
-    created_at: Optional[int] = None,
-    auxiliary_randomness: Optional[bytes] = None,
+    *, private_key: str, challenge: str, relay_url: str, auth_tag_json: str = "",
+    created_at: Optional[int] = None, auxiliary_randomness: Optional[bytes] = None,
 ) -> dict[str, Any]:
-    tags: list[list[str]] = [
-        ["relay", relay_url],
-        ["challenge", challenge],
-    ]
+    tags: list[list[str]] = [["relay", relay_url], ["challenge", challenge]]
     if auth_tag_json.strip():
-        try:
-            auth_tag = json.loads(auth_tag_json)
-        except json.JSONDecodeError as exc:
-            raise ValueError("BUZZ_AUTH_TAG is not valid JSON") from exc
-        if (
-            not isinstance(auth_tag, list)
-            or len(auth_tag) != 4
-            or auth_tag[0] != "auth"
-            or not all(isinstance(part, str) for part in auth_tag)
-        ):
-            raise ValueError("BUZZ_AUTH_TAG must be a four-string auth tag")
-        tags.append(auth_tag)
-
+        tags.append(parse_auth_tag(auth_tag_json, "BUZZ_AUTH_TAG"))
     pubkey = public_key_hex(private_key)
     timestamp = int(time.time()) if created_at is None else int(created_at)
-    serialized = json.dumps(
-        [0, pubkey, timestamp, 22242, tags, ""],
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
+    serialized = json.dumps([0, pubkey, timestamp, 22242, tags, ""], separators=(",", ":"), ensure_ascii=False).encode()
     event_id = hashlib.sha256(serialized).digest()
     return {
-        "id": event_id.hex(),
-        "pubkey": pubkey,
-        "created_at": timestamp,
-        "kind": 22242,
-        "tags": tags,
-        "content": "",
-        "sig": schnorr_sign(
-            event_id,
-            private_key,
-            auxiliary_randomness=auxiliary_randomness,
-        ).hex(),
+        "id": event_id.hex(), "pubkey": pubkey, "created_at": timestamp, "kind": 22242, "tags": tags, "content": "",
+        "sig": schnorr_sign(event_id, private_key, auxiliary_randomness=auxiliary_randomness).hex(),
     }

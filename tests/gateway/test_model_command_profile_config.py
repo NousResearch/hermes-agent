@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -57,7 +57,7 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     listing_kwargs = {}
 
     def _list_picker_providers(**kwargs):
@@ -73,7 +73,7 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "hermes_cli.model_switch_providers.list_picker_providers",
         _list_picker_providers,
     )
 

@@ -451,7 +451,7 @@ class TestCookiePathRespectsPrefix:
         @app.get("/set")
         def _set():
             r = Response("ok")
-            set_pkce_cookie(r, payload="x", use_https=False)
+            set_pkce_cookie(r, payload={"provider": "x"}, use_https=False)
             return r
 
         client = TestClient(app)
@@ -525,3 +525,213 @@ class TestCookiePathRespectsPrefix:
         assert "Path=/hermes" in at_cookies[0]
         assert "Secure" in at_cookies[0]
         assert "HttpOnly" in at_cookies[0]
+
+
+# ---------------------------------------------------------------------------
+# Post-login landing respects X-Forwarded-Prefix
+# ---------------------------------------------------------------------------
+
+
+class TestExternalizePostLoginTarget:
+    """Unit tests for ``_externalize_post_login_target``."""
+
+    def test_bare_slash_gets_prefix(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert _externalize_post_login_target("/", "/hermes") == "/hermes/"
+
+    def test_prefixed_path_unchanged(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert (
+            _externalize_post_login_target("/hermes/sessions", "/hermes")
+            == "/hermes/sessions"
+        )
+
+    def test_empty_target_returns_empty(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert _externalize_post_login_target("", "/hermes") == ""
+
+    def test_empty_prefix_returns_target_unchanged(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert _externalize_post_login_target("/", "") == "/"
+
+    def test_trailing_slash_on_prefix_stripped(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert _externalize_post_login_target("/", "/hermes/") == "/hermes/"
+
+    def test_exact_prefix_match_returns_target(self):
+        from hermes_cli.dashboard_auth.routes import (
+            _externalize_post_login_target,
+        )
+
+        assert _externalize_post_login_target("/hermes", "/hermes") == "/hermes"
+
+
+class TestPostLoginLandingPrefix:
+    """Integration: callback and password-login landing URLs carry prefix."""
+
+    def test_callback_redirect_location_carries_prefix(
+        self, gated_app_proxied
+    ):
+        """After OAuth callback with prefix, the 302 Location must be
+        ``/hermes/`` not bare ``/``."""
+        r1 = gated_app_proxied.get(
+            "/auth/login?provider=stub",
+            headers={"x-forwarded-prefix": "/hermes"},
+            follow_redirects=False,
+        )
+        pkce_set = next(
+            c for c in r1.headers.get_list("set-cookie")
+            if "hermes_session_pkce" in c
+        )
+        pkce_kv = pkce_set.split(";", 1)[0]
+        state = r1.headers["location"].split("state=")[1]
+
+        r2 = gated_app_proxied.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            headers={
+                "x-forwarded-prefix": "/hermes",
+                "cookie": pkce_kv,
+            },
+            follow_redirects=False,
+        )
+        assert r2.status_code == 302, r2.text
+        location = r2.headers["location"]
+        assert location.startswith("/hermes/"), (
+            f"callback redirect should carry prefix, got {location!r}"
+        )
+
+    def test_callback_redirect_no_prefix_direct_deploy(
+        self, gated_app_direct
+    ):
+        """Without prefix, callback redirects to bare ``/``."""
+        r1 = gated_app_direct.get(
+            "/auth/login?provider=stub",
+            follow_redirects=False,
+        )
+        pkce_set = next(
+            c for c in r1.headers.get_list("set-cookie")
+            if "hermes_session_pkce" in c
+        )
+        pkce_kv = pkce_set.split(";", 1)[0]
+        state = r1.headers["location"].split("state=")[1]
+
+        r2 = gated_app_direct.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            headers={"cookie": pkce_kv},
+            follow_redirects=False,
+        )
+        assert r2.status_code == 302, r2.text
+        location = r2.headers["location"]
+        assert location == "/", (
+            f"direct deploy should redirect to /, got {location!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Whole-class coverage: every root-absolute URL the server-rendered auth
+# pages emit (auth links, font URLs, logout landing) honours the prefix
+# ---------------------------------------------------------------------------
+
+
+class TestLoginPageWholeClassPrefix:
+    """Not just the three URLs named in the issue: the ENTIRE rendered page
+    must stay inside the proxy mount, and the empty-prefix deploy must be
+    byte-identical to today's output."""
+
+    def test_login_page_fonts_prefixed_behind_proxy(self, gated_app_proxied):
+        r = gated_app_proxied.get(
+            "/login", headers={"X-Forwarded-Prefix": "/hermes"})
+        assert r.status_code == 200
+        assert "url('/fonts/" not in r.text
+        assert "url('/hermes/fonts/" in r.text
+
+    def test_login_page_byte_identical_without_prefix(self, gated_app_direct):
+        # No X-Forwarded-Prefix: no data-prefix, no rewritten fonts,
+        # bare-root hrefs — the direct deploy is unchanged.
+        r = gated_app_direct.get("/login")
+        assert r.status_code == 200
+        assert "data-prefix" not in r.text
+        assert "url('/fonts/" in r.text
+        assert 'href="/auth/login?provider=' in r.text
+
+    def test_password_form_script_reads_data_prefix(self, gated_app_proxied):
+        """The fetch target is built in the browser from data-prefix; the
+        emitted page must carry both the attribute and the JS that reads it
+        (the PKCE cookie Path matches the mount, so a root-absolute POST
+        would silently drop the cookie and break native login)."""
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from tests.hermes_cli.test_dashboard_auth_password_login import (
+            PasswordProvider)
+
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            r = gated_app_proxied.get(
+                "/login", headers={"X-Forwarded-Prefix": "/hermes"})
+            assert r.status_code == 200
+            html = r.text
+            assert "getAttribute('data-prefix')" in html
+            assert "fetch(prefix + '/auth/password-login'" in html
+        finally:
+            clear_providers()
+
+    def test_native_chooser_fonts_prefixed_behind_proxy(self):
+        """The RFC 8252 desktop provider chooser shares the login template,
+        so its font URLs must honour the prefix too (rendered when more
+        than one interactive provider is registered)."""
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+        from hermes_cli.dashboard_auth.login_page import (
+            render_native_provider_choice_html)
+
+        class _SecondStub(StubAuthProvider):
+            name = "stub2"
+            display_name = "Second Stub (test only)"
+
+        html = render_native_provider_choice_html(
+            providers=[StubAuthProvider(), _SecondStub()],
+            authorize_path="/hermes/auth/native/authorize",
+            code_challenge="challenge",
+            code_challenge_method="S256",
+            redirect_uri="http://127.0.0.1:53123/cb",
+            state="cli-state",
+            prefix="/hermes",
+        )
+        assert "url('/fonts/" not in html
+        assert "url('/hermes/fonts/" in html
+        # The chooser buttons re-enter the mount, not the origin root.
+        assert 'href="/hermes/auth/native/authorize?' in html
+
+    def test_native_chooser_bare_root_without_prefix(self):
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+        from hermes_cli.dashboard_auth.login_page import (
+            render_native_provider_choice_html)
+
+        class _SecondStub(StubAuthProvider):
+            name = "stub2"
+            display_name = "Second Stub (test only)"
+
+        html = render_native_provider_choice_html(
+            providers=[StubAuthProvider(), _SecondStub()],
+            authorize_path="/auth/native/authorize",
+            code_challenge="challenge",
+            code_challenge_method="S256",
+            redirect_uri="http://127.0.0.1:53123/cb",
+            state="cli-state",
+        )
+        assert "data-prefix" not in html
+        assert "url('/fonts/" in html

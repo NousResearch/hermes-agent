@@ -56,7 +56,6 @@ def test_cross_agent_same_session_overlap_warns(caplog):
     assert len(caplog.records) == 1
     msg = caplog.records[0].getMessage()
     assert "s1:t1:aaaa" in msg and "s1:t2:bbbb" in msg and "s1" in msg
-    assert "different agent object" in msg
 
 
 

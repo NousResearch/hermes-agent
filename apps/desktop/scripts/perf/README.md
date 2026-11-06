@@ -10,21 +10,36 @@ client, arg parsing, stats, and output (and never had a baseline).
 ```bash
 # Isolated instance (recommended) — no running app or LLM credits needed.
 # Its own --user-data-dir + HERMES_HOME means it never collides with `hgui`.
-npm run perf -- --spawn
+pnpm run perf --spawn
 
 # Or: launch an isolated instance once, attach repeatedly (faster iteration).
-npm run perf:serve            # leaves an instance on :9222
-npm run perf                  # attaches, runs the CI suite, gates on baseline
+pnpm run perf:serve            # leaves an instance on :9222
+pnpm run perf                  # attaches, runs the CI suite, gates on baseline
 
 # One scenario, with a CPU profile:
-npm run perf -- stream --cpuprofile --tokens 800
+pnpm run perf stream --cpuprofile --tokens 800
 
 # Representative PRODUCTION numbers (minified React, not the ~3x-slower dev build):
-npm run perf -- cold-start stream keystroke transcript --spawn --prod
+pnpm run perf cold-start stream keystroke transcript --spawn --prod
 
 # Re-capture the baseline on your reference device, then commit baseline.json:
-npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
+pnpm run perf cold-start stream keystroke transcript --spawn --prod --update-baseline
 ```
+
+## Profiling an existing workspace
+
+```bash
+node scripts/perf/run.mjs live-window --seconds 15 --json ~/.hermes/cache/scratch/live-window.json
+# Attribution is a separate pass, not an FPS comparison:
+node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.hermes/cache/scratch
+```
+
+`live-window` never opens/closes tabs, seeds messages, moves focus, or forces GC.
+It records frame intervals, long tasks, visible/mounted transcript counts, and
+heap/DOM counters. Keep the same panes and workload for before/after captures.
+Record restarts, HMR, and code updates separately: a fresh renderer is not a
+valid after measurement for a long-running renderer. Heap counters alone do not
+prove a leak. Heavy render/atom counters must be stopped before timing.
 
 ## Dev vs prod
 

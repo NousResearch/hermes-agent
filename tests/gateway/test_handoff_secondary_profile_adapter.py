@@ -67,7 +67,7 @@ def _make_multiplex_runner():
         platform=Platform.TELEGRAM, chat_type="dm",
     ))
 
-    async def _switch(key, sid):
+    async def _switch(key, sid, *, preserve_prompt_pin=True):
         captured["session_key"] = key
         return SessionEntry(
             session_key=key, session_id=sid,
@@ -124,7 +124,7 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
 
     used = {}
     monkeypatch.setattr(
-        "gateway.run.resolve_delivery_transport", _spy_transport_factory(used),
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
     )
     # The watcher would already be inside _profile_runtime_scope here, so a
     # fresh load resolves the secondary's config.
@@ -146,16 +146,21 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
         f"session key must carry the profile namespace, got {captured['session_key']}"
     )
     assert captured["source"].profile == "medicina"
+    # The turn answers through medicina's bot, so once ingress pins its identity medicina's allowlist
+    # authorizes it, not the primary's.
+    from hermes_cli.profiles import get_profile_dir
+    runner._canonicalize(captured["source"])
+    assert runner._authorization_home_for_source(captured["source"]) == get_profile_dir("medicina")
 
 
 @pytest.mark.asyncio
 async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
     """The default/root path must behave exactly as before the fix."""
-    runner, captured = _make_multiplex_runner()
+    runner, _captured = _make_multiplex_runner()
 
     used = {}
     monkeypatch.setattr(
-        "gateway.run.resolve_delivery_transport", _spy_transport_factory(used),
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
     )
 
     await runner._process_handoff(
@@ -165,6 +170,34 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
     assert used["adapter_tag"] == "primary"
     assert used["home_chat_id"] == "1111"
+
+
+@pytest.mark.asyncio
+async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
+    """A secondary profile whose config cannot load must fail the handoff.
+
+    Falling back to the primary's config delivers through the right bot to
+    the WRONG chat (the primary's home channel) and reports completed.
+    """
+    runner, _ = _make_multiplex_runner()
+    used = {}
+
+    def _boom():
+        raise RuntimeError("config.yaml exploded")
+
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+    )
+    monkeypatch.setattr("gateway.run.load_gateway_config", _boom)
+
+    with pytest.raises(RuntimeError, match="could not load config"):
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name="medicina",
+        )
+    assert used == {}, (
+        "nothing may be delivered when the profile config fails to load"
+    )
 
 
 @pytest.mark.asyncio
@@ -178,7 +211,7 @@ async def test_secondary_profile_without_live_adapters_fails_loudly(monkeypatch)
     runner._profile_adapters = {}
 
     monkeypatch.setattr(
-        "gateway.run.resolve_delivery_transport", _spy_transport_factory({}),
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory({}),
     )
 
     with pytest.raises(RuntimeError, match="no live adapters"):

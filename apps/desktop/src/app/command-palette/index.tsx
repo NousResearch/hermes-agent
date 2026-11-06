@@ -13,6 +13,8 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
+import { SESSION_IMPORT_ROUTE } from '@/app/routes'
+import { leaveIntro } from '@/components/onboarding/first-run/intro'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -45,6 +47,7 @@ import {
   Package,
   Palette,
   PawPrint,
+  Pin,
   Plus,
   RefreshCw,
   Settings,
@@ -59,7 +62,6 @@ import {
 import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import { resolveVersionStatus } from '@/lib/version-status'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -68,19 +70,17 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { completeFlow, recordAction } from '@/store/desktop-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
-import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
+import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
-import { openBrowserTab } from '@/store/preview'
+import { toggleBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
-import { $connection } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
+import { $removedSessionIds } from '@/store/session-removal'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
-  $backendUpdateApply,
-  $backendUpdateStatus,
-  $desktopVersion,
-  $updateApply,
-  $updateStatus,
   requestActiveUpdate
 } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -88,10 +88,12 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
-import { openSession, openSessionIntentFromModifiers } from '../open-session'
+import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
+import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
@@ -99,7 +101,6 @@ import {
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
 import { SECTIONS } from '../settings/constants'
@@ -110,6 +111,7 @@ import { usePaletteContributions } from './contrib'
 import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
+import { useUpdateRowLabel } from './use-update-row-label'
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -392,6 +394,11 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
   title: sessionTitle(session)
 })
 
+// Search terms beyond the label: the preview and branch, so a session is
+// findable by what it's about, not only what it's called.
+const sessionKeywords = (session: SessionEntry, ...tags: string[]): string[] =>
+  [...tags, 'chat', 'session', session.preview, session.git_branch].filter((word): word is string => !!word)
+
 type NonConfigSettingsLabel =
   | 'about'
   | 'archivedChats'
@@ -451,13 +458,13 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
     labelKey: 'keysSettings',
     tab: 'keys&kview=settings'
   },
+  { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
   {
-    icon: Package,
-    keywords: ['plugins', 'extensions', 'desktop plugins', 'addon', 'add-on'],
+    icon: codiconIcon('extensions'),
+    keywords: ['plugins', 'plugin settings', 'plugin options', 'addons', 'add-ons', 'extensions'],
     labelKey: 'plugins',
     tab: 'plugins'
   },
-  { icon: Archive, keywords: ['history', 'archived'], labelKey: 'archivedChats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
 ]
 
@@ -575,34 +582,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const [page, setPage] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // The Update row names the same install the statusbar names — same target
-  // selection, same resolver. Reduced to the label string: an in-flight apply
-  // rewrites these stores on every progress line, and only a changed string
-  // should rebuild the palette's groups.
-  const connection = useStore($connection)
-  const desktopVersion = useStore($desktopVersion)
-  const clientStatus = useStore($updateStatus)
-  const clientApply = useStore($updateApply)
-  const backendStatus = useStore($backendUpdateStatus)
-  const backendApply = useStore($backendUpdateApply)
-
-  const updateVersionLabel = useMemo(() => {
-    const backend = connection?.mode === 'remote'
-    const apply = backend ? backendApply : clientApply
-    const status = backend ? backendStatus : clientStatus
-
-    return resolveVersionStatus({
-      applying: apply.applying || apply.stage === 'restart',
-      behind: status?.behind ?? 0,
-      copy: t.shell.statusbar,
-      remote: backend,
-      restarting: apply.stage === 'restart',
-      sha: status?.currentSha?.slice(0, 7) ?? null,
-      target: backend ? 'backend' : 'client',
-      updateAvailable: status?.updateAvailable,
-      version: backend ? status?.currentVersion : desktopVersion?.appVersion
-    }).label
-  }, [backendApply, backendStatus, clientApply, clientStatus, connection?.mode, desktopVersion?.appVersion, t])
+  const updateVersionLabel = useUpdateRowLabel()
 
   // cmdk's onSelect doesn't forward the triggering event — keep the last
   // click/keydown modifiers so session rows can honour ⌘-Enter / ⌘-click.
@@ -650,21 +630,65 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     queryFn: () => getHermesConfigRecord()
   })
 
+  // staleTime 0 (not the 60s client default): renames, pins, and archives
+  // happen in the sidebar while this component is unmounted, so nothing can
+  // invalidate these keys — every open must revalidate. The cached page
+  // still paints instantly; the live-store overlay below covers the gap.
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude')
+    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
+    staleTime: 0
   })
 
   const archivedQuery = useQuery({
     queryKey: ['command-palette', 'archived'],
-    queryFn: () => listAllProfileSessions(200, 0, 'only')
+    queryFn: () => listAllProfileSessions(200, 0, 'only'),
+    staleTime: 0
   })
+
+  const liveSessions = useStore($sessions)
+  const liveCronSessions = useStore($cronSessions)
+  const liveMessagingSessions = useStore($messagingSessions)
+  const pinnedSessionIds = useStore($pinnedSessionIds)
+  const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
+  const removedSessionIds = useStore($removedSessionIds)
 
   // getServers is the shared choke point that also drops malformed (null/
   // scalar) entries, so the palette never lists a server the MCP tab dropped.
   const mcpServers = useMemo(() => Object.keys(getServers(configQuery.data ?? null)).sort(), [configQuery.data])
 
-  const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
+  // The sidebar's stores are where a rename / pin / archive lands first (the
+  // server page confirms later). Overlay them on the fetched 200-row page so
+  // the palette says what the sidebar says: same title, same pin, and no row
+  // the user just archived or deleted.
+  const liveRows = useMemo(() => {
+    const byId = new Map(
+      [...liveCronSessions, ...liveMessagingSessions, ...liveSessions].map(row => [row.id, row] as const)
+    )
+
+    return (sessionsQuery.data?.sessions ?? [])
+      .filter(session => !removedSessionIds.has(session.id))
+      .map(session => {
+        const live = byId.get(session.id)
+
+        return live ? { ...session, pinned: live.pinned, title: live.title } : session
+      })
+  }, [liveCronSessions, liveMessagingSessions, liveSessions, removedSessionIds, sessionsQuery.data])
+
+  // Same resolution as the sidebar's Pinned section: local pin order first,
+  // then server-flagged pins, minus our own in-flight unpins.
+  const pinnedSessions = useMemo(() => {
+    const byAnyId = buildSessionByAnyId(liveRows, [], [])
+
+    return resolvePinnedSessions(pinnedSessionIds, byAnyId, liveRows, unconfirmedPinWrites).map(toSessionEntry)
+  }, [liveRows, pinnedSessionIds, unconfirmedPinWrites])
+
+  const sessions = useMemo(() => {
+    const pinned = new Set(pinnedSessions.map(session => session.id))
+
+    return liveRows.filter(session => !pinned.has(session.id)).map(toSessionEntry)
+  }, [liveRows, pinnedSessions])
+
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
 
   // Search/sub-page are local to a mount, and this component remounts per open
@@ -704,7 +728,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // sidebar, minus the sidebar's licence to spend main.
   const goSession = useCallback(
     (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
-      openSession(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
+      openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
     },
     [navigate]
   )
@@ -825,12 +849,12 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             run: go(SETTINGS_ROUTE)
           },
           {
-            action: 'nav.skills',
+            action: 'nav.capabilities',
             icon: Wrench,
             id: 'nav-skills',
             keywords: ['skills', 'tools', 'toolsets', 'mcp', 'capabilities'],
-            label: cc.nav.skills.title,
-            run: go(SKILLS_ROUTE)
+            label: cc.nav.capabilities.title,
+            run: go(CAPABILITIES_ROUTE)
           },
           {
             action: 'nav.messaging',
@@ -899,6 +923,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             run: go(`${COMMAND_CENTER_ROUTE}?section=sessions`)
           },
           {
+            icon: Download,
+            id: 'session-import',
+            keywords: ['import', 'claude', 'codex', 'conversation'],
+            label: t.sessionImport.action,
+            run: go(SESSION_IMPORT_ROUTE)
+          },
+          {
             icon: Activity,
             id: 'cc-system',
             keywords: ['command center', 'system', 'status', 'logs'],
@@ -919,14 +950,19 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             label: cc.restartGateway,
             run: () => void runGatewayRestart()
           },
-          {
-            detail: updateVersionLabel,
-            icon: Download,
-            id: 'cc-update-hermes',
-            keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
-            label: cc.updateHermes,
-            run: () => requestActiveUpdate()
-          },
+          // Hermes Cloud updates its agents itself.
+          ...(updateVersionLabel === null
+            ? []
+            : [
+                {
+                  detail: updateVersionLabel,
+                  icon: Download,
+                  id: 'cc-update-hermes',
+                  keywords: ['update', 'upgrade', 'hermes', 'version', 'system', 'restart'],
+                  label: cc.updateHermes,
+                  run: () => requestActiveUpdate()
+                }
+              ]),
           {
             icon: RefreshCw,
             id: 'cc-reload-window',
@@ -938,9 +974,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             action: 'view.showBrowser',
             icon: codiconIcon('globe'),
             id: 'cc-open-browser',
-            keywords: ['browser', 'web', 'url', 'address', 'open', 'navigate', 'internet', 'site'],
-            label: cc.openBrowser,
-            run: () => openBrowserTab()
+            keywords: ['browser', 'web', 'url', 'address', 'open', 'toggle', 'close', 'navigate', 'internet', 'site'],
+            label: cc.toggleBrowser,
+            run: () => toggleBrowserTab()
           }
         ]
       },
@@ -1083,7 +1119,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // Deep-link straight to a Capabilities sub-tab. The root "Go to" entry only
     // lands on the top-level Skills view; typing "mcp"/"tools"/"skills" should
     // jump to the exact tab (matches the "not just the top lvl" ask).
-    const capLabel = t.commandCenter.nav.skills.title
+    const capLabel = t.commandCenter.nav.capabilities.title
 
     result.push({
       heading: capLabel,
@@ -1093,21 +1129,28 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-skills',
           keywords: ['skills', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabSkills}`,
-          run: go(`${SKILLS_ROUTE}?tab=skills`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=skills`)
         },
         {
           icon: SlidersHorizontal,
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${SKILLS_ROUTE}?tab=toolsets`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`)
         },
         {
           icon: Layers3,
-          id: 'cap-mcp',
-          keywords: ['mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
-          label: `${capLabel}: ${t.skills.tabMcp}`,
-          run: go(`${SKILLS_ROUTE}?tab=mcp`)
+          id: 'cap-connectors',
+          keywords: ['connectors', 'apps', 'mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
+          label: `${capLabel}: ${t.connectorsPage.title}`,
+          run: go(`${CAPABILITIES_ROUTE}?tab=connectors`)
+        },
+        {
+          icon: Package,
+          id: 'cap-plugins',
+          keywords: ['plugins', 'extensions', 'desktop plugins', 'agent plugins', 'catalog', 'addon', 'add-on'],
+          label: `${capLabel}: ${t.skills.tabPlugins}`,
+          run: go(`${CAPABILITIES_ROUTE}?tab=plugins`)
         }
       ]
     })
@@ -1161,25 +1204,39 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       }))
     })
 
-    if (sessions.length > 0) {
+    // Pinned before Sessions: rankGroups' stable sort keeps source order on
+    // equal scores, so a pin wins a tie with an unpinned row of the same name.
+    if (pinnedSessions.length > 0) {
       result.push({
-        heading: t.commandCenter.sections.sessions,
-        items: sessions.map(session => ({
-          icon: MessageCircle,
-          id: `session-${session.id}`,
-          keywords: [
-            'chat',
-            'session',
-            ...(session.preview ? [session.preview] : []),
-            ...(session.git_branch ? [session.git_branch] : [])
-          ],
+        heading: t.sidebar.pinned,
+        items: pinnedSessions.map(session => ({
+          icon: Pin,
+          id: `pinned-${session.id}`,
+          keywords: sessionKeywords(session, 'pinned'),
           label: session.title,
           runWithEvent: goSession(session.id)
         }))
       })
     }
 
-    const fieldItems = [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+    if (sessions.length > 0) {
+      result.push({
+        heading: t.commandCenter.sections.sessions,
+        items: sessions.map(session => ({
+          icon: MessageCircle,
+          id: `session-${session.id}`,
+          keywords: sessionKeywords(session),
+          label: session.title,
+          runWithEvent: goSession(session.id)
+        }))
+      })
+    }
+
+    const fieldItems = [
+      ...settingsCatalog.subpageEntries,
+      ...settingsCatalog.settingEntries,
+      ...settingsCatalog.configEntries
+    ].map(settingsEntryItem)
 
     if (fieldItems.length > 0) {
       result.push({ heading: t.commandCenter.settingsFields, items: fieldItems })
@@ -1187,8 +1244,15 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     if (settingsCatalog.pluginEntries.length > 0) {
       result.push({
-        heading: t.settings.nav.plugins,
-        items: settingsCatalog.pluginEntries.map(settingsEntryItem)
+        heading: t.skills.tabPlugins,
+        items: settingsCatalog.pluginEntries.map(entry => ({
+          detail: entry.context,
+          icon: entry.icon,
+          id: `sp-${entry.id}`,
+          keywords: [entry.context, entry.description ?? '', ...entry.keywords],
+          label: entry.label,
+          run: go(`${CAPABILITIES_ROUTE}?tab=plugins&plugin=${encodeURIComponent(entry.plugin)}`)
+        }))
       })
     }
 
@@ -1207,7 +1271,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: `mcp-${name}`,
           keywords: ['mcp', 'server', 'tool'],
           label: name,
-          run: go(`${SKILLS_ROUTE}?tab=mcp&server=${encodeURIComponent(name)}`)
+          run: go(`${CAPABILITIES_ROUTE}?tab=connectors&server=${encodeURIComponent(name)}`)
         }))
       })
     }
@@ -1218,13 +1282,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
         items: archivedSessions.map(session => ({
           icon: Archive,
           id: `archived-${session.id}`,
-          keywords: [
-            'archived',
-            'chat',
-            'session',
-            ...(session.preview ? [session.preview] : []),
-            ...(session.git_branch ? [session.git_branch] : [])
-          ],
+          keywords: sessionKeywords(session, 'archived'),
           label: session.title,
           run: go(`${SETTINGS_ROUTE}?tab=sessions&session=${encodeURIComponent(session.id)}`)
         }))
@@ -1239,6 +1297,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     goSession,
     mcpServers,
     mode,
+    pinnedSessions,
     previewTheme,
     resolvedMode,
     resolveThemeMode,
@@ -1294,15 +1353,12 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     if (search.trim()) {
       result.push({
         heading: cc.settingsFields,
-        items: [...settingsCatalog.appearanceEntries, ...settingsCatalog.configEntries].map(settingsEntryItem)
+        items: [
+          ...settingsCatalog.subpageEntries,
+          ...settingsCatalog.settingEntries,
+          ...settingsCatalog.configEntries
+        ].map(settingsEntryItem)
       })
-
-      if (settingsCatalog.pluginEntries.length > 0) {
-        result.push({
-          heading: t.settings.nav.plugins,
-          items: settingsCatalog.pluginEntries.map(settingsEntryItem)
-        })
-      }
 
       if (settingsCatalog.credentialEntries.length > 0) {
         result.push({
@@ -1497,6 +1553,11 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
       return
     }
+
+    completeFlow('command_palette')
+    recordAction(item.action ?? 'other', 'palette')
+    // A Cmd-K command or layout is a way out of the first-run intro.
+    leaveIntro()
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

@@ -1,6 +1,11 @@
 import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
+/** Browser touch chrome: the band (and the controls flush in it) are 44px
+ *  touch targets, not Electron's compact band. */
+export const TOUCH_TITLEBAR_HEIGHT = 44
+/** Permanent native drag target beside a top-edge tab strip. */
+export const TITLEBAR_DRAG_HANDLE_WIDTH = 48
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 /** Titlebar tool hit target (both axes). */
 export const TITLEBAR_CONTROL_SIZE = 24
@@ -16,7 +21,9 @@ export function titlebarIconSizeCss(scale = 1): string {
   return `${TITLEBAR_ICON_SIZE * scale}px`
 }
 
-export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
+export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 12
+// Preserve other platforms' first paint until native window state arrives.
+const TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
 // Windows/Linux (native overlay is on the right) and macOS fullscreen
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
@@ -102,8 +109,14 @@ export function titlebarControlsPosition(
     return { left: TITLEBAR_EDGE_INSET, top }
   }
 
+  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+  const fallbackX = isMac ? TITLEBAR_FALLBACK_WINDOW_BUTTON_X : TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X
+
   return {
-    left: (windowButtonPosition?.x ?? TITLEBAR_FALLBACK_WINDOW_BUTTON_X) + TITLEBAR_CONTROL_OFFSET_X,
+    left: (windowButtonPosition?.x ?? fallbackX) + TITLEBAR_CONTROL_OFFSET_X,
     top
   }
 }
+
+/** Rebind panel measurements after titlebar nodes or their positions change. */
+export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'

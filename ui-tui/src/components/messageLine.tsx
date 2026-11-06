@@ -1,4 +1,5 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@hermes/shared/ansi'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
@@ -8,19 +9,16 @@ import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { useT } from '../i18n/useT.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
-import {
-  boundedLiveRenderText,
-  compactPreview,
-  hasAnsi,
-  isPasteBackedText,
-  sanitizeAnsiForRender,
-  stripAnsi
-} from '../lib/text.js'
+import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
+import { type GaugeStyle, hasUsageGauge, splitUsageGaugeLine } from '../lib/usageGauge.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { MessageImages } from './inlineImage.js'
 import { Md } from './markdown.js'
+import { PasteSections } from './pasteSections.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
@@ -63,6 +61,8 @@ export const MessageLine = memo(function MessageLine({
   timestamps = false,
   tools = []
 }: MessageLineProps) {
+  const T = useT().chatBits.messageLine
+
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
   // sections only — never on the global mode.  A `trail` message feeds Tool
@@ -131,7 +131,7 @@ export const MessageLine = memo(function MessageLine({
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text
     const safeAnsi = hasAnsi(msg.text) ? sanitizeAnsiForRender(msg.text) : msg.text
-    const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
+    const preview = compactPreview(stripped, maxChars) || T.emptyToolResult
 
     return (
       <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
@@ -146,6 +146,11 @@ export const MessageLine = memo(function MessageLine({
         )}
       </Box>
     )
+  }
+
+  // A tool's image, hung under its trail line at the body indent.
+  if (msg.kind === 'image') {
+    return <MessageImages cols={cols} msg={msg} t={t} />
   }
 
   // Timeline events (model switches, delegation completions) render as
@@ -178,11 +183,18 @@ export const MessageLine = memo(function MessageLine({
       return <Text color={t.color.muted}>{msg.text}</Text>
     }
 
+    // ── `/usage` gauge row: one line with a `[||||    ]` bar, colored like the
+    // model picker. Only these rows take this path; every other system message
+    // keeps its collapse / ANSI / truncation handling below.
+    if (isUsageGaugeRow(msg)) {
+      return <UsageGaugeRow t={t} text={msg.text} />
+    }
+
     // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
     // MUST come before the hasAnsi check — system messages from the backend
     // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
     if (systemIsLong) {
-      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || T.systemMessage
 
       return (
         <Box flexDirection="column">
@@ -191,7 +203,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.muted}>{firstLine}</Text>
             <Text color={t.color.muted} dimColor>
               {' — '}
-              {msg.text.length.toLocaleString()} chars
+              {T.chars(msg.text.length.toLocaleString())}
             </Text>
           </Box>
           {systemOpen && <Ansi>{sanitizeAnsiForRender(msg.text)}</Ansi>}
@@ -223,7 +235,7 @@ export const MessageLine = memo(function MessageLine({
         <Text color={body}>
           {head}
           <Text color={t.color.muted} dimColor>
-            [long message]
+            {T.longMessage}
           </Text>
           {rest.join('')}
         </Text>
@@ -259,11 +271,7 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
-  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
-  // assistant rows only — event/trail/system chrome stays unstamped, matching
-  // the classic CLI which stamps its user/assistant labels (#41531).
-  const stamp =
-    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
+  const stamp = timestamps ? messageStamp(msg) : null
 
   return (
     <Box
@@ -294,7 +302,7 @@ export const MessageLine = memo(function MessageLine({
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
           <Text color={t.color.muted} dim>
-            Response
+            {T.response}
           </Text>
         </Box>
       )}
@@ -319,9 +327,43 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      <MessageImages cols={cols} msg={msg} spaced t={t} />
+      <PasteSections
+        marginLeft={gutterWidth}
+        pastes={msg.pastes}
+        t={t}
+        width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+      />
     </Box>
   )
 })
+
+const gaugeThemeColor = (t: Theme, style: GaugeStyle): string =>
+  style === 'red' ? t.color.error : style === 'yellow' ? t.color.warn : t.color.ok
+
+const isUsageGaugeRow = (msg: Msg): boolean =>
+  msg.role === 'system' && !msg.kind && !msg.text.includes('\n') && hasUsageGauge(msg.text)
+
+// wrap-ansi treats a colored `[||||||||  ]` as a broken CSI sequence and
+// prints `?[32m`, so each segment is its own <Text> with no wrapping.
+function UsageGaugeRow({ t, text }: { t: Theme; text: string }) {
+  return (
+    <Box>
+      {splitUsageGaugeLine(stripAnsi(text)).map((seg, j) => (
+        <Text color={seg.style ? gaugeThemeColor(t, seg.style) : t.color.muted} key={j}>
+          {seg.text}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+// `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
+// assistant rows only — event/trail/system chrome stays unstamped, matching
+// the classic CLI which stamps its user/assistant labels (#41531).
+const messageStamp = (msg: Msg): null | string =>
+  (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
 
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)

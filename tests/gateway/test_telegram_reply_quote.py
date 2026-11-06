@@ -11,7 +11,7 @@ actionable-looking text the user did not quote (#22619).
 from types import SimpleNamespace
 
 from gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -55,7 +55,7 @@ def _make_message(
 
 def test_native_partial_quote_used_as_reply_to_text():
     """When ``message.quote`` is present, prefer the selected substring."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter()
     msg = _make_message(

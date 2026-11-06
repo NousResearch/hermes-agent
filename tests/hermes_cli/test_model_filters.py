@@ -169,7 +169,7 @@ def test_ai_gateway_setup_scopes_picker_filtering(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(
-        "hermes_cli.main._prompt_api_key",
+        "hermes_cli.main_provider_setup._prompt_api_key",
         lambda *_args, **_kwargs: ("test-key", False),
     )
     monkeypatch.setattr(
@@ -192,7 +192,7 @@ def test_ai_gateway_setup_scopes_picker_filtering(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "hermes_cli.models.get_pricing_for_provider",
+        "hermes_cli.models_pricing.get_pricing_for_provider",
         lambda *_args, **_kwargs: {},
     )
 

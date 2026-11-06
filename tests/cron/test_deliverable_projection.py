@@ -5,9 +5,17 @@ import pytest
 from cron import scheduler, scheduler_delivery, scheduler_prompt
 from tests.cron import test_scheduler as scheduler_cases
 
+_QUOTED_MARKER_REPORT = """Status: green
+
+```text
+FINAL_CRON_OUTPUT: literal example
+```
+Next: deploy"""
+
 
 @pytest.mark.parametrize("response, expected", [
     ("Working notes.\nFINAL_CRON_OUTPUT:\nPublic report", "Public report"),
+    (f"Working notes.\n\nFINAL_CRON_OUTPUT:\n{_QUOTED_MARKER_REPORT}", _QUOTED_MARKER_REPORT),
     ("Notes.\nFINAL_CRON_OUTPUT: Title\n- body", "Title\n- body"),
     ("Report\n---\nBody", "Report\n---\nBody"),
     ("Notes.\nFinal answer:\nReport", "Notes.\nFinal answer:\nReport"),
@@ -19,7 +27,7 @@ def test_only_the_explicit_boundary_projects_delivery(response, expected):
     assert scheduler_delivery._extract_cron_deliverable_response(response) == expected
 
 
-@pytest.mark.parametrize("tail", ["Public report", "[SILENT]"])
+@pytest.mark.parametrize("tail", ["Public report", "[SILENT]", _QUOTED_MARKER_REPORT])
 def test_run_archive_and_queued_delivery_keep_their_own_projections(tmp_path, monkeypatch, tail):
     job = {"id": "deliverable-test", "name": "test", "prompt": "Report now", "deliver": "local"}
     response = f"Working notes; [SILENT] was considered.\nFINAL_CRON_OUTPUT:\n{tail}"

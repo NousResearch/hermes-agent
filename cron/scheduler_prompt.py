@@ -275,6 +275,7 @@ _CRON_HINT = (
     "final response and the system handles the rest. "
     "For a normal report, include a line that says exactly {deliverable_marker} "
     "before the deliverable; only content after it is sent. Keep working notes before it. "
+    "The first marker starts delivery; later marker-shaped lines are report content. "
     "Control responses below retain their exact formats. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "

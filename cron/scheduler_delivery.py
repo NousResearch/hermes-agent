@@ -29,14 +29,13 @@ _CRON_DELIVERABLE_MARKER_RE = re.compile(
 
 
 def _extract_cron_deliverable_response(text: str) -> str:
-    """Project delivery only after the prompt's explicit boundary; preserve unmarked reports."""
+    """Project after the first boundary; keep later markers literal and unmarked reports intact."""
     if not isinstance(text, str):
         return ""
     stripped = text.strip()
-    markers = list(_CRON_DELIVERABLE_MARKER_RE.finditer(stripped))
-    if not markers:
+    marker = _CRON_DELIVERABLE_MARKER_RE.search(stripped)
+    if marker is None:
         return stripped
-    marker = markers[-1]
     tail = "\n".join((marker.group(1).strip(), stripped[marker.end():].strip())).strip()
     return tail or stripped
 

@@ -336,4 +336,5 @@ def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRout
     """The route an internal caller's explicit config block describes (``/review`` ->
     ``auxiliary.review``); bypasses the provider, as those callers own their route."""
     from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
-    return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)
+    return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg,
+                     routing_cfg.get("reasoning_effort"))

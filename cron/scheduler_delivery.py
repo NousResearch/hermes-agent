@@ -1682,16 +1682,17 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
     return msg
 
 
-def _effective_wrap_response(job: dict, user_cfg: Any) -> Any:
+def _should_wrap_cron_response(job: dict, user_cfg: Any) -> bool:
     """Whether to wrap delivered output in the cron header/footer. A bool per-job
-    ``wrap_response`` overrides the global ``cron.wrap_response``; an unreadable or
-    malformed config falls back to the default (wrap)."""
+    ``wrap_response`` overrides the global ``cron.wrap_response`` (read from the active
+    profile); an unreadable or malformed config falls back to the default (wrap)."""
     if isinstance(job.get("wrap_response"), bool):
         return job["wrap_response"]
     cron_cfg = user_cfg.get("cron") if isinstance(user_cfg, dict) else None
     if not isinstance(cron_cfg, dict):
         return True
-    return cron_cfg.get("wrap_response", True)
+    # Truthiness, as the inline check this replaces used; YAML yields real bools here.
+    return bool(cron_cfg.get("wrap_response", True))
 
 
 def _deliver_result(
@@ -1737,7 +1738,7 @@ def _deliver_result(
     user_cfg = None
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
-    wrap_response = _effective_wrap_response(job, user_cfg)
+    wrap_response = _should_wrap_cron_response(job, user_cfg)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);

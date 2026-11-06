@@ -10,7 +10,10 @@ churn vanish; what's left is the actual dependency change.
 
 pnpm locks the workspace (``pnpm-lock.yaml``, lockfileVersion 9.0); the
 standalone npm projects (website/, the sidecars) keep a ``package-lock.json``
-(lockfileVersion 2/3).
+(lockfileVersion 2/3). A pnpm lock has no install paths, so besides its
+``{package: versions}`` rows the report lists a project's direct dependency
+(``semver *(web)*``) or a package's dependency (``semver *(via node-gyp@10.3.1)*``)
+that moved between versions locked on both sides, which the package rows miss.
 
 Usage (from a checkout that still has the base ref available):
 
@@ -39,7 +42,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.ci.pnpm_lock import section_keys
+from scripts.ci.pnpm_lock import section, section_keys
 
 
 def parse_lockfile(text: str) -> dict[str, str]:
@@ -62,6 +65,63 @@ def parse_lockfile(text: str) -> dict[str, str]:
     return out
 
 
+_DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
+
+
+def _split_key(key: str) -> tuple[str, str]:
+    """``@scope/name@1.2.3(peer@4)`` → ``("@scope/name", "1.2.3(peer@4)")``."""
+    at = key.index("@", 1)  # past a scope's leading @
+    return key[:at], key[at + 1:]
+
+
+def _bare(version: str) -> str:
+    """Drop pnpm's peer suffix: ``0.33.0(react@19.3.0)`` → ``0.33.0``.
+
+    A peer bump rewrites every suffix that names it; the peer's own row reports it.
+    """
+    return version.split("(", 1)[0]
+
+
+def _joined(found: dict[str, set[str]]) -> dict[str, str]:
+    return {key: ", ".join(sorted(values)) for key, values in found.items()}
+
+
+def _pnpm_package_versions(text: str) -> dict[str, str]:
+    versions: dict[str, set[str]] = {}
+    for key in section_keys(text, "packages"):
+        name, version = _split_key(key)
+        versions.setdefault(name, set()).add(version)
+    return _joined(versions)
+
+
+def _pnpm_importer_versions(text: str) -> dict[str, str]:
+    """``{"name *(project)*": version}`` for each workspace project's direct dependencies."""
+    found: dict[str, set[str]] = {}
+    for project, fields in section(text, "importers").items():
+        where = "root" if project == "." else project
+        for field in _DEP_FIELDS:
+            for name, entry in fields.get(field, {}).items():
+                if entry["version"].startswith("link:"):
+                    continue  # another workspace project, not a locked version
+                found.setdefault(f"{name} *({where})*", set()).add(_bare(entry["version"]))
+    return _joined(found)
+
+
+def _pnpm_snapshot_edges(text: str) -> dict[str, dict[str, str]]:
+    """``{"consumer@version": {dependency name: version}}`` from ``snapshots``.
+
+    Peer variants of one consumer collapse into one entry.
+    """
+    found: dict[str, dict[str, set[str]]] = {}
+    for key, entry in section(text, "snapshots").items():
+        name, version = _split_key(key)
+        edges = found.setdefault(f"{name}@{_bare(version)}", {})
+        for field in ("dependencies", "optionalDependencies"):
+            for dep, target in entry.get(field, {}).items():
+                edges.setdefault(dep, set()).add(_bare(target))
+    return {consumer: _joined(edges) for consumer, edges in found.items()}
+
+
 def parse_pnpm_lockfile(text: str) -> dict[str, str]:
     """Reduce pnpm-lock.yaml to ``{package name: versions}``.
 
@@ -69,14 +129,49 @@ def parse_pnpm_lockfile(text: str) -> dict[str, str]:
     per locked version. A package locked at several versions maps to all of
     them (``"17.0.2, 18.2.0"``), so moving any one of them updates that package.
     """
-    versions: dict[str, list[str]] = {}
-    for key in section_keys(text, "packages"):
-        at = key.index("@", 1)  # past a scope's leading @
-        versions.setdefault(key[:at], []).append(key[at + 1:])
-    return {name: ", ".join(sorted(found)) for name, found in versions.items()}
+    return _pnpm_package_versions(text)
 
 
-_PARSERS = {"package-lock.json": parse_lockfile, "pnpm-lock.yaml": parse_pnpm_lockfile}
+def diff_pnpm_locks(base_text: str, head_text: str) -> dict[str, list]:
+    """Diff two pnpm locks: package versions, plus the dependency moves those hide.
+
+    The ``packages`` keys cannot show a dependency moving between two versions that
+    both stay locked (``semver`` 7.8.5 → 7.7.4 in one project). So each project's
+    direct dependencies are diffed too (``semver *(web)*``), and so are the
+    ``snapshots`` edges (``semver *(via node-gyp@10.3.1)*``). Such a row is shown
+    only when every version it names is locked on both sides, i.e. when the
+    package row cannot explain it: a bump otherwise repeats once per dependent.
+    """
+    base = parse_pnpm_lockfile(base_text) if base_text else {}
+    head = parse_pnpm_lockfile(head_text) if head_text else {}
+    diff = diff_locks(base, head)
+
+    def hidden(name: str, *versions: str) -> bool:
+        kept = set(base.get(name, "").split(", ")) & set(head.get(name, "").split(", "))
+        return all(set(v.split(", ")) <= kept for v in versions)
+
+    projects = diff_locks(_pnpm_importer_versions(base_text) if base_text else {},
+                          _pnpm_importer_versions(head_text) if head_text else {})
+    for kind, rows in projects.items():
+        diff[kind] += [row for row in rows if hidden(row[0].split(" *(", 1)[0], *row[1:])]
+
+    base_edges = _pnpm_snapshot_edges(base_text) if base_text else {}
+    head_edges = _pnpm_snapshot_edges(head_text) if head_text else {}
+    for consumer in base_edges.keys() & head_edges.keys():
+        old, new = base_edges[consumer], head_edges[consumer]
+        for name in old.keys() & new.keys():
+            if old[name] != new[name] and hidden(name, old[name], new[name]):
+                diff["updated"].append((f"{name} *(via {consumer})*", old[name], new[name]))
+
+    return {kind: sorted(rows) for kind, rows in diff.items()}
+
+
+def _diff_npm_locks(base_text: str, head_text: str) -> dict[str, list]:
+    return diff_locks(parse_lockfile(base_text) if base_text else {},
+                      parse_lockfile(head_text) if head_text else {})
+
+
+_DIFFERS = {"package-lock.json": _diff_npm_locks, "pnpm-lock.yaml": diff_pnpm_locks}
 
 
 def diff_locks(base: dict[str, str], head: dict[str, str]) -> dict[str, list]:
@@ -162,7 +257,7 @@ def _tracked_lockfiles(ref: str, repo_root: str) -> set[str]:
     return {
         line
         for line in proc.stdout.splitlines()
-        if line.split("/")[-1] in _PARSERS
+        if line.split("/")[-1] in _DIFFERS
     }
 
 
@@ -171,12 +266,8 @@ def diff_refs(base: str, head: str, repo_root: str = ".") -> dict[str, dict[str,
     lockfiles = _tracked_lockfiles(base, repo_root) | _tracked_lockfiles(head, repo_root)
     diffs = {}
     for path in sorted(lockfiles):
-        parse = _PARSERS[path.split("/")[-1]]
-        base_text = _git_show(base, path, repo_root)
-        head_text = _git_show(head, path, repo_root)
-        base_map = parse(base_text) if base_text else {}
-        head_map = parse(head_text) if head_text else {}
-        diffs[path] = diff_locks(base_map, head_map)
+        differ = _DIFFERS[path.split("/")[-1]]
+        diffs[path] = differ(_git_show(base, path, repo_root) or "", _git_show(head, path, repo_root) or "")
     return diffs
 
 

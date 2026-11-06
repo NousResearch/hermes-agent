@@ -5,8 +5,10 @@ churn in the lockfile text must produce an empty diff, while actual
 version movement must show up as added/removed/updated regardless of
 where in the file it appears.
 
-tests/fixtures/pnpm_lock/ holds two real pnpm 12 lockfiles (``pnpm install
---lockfile-only``) of a two-project workspace, single-document as the repo's is.
+tests/fixtures/pnpm_lock/ holds real pnpm 12 lockfiles (``pnpm install
+--lockfile-only``) of two-project workspaces, single-document as the repo's is.
+base/head bump, add and remove packages; repin-base/repin-head only move
+dependencies between versions that both stay locked.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ _spec.loader.exec_module(_mod)
 
 PNPM_BASE = (_ROOT / "tests/fixtures/pnpm_lock/base.yaml").read_text(encoding="utf-8")
 PNPM_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/head.yaml").read_text(encoding="utf-8")
+REPIN_BASE = (_ROOT / "tests/fixtures/pnpm_lock/repin-base.yaml").read_text(encoding="utf-8")
+REPIN_HEAD = (_ROOT / "tests/fixtures/pnpm_lock/repin-head.yaml").read_text(encoding="utf-8")
 
 
 def _lock(packages: dict[str, dict]) -> str:
@@ -96,8 +100,10 @@ def test_pnpm_lock_reduces_to_package_versions():
     }
 
 
-def test_pnpm_add_remove_update_all_detected():
-    d = _mod.diff_locks(_mod.parse_pnpm_lockfile(PNPM_BASE), _mod.parse_pnpm_lockfile(PNPM_HEAD))
+def test_pnpm_add_remove_update_all_detected(tmp_path):
+    # Every move here shows in the package rows, so no project or edge row repeats it.
+    d = _mod.diff_refs("HEAD~1", "HEAD", _commit_pnpm_locks(tmp_path, PNPM_BASE, PNPM_HEAD))
+    d = d["pnpm-lock.yaml"]
     assert d["added"] == [("escape-string-regexp", "4.0.0")]
     assert d["removed"] == [("left-pad", "1.3.0")]
     # Moving one of two locked copies (pkg's is-number 6 -> 5) updates that package.
@@ -108,6 +114,33 @@ def test_pnpm_add_remove_update_all_detected():
     ]
 
 
+def _commit_pnpm_locks(repo: Path, *locks: str) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
+    for lock in locks:
+        (repo / "pnpm-lock.yaml").write_text(lock, encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, timeout=30)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                        "commit", "-q", "--no-verify", "-m", "lock"], cwd=repo, check=True, timeout=30)
+    return str(repo)
+
+
+def test_pnpm_dependency_moving_between_locked_versions_is_reported(tmp_path):
+    # The root and pkg swap ms 2.1.2 and 2.1.3, and an override moves debug's ms:
+    # both versions stay locked, so the packages section is identical on both sides.
+    assert _mod.parse_pnpm_lockfile(REPIN_BASE) == _mod.parse_pnpm_lockfile(REPIN_HEAD)
+    diffs = _mod.diff_refs("HEAD~1", "HEAD", _commit_pnpm_locks(tmp_path, REPIN_BASE, REPIN_HEAD))
+    assert diffs["pnpm-lock.yaml"] == {
+        "added": [],
+        "removed": [],
+        "updated": [
+            ("ms *(pkg)*", "2.1.3", "2.1.2"),
+            ("ms *(root)*", "2.1.2", "2.1.3"),
+            ("ms *(via debug@4.3.4)*", "2.1.2", "2.1.3"),
+        ],
+    }
+    assert "| ms *(root)* | `2.1.2` | `2.1.3` |" in _mod.render_markdown(diffs)
+
+
 def test_pnpm_lock_refuses_what_it_cannot_read():
     with pytest.raises(ValueError, match="lockfileVersion: '6.0'"):
         _mod.parse_pnpm_lockfile(PNPM_BASE.replace("lockfileVersion: '9.0'", "lockfileVersion: '6.0'"))
@@ -116,6 +149,10 @@ def test_pnpm_lock_refuses_what_it_cannot_read():
     pin = "---\nlockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    configDependencies: {}\n\n---\n"
     with pytest.raises(ValueError, match="one YAML document, found 2"):
         _mod.parse_pnpm_lockfile(pin + PNPM_BASE)
+    # The project and snapshot rows read each entry's fields: a shape pnpm does not
+    # write fails rather than being skipped.
+    with pytest.raises(ValueError, match="unreadable importers line"):
+        _mod.diff_pnpm_locks(PNPM_BASE.replace("        version: 6.0.0", "         version: 6.0.0"), PNPM_HEAD)
 
 
 def test_diff_refs_reports_the_pnpm_lock_and_nested_npm_locks(tmp_path):

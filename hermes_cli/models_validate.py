@@ -578,9 +578,9 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     (case-insensitive: typing matches the file name, the router registers the preset id);
     anything else falls through to the live listing, which stays authoritative for ids that
     were never downloaded here."""
-    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+    from hermes_cli.local_runtime.implementation import get_runtime
 
-    staged = {sid.lower() for sid in staged_model_ids()}
+    staged = {sid.lower() for sid in get_runtime().staged_model_ids()}
     if req.lookup.strip().lower() in staged:
         return _accept_with_note(
             f"Note: `{req.requested}` was not found in the live /v1/models listing "

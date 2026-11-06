@@ -601,8 +601,8 @@ def _has_staged_local_models() -> bool:
     """True when GGUFs are staged under the Hermes home's ``models/`` — the model the picker's Local
     row offers, which the runtime seam serves by booting/attaching a server on selection."""
     try:
-        from hermes_cli.local_runtime.bootstrap import staged_model_ids
-        return bool(staged_model_ids())
+        from hermes_cli.local_runtime.implementation import get_runtime
+        return bool(get_runtime().staged_model_ids())
     except Exception:
         return False
 
@@ -616,8 +616,8 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
     this rung model-switch rejected the very provider the Local Models 'Use' flow writes to config."""
     try:
         from hermes_cli.config import load_config_readonly
-        from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint(config=load_config_readonly(), wait_for_boot_s=0)
+        from hermes_cli.local_runtime.implementation import get_runtime
+        endpoint = get_runtime().resolve_endpoint(config=load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None
     if not endpoint and not _has_staged_local_models():

@@ -146,9 +146,9 @@ async def standalone_lifespan(app: "FastAPI"):
     def _boot_local_runtime():
         try:
             from hermes_cli.config import load_config
-            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
+            from hermes_cli.local_runtime.implementation import get_runtime
 
-            ensure_local_runtime(load_config())
+            get_runtime().ensure_running(load_config())
         except Exception as exc:
             logging.getLogger(__name__).warning("local runtime boot failed: %s", exc)
 
@@ -186,9 +186,9 @@ async def standalone_lifespan(app: "FastAPI"):
 
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
-            from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
+            from hermes_cli.local_runtime.implementation import get_runtime
 
-            shutdown_local_runtime()
+            get_runtime().shutdown()
         except Exception:
             # Shutdown boundary: a supervisor that fails to stop must not skip the
             # managed-gateway teardown below; log it so the orphan is diagnosable.

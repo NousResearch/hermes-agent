@@ -72,7 +72,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
 
     # Bound every pool: httpx's 100-connection default × (wedged endpoint + seed IPs) can outgrow the fd limit.
-    # See #63311.
+    # See #71593 (pool release on connect failure) and #82678 (the adapter always supplies its own
+    # `limits`, so this default is only a floor).
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
@@ -118,7 +119,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         poisoned pool would leak one fd per retry.
 
         Retaining the poisoned pool leaks one descriptor per retry until the process hits its file limit and
-        can no longer accept connections or resolve DNS (#63311).
+        can no longer accept connections or resolve DNS (#71593).
         """
         async with self._fallback_lock:
             transport = self._fallbacks.pop(ip, None)
@@ -304,4 +305,35 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    """True when a transport failure means "this path is unusable, drop it and try the next one".
+
+    A failure that is NOT classified as retryable is re-raised as-is, which skips both the pool
+    reset (``_reset_fallback`` / ``_reset_primary``) and the sticky-IP clear. The failed path then
+    stays pinned and every later attempt reuses it, so a single unclassified failure can wedge the
+    adapter until the process restarts.
+
+    ``httpx.ReadTimeout`` is the important addition. httpx keeps a socket alive in the pool after
+    a successful request; if the peer half-closes it, the next request reuses that socket, the
+    write succeeds, and the read blocks until ``read_timeout`` (20s by default) expires. The
+    resulting ``httpx.ReadTimeout`` is not a connect error, so before this change it was re-raised
+    as-is: the pool was never rebuilt, the sticky IP was never cleared, and the adapter kept
+    retrying the same dead socket — the bot stayed silent for over an hour while a fresh ``curl``
+    to the very same IP succeeded in 0.2s.
+
+    ``httpx.PoolTimeout`` covers the sibling case where the pool wait itself expires, and
+    ``httpx.ReadError`` / ``httpx.RemoteProtocolError`` / ``httpx.WriteTimeout`` cover the other
+    ways a pooled connection can die mid-request.
+
+    The adapter layer already treats an httpx pool timeout as safe to retry
+    (``TelegramAdapter._looks_like_pool_timeout``); the transport layer has to agree with it,
+    otherwise the pool is never rebuilt and the gateway cannot recover on its own.
+    """
+    return isinstance(exc, (
+        httpx.ConnectTimeout,
+        httpx.ConnectError,
+        httpx.PoolTimeout,
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+        httpx.ReadError,
+        httpx.RemoteProtocolError,
+    ))

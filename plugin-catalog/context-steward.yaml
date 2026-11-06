@@ -16,13 +16,13 @@
 
 name: context-steward
 repo: https://github.com/jiangkoumo/hermes-context-steward
-sha: d72aa39a46fb18d7713f9f21c1be6ebb68a7cc23
+sha: ed2d16c1e97ad37c0821355b831ac3dc9181cd16
 description: One auxiliary judgment chooses a checkpoint or a fresh context segment in the same chat.
 maintainer: jiangkoumo
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-version: "0.4.0"
+version: "0.4.1"
 readme: true
 known_issues:
   - "Runs its judgment on the session model unless plugins.entries.context-steward.llm.allow_task_override is set (then auxiliary.compression)."

@@ -111,61 +111,83 @@ def skills_hub_http_session() -> Iterator[None]:
             _skills_hub_http_client.reset(token)
 
 
-def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
-    """GET through the active resolution pool, or preserve one-shot behavior."""
-    client = _skills_hub_http_client.get()
-    if client is not None:
-        return client.get(url, **kwargs)
-    return httpx.get(url, **kwargs)
+class SkillsHubFetchBlocked(httpx.TransportError):
+    """A hop failed URL safety, website policy, or the connect-time SSRF check.
+
+    A transport error, so every caller's existing ``httpx.HTTPError`` handling covers it."""
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                        headers: Optional[dict[str, str]] = None) -> httpx.Response:
-    """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
-    with skills_hub_http_session():
-        return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers)
+_CREDENTIAL_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
 
 
-def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
-                      headers: Optional[dict[str, str]] = None) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
+def _same_origin(a: str, b: str) -> bool:
+    ua, ub = httpx.URL(a), httpx.URL(b)
+    return (ua.scheme, ua.host, ua.port) == (ub.scheme, ub.host, ub.port)
 
-    *headers* are plain request headers (no credentials) and are sent on every hop."""
+
+def _hop_headers(headers: Optional[dict[str, str]], origin_url: str,
+                 hop_url: str) -> Optional[dict[str, str]]:
+    """Credentials stay on the origin: a cross-origin Location gets the plain headers only,
+    so a GitHub token never rides a redirect to another host."""
+    if not headers or _same_origin(origin_url, hop_url):
+        return headers
+    return {k: v for k, v in headers.items() if k.lower() not in _CREDENTIAL_HEADERS}
+
+
+def _check_hop(url: str) -> None:
+    if not is_safe_url(url):
+        logger.warning("Blocked unsafe Skills Hub URL: %s", url)
+        raise SkillsHubFetchBlocked(f"unsafe URL: {url}")
+    blocked = check_website_access(url)
+    if blocked:
+        logger.info("Blocked Skills Hub fetch for %s by rule %s", blocked["host"], blocked["rule"])
+        raise SkillsHubFetchBlocked(f"blocked by website policy: {url}")
+
+
+def _skills_hub_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
+                         headers: Optional[dict[str, str]] = None,
+                         params: Optional[dict[str, Any]] = None) -> httpx.Response:
+    """GET with every redirect hop re-checked against URL safety and website policy.
+
+    Each hop goes through the SSRF-safe client (the resolution pool when one is active).
+    *params* apply to the first hop only; a redirect Location is already a full URL.
+    Raises ``SkillsHubFetchBlocked`` for a refused hop and ``httpx.TooManyRedirects``
+    past the hop limit; a 3xx without a Location is returned as is."""
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
-
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
-        if not is_safe_url(current_url):
-            logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
-            return None
-
-        blocked = check_website_access(current_url)
-        if blocked:
-            logger.info(
-                "Blocked Skills Hub fetch for %s by rule %s",
-                blocked["host"],
-                blocked["rule"],
-            )
-            return None
-
+        _check_hop(current_url)
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
-        except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
-            logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
-            return None
-
-        if resp.status_code in _REDIRECT_STATUS_CODES:
-            location = getattr(resp, "headers", {}).get("location")
-            if not location:
-                return None
-            current_url = urljoin(current_url, location)
-            continue
-
-        return resp
-
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout,
+                                       headers=_hop_headers(headers, url, current_url), params=params)
+        except SSRFConnectionBlocked as exc:
+            raise SkillsHubFetchBlocked(str(exc)) from exc
+        location = resp.headers.get("location") if resp.status_code in _REDIRECT_STATUS_CODES else None
+        if not location:
+            return resp
+        current_url = urljoin(current_url, location)
+        params = None
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
-    return None
+    raise httpx.TooManyRedirects(f"more than {_MAX_SKILL_FETCH_REDIRECTS} redirects from {url}")
+
+
+def _ssrf_safe_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
+                        headers: Optional[dict[str, str]] = None,
+                        params: Optional[dict[str, Any]] = None) -> httpx.Response:
+    """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
+    with skills_hub_http_session():
+        return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers, params=params)
+
+
+def _guarded_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
+                      headers: Optional[dict[str, str]] = None) -> Optional[httpx.Response]:
+    """``_skills_hub_http_get`` that answers None instead of raising on a refused hop or transport error."""
+    try:
+        return _skills_hub_http_get(url, timeout=timeout, headers=headers)
+    except httpx.HTTPError as exc:
+        logger.debug("Skills Hub fetch failed for %s: %s", url, exc)
+        return None
 
 
 @contextmanager

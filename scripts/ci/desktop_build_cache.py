@@ -47,6 +47,14 @@ _INPUT_FILES = (
     "apps/desktop/scripts/windows-bundle-tools.mjs", "apps/desktop/scripts/prepared-native-deps.mjs",
     "apps/desktop/scripts/prepared-packaging.mjs", "apps/desktop/scripts/prepare-dmgbuild.mjs",
     "apps/desktop/scripts/prepare_dmgbuild.py", "apps/desktop/scripts/probe-prepared-native.mjs",
+    # Python modules the entries above import, at module level or inside the functions preparation calls.
+    "scripts/bundles/desktop.py", "scripts/bundles/payload.py", "scripts/bundles/bytecode.py",
+    "scripts/bundles/msix_names.py", "scripts/releases/versioning.py", "scripts/releases/semver.py",
+    "scripts/releases/bundle_env.py", "scripts/releases/commit_build.py", "scripts/termux/deb_version.py",
+    "hermes_cli/__init__.py", "hermes_cli/release_channels.py", "hermes_cli/update_channel.py",
+    "hermes_cli/runtime_state.py", "hermes_constants.py", "hermes_platform/__init__.py",
+    "hermes_platform/resolver/__init__.py", "hermes_platform/resolver/base.py",
+    "hermes_platform/resolver/core.py", "hermes_platform/resolver/known_dirs.py",
 )
 
 

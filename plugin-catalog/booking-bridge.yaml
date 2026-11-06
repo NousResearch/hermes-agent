@@ -1,0 +1,20 @@
+name: booking-bridge
+repo: https://github.com/kyle-bartlett/booking-bridge
+sha: "7c82f93a947a1b286d875ed6232c9c3f21ab6c60"
+version: "1.0.0"
+title: Booking Bridge
+description: "Find free time, then book, list, reschedule and cancel real Google Calendar consults (for example a Strategy consult) from Hermes. Signs in with the user's own Google OAuth client through hermes auth add booking-bridge:google; all calls go through credentialed_provider_request to www.googleapis.com only. Disclosure: network calls to Google Calendar API v3 only (scopes calendar.events and calendar.freebusy); write tools (book, reschedule, cancel) change the user's calendar, can email invitations to listed attendees, require confirm=true, and refuse to run in cron or webhook sessions; booked events carry a private hash property to prevent duplicates; no shell commands, background processes, telemetry or stored credentials."
+maintainer: kyle-bartlett
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/kyle-bartlett/booking-bridge/blob/7c82f93a947a1b286d875ed6232c9c3f21ab6c60/README.md
+readme: true
+capabilities:
+  provides_tools: [list_availability, list_upcoming, book_event, reschedule_event, cancel_event]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [BOOKING_BRIDGE_CLIENT_ID, BOOKING_BRIDGE_CLIENT_SECRET]
+known_issues:
+  - "Needs the user's own Google Cloud OAuth client (Desktop app) with the Calendar API enabled; sign in once with hermes auth add booking-bridge:google."
+  - "Google may show an unverified-app warning for a personal OAuth client in testing mode."

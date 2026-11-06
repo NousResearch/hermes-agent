@@ -464,6 +464,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     runtime_generation INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL,
     created_source TEXT,
+    kanban_task_id TEXT,
     user_id TEXT,
     session_key TEXT,
     chat_id TEXT,

@@ -1,0 +1,31 @@
+name: crashlab
+title: CrashLab
+repo: https://github.com/dolepee/crashlab
+sha: f859594d4061e8eea2fcd601f3fd237029d60ec7
+description: Reproduce lost-response duplicate writes and compare persisted state before and after repair.
+maintainer: dolepee
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/dolepee/crashlab/blob/f859594d4061e8eea2fcd601f3fd237029d60ec7/README.md
+platforms:
+  - linux
+screenshots:
+  - https://raw.githubusercontent.com/dolepee/crashlab/f859594d4061e8eea2fcd601f3fd237029d60ec7/docs/repair-report.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/f859594d4061e8eea2fcd601f3fd237029d60ec7/docs/booking-report.png
+  - https://raw.githubusercontent.com/dolepee/crashlab/f859594d4061e8eea2fcd601f3fd237029d60ec7/docs/desktop-pane.png
+known_issues:
+  - "Full browser test not run in this environment; Chromium startup failed with socket EPERM."
+  - "Manifest still declares >=0.21.5; only Hermes v0.23.0 is tested. Alignment is required before admission."
+  - "Requires Node.js 20+, playwright-core, and local Chromium; uses --no-sandbox, so run only trusted fixtures in isolation."
+  - "Only the first matching request is interrupted; other fault.occurrence values are unsupported."
+capabilities:
+  provides_tools:
+    - crashlab_validate
+    - crashlab_run
+    - crashlab_compare
+    - crashlab_list
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

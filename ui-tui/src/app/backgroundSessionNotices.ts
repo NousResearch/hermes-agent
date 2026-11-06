@@ -1,5 +1,6 @@
-import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveListResponse } from '@hermes/shared/gateway-types'
+
+import type { GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 

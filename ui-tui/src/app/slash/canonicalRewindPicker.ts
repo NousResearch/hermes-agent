@@ -3,10 +3,11 @@
 // the picked row instead of the newest one — the owner's form of the legacy `prompt.submit
 // truncate_before_row_id` that Desktop's edit-and-resend sends. Nothing is cut until the edit is sent.
 
+import type { SessionInfo } from '@hermes/shared/gateway-types'
+
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
-import type { SessionInfo } from '@hermes/shared/gateway-types'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'

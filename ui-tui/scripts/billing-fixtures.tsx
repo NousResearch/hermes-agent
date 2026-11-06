@@ -231,6 +231,7 @@ if (!arg || arg === '--list' || arg === '-l') {
   for (const name of names) {
     process.stdout.write(`  ${name.padEnd(18)} ${FIXTURES[name]!.desc}\n`)
   }
+
   process.stdout.write(`\n  ${names.length} fixtures. Run:  pnpm exec tsx scripts/billing-fixtures.tsx <name>\n`)
   process.exit(0)
 }

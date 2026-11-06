@@ -85,6 +85,25 @@ class TestCustomReasoningWireShape:
         assert "think" not in eb
         assert tl == {"reasoning_effort": "none"}
 
+    def test_ministral_on_mistral_api_omits_reasoning_effort(self, custom_profile):
+        """Ministral rejects the custom profile's otherwise-default effort field."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="ministral-14b-2512",
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert eb == {}
+        assert "reasoning_effort" not in tl
+
+    def test_other_custom_models_keep_reasoning_effort_on_mistral_api(self, custom_profile):
+        """The Ministral exception must not disable reasoning for the whole endpoint."""
+        _, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="mistral-large-latest",
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert tl == {"reasoning_effort": "medium"}
+
     def test_disabled_omits_think_without_base_url(self, custom_profile):
         """Unknown custom endpoint — do not send the Ollama-only flag."""
         eb, tl = custom_profile.build_api_kwargs_extras(

@@ -66,3 +66,36 @@ def test_failing_or_renaming_extender_is_skipped_and_later_ones_still_run():
     finally:
         manager.unload("extend_schema_faulty_plugin")
         registry.deregister(name)
+
+
+def test_disposing_one_of_two_same_callback_registrations_keeps_the_order_of_the_rest():
+    """Each handle removes its own registration, and an unhashable extender that raises is skipped."""
+    name = "extend_schema_dupes"
+    manager = PluginManager(scope_key=registry.current_scope_key())
+    ctx = _context(manager, "extend_schema_dupes_plugin")
+    registry.register(
+        name=name, toolset="extend_schema_core",
+        schema={"name": name, "description": "x", "parameters": {"type": "object"}},
+        handler=lambda args, **kw: "ok",
+    )
+
+    class Unhashable:
+        __hash__ = None
+
+        def __call__(self, schema):
+            raise RuntimeError("broken plugin")
+
+    def append(schema):
+        return {**schema, "description": schema["description"] + "+a"}
+
+    ctx.extend_tool_schema(name, Unhashable())
+    ctx.extend_tool_schema(name, append)
+    ctx.extend_tool_schema(name, lambda schema: {**schema, "description": schema["description"].upper()})
+    last = ctx.extend_tool_schema(name, append)
+    try:
+        assert _function_schema(name)["description"] == "X+A+a"
+        last.dispose()
+        assert _function_schema(name)["description"] == "X+A"
+    finally:
+        manager.unload("extend_schema_dupes_plugin")
+        registry.deregister(name)

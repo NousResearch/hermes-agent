@@ -452,3 +452,45 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         assert argv == ["security", "-i"]
         assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
             "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}
+
+    @pytest.mark.platforms("macos")
+    def test_no_write_when_the_command_line_exceeds_the_security_i_line_limit(
+        self, monkeypatch, caplog
+    ):
+        """``security -i`` reads stdin in lines of at most 4095 chars: a longer line runs its first
+        4095 chars as the command (a truncated ``-X`` value) and the tail as a bogus second one,
+        so ``add-generic-password -U`` clobbers the item with a truncated payload. An oversized
+        line must not be handed to the tool at all, and the skip must be visible above DEBUG."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"},
+                        "mcpOAuth": {f"srv-{i}": {"t": "x" * 40} for i in range(60)}})
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item
+        )
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        with caplog.at_level("WARNING", logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        run.assert_not_called()
+        assert any(
+            "security -i" in r.message and "4095" in r.message for r in caplog.records
+        )
+
+    @pytest.mark.platforms("macos")
+    def test_a_fitting_payload_still_writes_unchanged(self, monkeypatch):
+        """The guard only rejects lines past the limit: a payload that fits (the shape before
+        ``mcpOAuth`` entries grew the item) keeps the exact command line the mirror always built."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        (argv,), kwargs = run.call_args
+        line = kwargs["input"]
+        assert argv == ["security", "-i"]
+        assert len(line.rstrip("\n")) <= 4095
+        assert json.loads(bytes.fromhex(line.split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
+            "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}

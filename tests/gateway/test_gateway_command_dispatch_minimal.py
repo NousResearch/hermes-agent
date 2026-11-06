@@ -84,7 +84,6 @@ def _make_runner():
     runner._draining = False
     runner._session_run_generation = {}
     runner._session_sources = {}
-    runner._pending_native_image_paths_by_session = {}
     runner._background_tasks = {}
     runner._background_task_counter = 0
     runner._session_model_overrides = {}

@@ -50,7 +50,6 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
-    runner._pending_one_turn_model_restores = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
     runner._running_agents = {}
@@ -342,7 +341,6 @@ class TestOneTurnNeverPersisted:
         runner.adapters = {}
         runner._voice_mode = {}
         runner._session_model_overrides = {}
-        runner._pending_one_turn_model_restores = {}
         runner._running_agents = {}
         # async_session_store is a property over session_store; install the
         # mock behind the private cache attribute it reads.
@@ -380,7 +378,7 @@ class TestOneTurnNeverPersisted:
         assert runner._session_model_overrides[sk]["capabilities"] == {
             "openai_native_compaction": True
         }
-        assert sk in runner._pending_one_turn_model_restores
+        assert runner._session_state(sk).conversation.one_turn_restore is not None
         # ...but NEVER written through to the persistent session store.
         runner.async_session_store.set_model_override.assert_not_awaited()
 
@@ -398,5 +396,5 @@ class TestOneTurnNeverPersisted:
 
         # The second producer call snapshotted the live gpt-5.5 override; the pending restore
         # must still be the ORIGINAL "no override" state.
-        assert runner._pending_one_turn_model_restores[sk]["had_override"] is False
+        assert runner._session_state(sk).conversation.one_turn_restore["had_override"] is False
 

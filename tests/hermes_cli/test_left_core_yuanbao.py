@@ -108,3 +108,10 @@ def test_plugins_disabled_naming_the_bundled_adapter_is_not_use_and_still_disabl
     assert lcm.yuanbao_in_use(home) is False
     manifest = PluginManifest(name="yuanbao", source="user", path=str(home / "plugins" / "yuanbao"), key="yuanbao")
     assert gate_manifest(manifest, {"platforms/yuanbao"}, None).error == "disabled via config"
+
+
+def test_every_platform_core_knows_but_yuanbao_keeps_the_yb_tools_off():
+    from hermes_cli.platforms import PLATFORMS
+    feature = next(f for f in lcm.LEFT_CORE if f.plugin == "yuanbao")
+    assert "homeassistant" in feature.off_platforms and "yuanbao" not in feature.off_platforms
+    assert set(PLATFORMS) <= set(feature.off_platforms)

@@ -1428,6 +1428,14 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # macOS launchd only: which Apple platform binary the gateway job spawns. The job's identity
+  # is the first executable launchd runs, and an Apple platform binary is what carries the Local
+  # Network exemption. The default, /usr/bin/osascript, holds Full Disk Access and no
+  # removable-volume row, so a child it is responsible for is refused an external volume.
+  # `python3` spawns /usr/bin/python3 -c instead — the same class of identity without that deny
+  # row, and its wait happens in the kernel rather than polling WindowServer. Opt-in.
+  # launchd_wrapper: python3
+
 # =============================================================================
 # Toolsets
 # =============================================================================

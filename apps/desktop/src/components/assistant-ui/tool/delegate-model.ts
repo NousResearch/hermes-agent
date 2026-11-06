@@ -128,8 +128,9 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
  * those match exactly. Native children stamp the call's delegation id, so a
  * result that carries it joins exactly — even when two delegations share a
  * goal string, which is how an older card used to re-adopt a newer call's
- * workers (#136532). Without it (old transcripts, no live transcripts), the
- * goal string verbatim from the same arguments this call was built from is the
+ * workers (#136532). Without it (old transcripts, no live transcripts, a
+ * foreground call whose result hasn't arrived), the goal string verbatim
+ * from the same arguments this call was built from is the
  * next best key. Failing both, task order is how the delegate tool numbers its
  * children — but only trust it when the two sides agree on how many there are,
  * or a second delegation in the same turn will claim the first one's workers.

@@ -1132,6 +1132,9 @@ export function LocalFilePreview({
             onCancel={cancelEdit}
             onChange={handleEditorChange}
             onSave={() => void saveEdit()}
+            // Markdown / prose files routinely run off the right edge in the
+            // right-rail file pane. Wrap instead of horizontal scroll. See #136344.
+            wrap
           />
         </div>
       </div>

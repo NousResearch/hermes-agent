@@ -47,9 +47,27 @@ def _on_session_start(**kwargs):
     return None
 
 
+def _hosted_tool(args, **kwargs):
+    return "ok"
+
+
+def _passthrough(payload, **kwargs):
+    return None
+
+
+def _session_env(session_id):
+    return {"HOSTEDPROV_SESSION": session_id}
+
+
 def register(ctx):
     ctx.register_memory_provider(HostedProv())
     ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_tool(name="hostedprov_probe", toolset="hostedprov", handler=_hosted_tool,
+                      schema={"name": "hostedprov_probe", "description": "probe", "parameters": {"type": "object", "properties": {}}})
+    ctx.register_middleware("tool_request", _passthrough)
+    ctx.register_session_env("HOSTEDPROV_SESSION", _session_env)
+    ctx.register_rpc("probe", _passthrough)
+    (Path(os.environ["HERMES_HOME"]) / "registered.json").write_text("{}")  # register() ran to the end
 """
 
 _SCHEMA = """
@@ -63,11 +81,18 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 """
 
 
-@pytest.fixture
-def hosted_home(tmp_path, monkeypatch):
+@pytest.fixture(params=["hostedprov", "hostedprov_pkg"])
+def hosted_home(request, tmp_path, monkeypatch):
+    """``hostedprov_pkg``: a pip provider whose package dir is named differently from the provider,
+    found through its entry point (the loader registers under the dir's name)."""
     home = tmp_path / ".hermes"
-    plugin_dir = home / "plugins" / "hostedprov"
+    plugin_dir = home / "plugins" / request.param
     plugin_dir.mkdir(parents=True)
+    if request.param != "hostedprov":
+        import plugins.memory as memory_plugins
+        real = memory_plugins.find_provider_dir
+        monkeypatch.setattr(memory_plugins, "find_provider_dir",
+                            lambda name: plugin_dir if name == "hostedprov" else real(name))
     (plugin_dir / "__init__.py").write_text(_INIT, encoding="utf-8")
     (plugin_dir / "config_schema.py").write_text(_SCHEMA, encoding="utf-8")
     (home / "config.yaml").write_text(yaml.safe_dump(
@@ -110,11 +135,21 @@ def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     assert seen["name"] == "work" and seen["pid"] != os.getpid()
     hosts = [getattr(m, "_plugin_host_instance", None) for m in plugins_mod._known_plugin_managers()]
     assert not any(h is not None and h.alive for h in hosts)
-    # The hook-only load's on_session_start proxy pointed at the stopped host: it was dropped too.
+    # Everything the hook-only load registered proxied into the stopped host: hook, tool,
+    # middleware, session env and RPC method are all gone from the new profile's manager.
+    from hermes_cli.plugins_session_env import _REGISTRATIONS
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.registry import registry
+    assert (work / "registered.json").exists()
     token = set_hermes_home_override(str(work))
     try:
-        assert not plugins_mod.get_plugin_manager()._hooks.get("on_session_start")
+        manager = plugins_mod.get_plugin_manager()
+        assert not any(manager._ownership_ledger.values())
+        assert not manager._hooks.get("on_session_start")
+        assert registry.get_entry("hostedprov_probe", scope=manager.scope_key) is None
+        assert not manager._middleware.get("tool_request")
+        assert not manager._plugin_rpc_methods
+        assert not [r for r in _REGISTRATIONS.values() if r[0] == manager.scope_key]
     finally:
         reset_hermes_home_override(token)
 

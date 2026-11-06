@@ -10,7 +10,7 @@ let stop = () => {}
 
 afterEach(() => {
   stop()
-  setFocusFollowsMouse(false)
+  setFocusFollowsMouse(true)
   window.localStorage.removeItem(KEY)
   vi.useRealTimers()
 })

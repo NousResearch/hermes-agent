@@ -16,6 +16,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { $composerPopout, $composerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { setFocusFollowsMouse } from '@/store/focus-follows-mouse'
 import { $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd, $sessionTiles, focusOpenSession } from '@/store/session-states'
@@ -89,6 +90,8 @@ function initialFocus(floating: boolean, readyC = true) {
 }
 
 beforeEach(() => {
+  // These assertions describe the opt-out mode: Focus follows mouse turned off.
+  setFocusFollowsMouse(false)
   $composerPopoutGesturesEnabled.set(true)
   $composerPopout.set({ poppedOut: false, position: { bottom: 24, right: 24 } })
   $floatingComposerOwner.set(null)
@@ -119,6 +122,7 @@ beforeEach(() => {
 afterEach(async () => {
   cleanup()
   stop()
+  setFocusFollowsMouse(true)
   await act(async () => {})
   window.getSelection()?.removeAllRanges()
   $floatingComposerOwner.set(null)

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, trackActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { $composerPopout, $composerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { $focusFollowsMouse } from '@/store/focus-follows-mouse'
 import { $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
@@ -234,5 +235,26 @@ describe.each([false, true])('configurable mouse focus (floating=%s)', floating 
     release()
     move(b.text)
     expect(getActiveComposer()).toBe('tile:B')
+  })
+})
+
+// The switch is an opt-out: with no stored preference the pointer behaves as the
+// Desktop interaction contract documents, so an untouched install keeps it.
+describe.each([false, true])('no stored preference (floating=%s)', floating => {
+  it('selects the hovered chat until someone turns the setting off', () => {
+    const a = surface('A')
+    const b = surface('B')
+    $composerPopout.set({ poppedOut: floating, position: { bottom: 24, right: 24 } })
+    select(a.editor)
+
+    window.localStorage.removeItem(KEY)
+    window.dispatchEvent(new StorageEvent('storage', { key: KEY, newValue: null }))
+    expect($focusFollowsMouse.get()).toBe(true)
+
+    move(b.text)
+    expect(getActiveComposer()).toBe('tile:B')
+    expect(document.activeElement).toBe(b.editor)
+    expect($focusedStoredSessionId.get()).toBe('B')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-B')
   })
 })

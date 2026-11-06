@@ -31,13 +31,14 @@ describe('Focus follows mouse setting', () => {
     const floating = screen.getByRole('switch', { name: 'Floating Composer' })
 
     expect(floating.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(toggle)
+    // On by default: the switch is an opt-out from the documented pointer behaviour.
     expect(toggle.getAttribute('aria-checked')).toBe('true')
-    expect(window.localStorage.getItem(KEY)).toBe('true')
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     expect(window.localStorage.getItem(KEY)).toBe('false')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+    expect(window.localStorage.getItem(KEY)).toBe('true')
   })
 
   it('is not hidden among chat-display settings', () => {

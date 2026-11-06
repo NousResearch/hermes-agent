@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree, trackActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { $composerPopout, $composerPopoutGesturesEnabled } from '@/store/composer-popout'
+import { setFocusFollowsMouse } from '@/store/focus-follows-mouse'
 import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner, setSessions } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
@@ -55,6 +56,8 @@ function clickEditor(editor: HTMLElement) {
 }
 
 beforeEach(() => {
+  // These assertions describe the opt-out mode: Focus follows mouse turned off.
+  setFocusFollowsMouse(false)
   $selectedStoredSessionId.set('A')
   $workspaceCwdOwner.set('A')
   $currentCwd.set('/repo-A')
@@ -81,6 +84,7 @@ afterEach(async () => {
     .splice(0)
     .reverse()
     .forEach(dispose => dispose())
+  setFocusFollowsMouse(true)
   await Promise.resolve()
   document.body.replaceChildren()
   window.getSelection()?.removeAllRanges()

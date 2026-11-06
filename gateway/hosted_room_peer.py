@@ -15,6 +15,7 @@ import math
 import os
 import re
 import stat
+import threading
 import urllib.parse
 from dataclasses import asdict, dataclass
 from functools import lru_cache, partial
@@ -43,12 +44,55 @@ class HostedRoomGrantError(HostedRoomPeerError): """Raised when a room-scoped gr
 
 
 _ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
+# Without hard links the secret is created in place, so loads and mints within a process are
+# serialized: no worker can read the file between its exclusive create and its bytes landing.
+_ROOM_GRANT_MINT_LOCK = threading.Lock()
+
+
+def _create_secret_file(path: Path, material: bytes) -> None:
+    """Exclusively create *path* at 0600 holding *material* (FileExistsError when it exists)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            stream.write(material)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)  # a torn secret would be rejected as invalid forever
+        raise
+
+
+def _mint_room_grant_secret(home: Path, path: Path) -> bytes | None:
+    """Publish a fresh secret at *path*; None when another worker's secret is already there.
+
+    The secret is written to an O_EXCL temp file and hard-linked into place, so a reader never sees
+    it half-written. Where hard links are unavailable (Android's ``os`` has no ``link``; some
+    filesystems refuse them) it is exclusively created in place instead, which still never replaces
+    a secret another worker published.
+    """
+    from utils import fsync_directory
+    material = os.urandom(32)
+    temporary = home / f".{_ROOM_GRANT_SECRET_FILE}.{os.getpid()}.{os.urandom(8).hex()}"
+    try:
+        _create_secret_file(temporary, material)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return None
+        except (AttributeError, OSError):
+            try:
+                _create_secret_file(path, material)
+            except FileExistsError:
+                return None
+    finally:
+        temporary.unlink(missing_ok=True)
+    fsync_directory(home)
+    return material
 
 
 @lru_cache(maxsize=32)
 def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
     """Load one restart-scoped grant secret for an exact installation root."""
-    from utils import fsync_directory
     (home := Path(home_value)).mkdir(parents=True, exist_ok=True)
     path = home / _ROOM_GRANT_SECRET_FILE
     def _read() -> bytes:
@@ -57,27 +101,11 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
         if stat.S_IMODE(path.stat().st_mode) & 0o077:
             path.chmod(0o600)
         return data
-    try:
-        material = _read()
-    except FileNotFoundError:
-        # Atomic create: O_EXCL temp file, hard-link into place (loser re-reads the winner's secret),
-        # fsync the directory, always drop the temp name.
-        material = os.urandom(32)
-        temporary = home / f".{_ROOM_GRANT_SECRET_FILE}.{os.getpid()}.{os.urandom(8).hex()}"
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with _ROOM_GRANT_MINT_LOCK:
         try:
-            with os.fdopen(fd, "wb", closefd=True) as stream:
-                stream.write(material)
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                material = _read()
-            else:
-                fsync_directory(home)
-        finally:
-            temporary.unlink(missing_ok=True)
+            material = _read()
+        except FileNotFoundError:
+            material = _mint_room_grant_secret(home, path) or _read()
     return hmac.new(material, b"hermes-hosted-room-installation-grant-v1", hashlib.sha256).digest()
 
 

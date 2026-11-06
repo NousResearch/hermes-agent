@@ -142,6 +142,10 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    route_refused: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, assignee, refusal)`` refused because the card pins a provider the
+    assignee's own home holds no credential for, and parked ``blocked``. Distinct
+    from a spawn failure: nothing was claimed and no worker was spawned."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -170,6 +174,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.route_refused:
+            counts["route_refused"] = counts.get("route_refused", 0) + len(res.route_refused)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -2112,6 +2118,21 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # --- route credential gate: a pinned provider this assignee cannot serve ---
+    # The card carries the router's pick (``model_override``/``provider_override``) and the worker
+    # resolves credentials from its OWN profile home, so a pin that home cannot serve is a worker
+    # that dies while its agent is constructed (`ProviderNotConfiguredError`), not one that
+    # refuses — t_59149063 burned three admissions that way with zero provider calls. Judged
+    # before the claim so a refused card is never left running. Deliberately independent of the
+    # fleet routing rule: a missing credential is a capability wall, not a policy decision.
+    pinned_provider, pinned_model = pinned_route(row)
+    route_refusal = route_credential_refusal(assignee, pinned_provider, pinned_model)
+    if route_refusal is not None:
+        result.route_refused.append((task_id, assignee, route_refusal.as_text()))
+        if not dry_run:
+            route_refusal.park(conn, task_id)
+        return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -2294,9 +2315,13 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    The pin rides along so the route credential gate answers without a per-candidate
+    query: ``model_override``/``provider_override`` are what the worker will be told to run.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, model_override, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2962,3 +2987,7 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+# Q3 of the preflight: the pin a card carries is only runnable on a profile whose own home
+# holds a credential for it. Imported here with the other late-bound names; the module
+# imports this one only inside ``_probe_env``, so there is no cycle to break.
+from hermes_cli.kanban_route_credentials import pinned_route, route_credential_refusal

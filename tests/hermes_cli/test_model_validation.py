@@ -41,6 +41,12 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "anthropic/claude-sonnet-4.5"
 
+    @pytest.mark.parametrize("provider_prefix", ("llamacpp", "llama.cpp", "llama-cpp"))
+    def test_llamacpp_prefix_selects_the_local_runtime_provider(self, provider_prefix):
+        """Regression for #120833: ACP Local picker IDs must not fall back to custom."""
+        provider, model = parse_model_input(f"{provider_prefix}:Qwen3.6-35B-A3B-UD-Q4_K_M", "custom")
+        assert (provider, model) == (provider_prefix, "Qwen3.6-35B-A3B-UD-Q4_K_M")
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

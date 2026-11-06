@@ -1,7 +1,12 @@
-import { sessionBelongsToProfile, sessionMatchesStoredId } from '@/store/session'
+import {
+  getRememberedRoute,
+  getRememberedSessionId,
+  sessionBelongsToProfile,
+  sessionMatchesStoredId
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 export type RememberedSession = Pick<
   SessionInfo,
@@ -29,4 +34,61 @@ export function validateRememberedNavigation(
     (!routeSession || listed(routeSession))
 
   return { routeSession, nonSessionRoute, validRoute, listedLast: !!last && listed(last), belongs, rowFor }
+}
+
+/** The hash commits synchronously before the router render. The history barrier
+ * holds if either says new-chat (||); restore waits until both agree (&&). */
+export function isMainOnNewChatRoute(pathname: string, phase: 'barrier' | 'restore'): boolean {
+  const routerIsNew = pathname === NEW_CHAT_ROUTE
+  const hashIsNew = window.location.hash.slice(1).split('?')[0] === NEW_CHAT_ROUTE
+
+  return phase === 'barrier' ? routerIsNew || hashIsNew : routerIsNew && hashIsNew
+}
+
+interface RememberedNavigationOptions {
+  profile: string
+  sessions: readonly RememberedSession[]
+  diskPluginsScanPending: boolean
+  resumeExhaustedSessionId: null | string
+  onDestination: (route: null | string, sessionId: null | string) => void
+}
+
+/** Live switch side effects, after scoped list authority. Cold start shares
+ * the pure validator above but retains its original effect ordering. This
+ * ladder never writes remembered navigation, even for unlisted/missing rows. */
+export function restoreRememberedNavigation({
+  profile,
+  sessions,
+  diskPluginsScanPending,
+  resumeExhaustedSessionId,
+  onDestination
+}: RememberedNavigationOptions): void {
+  const route = getRememberedRoute(profile)
+  const last = getRememberedSessionId(profile)
+
+  const { routeSession, validRoute, listedLast } = validateRememberedNavigation(route, last, profile, sessions)
+
+  if (routeSession && diskPluginsScanPending) {
+    return
+  }
+
+  if (validRoute && (!routeSession || routeSession !== resumeExhaustedSessionId)) {
+    onDestination(route, routeSession)
+
+    return
+  }
+
+  if (!last || last === resumeExhaustedSessionId) {
+    onDestination(null, null)
+
+    return
+  }
+
+  if (listedLast) {
+    onDestination(sessionRoute(last), last)
+
+    return
+  }
+
+  onDestination(null, null)
 }

@@ -25,6 +25,7 @@ import {
 } from '@/store/native-notifications'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $profileNavigationRequest, currentProfileNavigationSequence } from '@/store/profile-navigation'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
@@ -48,7 +49,7 @@ import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow }
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
-import { type RememberedSession, validateRememberedNavigation } from './remembered-navigation'
+import { isMainOnNewChatRoute, type RememberedSession, validateRememberedNavigation } from './remembered-navigation'
 import { resolveRememberedSessionId } from './remembered-session'
 
 // Trailing window that folds a burst of kept-route opens into one list refresh.
@@ -119,6 +120,9 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const launchProfileNavigation = useRef(currentProfileNavigationSequence())
+  const profileNavigationRequest = useStore($profileNavigationRequest)
+  const switchDraftSequence = useRef<number | null>(null)
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
@@ -136,7 +140,28 @@ export function useDesktopIntegrations({
       return
     }
 
-    if (!restoredRef.current) {
+    // Keep the switch draft out of remembered history even after a failed or
+    // cancelled restore. The barrier ends when navigation leaves this draft;
+    // it must not erase the destination merely because a page/read was absent.
+    const pending = $profileNavigationRequest.get() ?? profileNavigationRequest
+
+    if (pending) {
+      switchDraftSequence.current = pending.sequence
+    }
+
+    if (switchDraftSequence.current !== null) {
+      // The reset changes the hash synchronously before the router render.
+      if (isMainOnNewChatRoute(locationPathname, 'barrier')) {
+        return
+      }
+
+      switchDraftSequence.current = null
+    }
+
+    // A rail pick owns live navigation, including its fallback. Boot's own
+    // fresh-session resets are NOT rail picks and keep the original launch behavior.
+    // Do not latch restoredRef when yielding to the live path.
+    if (!restoredRef.current && currentProfileNavigationSequence() === launchProfileNavigation.current) {
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
@@ -252,6 +277,10 @@ export function useDesktopIntegrations({
           // remembered value for the next launch instead of discarding it.
           void resolveRememberedSessionId(last, getSession)
             .then(remembered => {
+              if (currentProfileNavigationSequence() !== launchProfileNavigation.current) {
+                return
+              }
+
               if (!remembered || !belongs(remembered)) {
                 setRememberedSessionId(null, activeProfile)
 
@@ -310,6 +339,7 @@ export function useDesktopIntegrations({
     locationPathname,
     navigate,
     profileReady,
+    profileNavigationRequest,
     resumeExhaustedSessionId,
     resumeLastSession,
     routedSessionId,

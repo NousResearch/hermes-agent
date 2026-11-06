@@ -23,6 +23,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
+import { cancelProfileNavigationRestore } from '@/store/profile-navigation'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -135,6 +136,8 @@ export function useComposerSubmit({
     target?: Parameters<ChatBarProps['onSubmit']>[1],
     onRejected?: (scope: string | null, submissionId: string) => void
   ) => {
+    cancelProfileNavigationRestore()
+
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
     // null: the create handoff below and the composer drift prong both key off

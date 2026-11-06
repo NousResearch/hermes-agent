@@ -1,6 +1,6 @@
 name: mission
 repo: https://github.com/EikeAhlers/hermes-agent-mission
-sha: 08b372001a65417c50bdfe0bc66713256b6fd40c
+sha: 4a23a07f4489acb9291c74aa9a1bf10c8ef384a6
 description: "Mission Control — a live, zoomable map of everything the agent is doing. Sessions
   become stars, projects become constellations, tool calls become filaments, with real-time
   tokens, cost and activity, instant search over every stored message, and a 24h replay.

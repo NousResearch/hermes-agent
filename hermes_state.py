@@ -930,13 +930,19 @@ class SessionDB(
             return self._get_read_conn()
 
     @contextmanager
-    def _read_ctx(self, *, reopen: bool = True) -> Iterator[sqlite3.Connection]:
+    def _read_ctx(self, *, reopen: bool = True, pooled_only: bool = False) -> Iterator[sqlite3.Connection]:
         """Yield a connection for read-only statements: a pooled read-only
         connection with NO lock under WAL; otherwise (non-WAL, open failure,
         ceiling reached) the writer connection under self._lock — deliberate
         degradation: slower beats EMFILE, which the supervisor cannot see.
         ``reopen=False``: a read after ``close()`` raises instead of reopening the
-        writer (an optional reader must not hold a home that is being deleted)."""
+        writer (an optional reader must not hold a home that is being deleted). Inside this thread's
+        ``transcript_read_snapshot``: its connection, so every read there sees one generation.
+        ``pooled_only``: None instead of the writer connection when no pooled reader is available."""
+        pinned = self._pinned_read_conn()
+        if pinned is not None:
+            yield pinned
+            return
         conn = self._checkout_read_conn()
         if conn is not None:
             try:
@@ -954,6 +960,9 @@ class SessionDB(
                     # close() drained the pool (or queue.Full: unreachable while
                     # permits == maxsize, load-bearing if they drift): surplus.
                     self._close_read_conn(conn)
+            return
+        if pooled_only:
+            yield None
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader

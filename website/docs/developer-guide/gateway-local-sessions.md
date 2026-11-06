@@ -169,21 +169,23 @@ listener keeps working.
   messages, recovery footer and ranking line written for the model), `compacted_messages` (the count
   the footer named, else null), `timestamp` and the stored `row_id`. A later compaction that carries,
   re-wraps or unwraps a summary carrier still shows the older handoff, each once.
-  A page holds at most `limit` (1-500, default 100) rows plus up to 64 tool results of the call at its
-  edge, and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
+  A page holds at most `limit` (1-500, default 100) rows, compaction rows included, plus up to 64 tool
+  results of the call at its edge (a row's handoffs and the row itself can fall on two pages, each sent
+  once), and at most 2 MiB of JSON, cut between tool groups (a tool result whose call sits on another
   page is still labelled from it); a single larger row keeps only its role, kind, time, ids and the
   head of its text and carries `truncated: true`. Images read `[image]` unless `inline_images: true`.
   The cursor is opaque and bound to the session, the child and the order.
   `order: "oldest"` (the default) is also the poll: `next_cursor` is never null; read until a page is
   empty, then keep that cursor and pass it again for the rows written since. The cursor holds the
-  segment it read and `SessionDB.transcript_cursor_state` of the rows it covered (live rows up to
-  the newest row read, the lineage's inactive rows, its summed `transcript_revision`). While both
-  hold only appends happened, and the page continues after the cursor (`reset: false`). Anything else
-  (an in-place compaction, a rotation to a new segment, a rewind, a rewrite or deletion of a covered
-  row, including rows appended and compacted between two polls) answers `reset: true` from the first
-  page: the caller replaces what it holds. That state is read between two snapshots taken around the
-  page read; a non-append change landing in between reads the page again, so a cursor never vouches
-  for rows it did not see. A reply without a cursor is `reset: true` too.
+  segment it read and `SessionDB.transcript_cursor_state` of the rows it covered (the segment's live
+  rows up to the newest row read plus every live row of its earlier segments, the lineage's inactive
+  rows, its summed `transcript_revision`). While both hold only appends happened, and the page
+  continues after the cursor (`reset: false`). Anything else (an in-place compaction, a rotation to a
+  new segment, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row,
+  including rows appended and compacted between two polls) answers `reset: true` from the first page:
+  the caller replaces what it holds. The check, the page and the state the next cursor holds are read
+  in one read transaction (`SessionDB.transcript_read_snapshot`), so a cursor vouches for exactly the
+  rows its page holds. A reply without a cursor is `reset: true` too.
   `order: "latest"` starts at the newest rows and pages older until `next_cursor` is null; its cursor
   is keyed by each message's first durable row, so a page boundary holds across later compactions.
   A single-segment conversation is paged in SQL on its display index, in one read transaction, with

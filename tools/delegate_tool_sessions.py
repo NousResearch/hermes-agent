@@ -26,18 +26,12 @@ def stored_child_session(db: Any, subagent_id: str, conversation_ids: Iterable[s
     marker, so the tip is the owned segment that no owned segment continues by compression
     (``get_compression_tip`` does not follow a delegate child's rotations: its chain step skips rows
     carrying ``_delegate_from``)."""
-    from hermes_state_common import _sql_json_extract
-
     ancestors = frozenset(sid for sid in conversation_ids if sid)
     if not subagent_id or not ancestors:
         return None
-    rows = db._read_all(
-        "SELECT id FROM sessions WHERE source = 'subagent' AND "
-        f"{_sql_json_extract('model_config', '$.' + SUBAGENT_ID_KEY)} = ? ORDER BY started_at DESC, id DESC",
-        (subagent_id,),
-    )
+    candidates = db.subagent_session_ids(subagent_id, SUBAGENT_ID_KEY)
     get, owns = _lineage_reader(db, ancestors)
-    owned = [row["id"] for row in rows if owns(row["id"])]
+    owned = [sid for sid in candidates if owns(sid)]
     # The tip is the owned segment no owned segment continues by compression; ``started_at`` only breaks
     # a tie, since the wall clock can step back between a rotation's two rows.
     owned_ids = frozenset(owned)

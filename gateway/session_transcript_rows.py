@@ -37,14 +37,15 @@ def _mark_index(row):
     return index if row.get('role') == 'system' and row.get('text') == _MARK_TEXT and type(index) is int else None
 
 
-def project_with_handoffs(db, page, segments, project):
-    """``project(rows)`` of the stored *page* (``_rows_to_conversation`` dicts of *segments*), each row
-    tagged with its ``row_kind`` and each handoff stored on a page row (or on an earlier copy of its
-    message) put back as a ``compaction`` row before it."""
+def page_handoffs(db, rows, segments):
+    """Per row of the stored *rows* (``_rows_to_conversation`` dicts of *segments*, display order): the
+    ``compaction`` rows shown just before it, one for each handoff stored on the row or on an earlier copy
+    of its message, each handoff once across *rows*."""
     from agent.compaction_display import compaction_summary
-    found = db.transcript_handoff_rows([row['_row_id'] for row in page if type(row.get('_row_id')) is int], segments)
-    handoffs, marked, seen = [], [], set()
-    for row in page:
+    found = db.transcript_handoff_rows([row['_row_id'] for row in rows if type(row.get('_row_id')) is int], segments)
+    seen, out = set(), []
+    for row in rows:
+        mine = []
         for message in found.get(row.get('_row_id'), ()):
             # A handoff's copies (a later generation or a rotated segment carrying it) keep its uid and content.
             occurrence = (message.get('message_uid'), json.dumps(message.get('content'), default=str))
@@ -52,9 +53,21 @@ def project_with_handoffs(db, page, segments, project):
             if summary is None:
                 continue
             seen.add(occurrence)
+            mine.append(handoff_row(message, summary))
+        out.append(mine)
+    return out
+
+
+def project_entries(entries, project):
+    """``project(rows)`` of *entries* (display order): ``(ROW_KIND_COMPACTION, handoff row)`` is put back in
+    place as is, ``(ROW_KIND_MESSAGE, stored row)`` is projected and tagged ``row_kind: 'message'``."""
+    handoffs, marked = [], []
+    for kind, value in entries:
+        if kind == ROW_KIND_COMPACTION:
             marked.append({'role': 'system', 'content': _MARK_TEXT, 'display_metadata': {_MARK_KEY: len(handoffs)}})
-            handoffs.append(handoff_row(message, summary))
-        marked.append(row)
+            handoffs.append(value)
+        else:
+            marked.append(value)
     rows = []
     for row in project(marked):
         index = _mark_index(row)

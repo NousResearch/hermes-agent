@@ -46,7 +46,7 @@ class StoredTranscriptResult(Result):
     next_cursor: str | None
     # The rows start the transcript again from its first page and replace what the caller holds: on a
     # read without a cursor, and when an oldest-order cursor's rows changed shape (an in-place
-    # compaction, a rotation, a rewind, a rewrite or deletion of a covered row).
+    # compaction, a rotation, a rewind, a rewrite or deletion of a covered row or of an earlier segment's row).
     reset: bool
     # Only with ``subagent_id``: the child read, whether it was found (a foreign or unknown child is
     # ``available: false`` with no rows and a null cursor), whether it is still running, and its own
@@ -62,7 +62,8 @@ canonical_method('session.transcript', params=StoredTranscriptParams, result=Sto
                      "(live rows and rows a compaction archived, each logical message once, and each "
                      "compaction handoff as a `row_kind: 'compaction'` row at its position), from the "
                      "oldest or the newest. Never attaches the caller. A page holds at most `limit` "
-                     "(1-500) rows plus up to 64 tool results of the call at its edge, and at most 2 MiB "
+                     "(1-500) rows, compaction rows included, plus up to 64 tool results of the call at its "
+                     "edge, and at most 2 MiB "
                      "of JSON, cut between tool groups (a single larger row keeps only its role, kind, time, "
                      "ids and the head of its text, and carries `truncated`). Oldest order: read on until "
                      "a page is empty, then poll with the same `next_cursor` for the rows written since; "

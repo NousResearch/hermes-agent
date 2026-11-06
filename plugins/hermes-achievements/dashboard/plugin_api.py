@@ -548,11 +548,12 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     """Scan Hermes sessions and build per-session achievement stats.
 
     ``limit=None`` (default) scans the ENTIRE history (SQLite ``LIMIT -1``); a former cap
-    of 200 silently shrank lifetime totals on long-running installs. The checkpoint stores
-    per-session stats keyed by ``(started_at, last_active)`` fingerprint so warm scans only
-    re-analyze changed sessions. ``progress_callback(partial_sessions, scanned_so_far,
-    total)`` fires every ``progress_every`` sessions so background scans can publish
-    intermediate snapshots.
+    of 200 silently shrank lifetime totals on long-running installs. Archived sessions are
+    scanned too: ``archived`` is a sidebar visibility flag, and lifetime badges must not
+    shrink when a user archives old sessions. The checkpoint stores per-session stats keyed
+    by ``(started_at, last_active)`` fingerprint so warm scans only re-analyze changed
+    sessions. ``progress_callback(partial_sessions, scanned_so_far, total)`` fires every
+    ``progress_every`` sessions so background scans can publish intermediate snapshots.
     """
     try:
         from hermes_state import SessionDB
@@ -570,7 +571,7 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
     try:
-        sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
+        sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False, include_archived=True)
         total_sessions = len(sessions_meta)
         sessions: list[dict[str, Any]] = []
         checkpoint_sessions: dict[str, Any] = {}

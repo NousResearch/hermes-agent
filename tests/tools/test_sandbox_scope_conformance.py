@@ -271,3 +271,47 @@ def _alive(pid: int) -> bool:
         return False
     with open(f"/proc/{pid}/stat") as fh:
         return fh.read().split(") ", 1)[1][0] != "Z"
+
+
+def test_a_tui_poller_leaves_another_agents_event_for_it():
+    """The TUI notification poller under B, sharing A's session key, hands A's event back rather than
+    rendering or consuming it."""
+    from agent.runtime_scope import bind_state
+    from tools.process_registry import process_registry
+    from tui_gateway.session_notifications import _notif_handle_event
+
+    evt = {"type": "completion", "session_id": "proc_tui_private", "session_key": "shared",
+           "sandbox_key": sandbox_identity(A).key, "command": "echo A-PRIVATE", "output": "A-PRIVATE"}
+    rendered, deferred = [], []
+    with bind_state(B):
+        assert _notif_handle_event("sid", {"session_key": "shared"}, evt, set(), process_registry,
+                                   lambda e: rendered.append(e) or "text", deferred) is True
+    assert deferred == [evt] and rendered == []
+
+
+def test_a_recovered_hosted_process_stays_its_agents(tmp_path, monkeypatch):
+    """The crash-recovery checkpoint keeps a hosted process's sandbox identity, so after a restart it
+    is still invisible to every other activity."""
+    import os
+    from unittest.mock import patch
+    from agent.runtime_scope import bind_state
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    registry = ProcessRegistry()
+    key = sandbox_identity(A).key
+    registry._running["proc_hosted_ckpt"] = ProcessSession(
+        id="proc_hosted_ckpt", command="sleep 600", task_id=key, sandbox_key=key, pid=os.getpid(),
+        pid_scope="host", host_start_time=1.0)
+    checkpoint = tmp_path / "procs.json"
+    with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        registry._write_checkpoint()
+        restarted = ProcessRegistry()
+        monkeypatch.setattr(restarted, "_host_pid_is_ours", lambda *_a: True)
+        monkeypatch.setattr(restarted, "_is_host_pid_alive", lambda *_a: True)
+        monkeypatch.setattr(restarted, "_refresh_detached_session", lambda s: s)
+        assert restarted.recover_from_checkpoint() == 1
+    assert restarted.get("proc_hosted_ckpt") is None
+    with bind_state(B):
+        assert restarted.get("proc_hosted_ckpt") is None
+    with bind_state(A):
+        assert restarted.get("proc_hosted_ckpt") is not None

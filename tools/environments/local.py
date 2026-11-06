@@ -1254,7 +1254,9 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files, including orphaned atomic-write snapshots
-        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind."""
+        (``snap.tmp.<bashpid>``) a failed/interrupted mv could leave behind, after stopping every
+        long-lived process this environment started."""
+        self.stop_all_processes()
         # See #38249.
         import glob
         try:

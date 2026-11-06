@@ -71,15 +71,15 @@ class RecordingSandboxEnvironment:
         launched = "nohup bash -lc" in command and "echo $! >" in command
         return {"output": "4242\n" if launched else "", "returncode": 0}
 
-    def get_temp_dir(self) -> str:
+    def get_temp_dir(self, *, scope: Scope) -> str:
         return "/tmp"  # no-tmp: ok — the sandbox's own temp dir, never created on the host
 
     def fetch_realpath(self, remote_path: str, *, scope: Scope) -> Optional[str]:
         self._record("fetch_realpath", scope, remote_path)
         return remote_path
 
-    def cleanup(self) -> None:
-        self._record("cleanup", None)
+    def cleanup(self, *, scope: Scope) -> None:
+        self._record("cleanup", scope)
         for proc in self._processes.values():
             proc.kill()
 
@@ -93,6 +93,10 @@ class RecordingSandboxEnvironment:
         self._record("attach_process", scope, name)
         proc = self._processes.get(name)
         return self._stream(name, proc) if proc is not None and proc.poll() is None else None
+
+    def stop_idle(self, *, scope: Scope) -> None:
+        """Suspend the sandbox: its workspace is kept and it resumes on the next call."""
+        self._record("stop_idle", scope)
 
     def stop_process(self, name: str, *, scope: Scope) -> bool:
         self._record("stop_process", scope, name)
@@ -331,10 +335,52 @@ def check_background_process_invisible(provider: RecordingSandboxProvider, a: Sc
             call_tool("process_manage", {"action": "kill", "session_id": session_id}, task_id="t")
 
 
+def _age_sandbox(a: Scope) -> str:
+    from tools import terminal_tool
+    key = _identity(a).key
+    terminal_tool._last_activity[key] = 0.0  # idle since the epoch
+    return key
+
+
+def check_idle_sandbox_kept_while_working(provider: RecordingSandboxProvider, a: Scope) -> None:
+    """A sandbox whose agent has a background process still running is never reaped as idle,
+    whatever task id that process was started under."""
+    from tools import terminal_tool
+    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    with _bind(a):
+        started = call_tool("terminal", {"command": "sleep 600", "background": True}, task_id="t")
+    assert started.get("session_id"), f"the background spawn failed: {started}"
+    key = _age_sandbox(a)
+    seen = len(provider.calls)
+    try:
+        _cleanup_inactive_envs(lifetime_seconds=300)
+        assert key in terminal_tool._active_environments, "a sandbox with running work was reaped"
+        assert not [c.op for c in provider.calls[seen:] if c.op in ("cleanup", "stop_idle")]
+    finally:
+        with _bind(a):
+            call_tool("process_manage", {"action": "kill", "session_id": started["session_id"]}, task_id="t")
+
+
+def check_idle_sandbox_suspended_not_destroyed(provider: RecordingSandboxProvider, a: Scope) -> None:
+    """An idle sandbox is suspended (``stop_idle``), not destroyed, and the call reaches the backend
+    under its owning agent's scope though the reaper runs with none bound."""
+    from tools.terminal_tool_lifecycle import _cleanup_inactive_envs
+    with _bind(a):
+        call_tool("terminal", {"command": "true"}, task_id="t")
+    _age_sandbox(a)
+    seen = len(provider.calls)
+    _cleanup_inactive_envs(lifetime_seconds=300)
+    lifecycle = [c for c in provider.calls[seen:] if c.op in ("cleanup", "stop_idle")]
+    assert [c.op for c in lifecycle] == ["stop_idle"], f"the idle sandbox was not suspended: {lifecycle}"
+    assert lifecycle[0].scope == a and lifecycle[0].sandbox == _identity(a)
+
+
 def checks() -> Iterator[tuple[str, Callable[..., None]]]:
     yield from (
         ("tools_address_own_sandbox", check_tools_address_own_sandbox),
         ("foreign_handle_refused", check_foreign_handle_refused),
         ("file_tools_never_touch_host", check_file_tools_never_touch_host),
         ("background_process_invisible", check_background_process_invisible),
+        ("idle_sandbox_kept_while_working", lambda p, a, b: check_idle_sandbox_kept_while_working(p, a)),
+        ("idle_sandbox_suspended_not_destroyed", lambda p, a, b: check_idle_sandbox_suspended_not_destroyed(p, a)),
     )

@@ -496,6 +496,8 @@ def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int,
 def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None, call: Optional[Any] = None) -> str:
+    from tools.mcp_tool_schema import _dereference_local_defs
+
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -516,10 +518,10 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         remote_fn = remote_schemas.get(name)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
-                           "parameters": fn.get("parameters", {})}
+                           "parameters": _dereference_local_defs(fn.get("parameters", {}))}
         elif isinstance(remote_fn, dict):
             tools[name] = {"description": str(remote_fn.get("description", "")),
-                           "parameters": remote_fn.get("parameters", {})}
+                           "parameters": _dereference_local_defs(remote_fn.get("parameters", {}))}
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
         elif unavailable := session_unavailable_error(name, session_names):

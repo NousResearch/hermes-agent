@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 
 from gateway.config import Platform
-from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, SessionActor, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
@@ -31,7 +31,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
         if isinstance(getattr(exc, key, None), int):
             data[key] = getattr(exc, key)
     if getattr(exc, 'admitted', None) is False:
-        data['admitted'] = False  # nothing admitted yet: the sender may finalize with ``bot_relay.settle``
+        # Nothing of this request was admitted: bot_relay.deliver's sender may finalize with
+        # ``bot_relay.settle``; groups.send's words may come back for editing.
+        data['admitted'] = False
     return data
 
 
@@ -151,7 +153,7 @@ class AuthorityConnection:
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
         from gateway.owner_identity import principal_subject
-        self.actor = Principal(principal_subject(identity),
+        self.actor = SessionActor(principal_subject(identity),
                                identity.get('profile_id', authority.profile_id),
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport
@@ -221,7 +223,7 @@ class AuthorityConnection:
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
-                    'bot_relay.settle': self.bot_settle,
+                    'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
@@ -419,6 +421,10 @@ class AuthorityConnection:
     async def bot_settle(self, ref, params):
         from gateway.session_bot import settle
         return await settle(self, params)
+
+    async def bot_cancel(self, ref, params):
+        from gateway.session_bot_cancel import cancel
+        return await cancel(self, params)
 
     async def worker_register(self, ref, params):
         from gateway.session_worker import worker_request
@@ -627,7 +633,7 @@ class AuthorityConnection:
                 resolved_id = self.authority.db.resolve_session_id(ref.session_id)
                 if resolved_id is not None:
                     ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import resolve_local_target
+            from gateway.session_local_migration import adopts_client_history, resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
@@ -636,7 +642,8 @@ class AuthorityConnection:
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+            if row and (row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+                        or adopts_client_history(self.authority, self.actor, row)):
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
             elif row:

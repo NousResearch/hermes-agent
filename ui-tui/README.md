@@ -44,29 +44,29 @@ From the repo root, the normal path is:
 hermes --tui
 ```
 
-The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `npm install` and `npm run dev`.
+The CLI expects `ui-tui/dist/entry.js` to exist, or the whole source code available in which to run `pnpm install` and `pnpm run dev`.
 
 ```bash
 cd ui-tui
-npm install
+pnpm install
 ```
 
 Local package commands:
 
 ```bash
-npm run dev
-npm start
-npm run build
-npm run lint
-npm run fmt
-npm run fix
+pnpm run dev
+pnpm start
+pnpm run build
+pnpm run lint
+pnpm run fmt
+pnpm run fix
 ```
 
 Tests use vitest:
 
 ```bash
-npm test         # single run
-npm run test:watch
+pnpm test         # single run
+pnpm run test:watch
 ```
 
 ## Live agents

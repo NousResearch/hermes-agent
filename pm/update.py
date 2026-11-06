@@ -20,7 +20,7 @@ The ``--check`` command is dry-run only: it hits the upstream indexes (small
 HTTP GETs) but never writes the lockfile, the store, or the venv, and never
 downloads an artifact. Real ``pm update`` re-pins changed packages
 (``pm lock``-style artifact hashing), installs them, then refreshes the
-venv (uv sync) — and with the dep legs enabled, uv.lock + package-lock.json.
+venv (uv sync) — and with the dep legs enabled, uv.lock + pnpm-lock.yaml.
 """
 
 from __future__ import annotations

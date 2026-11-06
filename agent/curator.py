@@ -224,10 +224,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
         _u.set_state(name, state)
         counts[key] += 1
 
+    from tools.skill_lock import is_locked_skill
+    locked_names = _u.locked_skill_names()  # keyed by directory; rows carry the frontmatter name
     for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
-        if row.get("pinned") or name in protected:
+        if row.get("pinned") or name in protected or (locked_names and is_locked_skill(name, locked_names)):
             continue
         # First sight with no persisted record: anchor its clock to now and defer.
         if not row.get("_persisted", True):
@@ -1099,6 +1101,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+        from agent.conversation_compression_checkpoint import checkpoint_required_from_config
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_reasoning_config
 
@@ -1116,7 +1119,10 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
             enabled_toolsets=["skills"],
             # Umbrella-building over hundreds of skills takes 50-100 API calls.
             max_iterations=9999,
-            quiet_mode=True, platform="curator", skip_context_files=True, skip_memory=True,
+            quiet_mode=True, platform="curator", skip_context_files=True,
+            # A curation run can compact (50-100 calls): under compression.checkpoint_required it needs the
+            # provider it checkpoints with, scoped as a fork.
+            skip_memory=not checkpoint_required_from_config(), memory_agent_context="subagent",
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0

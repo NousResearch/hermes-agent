@@ -662,6 +662,16 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
+def _sync_agent_daybreak(agent) -> None:
+    """``agent.daybreak`` for this turn, read inside the turn's profile scope once the final agent is selected,
+    so a build that raced a flip, a model switch and a compute-host child all take the saved value. Only the
+    owner's own surfaces carry it (agent.session_source.DAYBREAK_SOURCES): OpenAI allows no third-party use."""
+    from agent.session_source import DAYBREAK_SOURCES
+    if agent is not None:
+        agent.daybreak = (getattr(agent, "platform", None) in DAYBREAK_SOURCES
+                          and (_load_cfg().get("agent") or {}).get("daybreak") is True)
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -698,6 +708,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     _adopt_out_of_band_turns(session)
     st.agent = agent = session["agent"]
+    _sync_agent_daybreak(agent)
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -927,6 +938,18 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    # Safety refusal, standalone tui_gateway owner: the agent flushed the refused turn to its durable
+    # transcript at turn start, but result["messages"] is already the clean pre-refusal history. This
+    # path owns the session's SessionDB directly and never reaches the gateway's owner cleanup, so drop
+    # the refused turn durably HERE too — else a /resume or reopen re-sends the blocked content and the
+    # deterministic filter re-locks the chat (#149708 review). Best-effort; the live refusal notice was
+    # already delivered.
+    if result.get("failure_reason") == "content_policy_blocked":
+        from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+        from hermes_state_rewind import retain_refused_turn_for_display
+        retain_refused_turn_for_display(
+            getattr(agent, "_session_db", None), getattr(agent, "session_id", None),
+            notice=CONTENT_REFUSED_NOTICE, boundary_row_id=result.get("refused_turn_boundary_row_id"))
     # The receipt verifies the stored row's body, which keeps the model's text as written;
     # only the delivered copy drops a silence marker.
     receipt = _persisted_turn_receipt(st, raw, status)
@@ -1068,7 +1091,7 @@ def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
         from hermes_cli.mem_trim import trim_memory
         # Every OTHER session must be idle (#58576).
         if _sessions_quiescent(exclude=sid):
-            trim_memory(reason="tui turn completion")
+            trim_memory(reason="tui turn completion", collect=False)
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.scopes.home is not None:

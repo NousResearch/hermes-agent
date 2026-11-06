@@ -29,6 +29,7 @@ import fire
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
+from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 from model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
 from toolset_distributions import (
@@ -257,7 +258,9 @@ def _process_single_prompt(
             log_prefix_chars=config.get("log_prefix_chars", 100),
             log_prefix=f"[B{batch_num}:P{prompt_index}]",
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
-            skip_memory=True,  # Don't use persistent memory in batch runs
+            # No persistent memory in batch runs, unless compression.checkpoint_required needs the
+            # provider to checkpoint with (scoped as a fork: no recall, no turn writes).
+            skip_memory=not checkpoint_required_from_config(), memory_agent_context="subagent",
             **{key: config.get(key) for key in _AGENT_PASSTHROUGH if key != "platform"},
             # Batch is a first-class execution surface. Defaulting here (rather than
             # relying on the caller's config dict) keeps task-run telemetry attributable

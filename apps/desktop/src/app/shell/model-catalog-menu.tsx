@@ -52,7 +52,7 @@ import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
-import { $localModelsEnabled } from '@/store/local-models-flag'
+import { $localModelsEnabled, localModelsSelectable } from '@/store/local-models-flag'
 import {
   type LocalModelsOwner,
   runningModelDownloads,
@@ -332,13 +332,14 @@ export function ModelCatalogMenu({
         providers?.filter(
           provider =>
             provider.slug.toLowerCase() !== 'moa' &&
-            // Strict --local gate: staged local models exist on disk, but
-            // without the flag the GUI doesn't offer them.
-            (localModelsEnabled || provider.slug !== LOCAL_PROVIDER_SLUG)
+            // Strict --local gate on native Desktop: staged local models exist
+            // on disk, but without the flag the GUI doesn't offer them. The
+            // Webapp has no flag and offers what the backend advertises.
+            (localModelsSelectable() || provider.slug !== LOCAL_PROVIDER_SLUG)
         ) ?? [],
         customModels
       ),
-    [providers, localModelsEnabled, customModels]
+    [providers, customModels]
   )
 
   const current = controller.current

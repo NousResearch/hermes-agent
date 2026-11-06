@@ -5,6 +5,8 @@ relative path against it and sending the result over SSH names a directory the
 remote machine does not have (writes fail, ``cd`` exits 126).
 """
 
+import os
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -69,3 +71,80 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
 def test_ssh_cwd_never_names_the_host_subprocess_home(cwd, env_type, expected):
     with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
         assert coerce_ssh_remote_cwd(cwd, env_type) == expected
+
+
+def test_ssh_command_cwd_rewrites_the_hermes_home():
+    """The official image's data dir is the parent of the subprocess home, so the
+    relative rewrite leaves it alone. The SSH wrapper then cds to /opt/data."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME))
+        stack.enter_context(patch("hermes_constants.get_hermes_home", return_value="/opt/data"))
+        stack.enter_context(patch("hermes_constants.get_real_home", return_value="/root"))
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/homework", "ssh") == "/opt/data/homework"
+        assert coerce_ssh_remote_cwd("/opt/data/proj", "ssh") == "/opt/data/proj"
+        assert terminal_tool._resolve_command_cwd(
+            workdir="/opt/data", default_cwd="~", env_type="ssh",
+        ) == "~"
+        terminal_tool.record_session_cwd("ssh-home", "/opt/data")
+        try:
+            assert terminal_tool._resolve_command_cwd(
+                workdir=None, default_cwd="~", session_key="ssh-home", env_type="ssh",
+            ) == "~"
+        finally:
+            terminal_tool.clear_session_cwd("ssh-home")
+
+
+def test_ssh_cwd_rewrites_the_hermes_home_without_a_subprocess_home():
+    with patch("hermes_constants.get_subprocess_home", return_value=None), \
+         patch("hermes_constants.get_hermes_home", return_value="/opt/data"), \
+         patch("hermes_constants.get_real_home", return_value="/root"):
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "~"
+        assert coerce_ssh_remote_cwd("/opt/data/proj", "ssh") == "/opt/data/proj"
+
+
+def test_ssh_cwd_keeps_a_hermes_home_that_is_the_real_home():
+    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME), \
+         patch("hermes_constants.get_hermes_home", return_value="/opt/data"), \
+         patch("hermes_constants.get_real_home", return_value="/opt/data"):
+        assert coerce_ssh_remote_cwd("/opt/data", "ssh") == "/opt/data"
+
+
+def test_ssh_child_workspace_skips_the_hermes_home(tmp_path, monkeypatch):
+    hermes = tmp_path / "data"
+    hermes.mkdir()
+    monkeypatch.chdir(hermes)
+    here = os.path.abspath(".")
+    sub = os.path.join(here, "home")
+    os.mkdir(sub)
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", ".")
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: here)
+    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda env=None: sub)
+    monkeypatch.setattr("hermes_constants.get_real_home", lambda env=None: "/root")
+    from tools.delegate_tool_progress import _resolve_workspace_hint
+
+    parent = SimpleNamespace(
+        _subdirectory_hints=SimpleNamespace(working_dir=here),
+        terminal_cwd=sub,
+        cwd=here,
+    )
+    assert _resolve_workspace_hint(parent) is None
+
+    parent.cwd = str(project)
+    assert _resolve_workspace_hint(parent) == os.path.abspath(project)
+
+
+def test_local_child_workspace_keeps_the_process_directory(tmp_path, monkeypatch):
+    hermes = tmp_path / "data"
+    hermes.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(hermes))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes)
+    from tools.delegate_tool_progress import _resolve_workspace_hint
+
+    parent = SimpleNamespace(_subdirectory_hints=None, terminal_cwd=None, cwd=None)
+    assert _resolve_workspace_hint(parent) == os.path.abspath(hermes)

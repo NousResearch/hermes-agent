@@ -1,0 +1,30 @@
+manifest_version: 1
+
+name: fal
+description: Generate and edit images, videos, audio, and 3D with fal.
+source: https://fal.ai/mcp
+
+transport:
+  type: http
+  url: https://mcp.fal.ai/mcp-relay
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - fal
+    - fal.ai
+  hosts:
+    - fal.ai
+
+post_install: |
+  Sign in with your fal account when prompted. No API key or local server
+  is required. Generation uses your fal account's credits.
+
+  Ask Hermes to find a model and check its price before generating media.
+  For example: "Find image models for product photography and compare
+  their prices. Do not generate anything yet."
+
+  Select the tools you want with:
+    hermes mcp configure fal

@@ -133,3 +133,38 @@ def test_esc_esc_on_an_erased_edit_cancels_it_and_never_opens_browse(cli, gap):
         assert cli._backtrack_state is None
     cli._prefill_input_buffer = lambda text: None
     _drive(cli, script)
+
+
+def test_primed_chord_with_more_keys_in_the_same_read_still_opens_browse_and_applies_them(cli):
+    """Primed, then Esc + ← + ↵ in ONE read: browse opens, ← steps to the older prompt, ↵ edits it."""
+    async def script(pipe, editor):
+        pipe.send_text("\x1b")
+        await _until(lambda: cli._backtrack_primed == "hint")
+        pipe.send_text("\x1b\x1b[D\r")
+        await _until(lambda: cli._backtrack_edit is not None)
+        assert cli._backtrack_edit["ordinal"] == 1 and editor.text == "BETA"
+        assert cli._backtrack_state is None
+    _drive(cli, script)
+
+
+def test_primed_esc_enter_then_a_typed_key_in_one_read_prefills_then_types(cli):
+    """Primed, then Esc + ↵ + X in ONE read: the latest prompt is prefilled and X lands after it."""
+    async def script(pipe, editor):
+        pipe.send_text("\x1b")
+        await _until(lambda: cli._backtrack_primed == "hint")
+        pipe.send_text("\x1b\rX")
+        await _until(lambda: editor.text == "GAMMAX")
+        assert cli._backtrack_edit["ordinal"] == 2 and cli._backtrack_state is None
+    _drive(cli, script)
+
+
+@pytest.mark.parametrize(("draft", "chord", "expected"), [
+    ("", "\x1b\rX", "\nX"), ("draft", "\x1b\rX", "draft\nX")])
+def test_unprimed_alt_enter_with_a_trailing_key_in_one_read_is_a_newline_then_the_key(cli, draft, chord, expected):
+    async def script(pipe, editor):
+        editor.buffer.text = draft
+        editor.buffer.cursor_position = len(draft)
+        pipe.send_text(chord)
+        await _until(lambda: editor.text == expected)
+        assert cli._backtrack_state is None and cli._backtrack_primed is None and cli._backtrack_edit is None
+    _drive(cli, script)

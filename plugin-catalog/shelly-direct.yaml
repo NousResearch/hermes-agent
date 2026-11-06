@@ -1,6 +1,6 @@
 name: shelly-direct
 repo: https://github.com/cyberpz/hermes-shelly-direct
-sha: 67730cacbc99f96a72808b978d05f0a6c8e7ece0
+sha: b77557d81bd1a1fd080042063b1916367bff583b
 description: Control Shelly Gen 1/2/3 devices directly on your LAN — discovery, relays, dimmers, covers, power meters. No Home Assistant, no MQTT, no cloud.
 maintainer: Cyberpz
 tier: community
@@ -8,10 +8,10 @@ category: automation
 requires_hermes: ">=0.19"
 version: "1.0.0"
 title: "Shelly Direct"
-image: https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/67730cacbc99f96a72808b978d05f0a6c8e7ece0/docs/banner.png
+image: https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/b77557d81bd1a1fd080042063b1916367bff583b/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/67730cacbc99f96a72808b978d05f0a6c8e7ece0/docs/grid.png
-  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/67730cacbc99f96a72808b978d05f0a6c8e7ece0/docs/card.png
+  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/b77557d81bd1a1fd080042063b1916367bff583b/docs/grid.png
+  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/b77557d81bd1a1fd080042063b1916367bff583b/docs/card.png
 readme: true
 capabilities:
   provides_tools: [shelly]

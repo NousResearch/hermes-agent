@@ -535,6 +535,36 @@ def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
     return json.dumps(body, ensure_ascii=False)
 
 
+def _approval_note(guard: dict) -> Optional[str]:
+    """Who let a flagged script run, using terminal()'s note template with "(execute_code)" in
+    place of the guard's two-sentence description.
+
+    Nothing else records this per call where it is kept. The guardian's LLM call runs inside this
+    tool's dispatch, where Relay leaves nested calls unmanaged (#77244), so it gets no span; its
+    APPROVE verdict logs at DEBUG; and shared metrics fold smart and human grants into one
+    "approved" outcome. Without the note, the session store and the tool's trace span cannot
+    tell a smart auto-approval from a human approval, or either from an unflagged run."""
+    if guard.get("user_approved"):
+        return "Script required approval (execute_code) and was approved by the user."
+    if guard.get("smart_approved"):
+        return "Script was flagged (execute_code) and auto-approved by smart approval."
+    return None
+
+
+def _with_approval_note(result: str, note: Optional[str]) -> str:
+    """Add ``approval`` to a JSON object result; anything else, or an existing key, passes through."""
+    if not note:
+        return result
+    try:
+        body = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(body, dict) or "approval" in body:
+        return result
+    body["approval"] = note
+    return json.dumps(body, ensure_ascii=False)
+
+
 def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
     duration = round(time.monotonic() - exec_start, 2)
     logger.error("execute_code remote failed after %ss with %d tool calls: %s: %s",
@@ -783,23 +813,25 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    _note = _approval_note(_guard)
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
     if env_type != "local":
-        return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
+        return _with_approval_note(record_execution_backend(
+            "code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset))), _note)
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
-    return record_execution_backend("code", "local", execute_in_session_kernel(
+    return _with_approval_note(record_execution_backend("code", "local", execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
-    ))
+    )), _note)
 
 
 def _kill_process_group(proc, escalate: bool = False):

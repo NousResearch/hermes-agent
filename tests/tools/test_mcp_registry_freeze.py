@@ -209,3 +209,45 @@ def test_lazy_first_use_routes_cached_tools_to_live_server_when_frozen(core, mon
     assert asyncio.run(discovery._discover_and_register_server("lazy", {})) == ["mcp__lazy__cached"]
     assert published == []
     assert live._registered_tool_names == ["mcp__lazy__cached"] and core._servers["lazy"] is live
+
+
+def _shared_owner_server(core, monkeypatch):
+    from tools import mcp_tool_registration as registration
+    server = SimpleNamespace(session=object(), _config={"command": "x"}, _resolved_identity="same",
+                             _tools=[], tool_timeout=5)
+    core._servers[("/owner", "srv")] = server
+    monkeypatch.setattr(core, "_mcp_registry_scope", lambda: "/adopter")
+    monkeypatch.setattr(registration, "_adopter_identity_digest", lambda *a: "same")
+    monkeypatch.setattr(registration, "_select_utility_schemas", lambda *a: [])
+    return registration, server
+
+
+def test_shared_adoption_refuses_before_its_first_write(core, monkeypatch):
+    """Adopting another profile's connection publishes visibility and trust for this scope; after
+    the freeze the primitive refuses itself, whatever guarded caller reaches it."""
+    from tools.registry import ToolRegistry
+    registration, _server = _shared_owner_server(core, monkeypatch)
+    with patch("tools.registry.registry", ToolRegistry()):
+        registry_freeze.freeze_registries()
+        with pytest.raises(RegistryFrozen, match=FROZEN):
+            registration.register_connected_into_current_scope({"srv": {"command": "x", "trust": "untrusted"}})
+    assert core._server_tool_scopes == {}
+    assert core._server_trust_levels == {}
+
+
+def test_shareable_connection_lookup_is_read_only_after_freeze(core, monkeypatch):
+    """Finding an adoptable connection is a read, so it still answers after the freeze."""
+    registration, server = _shared_owner_server(core, monkeypatch)
+    registry_freeze.freeze_registries()
+    found = registration.shareable_connection("srv", {"command": "x"}, "/adopter", resolved_identity="same")
+    assert found == (("/owner", "srv"), server)
+    assert registration.shareable_connection("missing", {"command": "x"}, "/adopter") is None
+    assert core._server_tool_scopes == {}
+
+
+def test_shared_adoption_still_works_unfrozen(core, monkeypatch):
+    from tools.registry import ToolRegistry
+    registration, _server = _shared_owner_server(core, monkeypatch)
+    with patch("tools.registry.registry", ToolRegistry()):
+        registration.register_connected_into_current_scope({"srv": {"command": "x"}})
+    assert core._server_tool_scopes == {("/owner", "srv"): {"/adopter"}}

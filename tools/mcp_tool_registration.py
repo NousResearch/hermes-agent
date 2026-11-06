@@ -529,8 +529,25 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
             and resolved_identity is not None and recorded == resolved_identity)
 
 
+def shareable_connection(name: str, config: dict, scope: str, *, resolved_identity: Optional[str] = None):
+    """``(key, server)`` of another profile's live connection *scope* may adopt for *name* (same
+    route AND credentials), or None, also when *scope* has its own connection. Read-only: adopting
+    it is :func:`register_connected_into_current_scope`'s job."""
+    with _core._lock:
+        if _server_key(name, scope, current=False) in _core._servers:
+            return None  # this profile has its own connection for the name
+        for key, live in _core._servers.items():
+            if (_key_name(key) == name and getattr(live, "session", None) is not None
+                    and _same_server_route(live, config, cross_profile=True, resolved_identity=resolved_identity)):
+                return key, live
+    return None
+
+
 def register_connected_into_current_scope(servers: dict) -> int:
-    """Serialize shared-scope reconciliation and registration for one discovery pass."""
+    """Serialize shared-scope reconciliation and registration for one discovery pass. Every step
+    (dropping stale overlays, adopting a shared connection, recording its trust) changes what this
+    scope is served, so after the hosted boot froze the registries it refuses before any of them."""
+    refuse_if_frozen("MCP registry")
     scope = _core._mcp_registry_scope()
     if scope is None:
         return 0
@@ -598,17 +615,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     for name, config in servers.items():
         if not mcp_server_enabled(config):
             continue
-        with _core._lock:
-            if _server_key(name, scope, current=False) in _core._servers:
-                continue  # this profile has its own connection for the name
-            # Any other profile's live connection with the same route AND credentials is shareable.
-            shared = [(key, live) for key, live in _core._servers.items()
-                      if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config, cross_profile=True,
-                                             resolved_identity=resolved_ids.get(name))]
-        if not shared:
+        shared = shareable_connection(name, config, scope, resolved_identity=resolved_ids.get(name))
+        if shared is None:
             continue
-        key, server = shared[0]
+        key, server = shared
         # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
         with _core._lock:
             _core._server_tool_scopes.setdefault(key, set()).add(scope)

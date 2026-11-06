@@ -11,8 +11,9 @@ the tool registry, then asserts one isolation invariant:
 * :func:`check_foreign_handle_refused` — an environment or long-lived process handle that names
   another agent is refused before the backend sees the call;
 * :func:`check_file_tools_never_touch_host` — read, write, patch and search in a hosted scope never
-  open, write or list anything on the host (a planted host file stays unread and unchanged, and an
-  audit hook sees no ``open``/listing under its directory) and go to the sandbox instead;
+  open, write, list, stat or dereference anything on the host (a planted host file and a host symlink
+  to it stay unread and unchanged; no ``open``/listing/``stat``/``lstat``/``readlink`` lands under
+  their directory) and go to the sandbox instead;
 * :func:`check_background_process_invisible` — a background process started by A is missing for B;
 * :func:`check_host_backend_refused` — with a host backend configured, a hosted scope's tools
   fail closed instead of running here (backend-independent: run it with ``terminal.backend: local``).
@@ -23,7 +24,9 @@ plugin's own backend can be checked by recording the same two things. They raise
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -229,21 +232,51 @@ def check_foreign_handle_refused(provider: RecordingSandboxProvider, a: Scope, b
 
 _HOST_OPENS: list[str] = []
 _WATCHED: list[str] = []
+# Host metadata calls a path policy makes (``Path.resolve``/``os.path.realpath`` walk the path with
+# ``lstat``/``readlink``; ``exists``/``is_file`` ``stat`` it). CPython raises no audit event for them,
+# so they are observed by wrapping the ``os`` functions for the duration of a check.
+_METADATA_CALLS = ("stat", "lstat", "readlink")
+
+
+def _watched(path: Any) -> bool:
+    try:
+        text = os.fsdecode(path) if isinstance(path, (str, bytes, os.PathLike)) else ""
+    except (TypeError, ValueError):
+        return False
+    return bool(text) and any(text.startswith(root) for root in _WATCHED)
 
 
 def _audit(event: str, args: tuple) -> None:
-    if _WATCHED and event in ("open", "os.listdir", "os.scandir") and args and isinstance(args[0], (str, Path)):
-        if any(str(args[0]).startswith(root) for root in _WATCHED):
-            _HOST_OPENS.append(f"{event} {args[0]}")
+    if _WATCHED and event in ("open", "os.listdir", "os.scandir") and args and _watched(args[0]):
+        _HOST_OPENS.append(f"{event} {args[0]}")
 
 
 _audit_installed = False
 
 
+@contextlib.contextmanager
+def _observe_metadata():
+    originals = {name: getattr(os, name) for name in _METADATA_CALLS}
+
+    def observing(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if _WATCHED and _watched(path):
+                _HOST_OPENS.append(f"os.{name} {os.fsdecode(path)}")
+            return original(path, *args, **kwargs)
+        return call
+    for name, original in originals.items():
+        setattr(os, name, observing(name, original))
+    try:
+        yield
+    finally:
+        for name, original in originals.items():
+            setattr(os, name, original)
+
+
 def _watch_host(root: Path):
-    """Record every host open / directory listing under *root* while the context is active (an
-    audit hook; Python cannot remove one, so it is installed once and switched by ``_WATCHED``)."""
-    import contextlib
+    """Record every host open, directory listing, stat, lstat and readlink under *root* while the
+    context is active (opens and listings through an audit hook, which Python cannot remove, so it is
+    installed once and switched by ``_WATCHED``; metadata calls by wrapping ``os``)."""
     import sys
     global _audit_installed
     if not _audit_installed:
@@ -255,7 +288,8 @@ def _watch_host(root: Path):
         _HOST_OPENS.clear()
         _WATCHED.append(str(root))
         try:
-            yield _HOST_OPENS
+            with _observe_metadata():
+                yield _HOST_OPENS
         finally:
             _WATCHED.remove(str(root))
     return watching()
@@ -273,37 +307,49 @@ def _drive_file_tools(scope: Scope, host_dir: Path, path: str) -> list[dict]:
         ]
 
 
-def check_file_tools_never_touch_host(provider: RecordingSandboxProvider, a: Scope, host_dir: Path) -> None:
-    """A file planted on the host at the path the tools are asked for is never opened or listed, and
-    stays byte-identical through a hosted read, write, patch, search, terminal and code call at that
-    path; the operations go to the sandbox instead."""
+def _plant(host_dir: Path) -> tuple[Path, Path, str]:
+    """A host file, and a host symlink to it, at paths a hosted tool call will name."""
     planted = host_dir / "planted.txt"
     marker = f"HOST-ONLY-{uuid.uuid4().hex}"
     planted.write_text(f"{marker}\n", encoding="utf-8")
+    link = host_dir / "alias.txt"
+    link.symlink_to(planted)
+    return planted, link, marker
+
+
+def check_file_tools_never_touch_host(provider: RecordingSandboxProvider, a: Scope, host_dir: Path) -> None:
+    """A file planted on the host at the path the tools are asked for, and a host symlink to it, are
+    never opened, listed, stat'd or dereferenced (``stat``/``lstat``/``readlink``), and stay
+    byte-identical through a hosted read, write, patch, search, terminal and code call at those paths;
+    the operations go to the sandbox instead."""
+    planted, link, marker = _plant(host_dir)
     before = planted.stat()
-    path = str(planted)
+    outputs = []
     with _watch_host(host_dir) as touched:
-        outputs = _drive_file_tools(a, host_dir, path)
+        for path in (str(planted), str(link)):
+            outputs += _drive_file_tools(a, host_dir, path)
     assert not touched, f"a hosted tool touched the host filesystem: {touched}"
     assert marker not in json.dumps(outputs), "a hosted tool returned the host file's content"
     after = planted.stat()
     assert planted.read_text(encoding="utf-8-sig") == f"{marker}\n", "a hosted tool wrote the host file"
     assert (after.st_mtime_ns, after.st_size, after.st_ino) == (before.st_mtime_ns, before.st_size, before.st_ino)
     commands = [c.command for c in provider.calls if c.sandbox == _identity(a) and c.op == "execute"]
-    assert any(path in c for c in commands), "the file tools did not address the path in the sandbox"
+    for path in (str(planted), str(link)):
+        assert any(path in c for c in commands), f"the file tools did not address {path} in the sandbox"
     assert any("sandbox copy" in c.stdin or "c2FuZGJveCBjb3B5" in c.stdin for c in provider.calls), \
         "write_file's content never reached the sandbox"
 
 
 def check_host_backend_refused(a: Scope, host_dir: Path) -> None:
     """With a backend that runs on this host configured (``terminal.backend: local``), every tool of a
-    hosted scope fails closed: nothing runs, and the planted host file is never opened or changed."""
-    planted = host_dir / "planted.txt"
-    marker = f"HOST-ONLY-{uuid.uuid4().hex}"
-    planted.write_text(f"{marker}\n", encoding="utf-8")
+    hosted scope fails closed: nothing runs, and the planted host file (and a symlink to it) is never
+    opened, stat'd or changed."""
+    planted, link, marker = _plant(host_dir)
     before = planted.stat()
+    outputs = []
     with _watch_host(host_dir) as touched:
-        outputs = _drive_file_tools(a, host_dir, str(planted))
+        for path in (str(planted), str(link)):
+            outputs += _drive_file_tools(a, host_dir, path)
     assert not touched, f"a hosted tool touched the host filesystem: {touched}"
     assert marker not in json.dumps(outputs), "a hosted tool returned the host file's content"
     assert all(o.get("error") or o.get("success") is False or o.get("exit_code", 0) != 0 for o in outputs), outputs

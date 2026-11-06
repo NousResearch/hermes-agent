@@ -65,7 +65,11 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
 
 
 def _resolve_target(path: str) -> Optional[Path]:
-    """``Path(expanduser(path)).resolve()``, or None when resolution fails."""
+    """``Path(expanduser(path)).resolve()``, or None when resolution fails (a hosted agent's path:
+    its lexical form, see ``sandbox_lexical_path``)."""
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    if (lexical := sandbox_lexical_path(path)) is not None:
+        return Path(lexical)
     with suppress(OSError, RuntimeError):
         return Path(os.path.expanduser(str(path))).resolve()
     return None
@@ -97,8 +101,11 @@ def _guard_homes(path: str = "") -> set[str]:
 
 
 def _homes_and_resolved(path: str) -> tuple[set[str], str]:
-    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair."""
-    return _guard_homes(path), os.path.realpath(os.path.expanduser(str(path)))
+    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair (a hosted
+    agent's path: its lexical form, see ``sandbox_lexical_path``)."""
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical = sandbox_lexical_path(path)
+    return _guard_homes(path), lexical if lexical is not None else os.path.realpath(os.path.expanduser(str(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +283,9 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     if denial or not entry:
         return denial
     parent, leaf = split_entry(os.path.expanduser(str(path)))
-    entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical_parent = sandbox_lexical_path(parent or ".")
+    entry_path = os.path.join(lexical_parent if lexical_parent is not None else os.path.realpath(parent or "."), leaf)
     return _classify_resolved_write_denial(homes, entry_path)
 
 
@@ -392,7 +401,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     nt_error = get_nt_namespace_error(path, verb="Read")
     if nt_error:
         return nt_error
-    resolved = Path(path).expanduser().resolve()
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    lexical = sandbox_lexical_path(path)
+    resolved = Path(lexical) if lexical is not None else Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
     if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):

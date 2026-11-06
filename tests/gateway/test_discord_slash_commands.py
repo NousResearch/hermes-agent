@@ -169,6 +169,29 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     interaction.delete_original_response.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_native_queue_slash_deletes_interaction_reply_after_gateway_ack(adapter):
+    """/queue has its acknowledgement delivered by the gateway, not Discord twice."""
+    adapter._register_slash_commands()
+    adapter.handle_message = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        guild_id=456,
+        user=SimpleNamespace(id=42, name="Jezza", display_name="Jezza"),
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+
+    await adapter._client.tree.commands["queue"](interaction, prompt="Finish the report")
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].text == "/queue Finish the report"
+    interaction.delete_original_response.assert_awaited_once_with()
+    interaction.edit_original_response.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

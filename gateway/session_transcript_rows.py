@@ -37,18 +37,31 @@ def _mark_index(row):
     return index if row.get('role') == 'system' and row.get('text') == _MARK_TEXT and type(index) is int else None
 
 
-def page_handoffs(db, rows, segments):
+def handoff_occurrence(message):
+    # A handoff's copies (a later generation or a rotated segment carrying it) keep its uid and content.
+    return message.get('message_uid') or None, json.dumps(message.get('content'), default=str)
+
+
+def shown_occurrences(messages):
+    """The handoff occurrences among stored *messages* (``transcript_handoff_rows`` candidates)."""
+    from agent.compaction_display import compaction_summary
+    return {handoff_occurrence(message) for message in messages if compaction_summary(message) is not None}
+
+
+def page_handoffs(db, rows, segments, earlier=None):
     """Per row of the stored *rows* (``_rows_to_conversation`` dicts of *segments*, display order): the
     ``compaction`` rows shown just before it, one for each handoff stored on the row or on an earlier copy
-    of its message, each handoff once across *rows*."""
+    of its message. Each handoff is shown once in the whole transcript, before the first row that holds
+    it, wherever the page starts: ``earlier(candidates)`` (stored handoff messages) is the occurrences
+    among them a row before *rows* holds."""
     from agent.compaction_display import compaction_summary
     found = db.transcript_handoff_rows([row['_row_id'] for row in rows if type(row.get('_row_id')) is int], segments)
-    seen, out = set(), []
+    candidates = [message for messages in found.values() for message in messages]
+    seen, out = set(earlier(candidates)) if earlier is not None and candidates else set(), []
     for row in rows:
         mine = []
         for message in found.get(row.get('_row_id'), ()):
-            # A handoff's copies (a later generation or a rotated segment carrying it) keep its uid and content.
-            occurrence = (message.get('message_uid'), json.dumps(message.get('content'), default=str))
+            occurrence = handoff_occurrence(message)
             summary = compaction_summary(message) if occurrence not in seen else None
             if summary is None:
                 continue

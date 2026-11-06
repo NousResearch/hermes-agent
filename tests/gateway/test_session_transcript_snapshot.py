@@ -1,5 +1,5 @@
 """``session.transcript`` review fixes: a page and the cursor state it stores come from one read
-transaction; the cursor state covers every displayed segment (an earlier segment's deleted rows reset a
+transaction (without a pooled reader: reads no write landed between, else ``reset``); the cursor state covers every displayed segment (an earlier segment's deleted rows reset a
 poller, as its reactions do); ``limit`` bounds the rows sent, handoff rows included, and a row's handoffs
 split across pages are each sent once.
 """
@@ -10,8 +10,16 @@ from tests.gateway.test_session_stored_reads_bounds import _session
 from tests.gateway.test_session_transcript_poll import Reader, _shape
 
 
+def _read_path(monkeypatch, db, mode):
+    """``pooled``: the WAL read pool (one pinned read transaction). ``fallback``: no pooled reader (a
+    DELETE-journal or read-only store, a reader that failed to open, the pool's ceiling)."""
+    if mode == 'fallback':
+        monkeypatch.setattr(db, '_checkout_read_conn', lambda: None)
+
+
 @pytest.mark.asyncio
-async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['pooled', 'fallback'])
+async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(tmp_path, monkeypatch, mode):
     """A row appended after the poll started is on the page, then deleted before the state is stored: the
     cursor must vouch for the page's own generation, so the next poll resets instead of keeping it forever."""
     from gateway import session_stored_reads
@@ -23,6 +31,7 @@ async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
         target = transcript_target(authority, ref)
+        _read_path(monkeypatch, db, mode)
         reader = Reader(owner, ref.session_id)
         await reader.poll()
         original, armed = session_stored_reads.read_page, [True]
@@ -44,6 +53,69 @@ async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['pooled', 'fallback'])
+async def test_a_held_row_deleted_while_its_page_is_read_is_not_kept(tmp_path, monkeypatch, mode):
+    """The page holds a row a delete then removes before the cursor state is read: the reader never keeps it."""
+    from gateway import session_stored_reads
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        try:
+            db.append_message(target, 'user', 'held')
+            _read_path(monkeypatch, db, mode)
+            original, armed = session_stored_reads.read_page, [True]
+
+            def racing(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if armed[0]:
+                    armed[0] = False
+                    db.clear_messages(target)
+                return result
+            monkeypatch.setattr(session_stored_reads, 'read_page', racing)
+            reader = Reader(owner, ref.session_id)
+            await reader.poll()
+            await reader.poll()
+            assert reader.rows == [] and _shape(reader.rows) == await reader.fresh()
+        finally:
+            await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_read_that_never_settles_resets_from_the_first_page_until_one_does(tmp_path, monkeypatch):
+    """No pooled reader, and a write lands during the read and again during its retry: no page is proven
+    against a cursor state, so the reply is ``reset`` with the first page, and the next poll resets again
+    (its stored state matches no transcript) instead of continuing from it."""
+    from gateway import session_stored_reads
+    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+        try:
+            for n in range(3):
+                db.append_message(target, 'user', f'message {n}')
+            reader = Reader(owner, ref.session_id, limit=2)
+            await reader.poll()
+            _read_path(monkeypatch, db, 'fallback')
+            original, writes = session_stored_reads.read_page, [2]
+
+            def busy(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if writes[0]:
+                    writes[0] -= 1
+                    db.set_message_reaction(target, result[0][0]['row_id'], '\U0001f44d')
+                return result
+            monkeypatch.setattr(session_stored_reads, 'read_page', busy)
+            db.append_message(target, 'user', 'message 3')
+            first = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
+                                 cursor=reader.cursor))['result']
+            assert first['reset'] is True and [row.get('text') for row in first['rows']] == ['message 0', 'message 1']
+            again = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
+                                 cursor=first['next_cursor']))['result']
+            assert again['reset'] is True, again
+            reader.rows, reader.cursor = again['rows'], again['next_cursor']
+            await reader.poll()
+            assert _shape(reader.rows) == await reader.fresh()
+            assert [row.get('text') for row in reader.rows] == [f'message {n}' for n in range(4)]
+        finally:
+            await owner.close()
 
 
 @pytest.mark.asyncio

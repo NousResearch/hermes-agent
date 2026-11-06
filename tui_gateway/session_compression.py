@@ -84,9 +84,10 @@ _COMPRESSION_INT_KEYS = (
 
 
 def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
-    """Update a live session's compressor in place from config.yaml. Every adopted key has UNSET semantics:
-    a removed key restores the normalized default (or model-derived value) through the construction
-    path's own derivation — acting only on PRESENT keys would leave stale values active forever.
+    """Update host controls and the built-in compressor's policy from config.yaml.
+    Third-party engines own their policy and do not implement compressor internals.
+    Every adopted key has UNSET semantics: removal restores the normalized default
+    (or model-derived value) through the construction path's own derivation.
 
     Every adopted key has UNSET semantics (#94724 review finding on the merged #95980): removing a key from
     config.yaml restores the normalized default — or the model-derived value — on the next turn, through the
@@ -113,6 +114,23 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         agent.compression_idle_compact_after_seconds = max(0, int(compression.get("idle_compact_after_seconds", 0) or 0))
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
+        return
+    from agent.context_compressor import ContextCompressor
+    if not isinstance(cc, ContextCompressor):
+        new_ctx = config_context_length_for_runtime(agent, cfg)
+        if new_ctx != getattr(agent, "_config_context_length", None):
+            from agent.model_metadata import get_model_context_length
+            context_length = new_ctx if new_ctx is not None else get_model_context_length(
+                getattr(agent, "model", ""), base_url=getattr(agent, "base_url", "") or "",
+                api_key=getattr(agent, "api_key", "") or "", provider=getattr(agent, "provider", "") or "",
+                custom_providers=cfg.get("custom_providers"),
+            )
+            cc.update_model(
+                model=getattr(agent, "model", ""), context_length=context_length,
+                base_url=getattr(agent, "base_url", "") or "", api_key=getattr(agent, "api_key", "") or "",
+                provider=getattr(agent, "provider", "") or "", api_mode=getattr(agent, "api_mode", "") or "",
+            )
+            agent._config_context_length = new_ctx
         return
     # tail_mode: unknown/absent values land on the ctor default ("lean"), matching agent_init.
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))

@@ -4,9 +4,10 @@
 compression — that lets an external context engine replace which context
 enters the prompt for a single request, every turn, independent of
 ``should_compress()``. It is additive and no-op by default, and the host
-call site (``_apply_context_engine_selection``) is fail-open: a missing hook,
-an exception, or an invalid return value must leave the assembled request
-untouched and must never mutate persisted history.
+call site (``_apply_context_engine_selection``) is fail-open for ordinary errors:
+a missing hook, an ordinary exception, or an invalid return value must leave the
+assembled request untouched and must never mutate persisted history. Typed preparation
+failures and cancellation stop dispatch instead (test_context_engine_host_callbacks.py).
 
 This pins the contract that engines such as retrieval-augmented, topic-routed,
 and role-switching engines rely on (RFC #36765), consolidating the per-turn

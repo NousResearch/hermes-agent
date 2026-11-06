@@ -730,13 +730,14 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
 
 def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
     """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3 directly) with the
-    adapter's shared recovery: a cachePoint rejection (Nova: toolConfig.tools, #97281) or a replayed sealed
-    reasoning rejection resends once without the offending blocks inside the same attempt; a streaming IAM
-    denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection evicts the cached
-    client so the outer retry builds a fresh pool. Streaming returns the event stream; else a SimpleNamespace."""
+    adapter's shared recovery: a cachePoint rejection (Nova: toolConfig.tools, #97281) or a thinking
+    prefix-binding rejection (``recover_converse_retry``), or a replayed sealed reasoning rejection, resends
+    once inside the same attempt; a streaming IAM denial hands off to ``on_stream_denied(client, kwargs,
+    exc)``; a stale connection evicts the cached client so the outer retry builds a fresh pool. Streaming
+    returns the event stream; else a SimpleNamespace."""
     from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
-        recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
+        recover_converse_retry, recover_from_redacted_reasoning_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
     client = _get_bedrock_runtime_client(region, api_kwargs.get("modelId"))  # the active model's timeout
@@ -745,7 +746,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     try:
         raw_response = method(**api_kwargs)
     except Exception as exc:
-        retry_kwargs = (recover_from_cache_point_rejection(exc, api_kwargs)
+        retry_kwargs = (recover_converse_retry(exc, api_kwargs)
                         or recover_from_redacted_reasoning_rejection(exc, api_kwargs))
         if retry_kwargs is not None:
             return finish(method(**retry_kwargs))
@@ -2572,14 +2573,13 @@ class _BedrockStream:
     def _fall_back_to_converse(self, client, final_kwargs: dict, exc: Exception):
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
         # attempt (one lifecycle boundary).
-        from agent.bedrock_adapter import normalize_converse_response
         self.agent._disable_streaming = True
         self.agent._safe_print("\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
             "falling back to non-streaming InvokeModel.\n"
             "   Grant that action to restore streaming output.\n", diagnostic=True)
         logger.info("bedrock: converse_stream denied by IAM (%s) — "
             "using non-streaming converse() for this session.", type(exc).__name__)
-        return normalize_converse_response(client.converse(**final_kwargs))
+        return _bedrock_converse_call({**final_kwargs, "__bedrock_region__": self.region}, stream=False)
 
     def _worker(self):
         agent = self.agent

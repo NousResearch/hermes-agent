@@ -64,5 +64,3 @@ def test_managed_worker_snapshot_home_and_secret_boundary(tmp_path, monkeypatch,
         hc.reset_hermes_home_override(home_token)
         secret_scope.set_multiplex_active(False)
     assert dict(os.environ) == before
-
-

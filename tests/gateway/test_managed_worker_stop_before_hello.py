@@ -100,7 +100,7 @@ def test_stop_acknowledged_during_spawn_never_bootstraps_the_worker(tmp_path, mo
     monkeypatch.setattr(managed.subprocess, 'Popen', Child)
     entered, release = threading.Event(), threading.Event()
 
-    def barrier(authority):
+    def barrier(authority, policy):
         entered.set()
         assert release.wait(10)
     monkeypatch.setattr(managed, '_worker_env', barrier)

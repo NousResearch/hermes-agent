@@ -138,7 +138,7 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
     from gateway import session_managed_worker as managed
     started, release = threading.Event(), threading.Event()
     frames = []
-    def env(authority):
+    def env(authority, policy):
         started.set()
         assert release.wait(5)
     class Worker:

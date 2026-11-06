@@ -31,6 +31,9 @@ OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium
 #: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
+#: Muse Spark 1.3 on the shared Responses transport (direct Meta and OpenCode
+#: Zen/Go). ``max`` is a level above ``xhigh``; Spark 1.2 stays on the legacy set.
+MUSE_SPARK_13_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 # GPT-6 Astra is account-gated and its Responses API accepts no disable/minimal
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -86,8 +89,10 @@ DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: Meta Model API (Muse): rejects ``none``.
+#: Meta Model API (Muse): rejects ``none``. Spark 1.2 tops out at ``xhigh``;
+#: Spark 1.3 adds ``max`` (:func:`meta_ai_supported_efforts`).
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+META_AI_SPARK_13_EFFORTS: tuple[str, ...] = (*META_AI_EFFORTS, "max")
 
 #: Gemini 4 (``gemini-4-argon``) ``thinkingLevel``: thinking cannot be disabled, ``minimal`` and
 #: ``thinkingBudget`` 400 (live on Vertex global, 2026-10-13).
@@ -101,16 +106,39 @@ def is_astra_model(model: Optional[str]) -> bool:
     return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
 
 
+def _is_muse_spark_13(model: Optional[str]) -> bool:
+    """Spark 1.3 family, including contributor, free, and ``vendor/`` prefixes."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return "muse-spark-1.3" in bare
+
+
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
-    """Supported effort set for an OpenAI/Codex Responses model."""
+    """Supported effort set for a Responses-wire model.
+
+    OpenAI generations keep their own ladders. Muse Spark 1.3 shares this
+    transport and accepts ``max``; Spark 1.2 and earlier do not.
+    """
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     if is_astra_model(model) or bare.startswith(NO_DISABLE_TIER_PREFIXES):
         return CODEX_ASTRA_EFFORTS
+    if _is_muse_spark_13(model):
+        return MUSE_SPARK_13_EFFORTS
     return (
         CODEX_GPT56_EFFORTS
         if "gpt-5.6" in bare or bare.startswith(GPT6_TIER_PREFIXES) or bare in DAYBREAK_MODEL_IDS
         else CODEX_LEGACY_EFFORTS
     )
+
+
+def meta_ai_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
+    """Meta Model API vocabulary. Spark 1.3 accepts ``max``; older slugs do not.
+
+    An empty or unknown model stays on the 1.2 ceiling so a missing id never
+    escalates a request to ``max``.
+    """
+    if _is_muse_spark_13(model):
+        return META_AI_SPARK_13_EFFORTS
+    return META_AI_EFFORTS
 
 
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:

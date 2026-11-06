@@ -1,6 +1,8 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
 
+import json
+
 import pytest
 
 from acp_adapter.edit_approval import EditProposal
@@ -226,11 +228,33 @@ class TestBuildToolComplete:
         assert result.raw_output is None
 
 
+# ---------------------------------------------------------------------------
+# session_search completion — the date shown must be the hit's own time
+# ---------------------------------------------------------------------------
 
 
+class TestSessionSearchComplete:
+    """#50900: show `when` (the matched message's time), not `started_at` (session start)."""
 
+    def _text(self, payload: dict) -> str:
+        return build_tool_complete("tc-ss", "session_search", json.dumps(payload)).content[0].content.text
 
+    def test_discover_shows_matched_message_time_not_session_start(self):
+        """Discover hits carry `when` (the matched message's time); it must win over `started_at`."""
+        text = self._text({"success": True, "mode": "discover", "query": "deploy", "count": 1, "results": [{
+            "session_id": "s1", "title": "Deploy fix",
+            "when": "June 23, 2026 at 08:36 PM", "started_at": "June 22, 2026 at 08:35 PM",
+            "source": "cli"}]})
+        assert "June 23, 2026 at 08:36 PM" in text
+        assert "June 22, 2026 at 08:35 PM" not in text
 
+    def test_browse_falls_back_to_last_active_when_absent(self):
+        """Browse rows carry no `when`; the session's activity time still wins over its start."""
+        text = self._text({"success": True, "mode": "browse", "count": 1, "results": [{
+            "session_id": "s1", "title": "Recent", "source": "cli", "message_count": 4,
+            "started_at": 1000000000, "last_active": 1000086400}]})
+        assert "1000086400" in text
+        assert "1000000000" not in text
 
 
 # ---------------------------------------------------------------------------

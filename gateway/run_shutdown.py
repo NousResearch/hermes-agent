@@ -710,8 +710,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._external_drain_active = True
         logger.info(
             "External drain ENGAGED (.drain_request.json present) — refusing "
-            "new turns; %d in-flight turn(s) will finish. Process stays up.", self._active_work_count(),
-        )
+            "new turns; %d in-flight turn(s) will finish. Process stays up.", self._active_work_count())
         # Persist "draining" so /api/status tracks it; active_agents is read-merged, only state changes.
         self._update_runtime_status("draining")
 
@@ -728,9 +727,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return
         logger.info(
             "External drain RELEASED (.drain_request.json removed) — "
-            "re-accepting new turns; gateway_state -> %s.", self._serving_state(),
-        )
+            "re-accepting new turns; gateway_state -> %s.", self._serving_state())
         self._update_runtime_status(self._serving_state())
+        from gateway.session_authority import resume_external_drain
+        resume_external_drain(self)
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
         """Poll ``.drain_request.json`` at 1s: present -> enter drain, absent -> exit; a stale epoch = absent."""

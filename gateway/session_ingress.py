@@ -42,6 +42,11 @@ async def admit_message(authority, event):
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
         return '⏳ Too many messages are already waiting in this conversation; send this again after the current reply.'
     if receipt.status == 'terminal':
+        if _delivery_owned(authority, receipt.admission_id):
+            # The committed drain still owns its send; a duplicate cannot complete its status.
+            from gateway.platforms.event import ProcessingOutcome
+            event._gateway_processing_outcome = ProcessingOutcome.CANCELLED
+            event._gateway_processing_deferred = True
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
@@ -62,12 +67,35 @@ async def admit_message(authority, event):
             del authority.waiters[receipt.admission_id]
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+        if status == 'unknown' or _delivery_owned(authority, receipt.admission_id):
+            from gateway.platforms.event import ProcessingOutcome
+            event._gateway_processing_outcome = ProcessingOutcome.CANCELLED
+            event._gateway_processing_deferred = True  # retained settlement or drain send owns completion
         return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
+    runner = getattr(authority, 'runner', None)
+    adapter = runner._adapter_for_source(event.source) if runner is not None else None
+    if getattr(adapter, 'processing_starts_at_execution', False) is True:
+        _registry(authority, 'live_delivery_owners')[receipt.admission_id] = event
+        event._gateway_delivery_owner = (authority, receipt.admission_id)
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
-        return await asyncio.shield(waiter)
+        response = await asyncio.shield(waiter)
+        runner = getattr(authority, 'runner', None)
+        adapter = runner._adapter_for_source(event.source) if runner is not None else None
+        if getattr(adapter, 'processing_starts_at_execution', False) is True:
+            settled = await asyncio.to_thread(get_session_admission, authority.db,
+                                             admission_id=receipt.admission_id)
+            from gateway.platforms.event import ProcessingOutcome
+            event._gateway_processing_outcome = {
+                'completed': ProcessingOutcome.SUCCESS, 'failed': ProcessingOutcome.FAILURE,
+                'interrupted': ProcessingOutcome.CANCELLED,
+            }.get((settled or {}).get('outcome'), ProcessingOutcome.CANCELLED)
+        return response
     except RuntimeStoreError as exc:
+        from gateway.platforms.event import ProcessingOutcome
+        event._gateway_processing_outcome = ProcessingOutcome.CANCELLED
+        event._gateway_processing_deferred = True  # committed input still owes execution/delivery
         return pause_notice(authority, receipt.ref, exc.reason)
     finally:
         if adopters.get(receipt.admission_id) is event:
@@ -124,6 +152,29 @@ def _registry(authority, name):
     return found
 
 
+def _delivery_owned(authority, admission_id):
+    return (admission_id in authority.pending_deliveries
+            or admission_id in _registry(authority, 'live_delivery_owners'))
+
+
+def release_delivery_owner(event):
+    """Release only this sender's ownership, after delivery and its completion hook."""
+    owner = getattr(event, '_gateway_delivery_owner', None)
+    if owner is None:
+        return
+    authority, admission_id = owner
+    owners = _registry(authority, 'live_delivery_owners')
+    if owners.get(admission_id) is event:
+        del owners[admission_id]
+    del event._gateway_delivery_owner
+
+
+def native_completion(authority):
+    """admission -> completion ownership for a waiter already registered when execution starts.
+    Kept out of ``pending_deliveries`` so an unknown settlement cannot drop it before retention."""
+    return _registry(authority, 'native_completion')
+
+
 def waiter_replies(authority):
     """admission -> the reply a live native waiter is about to send, kept only until the drain
     settles the turn, so a turn fenced ``unknown`` can still owe it to the chat."""
@@ -138,6 +189,8 @@ def retain_unsettled_delivery(authority, admission_id):
     ``release_unknown_turn_markers``); a Discard that commits the captured answer makes it owed,
     sent once by ``deliver_resolved`` or, after a kill before that send, by the boot ledger."""
     delivery = waiter_replies(authority).pop(admission_id, None)
+    if delivery is None:
+        delivery = native_completion(authority).pop(admission_id, None)
     if delivery is not None:
         adopter = _marker_adopters(authority).get(admission_id)
         if adopter is not None:
@@ -156,8 +209,12 @@ async def deliver_resolved(authority, admission_id, *, owed):
     delivery = _registry(authority, 'unsettled_deliveries').pop(admission_id, None)
     if delivery is None:
         return
-    if owed:
-        authority.pending_deliveries[admission_id] = delivery
+    if not owed:
+        # The answer was discarded, not its completion owner. Settle cleanup without
+        # sending the retained response or awarding delivery success.
+        adapter, event, session_key, _response, home = delivery
+        delivery = (adapter, event, session_key, None, home)
+    authority.pending_deliveries[admission_id] = delivery
     await deliver_settled(authority, admission_id)
 
 
@@ -264,6 +321,19 @@ async def execute_admission(authority, ref, row):
                     event.text = '\n'.join(part['text'] for part in prepared['content'] if part.get('type') == 'text')
                 event.allow_gateway_control = False
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
+            if not event.internal and 'native_text_v1' in row['payload']:
+                adapter = authority.runner._adapter_for_source(event.source)
+                if getattr(adapter, 'processing_starts_at_execution', False) is True:
+                    completion = (adapter, event, live.route, None, home)
+                    if native:
+                        # Already registered: the drain drops pending_deliveries when settlement
+                        # becomes unknown, so this owner must survive that drop.
+                        native_completion(authority)[row['admission_id']] = completion
+                    else:
+                        # Own completion even when the handler returns no reply or raises. The drain
+                        # settles first; a late native waiter still takes over in deliver_settled.
+                        authority.pending_deliveries[row['admission_id']] = completion
+                    await adapter._run_processing_hook('on_processing_start', event)
             response = await authority.runner._handle_message(event)
             result = captured.get('terminal_result', captured.get('result'))
             if result is None:
@@ -293,6 +363,7 @@ async def execute_admission(authority, ref, row):
                     delivery = (adapter, event, live.route, response, home)
                     if native:
                         waiter_replies(authority)[row['admission_id']] = delivery
+                        native_completion(authority).pop(row['admission_id'], None)
                     else:
                         authority.pending_deliveries[row['admission_id']] = delivery
             handed = True
@@ -333,6 +404,9 @@ async def _execution_scope(authority, home):
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
     failure cannot rewrite that outcome; it is logged, and inference never runs again."""
+    # Settlement has committed; a registered waiter's lifecycle now owns completion.
+    # Unknown settlement retains this record instead, before reaching this boundary.
+    native_completion(authority).pop(admission_id, None)
     held = _held_markers(authority).pop(admission_id, None)
     delivery = authority.pending_deliveries.get(admission_id)
     if delivery is not None and admission_id in authority.native_waiters:
@@ -351,12 +425,30 @@ async def deliver_settled(authority, admission_id):
             await _release_turn_marker(authority, held)
         return
     adapter, event, session_key, response, home = delivery
+    from gateway.platforms.event import ProcessingOutcome
+    outcome = ProcessingOutcome.FAILURE
     try:
         with await _execution_scope(authority, home):
-            await deliver_response(adapter, event, session_key, response)
+            delivered = await deliver_response(adapter, event, session_key, response)
+            if getattr(adapter, 'processing_starts_at_execution', False) is True:
+                from hermes_state_runtime import get_session_admission
+                settled = await asyncio.to_thread(get_session_admission, authority.db, admission_id=admission_id)
+                durable = {
+                    'completed': ProcessingOutcome.SUCCESS, 'failed': ProcessingOutcome.FAILURE,
+                    'interrupted': ProcessingOutcome.CANCELLED,
+                }.get((settled or {}).get('outcome'), ProcessingOutcome.CANCELLED)
+                outcome = (ProcessingOutcome.FAILURE if delivered is False else
+                           durable if delivered is True or durable != ProcessingOutcome.SUCCESS else
+                           ProcessingOutcome.CANCELLED)
+    except asyncio.CancelledError:
+        outcome = ProcessingOutcome.CANCELLED
+        raise
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
     finally:
+        if getattr(adapter, 'processing_starts_at_execution', False) is True:
+            with await _execution_scope(authority, home):
+                await adapter._run_processing_hook('on_processing_complete', event, outcome)
         # Held until the send returns: an empty map means every settled reply was handed over.
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
@@ -367,7 +459,7 @@ async def deliver_response(adapter, event, session_key, response):
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
-        return
+        return None
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
     results = []
@@ -376,6 +468,8 @@ async def deliver_response(adapter, event, session_key, response):
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
                                        record_delivery=results.append)
+    successful = all if getattr(adapter, "processing_requires_all_deliveries", False) is True else any
+    return successful(result.success for result in results) if results else None
 
 
 async def dispatch_shared_busy(adapter, event, session_key):
@@ -393,8 +487,23 @@ async def dispatch_shared_busy(adapter, event, session_key):
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
-            await deliver_response(adapter, delivery_event, session_key, response)
+            delivered = await deliver_response(adapter, delivery_event, session_key, response)
+            if getattr(adapter, 'processing_starts_at_execution', False) is True:
+                from gateway.platforms.event import ProcessingOutcome
+                outcome = ProcessingOutcome.FAILURE if delivered is False else ProcessingOutcome.SUCCESS
+                if delivered is None and getattr(adapter, 'processing_requires_all_deliveries', False) is True:
+                    durable = getattr(event, '_gateway_processing_outcome', ProcessingOutcome.CANCELLED)
+                    outcome = durable if durable != ProcessingOutcome.SUCCESS else ProcessingOutcome.CANCELLED
+                await adapter._run_processing_hook('on_processing_complete', event, outcome)
+        except asyncio.CancelledError:
+            if getattr(adapter, 'processing_starts_at_execution', False) is True:
+                from gateway.platforms.event import ProcessingOutcome
+                await adapter._run_processing_hook('on_processing_complete', event, ProcessingOutcome.CANCELLED)
+            raise
         except Exception as exc:
+            if getattr(adapter, 'processing_starts_at_execution', False) is True:
+                from gateway.platforms.event import ProcessingOutcome
+                await adapter._run_processing_hook('on_processing_complete', event, ProcessingOutcome.FAILURE)
             if not accepted.done():
                 raise  # nothing was queued: the receive loop sees the failure as before
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)

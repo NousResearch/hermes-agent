@@ -243,7 +243,8 @@ class AuthorityConnection:
             # launch profile's config into a served secondary's session. Under a single profile
             # the scope is that profile's own home, so behaviour is unchanged.
             from gateway.session_authorities import owner_scope
-            with owner_scope(self.authority):
+            from gateway.session_dispatch_diagnostics import watch_dispatch
+            with watch_dispatch(contract.name if contract is not None else None), owner_scope(self.authority):
                 if method in GROUP_METHODS or method == 'profiles.list':
                     result = await dispatch_group_control(self, method, params)
                 elif method not in handlers:
@@ -463,31 +464,43 @@ class AuthorityConnection:
                                   'message_count': row.get('message_count', 0),
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
+        from gateway.session_active_list import _read_state
         from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+        authority = self.authority
         sessions = []
-        for sid in tuple(self.authority.sessions):
+        for sid, live in tuple(authority.sessions.items()):
             candidate = SessionRef(self.actor.profile_id, sid)
             try:
-                handle = await self.authority.resolve(self.actor, candidate)
+                # authorize can restore an evicted entry; a listing must not revive it.
+                if authority.sessions.get(sid) is not live:
+                    continue
+                authority.authorize(self.actor, candidate, 'session:read')
+                row, pending, closed = await asyncio.to_thread(_read_state, authority, sid)
+                if row is None or authority.sessions.get(sid) is not live:
+                    continue
+                authority.authorize(self.actor, candidate, 'session:read')
             except RuntimeStoreError as exc:
                 if exc.reason not in {'permission_denied', 'profile_mismatch', 'not_found'}:
                     raise
                 continue
-            row = self.authority.db.get_session(sid)
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
             # finite one-shot runs are not conversations, as on every other picker.
             if row.get('source') in INTERNAL_LISTING_SOURCES or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
-            from gateway.session_local_close import closed_and_unviewed
-            if closed_and_unviewed(self.authority, sid, handle):
-                # Closed by its last viewer and idle: main lists it as resumable (the stored
-                # feed), not as a live session.
-                continue
+            with live.event_stream.lock:
+                pending = {r['admission_id']: r for r in pending}
+                pending.update(live.settling)
+                generation = live.event_stream.execution.get('execution_generation')
+                state = 'unknown' if any(r['status'] == 'unknown' for r in pending.values()) else (
+                    'running' if generation is not None or any(r['status'] == 'started' for r in pending.values()) else 'idle')
+                if closed and not live.subscribers and state == 'idle':
+                    # Closed idle chats remain resumable in the stored feed.
+                    continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0), 'model': row.get('model'),
-                             'running': handle.execution_state == 'running'})
+                             'running': state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
 

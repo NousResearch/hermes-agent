@@ -45,6 +45,7 @@ class LiveSession:
     # The messaging ingress tells the platform user once per pause episode (unknown head,
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
+    external_drain_paused: bool = False  # reawaken this FIFO on reversible drain release
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
@@ -153,6 +154,8 @@ class SessionAuthority:
         exactly once, while this owner's claim path stays refused."""
         if self.retiring:
             raise RuntimeStoreError('runtime_draining')
+        if getattr(self.runner, '_external_drain_active', False):
+            raise RuntimeStoreError('runtime_draining', field='external_drain')
         if self.runner._draining:
             from gateway.drain_control import restart_wait_open
             if not (queue_only and restart_wait_open(self.runner)):
@@ -319,6 +322,7 @@ class SessionAuthority:
 
     def _schedule(self, ref):
         live = self.sessions[ref.session_id]
+        live.external_drain_paused = False
         live.rescan = True
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
@@ -333,7 +337,7 @@ class SessionAuthority:
             if sid in self.sessions:
                 self._schedule(SessionRef(self.profile_id, sid))
 
-    def _pause(self, ref, reason):
+    def _pause(self, ref, reason, *, external_pause=True):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; process-local delivery/HTTP/producer waiters on this session are released,
         with the reason instead of a reply, so an adapter loop is never parked on a turn that
@@ -341,6 +345,11 @@ class SessionAuthority:
         ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
         the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
         waiting for the answer instead of reporting accepted work as a conflict."""
+        live = self.sessions.get(ref.session_id)
+        if live is not None:
+            live.external_drain_paused = (external_pause and reason == 'runtime_draining'
+                                         and getattr(self.runner, '_external_drain_active', False)
+                                         and not self.runner._draining and not self.retiring)
         for row in list_session_admissions(self.db, session_id=ref.session_id):
             admission_id = row['admission_id']
             if reason == 'session_busy' and admission_id not in self.native_waiters:
@@ -905,8 +914,9 @@ class SessionAuthority:
     def _drain_stopping(self, ref, live):
         """A drain about to wait (storage retry, classic slot) exits instead when the runtime drains,
         the profile retires or the live entry was replaced; committed rows stay queued."""
-        if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
-            self._pause(ref, 'runtime_draining')
+        if (self.runner._draining or getattr(self.runner, '_external_drain_active', False)
+                or self.retiring or self.sessions.get(ref.session_id) is not live):
+            self._pause(ref, 'runtime_draining', external_pause=self.sessions.get(ref.session_id) is live)
             return True
         return False
 
@@ -918,9 +928,17 @@ class SessionAuthority:
             try:
                 row, first = await self._claim_next(ref, live)
             except RuntimeStoreError as exc:
+                # A reversible guard can refuse in the worker, then be released before this
+                # loop sees it. Re-read and reauthorize the head rather than lose that wakeup.
+                if (exc.reason == 'runtime_draining' and exc.field == 'external_drain'
+                        and not getattr(self.runner, '_external_drain_active', False)
+                        and self.runner._running and not self.runner._draining
+                        and not self.retiring and not self.retired
+                        and self.sessions.get(ref.session_id) is live):
+                    continue
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
-                self._pause(ref, exc.reason)
+                self._pause(ref, exc.reason, external_pause=self.sessions.get(ref.session_id) is live)
                 return None
             except (OSError, sqlite3.OperationalError) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
@@ -1093,6 +1111,18 @@ class SessionAuthority:
         if released is not None and not (self.runner._draining or self.retiring):
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
+
+
+def resume_external_drain(runner):
+    """Wake only externally parked FIFOs, under each still-served owner's scope."""
+    from gateway.session_authorities import all_authorities, owner_scope
+    for authority in all_authorities(runner):
+        if authority is None or authority.retiring or authority.retired:
+            continue
+        with owner_scope(authority):
+            for sid, live in list(authority.sessions.items()):
+                if live.external_drain_paused:
+                    authority._schedule(SessionRef(authority.profile_id, sid))
 
 
 def backfill_legacy_session_owners(db):

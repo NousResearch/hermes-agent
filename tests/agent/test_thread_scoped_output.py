@@ -14,6 +14,7 @@ import threading
 import time
 
 import agent.thread_scoped_output as thread_output
+from agent.process_bootstrap import _SafeWriter, _install_safe_stdio
 from agent.thread_scoped_output import thread_scoped_silence
 
 
@@ -128,6 +129,43 @@ def test_temporary_global_redirects_do_not_allocate_new_sinks(monkeypatch):
         assert thread_output._installed == original_proxies
     finally:
         sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def test_safe_stdio_and_silence_do_not_nest(monkeypatch):
+    """Agent init plus silence must not add a wrapper pair every turn.
+
+    That alternation made ``line_buffering`` lookup recurse until the gateway
+    aborted the turn with RecursionError.
+    """
+    monkeypatch.setattr(thread_output, "_installed", {})
+    monkeypatch.setattr(thread_output, "_sinks", {})
+    monkeypatch.setattr(thread_output, "_routing_states", {})
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    real_out = io.StringIO()
+    sys.stdout, sys.stderr = real_out, io.StringIO()
+    try:
+        for _ in range(40):
+            _install_safe_stdio()
+            with thread_scoped_silence():
+                sys.stdout.write("hidden")
+            sys.stdout.write("kept")
+        assert getattr(sys.stdout, "line_buffering", False) is False
+        assert real_out.getvalue() == "kept" * 40
+        assert isinstance(sys.stdout, thread_output._ThreadRoutingStream)
+        assert isinstance(sys.stdout._passthrough, _SafeWriter)
+        assert sys.stdout._passthrough._inner is real_out
+    finally:
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+
+def test_delegated_lookup_survives_a_deep_wrapper_chain():
+    raw = io.StringIO()
+    node = raw
+    state = thread_output._RoutingState(io.StringIO())
+    for _ in range(600):
+        node = thread_output._ThreadRoutingStream(node, state)
+        node = _SafeWriter(node)
+    assert node.encoding == raw.encoding
 
 
 def test_silence_survives_redirect_restoring_an_older_proxy(monkeypatch):

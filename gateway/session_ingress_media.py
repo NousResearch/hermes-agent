@@ -168,6 +168,22 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
+    envelope = payload.get('native_text_v1', {})
+    previous = retained.get('native_text_v1', {})
+    # Slack used the local arrival clock before provider timestamps were pinned. A replay of
+    # that same provider message keeps its committed clock; every other field still compares.
+    if (previous.get('source', {}).get('platform') == 'slack'
+            and envelope.get('source', {}).get('platform') == 'slack'
+            and previous.get('event', {}).get('message_id') == request_id
+            and envelope.get('event', {}).get('message_id') == request_id):
+        payload = {**payload, 'native_text_v1': {**envelope, 'timestamp': previous['timestamp']}}
+        # The pre-provenance schema is still replayable only on exact remaining bytes.
+        # Current callback authorization has already run before this reconciliation.
+        if 'provenance' not in previous and 'provenance' in envelope:
+            legacy = {**payload, 'native_text_v1': dict(payload['native_text_v1'])}
+            legacy['native_text_v1'].pop('provenance')
+            if legacy == retained:
+                payload = legacy
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained

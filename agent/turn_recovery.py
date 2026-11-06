@@ -1901,8 +1901,11 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            from agent.fallback_cooldown import defer_eager_fallback
+            if defer_eager_fallback(agent, classified.reason, reset_at):
+                return _verdict("fallthrough")
+            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 

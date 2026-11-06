@@ -3480,6 +3480,9 @@ class BasePlatformAdapter(ABC):
     # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing
     # ``_add_reaction(chat_id, message_id, emoji)`` / ``_remove_reaction(chat_id, message_id)``
     # can just set the emoji attributes; left ``None`` the hook is a no-op.
+    processing_starts_at_execution: bool = False
+    processing_requires_all_deliveries: bool = False
+    processing_inline_commands: bool = False
     _ACK_EMOJI: Optional[str] = None
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
@@ -3517,6 +3520,11 @@ class BasePlatformAdapter(ABC):
             await hook(*args, **kwargs)
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+        # Cancellation propagates to the caller's completion retry. Keep its
+        # ownership until that hook finishes so terminal duplicates cannot compete.
+        if hook_name == "on_processing_complete" and args:
+            from gateway.session_ingress import release_delivery_owner
+            release_delivery_owner(args[0])
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -3556,21 +3564,35 @@ class BasePlatformAdapter(ABC):
         return response.text, int(ttl or 0)
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
-        """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
-        thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        """Send inline without touching session ownership. Adapters may opt commands
+        into processing hooks; approval/control bypass and guard semantics stay unchanged."""
+        track_processing = self.processing_inline_commands and bool(event.get_command())
+        outcome = ProcessingOutcome.CANCELLED  # no reply is not a delivered success
+        try:
+            if track_processing:
+                await self._run_processing_hook("on_processing_start", event)
+            thread_meta = _thread_metadata_for_event(event)
+            response = await self._message_handler(event)
+            text, eph_ttl = self._unwrap_ephemeral(response)
+            if not text:
+                return
+            if log_cmd is not None:
+                logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
+                            len(text), event.source.chat_id)
+            result = await self._send_with_retry(
+                chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
+                metadata=_mark_notify_metadata(thread_meta))
+            outcome = ProcessingOutcome.SUCCESS if result.success else ProcessingOutcome.FAILURE
+            if eph_ttl > 0 and result.success and result.message_id:
+                self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            outcome = ProcessingOutcome.FAILURE
+            raise
+        finally:
+            if track_processing:
+                await self._run_processing_hook("on_processing_complete", event, outcome)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -4544,15 +4566,20 @@ class BasePlatformAdapter(ABC):
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
+                success = bool(getattr(result, "success", False))
+                if self.processing_requires_all_deliveries:
+                    delivery_succeeded = (not delivery_attempted or delivery_succeeded) and success
+                else:
+                    delivery_succeeded = delivery_succeeded or success
                 delivery_attempted = True
-                delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
-            await self._run_processing_hook("on_processing_start", event)
+            if not (self.processing_starts_at_execution and self._shared_runtime_owns_input(event)):
+                await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
@@ -4615,13 +4642,15 @@ class BasePlatformAdapter(ABC):
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            outcome = ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
+            if self.processing_requires_all_deliveries and not delivery_attempted:
+                durable = getattr(event, "_gateway_processing_outcome", ProcessingOutcome.CANCELLED)
+                outcome = durable if durable != ProcessingOutcome.SUCCESS else ProcessingOutcome.CANCELLED
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            await self._run_processing_hook("on_processing_complete", event, outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

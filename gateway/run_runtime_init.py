@@ -56,9 +56,10 @@ class GatewayRuntimeInitMixin:
         self._exit_code: Optional[int] = None
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
         self._systemd_watchdog = None
-        # External (NAS-driven) drain, distinct from one-way ``_draining``: set while ``.drain_request.json``
-        # exists — NEW turns refused, process stays up, removing the marker reverts to ``running``.
-        self._external_drain_active = False
+        # External (NAS-driven) drain, distinct from one-way ``_draining``: an inherited
+        # same-epoch marker must fence authority even before the startup watcher begins.
+        from gateway.drain_control import drain_requested
+        self._external_drain_active = drain_requested()
         # ``_signal_initiated_shutdown``: SIGTERM/SIGINT with no planned-stop/takeover marker (container,
         # OOM, bare kill); _stop_impl must NOT persist gateway_state=stopped or container_boot won't restart.
         self._restart_requested = self._signal_initiated_shutdown = self._restart_task_started = False

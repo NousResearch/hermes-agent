@@ -1155,6 +1155,10 @@ def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
 CODEX_STREAM_STALL_MARKER = "stream stalled"
 
 
+class _CodexClientRetiredTimeout(TimeoutError):
+    """This attempt retired its client; retrying that client cannot succeed."""
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -1605,7 +1609,8 @@ class _CodexCompletionsAdapter:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
             if guard.timed_out.is_set():
-                raise TimeoutError(guard.timeout_message()) from exc
+                timeout_type = _CodexClientRetiredTimeout if guard.timeout_release_pending.is_set() else TimeoutError
+                raise timeout_type(guard.timeout_message()) from exc
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
@@ -8113,7 +8118,7 @@ def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -
     """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
     tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
     to fallback."""
-    if not _is_transient_transport_error(exc):
+    if isinstance(exc, _CodexClientRetiredTimeout) or not _is_transient_transport_error(exc):
         return False
     if _should_skip_same_provider_retry(task, exc):
         logger.info("Auxiliary %s%s: timeout on the critical path; "
@@ -8224,7 +8229,7 @@ def _call_llm_impl(
                 try:
                     return _primary()
                 except Exception as retry_transient:
-                    if not _is_transient_transport_error(retry_transient):
+                    if isinstance(retry_transient, _CodexClientRetiredTimeout) or not _is_transient_transport_error(retry_transient):
                         raise
                     _last_transient = retry_transient
             raise _last_transient

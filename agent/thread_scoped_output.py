@@ -84,7 +84,57 @@ class _ThreadRoutingStream:
         return self._target().fileno()
 
     def __getattr__(self, name):  # type: ignore[no-untyped-def]
-        return getattr(self._target(), name)
+        # Walk wrappers ourselves. ``getattr`` here re-enters ``_SafeWriter.__getattr__``,
+        # and the two wrappers used to nest once per turn until this lookup blew the stack.
+        return lookup_stream_attr(self._target(), name)
+
+
+def lookup_stream_attr(start, name):  # type: ignore[no-untyped-def]
+    """Resolve ``name`` on a stdio wrapper chain without recursive ``__getattr__``.
+
+    ``_SafeWriter`` and this proxy each used to forward with ``getattr``. Once
+    agent init wrapped the proxy and the next silence wrapped that writer, the
+    chain grew by two every turn and ``line_buffering`` raised ``RecursionError``.
+    """
+    seen: set[int] = set()
+    target = start
+    while target is not None and id(target) not in seen:
+        seen.add(id(target))
+        try:
+            return object.__getattribute__(target, name)
+        except AttributeError:
+            target = _stdio_delegate(target)
+    raise AttributeError(name)
+
+
+def _stdio_delegate(stream):  # type: ignore[no-untyped-def]
+    """One step inward. Never calls ``__getattr__``."""
+    if isinstance(stream, _ThreadRoutingStream):
+        try:
+            return stream._target()
+        except Exception:
+            return None
+    for attr in ("_inner", "_passthrough"):
+        try:
+            return object.__getattribute__(stream, attr)
+        except AttributeError:
+            continue
+    return None
+
+
+def _routing_proxy_inside(stream):  # type: ignore[no-untyped-def]
+    """Outermost routing proxy under ``_SafeWriter`` layers, if any."""
+    seen: set[int] = set()
+    current = stream
+    while current is not None and id(current) not in seen:
+        if isinstance(current, _ThreadRoutingStream):
+            return current
+        seen.add(id(current))
+        try:
+            current = object.__getattribute__(current, "_inner")
+        except AttributeError:
+            return None
+    return None
 
 
 def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
@@ -100,6 +150,16 @@ def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
             return current
         if proxy is not None and current is proxy:
             return proxy
+        # ``_install_safe_stdio`` used to wrap this proxy, and the next silence
+        # then wrapped a new proxy around that writer. Peel back to the proxy
+        # we already installed instead of adding another layer.
+        nested = _routing_proxy_inside(current)
+        if nested is not None:
+            _installed[attr] = nested
+            _routing_states[attr] = nested._state
+            if current is not nested:
+                setattr(sys, attr, nested)
+            return nested
         # Route non-silenced threads to whatever is currently bound (an active
         # global redirect keeps its old behavior).
         passthrough = current if current is not None else passthrough

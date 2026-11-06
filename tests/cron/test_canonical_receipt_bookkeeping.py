@@ -1,5 +1,6 @@
 """Canonical cron recovery settles attempts and never re-pauses an explicitly resumed job."""
 from contextlib import asynccontextmanager
+import asyncio
 import json
 
 import pytest
@@ -138,3 +139,56 @@ def test_recovered_receipt_books_the_same_failure_verdicts_as_the_firer(tmp_path
         saved = jobs.get_job(job['id'])
         assert (saved['last_status'], saved['failure_streak']) == ('error', 1)
         assert executions.get_execution(execution['id'])['status'] == 'failed'
+
+
+def test_delayed_recovery_observers_keep_each_owner_and_receipt(monkeypatch):
+    from gateway import session_cron
+
+    loop = asyncio.new_event_loop()
+    owners = iter([('owner-a', loop), ('owner-b', loop)])
+    saved = {}
+    for request in ('a', 'b'):
+        params = {'job_id': 'job', 'request_id': request, 'extra_prompt': None}
+        journal = scheduler_authority.journal_path('job', request)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        saved[journal] = json.dumps({'params': params, 'receipt': None})
+        journal.write_text(saved[journal])
+    expected = [json.loads(saved[path])['params'] for path in sorted(saved)]
+    observed, pending = [], []
+    submit = asyncio.run_coroutine_threadsafe
+
+    async def recover(authority, name, params):
+        observed.append((authority, name, dict(params)))
+        return {'status': 'queued'}
+
+    class Deadline:
+        def __init__(self, future):
+            self.future = future
+
+        def result(self, timeout):
+            assert timeout == 20
+            # Expire the wait before starting the owner loop, without a real 20s delay.
+            return self.future.result(timeout=0)
+
+    def deferred(coro, owner_loop):
+        future = submit(coro, owner_loop)
+        pending.append(future)
+        return Deadline(future)
+
+    monkeypatch.setattr(session_cron, 'owner_for_home', lambda home: next(owners))
+    monkeypatch.setattr(session_cron, 'operation', recover)
+    monkeypatch.setattr(executions, 'execution_owner_live', lambda *args: False)
+    monkeypatch.setattr(executions, 'get_execution', lambda request: None)
+    monkeypatch.setattr(asyncio, 'run_coroutine_threadsafe', deferred)
+    try:
+        scheduler_authority.reconcile_pending()
+        assert len(pending) == 2 and not any(f.done() for f in pending)
+        assert all(path.read_text() == content for path, content in saved.items())
+        for future in pending:
+            loop.run_until_complete(asyncio.wrap_future(future, loop=loop))
+        assert observed == [('owner-a', 'recover', expected[0]), ('owner-b', 'recover', expected[1])]
+    finally:
+        for future in pending:
+            if not future.done():
+                loop.run_until_complete(asyncio.wrap_future(future, loop=loop))
+        loop.close()

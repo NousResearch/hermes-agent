@@ -107,9 +107,10 @@ _TOKEN_COALESCE_S = 0.033
 
 # starlette stays optional at import time; fall back to a generic sentinel.
 try:
-    from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+    from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect, WebSocketState as _WebSocketState
 except ImportError:  # pragma: no cover - starlette is a required install path
     _WebSocketDisconnect = Exception  # type: ignore[assignment]
+    _WebSocketState = None
 
 
 class WSTransport:
@@ -129,6 +130,7 @@ class WSTransport:
         #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
         self.skin_home: str | None = None
         self._closed = False
+        self._closed_event = asyncio.Event()
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
         self._token_lock = threading.Lock()
@@ -251,7 +253,7 @@ class WSTransport:
                     # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
                     # batches bail, and close the socket so handle_ws's read loop ends and its teardown
                     # (session detach/reap, client reconnect) runs. See #106369.
-                    self._closed = True
+                    self.close()
                     _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
                                  self._peer, _WS_SEND_DEADLINE_S)
                     self._loop.create_task(self._close_socket(1011, "send deadline"))
@@ -262,12 +264,13 @@ class WSTransport:
                     continue
                 except Exception as exc:
                     # Latch while holding the writer lock so queued batches observe the failure first.
-                    self._closed = True
+                    self.close()
                     _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
                     return
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
         self._closed = True
+        self._closed_event.set()
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
@@ -405,6 +408,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     dispatcher: asyncio.Task | None = None
+    transport_closed: asyncio.Task | None = None
     stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
 
     async def _dispatch_loop() -> None:
@@ -428,17 +432,24 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply(resp, "send_failed_after_response",
                              "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
 
-    async def _unless_dispatch_failed(aw: Any) -> Any:
-        """Await *aw*, or raise _SendFailed once the dispatcher has ended on a reply it could not send."""
+    async def _unless_dispatch_failed(aw: Any, *, check_transport: bool = True) -> Any:
+        """Await *aw*, or stop when a reply/background send closes this connection."""
         assert dispatcher is not None
         step = asyncio.ensure_future(aw)
+        watched = {step, dispatcher}
+        if check_transport:
+            assert transport_closed is not None
+            watched.add(transport_closed)
         try:
-            await asyncio.wait({step, dispatcher}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
             if step.done():
-                return step.result()
+                result = step.result()  # Preserve unrelated receive errors even if a send also failed.
+                if not check_transport or not transport.closed:
+                    return result
             raise _SendFailed
         finally:
-            step.cancel()  # no-op once done
+            step.cancel()
+            await asyncio.gather(step, return_exceptions=True)
 
     try:
         await (ws.accept(subprotocol=subprotocol) if subprotocol else ws.accept())
@@ -481,6 +492,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             return
 
         dispatcher = asyncio.create_task(_dispatch_loop())
+        transport_closed = asyncio.create_task(transport._closed_event.wait())
         while True:
             try:
                 raw = await _unless_dispatch_failed(ws.receive_text())
@@ -490,7 +502,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             except _WebSocketDisconnect as exc:
                 disconnect_reason = f"client_disconnect(code={getattr(exc, 'code', None)},reason={getattr(exc, 'reason', None)})"
                 break
-            except Exception:
+            except Exception as exc:
+                # Starlette marks the socket disconnected on a send-side OSError before the writer resumes.
+                if (isinstance(exc, RuntimeError)
+                        and str(exc) == 'WebSocket is not connected. Need to call "accept" first.'
+                        and _WebSocketState is not None
+                        and getattr(ws, "application_state", None) is _WebSocketState.DISCONNECTED):
+                    disconnect_reason = "socket_disconnected"
+                    break
                 disconnect_reason = "receive_failed"
                 _log.exception("ws receive failed peer=%s", peer)
                 break
@@ -513,8 +532,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 continue
             await _unless_dispatch_failed(pending.put(req))
     except _SendFailed:
-        pass
+        if disconnect_reason == "connected":
+            disconnect_reason = "transport_closed"
     finally:
+        if transport_closed is not None:
+            transport_closed.cancel()
+            await asyncio.gather(transport_closed, return_exceptions=True)
         if dispatcher is not None:
             # Finish the in-flight handler and the frames read before the disconnect (as the serial read loop
             # did) before the teardown below parks this transport's sessions. A cancelled connection (server
@@ -524,7 +547,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 dispatcher.cancel()
             else:
                 with contextlib.suppress(_SendFailed):
-                    await _unless_dispatch_failed(pending.put(stop))
+                    await _unless_dispatch_failed(pending.put(stop), check_transport=False)
             await asyncio.wait({dispatcher})
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):

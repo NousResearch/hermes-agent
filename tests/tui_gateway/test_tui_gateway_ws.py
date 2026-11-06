@@ -291,6 +291,197 @@ def test_ws_failed_reply_from_dispatcher_ends_the_connection(monkeypatch):
     assert log == ["dispatch:fast", "done:fast", "teardown"]
 
 
+def _starlette_send_failure_harness(monkeypatch, *, deadline=False, before_failure=None):
+    from starlette.websockets import WebSocket
+
+    inbound, reading, transports = asyncio.Queue(), asyncio.Event(), []
+    inbound.put_nowait({"type": "websocket.connect"})
+
+    async def receive():
+        if inbound.empty():
+            reading.set()
+        return await inbound.get()
+
+    async def send(message):
+        if message["type"] == "websocket.send" and json.loads(message["text"]).get("id") == "failed-send":
+            if before_failure is not None:
+                before_failure()
+            if deadline:
+                await asyncio.Event().wait()
+            raise OSError("peer disconnected")
+
+    ws = WebSocket({"type": "websocket", "path": "/", "headers": [], "app": None}, receive, send)
+    register = server.register_live_transport
+
+    def track(transport):
+        transports.append(transport)
+        register(transport)
+
+    monkeypatch.setattr(server, "register_live_transport", track)
+    monkeypatch.setattr(server, "resolve_skin", lambda: {})
+    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
+    monkeypatch.setattr(server, "_ensure_lease_watcher", lambda: None)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(ws_mod, "_note_dashboard_client_activity", lambda **_kw: None)
+    monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
+    return ws, inbound, reading, transports
+
+
+@pytest.mark.parametrize("deadline", [False, True])
+def test_ws_background_send_failure_wakes_idle_reader_and_preserves_session(monkeypatch, caplog, deadline):
+    """Real Starlette send failure must detach, not strand the reader or cancel a live turn."""
+    from starlette.websockets import WebSocketState
+
+    monkeypatch.setattr(ws_mod, "_WS_SEND_DEADLINE_S", 0.05)
+
+    async def scenario():
+        ws, _inbound, reading, transports = _starlette_send_failure_harness(monkeypatch, deadline=deadline)
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        session = None
+        try:
+            await asyncio.wait_for(reading.wait(), 2)
+            transport = transports[0]
+            session = {"transport": transport, "running": True, "agent": object()}
+            server._sessions["outbound-failure"] = session
+            assert not await transport.write_async({"id": "failed-send"})
+            await asyncio.wait_for(task, 2)
+            assert ws.application_state is WebSocketState.DISCONNECTED
+            assert transport.closed and transport not in server._live_transports
+            assert server._sessions["outbound-failure"] is session
+            assert session["running"] and session["transport"] is server._detached_ws_transport
+            assert not (asyncio.all_tasks() - {asyncio.current_task()})
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            server._sessions.pop("outbound-failure", None)
+
+    asyncio.run(scenario())
+    assert "ws receive failed" not in caplog.text
+
+
+@pytest.mark.parametrize("unrelated", [False, True])
+def test_ws_send_disconnect_receive_race_only_normalizes_disconnected_state(monkeypatch, caplog, unrelated):
+    """Starlette can reject receive_text before the writer has latched its failure."""
+    async def scenario():
+        release, entered = asyncio.Event(), asyncio.Event()
+        ws, _inbound, _reading, transports = _starlette_send_failure_harness(
+            monkeypatch, before_failure=None if unrelated else release.set)
+        receive_text = ws.receive_text
+        async def gated_receive_text():
+            entered.set()
+            await release.wait()
+            if unrelated:
+                raise RuntimeError("unrelated receive failure")
+            return await receive_text()
+
+        monkeypatch.setattr(ws, "receive_text", gated_receive_text)
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            assert not await transports[0].write_async({"id": "failed-send"})
+            release.set()
+            await asyncio.wait_for(task, 2)
+            assert not (asyncio.all_tasks() - {asyncio.current_task()})
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+    errors = [record for record in caplog.records if record.getMessage().startswith("ws receive failed")]
+    assert bool(errors) is unrelated
+    if unrelated:
+        assert str(errors[0].exc_info[1]) == "unrelated receive failure"
+
+
+def test_ws_never_accepted_receive_is_still_reported(monkeypatch, caplog):
+    async def scenario():
+        ws, _inbound, _reading, _transports = _starlette_send_failure_harness(monkeypatch)
+
+        async def no_op(*_args, **_kwargs):
+            pass
+
+        monkeypatch.setattr(ws, "accept", no_op)
+        monkeypatch.setattr(ws, "send_text", no_op)
+        await asyncio.wait_for(ws_mod.handle_ws(ws), 2)
+
+    asyncio.run(scenario())
+    errors = [record for record in caplog.records if record.getMessage().startswith("ws receive failed")]
+    assert len(errors) == 1
+    assert 'Need to call "accept" first' in str(errors[0].exc_info[1])
+
+
+@pytest.mark.parametrize("blocked_enqueue", [False, True])
+def test_ws_background_send_failure_drains_full_dispatch_queue(monkeypatch, blocked_enqueue):
+    from types import SimpleNamespace
+
+    async def scenario():
+        ws, inbound, reading, transports = _starlette_send_failure_harness(monkeypatch)
+        entered, release, completed = asyncio.Event(), asyncio.Event(), []
+        queued, blocked, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class PendingQueue(asyncio.Queue):
+            async def put(self, item):
+                req_id = item.get("id") if isinstance(item, dict) else None
+                if req_id == "unadmitted":
+                    assert self.full()
+                    blocked.set()
+                try:
+                    await super().put(item)
+                except asyncio.CancelledError:
+                    if req_id == "unadmitted":
+                        cancelled.set()
+                    raise
+                if req_id == "queued":
+                    queued.set()
+
+        async def dispatch(_connection, req, _method, _transport):
+            if req["id"] == "active":
+                entered.set()
+                await release.wait()
+            completed.append(req["id"])
+
+        monkeypatch.setattr(ws_mod, "asyncio", SimpleNamespace(**(vars(asyncio) | {"Queue": PendingQueue})))
+        monkeypatch.setattr(ws_mod, "_dispatch_request", dispatch)
+        monkeypatch.setattr(ws_mod, "_WS_DISPATCH_QUEUE_MAX", 1)
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            await asyncio.wait_for(reading.wait(), 2)
+            inbound.put_nowait({"type": "websocket.receive", "text": json.dumps(_rpc("active", "probe"))})
+            await asyncio.wait_for(entered.wait(), 2)
+            inbound.put_nowait({"type": "websocket.receive", "text": json.dumps(_rpc("queued", "probe"))})
+            await asyncio.wait_for(queued.wait(), 2)
+            if blocked_enqueue:
+                inbound.put_nowait({"type": "websocket.receive", "text": json.dumps(_rpc("unadmitted", "probe"))})
+                await asyncio.wait_for(blocked.wait(), 2)
+            assert not await transports[0].write_async({"id": "failed-send"})
+            if blocked_enqueue:
+                await asyncio.wait_for(cancelled.wait(), 2)
+            assert not task.done() and completed == []
+            release.set()
+            await asyncio.wait_for(task, 2)
+            assert completed == ["active", "queued"]
+            assert not (asyncio.all_tasks() - {asyncio.current_task()})
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_ws_cancelled_connection_settles_reader_and_dispatcher(monkeypatch):
+    async def scenario():
+        ws, _inbound, reading, _transports = _starlette_send_failure_harness(monkeypatch)
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        await asyncio.wait_for(reading.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert not (asyncio.all_tasks() - {asyncio.current_task()})
+
+    asyncio.run(scenario())
+
+
 def test_ws_transport_serializes_concurrent_sends():
     active_sends = 0
     max_active_sends = 0

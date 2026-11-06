@@ -1629,8 +1629,25 @@ class GatewayStartupMixin:
             # diagnostic snapshot once, instead of flushing at each return.
             await self._start_flush_runtime_status()
 
+    async def _start_wait_external_drain(self) -> bool:
+        """Keep boot recovery and transports behind an inherited maintenance marker."""
+        from gateway.drain_control import drain_requested
+        while await asyncio.to_thread(drain_requested):
+            self._enter_external_drain()
+            self._update_runtime_status("draining")
+            if await self._abort_startup_if_shutdown_requested():
+                return True
+            await asyncio.sleep(1.0)
+        # The absent/cleared read also yielded: shutdown may have completed during it.
+        if await self._abort_startup_if_shutdown_requested():
+            return True
+        self._exit_external_drain()
+        return False
+
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
+        if await self._start_wait_external_drain():
+            return True
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
@@ -1674,6 +1691,8 @@ class GatewayStartupMixin:
         ):
             return True
         if await self._abort_startup_if_shutdown_requested():
+            return True
+        if await self._start_wait_external_drain():
             return True
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()

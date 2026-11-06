@@ -165,7 +165,8 @@ class _SafeWriter:
             return False
 
     def __getattr__(self, name):
-        return getattr(self._inner, name)
+        from agent.thread_scoped_output import lookup_stream_attr
+        return lookup_stream_attr(object.__getattribute__(self, "_inner"), name)
 
 
 def _get_proxy_from_env() -> Optional[str]:
@@ -331,11 +332,23 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
 
 def _install_safe_stdio() -> None:
-    """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    """Wrap stdout/stderr so best-effort console output cannot crash the agent.
+
+    A thread-routing proxy already swallows write errors. Wrapping it from the
+    outside lets the next silence install another proxy around this writer, and
+    the two alternate until attribute lookup exceeds the recursion limit.
+    """
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
-            setattr(sys, stream_name, _SafeWriter(stream))
+        if stream is None or isinstance(stream, _SafeWriter):
+            continue
+        from agent.thread_scoped_output import _ThreadRoutingStream
+        if isinstance(stream, _ThreadRoutingStream):
+            inner = stream._passthrough
+            if inner is not None and not isinstance(inner, _SafeWriter):
+                stream._passthrough = _SafeWriter(inner)
+            continue
+        setattr(sys, stream_name, _SafeWriter(stream))
 
 
 # Drop-in for ``openai.OpenAI``.

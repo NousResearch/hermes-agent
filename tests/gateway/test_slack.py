@@ -2746,8 +2746,8 @@ class TestReactions:
         await adapter.on_processing_start(msg_event)
 
         add_calls = adapter._app.client.reactions_add.call_args_list
-        assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "eyes"
+        assert len(add_calls) == 2
+        assert [item.kwargs["name"] for item in add_calls] == ["eyes", "hourglass_flowing_sand"]
 
         # Simulate the base class calling on_processing_complete
         from gateway.platforms.event import ProcessingOutcome
@@ -2756,10 +2756,10 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
-        assert len(add_calls) == 2
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
-        assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert len(add_calls) == 3
+        assert add_calls[2].kwargs["name"] == "white_check_mark"
+        assert [item.kwargs["name"] for item in remove_calls] == [
+            "eyes", "hourglass_flowing_sand", "eyes"]
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids

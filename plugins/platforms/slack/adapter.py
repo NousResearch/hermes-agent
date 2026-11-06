@@ -11,6 +11,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
 aiohttp: Any = None
@@ -1047,6 +1048,10 @@ class SlackAdapter(BasePlatformAdapter):
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
 
+    # Shared-runtime admission is a receipt, not the start of this message's execution.
+    processing_starts_at_execution = True
+    processing_requires_all_deliveries = True
+    processing_inline_commands = True
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.
@@ -1379,6 +1384,17 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
                 connected = await self._socket_transport_connected()
                 if connected is False:
+                    client = getattr(self._handler, "client", None)
+                    started = self._socket_handler_started_monotonic
+                    # connect() may still be awaiting its first session. Restarting every
+                    # watchdog tick starves it; only that initial state gets bounded grace.
+                    if (
+                        getattr(client, "current_session", False) is None
+                        and getattr(client, "last_ping_pong_time", False) is None
+                        and started is not None
+                        and (time.monotonic() - started) < self._socket_first_ping_grace_s
+                    ):
+                        continue
                     await self._restart_socket_mode("transport disconnected")
                 elif self._socket_ping_pong_stale():
                     # is_connected() can lie on a closed session; staleness catches the zombie.
@@ -3316,29 +3332,37 @@ class SlackAdapter(BasePlatformAdapter):
         return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Replace the receipt with a distinct in-progress reaction."""
         target = self._reacting_target(event)
         if target is None:
             return
         ts, team_id, _marker = target
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._react(channel_id, ts, "eyes", team_id, remove=False)
+            if await self._react(channel_id, ts, "hourglass_flowing_sand", team_id, remove=False):
+                await self._react(channel_id, ts, "eyes", team_id, remove=True)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Clear transient reactions; only success receives a completion check."""
+        if getattr(event, "_gateway_processing_deferred", False):
+            return  # a pause notice is not completion of the saved input
         target = self._reacting_target(event)
         if target is None:
             return
         ts, team_id, marker = target
-        self._reacting_message_ids.discard(marker)
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
+            self._reacting_message_ids.discard(marker)
             return
+        await self._react(channel_id, ts, "hourglass_flowing_sand", team_id, remove=True)
         await self._react(channel_id, ts, "eyes", team_id, remove=True)
+        if outcome == ProcessingOutcome.SUCCESS:
+            outcome = getattr(event, "_gateway_processing_outcome", outcome)
         final = {ProcessingOutcome.SUCCESS: "white_check_mark", ProcessingOutcome.FAILURE: "x"}
         if outcome in final:
             await self._react(channel_id, ts, final[outcome], team_id, remove=False)
+        # A cancelled await must leave the caller's completion retry a target.
+        self._reacting_message_ids.discard(marker)
 
     # ----- User identity resolution -----
 
@@ -4205,20 +4229,21 @@ class SlackAdapter(BasePlatformAdapter):
         return getattr(runner, "_is_user_authorized", None)
 
     def _early_reject_unauthorized(
-            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
+            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None,
+            is_bot: bool = False) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
         introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, is_bot=is_bot, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
                 chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
-                thread_id=thread_id)
+                thread_id=thread_id, is_bot=is_bot)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4667,7 +4692,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+        if self._early_reject_unauthorized(
+                user_id, channel_id, is_dm, thread_id=thread_ts,
+                is_bot=self._event_declares_bot_sender(event)):
             return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
@@ -4701,7 +4728,14 @@ class SlackAdapter(BasePlatformAdapter):
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
                 team_id)
-        # Thread history stays out of ``text``: prepending would push a command off char zero.
+        reply_expected = self._slack_reply_expected(
+            routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
+            addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process)
+        # A plain reply in an admitted conversation is addressed too; do not mark ambient chatter.
+        if reply_expected is not False and self._reactions_enabled():
+            self._track_reacting_message(team_id, ts)
+            await self._react(channel_id, ts, "eyes", team_id, remove=False)
+        # Thread history stays out of ``text`` so commands remain at char zero.
         (
             channel_context, thread_root_media_urls, thread_root_media_types,
         ) = await self._hydrate_thread_context(
@@ -4716,13 +4750,7 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
-            reply_expected=self._slack_reply_expected(
-                routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
-            self._track_reacting_message(team_id, ts)
+            reply_expected=reply_expected)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.
         context_channel_id = agent_context.get("context_channel_id", "")
@@ -4732,6 +4760,9 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{msg_event.text}")
         if ts:
             self._remember_processed_message_ts(ts)
+        # Admission alone never earns a completion check (paused or fast-settled redelivery).
+        if self._shared_runtime_owns_input(msg_event):
+            msg_event._gateway_processing_outcome = ProcessingOutcome.CANCELLED
         await self.handle_message(msg_event)
 
     async def _build_message_event(
@@ -4773,6 +4804,8 @@ class SlackAdapter(BasePlatformAdapter):
             source=source,
             raw_message=event,
             message_id=ts,
+            # Arrival time changes on Socket Mode redelivery; the provider ts does not.
+            timestamp=datetime.fromtimestamp(float(ts), UTC),
             media_urls=media_urls,
             media_types=media_types,
             media_text_inlined=media_text_inlined,

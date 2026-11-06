@@ -186,7 +186,7 @@ def reconcile_pending(*, allow_connect=True):
                 owner = owner_for_home(get_hermes_home())
                 if owner is None and not allow_connect:
                     continue
-                async def observe():
+                async def observe(owner=owner, params=dict(params)):
                     if owner is not None:
                         return await operation(owner[0], 'recover', params)
                     async with connect_gateway() as client:

@@ -147,6 +147,13 @@ rows in the same transaction and refuses while work is live or `unknown`. An inp
 was `started` when its owner died becomes `unknown` at the next owner start and is never
 replayed; its later inputs wait until it is resolved (`prompt.resolve_unknown`).
 
+The `runtime_epoch` row is the store's owner fence: the gateway captures it once at boot
+and every write is checked against it, so bumping it is a takeover. Only the profile's lock
+holder may take it over — `begin_runtime_epoch()` refuses a bump while the profile's
+`gateway.lock` names a live foreign holder, because a stray bump leaves the running gateway
+permanently behind the fence: every write on that store then fails with `stale_epoch` until
+it restarts, and `/reset` does not recover it (#142330).
+
 `hermes sessions recover` copies the row-bearing tables above into the
 recovered database (FTS indexes and `schema_version` are regenerated), including
 the lazily-created `delivery_obligations` ledger when the source has one — its

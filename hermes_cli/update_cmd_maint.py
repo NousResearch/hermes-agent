@@ -378,6 +378,24 @@ def _update_complete_message(pre_version: str | None) -> str:
     return "✓ Update complete!"
 
 
+def _unbuilt_completion_message(complete_message: str) -> str:
+    """The honest headline when the code updated but a product build failed.
+
+    ``_print_verified_update_completion`` claims success only for a ``✓`` line, and a ``✓`` line
+    while the app products are unbuilt is exactly the trap this replaces: the summary said
+    "Update complete" while the desktop app that launches next was the previous (or a
+    half-written) bundle. The code itself IS committed, so this is not an update failure — say
+    partially complete, keep the version span, and name the retry.
+    """
+    start = complete_message.find("(")
+    detail = f" {complete_message[start:]}" if start != -1 and complete_message.rstrip().endswith(")") else ""
+    return (
+        f"⚠ Update partially complete{detail} — the code is updated, but the app products "
+        "failed to build, so the previous desktop app is still what launches. "
+        "Run `hermes update` again to retry the build."
+    )
+
+
 def _post_update_sqlite_runtime_status():
     """Return whether the interpreter used after update has safe SQLite."""
     from hermes_cli.sqlite_runtime import probe_sqlite_runtime
@@ -1068,7 +1086,16 @@ def _run_post_update_maintenance(
     ))
 
     print()
-    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
+    # A product build that failed is owed work, not a silent success: without this the run printed
+    # "✓ Update complete!" (exit 0) while the desktop app it just failed to rebuild stayed on disk
+    # as the previous bundle — the exact way a broken update passes as a good one.
+    from hermes_cli.update_receipt import BUILD_FOLLOWUPS
+
+    build_owed = any(step in BUILD_FOLLOWUPS for step, _ in (followups or []))
+    headline = completion_message or _update_complete_message(pre_update_version)
+    if build_owed and headline.startswith("✓"):
+        headline = _unbuilt_completion_message(headline)
+    update_complete = _print_verified_update_completion(headline)
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):
@@ -1078,9 +1105,9 @@ def _run_post_update_maintenance(
 
     with _best_effort('Post-update notices failed: %s'):
         _print_post_update_notices_and_self_heals()
-    # A non-✓ completion message (parked local changes) withholds success on its own; only a
-    # ✓ message that still came back False is the SQLite verdict.
-    if not update_complete and (completion_message or "✓").startswith("✓"):
+    # A non-✓ completion message (parked local changes, an unbuilt product) withholds success on its
+    # own; only a ✓ message that still came back False is the SQLite verdict.
+    if not update_complete and not build_owed and (completion_message or "✓").startswith("✓"):
         record_followup("sqlite_runtime", "the selected Python links an unsafe SQLite runtime",
                         retry="run the installer again")
     return update_complete

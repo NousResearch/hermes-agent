@@ -87,6 +87,118 @@ function removeInstalledTrees(source, projects) {
   }
 }
 
+function declaredPackageNames(source, workspaces) {
+  const names = new Set()
+  for (const workspace of workspaces) {
+    let manifest
+    try {
+      manifest = JSON.parse(readFileSync(join(source, workspace, 'package.json'), 'utf8'))
+    } catch {
+      continue
+    }
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+      for (const name of Object.keys(manifest[field] || {})) {
+        names.add(name)
+      }
+    }
+  }
+  return names
+}
+
+// `get-windows@9.3.0(encoding@0.1.13)` / `@mapbox/node-pre-gyp@1.0.11(...)` → the package name.
+function packageNameOf(entry) {
+  const withoutPeers = String(entry).split('(')[0]
+  const separator = withoutPeers.indexOf('@', withoutPeers.startsWith('@') ? 1 : 0)
+  return separator === -1 ? withoutPeers : withoutPeers.slice(0, separator)
+}
+
+/**
+ * Drop pnpm's stale `skipped` records for packages the SELECTED workspaces declare.
+ *
+ * pnpm writes a package it declined to install into the root `node_modules/.modules.yaml`
+ * `skipped` list, and that record is sticky: after it exists, an install with an unchanged
+ * lockfile reports "Lockfile is up to date" and never retries the package — even though
+ * ``removeInstalledTrees`` just deleted the tree it lived in. A filtered install
+ * (``--filter {./apps/desktop}...``) is one way to earn such a record for a package the
+ * workspace really declares, and an ``optionalDependency`` is not optional for the product:
+ * ``get-windows`` is the macOS window-enumeration helper the desktop build hard-requires
+ * (``scripts/build/desktop.mjs``), so a stale skip record turns every later desktop build into
+ * "Prepared get-windows is missing its macOS helper".
+ *
+ * Only names declared by a selected workspace are cleared, so genuinely platform-skipped
+ * packages (``@electron/windows-sign``, ``lefthook-windows-*``) stay skipped.
+ */
+function clearStaleSkipRecords(source, workspaces) {
+  const file = join(source, 'node_modules/.modules.yaml')
+  if (!existsSync(file)) return []
+  let modules
+  try {
+    modules = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return [] // not the JSON-compatible shape this pnpm writes; nothing provably stale
+  }
+  const skipped = Array.isArray(modules.skipped) ? modules.skipped : []
+  if (skipped.length === 0) return []
+  const declared = declaredPackageNames(source, workspaces)
+  const stale = skipped.filter(entry => declared.has(packageNameOf(entry)))
+  if (stale.length === 0) return []
+  modules.skipped = skipped.filter(entry => !stale.includes(entry))
+  writeFileSync(file, JSON.stringify(modules, null, 2))
+  return stale
+}
+
+/**
+ * Verify the optionalDependencies each selected workspace DECLARES, and backfill them once.
+ *
+ * A filtered install (``--filter {./apps/desktop}...``) silently declines to install some
+ * declared optional dependencies on macOS and records them in the root
+ * ``node_modules/.modules.yaml`` ``skipped`` list. That record is sticky: every later install
+ * with an unchanged lockfile reports "Lockfile is up to date" and never retries, so the gap
+ * survives updates forever — and an optionalDependency is not optional for the product:
+ * ``get-windows`` is the macOS window-enumeration helper the desktop build hard-requires, so the
+ * desktop app stops building while the update still claims success.
+ *
+ * The recorder is cleared and one unfiltered install backfills the tree; pnpm re-creates these
+ * packages from its store in seconds. Anything still missing is printed as a warning naming the
+ * package, so the next failure is diagnosable instead of "Prepared get-windows is missing".
+ */
+function backfillSkippedOptionals({ source, workspaces, pnpm, env }) {
+  const missing = () => {
+    const gaps = []
+    for (const workspace of workspaces) {
+      let manifest
+      try {
+        manifest = JSON.parse(readFileSync(join(source, workspace, 'package.json'), 'utf8'))
+      } catch {
+        continue
+      }
+      for (const name of Object.keys(manifest.optionalDependencies || {})) {
+        if (!existsSync(join(source, workspace, 'node_modules', name))) gaps.push(`${workspace}:${name}`)
+      }
+    }
+    return gaps
+  }
+  const firstGaps = missing()
+  if (firstGaps.length === 0) return
+  const cleared = clearStaleSkipRecords(source, workspaces)
+  console.log(
+    `node-deps: pnpm skipped declared optional dependencies (${firstGaps.join(', ')})` +
+      `${cleared.length ? `; cleared ${cleared.length} stale skip record(s)` : ''}; backfilling with an unfiltered install`
+  )
+  execFileSync(pnpm, ['install', '--frozen-lockfile', '--trust-lockfile', '--prod=false'], {
+    cwd: source,
+    env,
+    stdio: 'inherit'
+  })
+  const remaining = missing()
+  if (remaining.length) {
+    console.warn(
+      `node-deps: ⚠ still missing after the backfill: ${remaining.join(', ')} — ` +
+        'the product that needs them will not build correctly'
+    )
+  }
+}
+
 /** Install the full requested workspace union in one strict, locked operation.
  *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
 export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
@@ -152,6 +264,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   removeInstalledTrees(source, projects)
   console.log(`node-deps: installing workspace dependencies with pnpm (${selected.join(', ')})...`)
   execFileSync(pnpm, args, { cwd: source, env, stdio: 'inherit' })
+  backfillSkippedOptionals({ source, workspaces: selected, pnpm, env })
   if (prepareElectron) prepareElectronRuntime({ source, install, env })
   if (reuse) {
     const completed = `${key}\n${createHash('sha256').update(readFileSync(installedLock)).digest('hex')}\n`

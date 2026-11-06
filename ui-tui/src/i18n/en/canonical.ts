@@ -54,6 +54,7 @@ export const canonicalEn = {
       unknownExecution: 'unknown execution — Ctrl+X to discard before retrying',
       invalidRecord: (name: string) => `Invalid pending input record: ${name}`,
       clipboardImageFailed: (message: string) => `clipboard image failed: ${message}`,
+      pasteNotApplied: 'paste dropped: the draft it was pasted into is gone',
       imagesNotRestored: (count: number) =>
         `${count} image${count === 1 ? '' : 's'} from the edited prompt not re-attached (the draft changed)`
     },

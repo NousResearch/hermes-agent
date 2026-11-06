@@ -10,7 +10,7 @@ import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { splitImageNotes } from '../../lib/imageNotes.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
-import { armPendingRewind, cancelBacktrackPrime, cancelPendingRewind, type RewindSubmission } from '../backtrackStore.js'
+import { $pendingRewind, armPendingRewind, cancelBacktrackPrime, cancelPendingRewind, type RewindSubmission } from '../backtrackStore.js'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'
@@ -65,13 +65,18 @@ const readable = (path: string) => {
 function prefillPrompt(ctx: SlashRunCtx, stored: string) {
   const { images, text } = splitImageNotes(stored)
 
+  // Browse and fork answer after RPCs the user can type through: a draft started meanwhile stays,
+  // after the picked prompt, instead of being overwritten.
+  const prefill = (value: string) =>
+    ctx.composer.restoreDraft?.(value, [], captureDestination()) || ctx.composer.setInput(value)
+
   if (images.length && process.env.HERMES_TUI_GATEWAY_URL?.trim() && !images.every(readable)) {
-    ctx.composer.setInput(stored)
+    prefill(stored)
 
     return ctx.transcript.sys(t('slashCmd.core.rewind.imagesKeptAsNotes', images.length))
   }
 
-  ctx.composer.setInput(text)
+  prefill(text)
 
   if (images.length) {
     // The user may keep typing while the images stage: the restore follows the draft.
@@ -122,10 +127,15 @@ export function openRewindPicker(ctx: SlashRunCtx) {
           messages: toTranscriptMessages(snapshot.messages ?? []),
           targets,
           onEdit: target => {
+            // Browsing outlived its session (switched elsewhere): its prompts are not this one's.
+            if (getUiState().sid !== sid) {
+              return
+            }
+
             prefillPrompt(ctx, target.text)
             armPendingRewind({ send: edit => send(target, edit), sid, target })
           },
-          onFork: target => void forkFrom(ctx, sid, target),
+          onFork: target => void (getUiState().sid === sid && forkFrom(ctx, sid, target)),
           onSubmit: send,
           onType: text => ctx.composer.appendText(text),
           onPaste: text => void ctx.composer.appendPaste(text)
@@ -148,21 +158,43 @@ export async function rewindAndSend(
   edit: RewindSubmission | string,
   destination: SubmissionDestination = captureDestination()
 ) {
-  const { attachments, display, text } = typeof edit === 'string' ? { display: edit, text: edit } : edit
+  const { attachments, display, text, tokens } = typeof edit === 'string' ? { display: edit, text: edit } : edit
   const stale = () => getUiState().sid !== sid
   const gw = ctx.gateway.gw
   let cut = false
 
   // `text` is already expanded (paste chips resolved): the composer's tokens are gone by now.
-  const keepEdit = () => {
+  // `rearm`: a refusal (busy, another viewer's turn, stale revision) leaves the edit armed, so the
+  // retry Enter rewinds again instead of sending a plain prompt after the restored draft.
+  const keepEdit = (rearm = false) => {
     if (cut) {
       if (attachments?.length) {
         ctx.composer.enqueue(text, display, destination, attachments)
       } else {
         ctx.composer.enqueue(text, display, destination)
       }
-    } else if (!stale()) {
+
+      return
+    }
+
+    if (stale()) {
+      // The view moved to another session before anything was cut: the edit is not sent there and
+      // not dropped silently. Its text is in input history (↑) for when the user goes back.
+      return ctx.transcript.sys(t('slashCmd.core.rewind.editNotSent'))
+    }
+
+    // Nothing was cut: the draft goes back whole, chips and their images and pastes included, so a
+    // retry sends what was edited; a draft started since stays after it. Never the queue: that
+    // drains on its own and would send the edit as a new prompt without the rewind.
+    if (!tokens) {
       ctx.composer.setInput(text)
+    } else if (!ctx.composer.restoreDraft?.(display, tokens, destination)) {
+      return ctx.transcript.sys(t('slashCmd.core.rewind.editNotSent'))
+    }
+
+    // Unless the user armed another edit meanwhile: theirs is newer.
+    if (rearm && !$pendingRewind.get()) {
+      armPendingRewind({ send: next => void rewindAndSend(ctx, sid, target, next, destination), sid, target })
     }
   }
 
@@ -202,7 +234,7 @@ export async function rewindAndSend(
       ctx.transcript.send(text, true, display, value => value, { attachments })
     }
   } catch (error) {
-    keepEdit()
+    keepEdit(true)
 
     if (!stale()) {
       ctx.transcript.sys(rewindBusyText(error, 'rewind') ?? `error: ${rpcErrorMessage(error)}`)
@@ -224,9 +256,10 @@ export async function forkFrom(ctx: SlashRunCtx, sid: string, target: RewindTarg
 
   try {
     if (!target.throughRowId) {
-      await ctx.session.newSession()
+      // The created session's id: a switch elsewhere while it was created must not get the prompt.
+      const created = await ctx.session.newSession()
 
-      return prefill(getUiState().sid)
+      return prefill(created === undefined ? getUiState().sid : (created as null | string))
     }
 
     const stale = () => getUiState().sid !== sid

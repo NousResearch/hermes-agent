@@ -429,6 +429,9 @@ export interface ComposerActions {
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
   pushHistory: (text: string) => void
+  /** Put a submitted draft (text with chips + their tokens) back into the same session's empty
+   *  composer; false when the session changed or the composer is in use. */
+  restoreDraft: (display: string, tokens: readonly ComposerToken[], destination: SubmissionDestination) => boolean
   /** Composer text for queue-edit slot `index` (local items first, then server-queued rows). */
   queueDraft: (index: number) => string
   removeQueue: (index: number) => void
@@ -595,6 +598,7 @@ export interface SlashHandlerContext {
     hasSelection: boolean
     openEditor: () => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
+    restoreDraft?: ComposerActions['restoreDraft']
     selection: SelectionApi
     setInput: StateSetter<string>
   }

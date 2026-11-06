@@ -7124,7 +7124,7 @@ export const CANONICAL_RPC_METHODS = [
 
 // ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──
 export interface CanonicalRpcNamespaces {
-  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. Call one only when runtime.describe lists plugin-rpc-v1: an owner without it serves no plugin methods, and with it -32601 means that plugin method is not loaded. */
+  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported. */
   'plugin.{plugin_id}.{name}': { method: `plugin.${string}`; capability: 'plugin-rpc-v1'; params: PluginRpcParams; result: unknown }
 }
 export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces

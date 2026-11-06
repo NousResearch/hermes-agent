@@ -956,3 +956,35 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def _help_slot_parts(monkeypatch, agent):
+    """Stable tier with both help variants stubbed to distinct tokens."""
+    from agent import system_prompt
+
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "FULLVARIANT")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "NOVARIANT")
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)
+
+
+def test_help_guidance_env_overrides_variant(monkeypatch):
+    """The documented custom-deployment knob replaces the whole help block."""
+    monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "CUSTOMDEPLOY guidance")
+    parts = _help_slot_parts(monkeypatch, _make_agent(valid_tool_names=["read_file"]))
+    assert "CUSTOMDEPLOY guidance" in parts["stable"]
+    assert "FULLVARIANT" not in parts["stable"]
+    assert "NOVARIANT" not in parts["stable"]
+
+
+def test_help_guidance_env_unset_or_blank_keeps_variants(monkeypatch):
+    monkeypatch.delenv("HERMES_AGENT_HELP_GUIDANCE", raising=False)
+    parts = _help_slot_parts(monkeypatch, _make_agent(valid_tool_names=["read_file"]))
+    assert "NOVARIANT" in parts["stable"]
+    monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "   ")
+    parts = _help_slot_parts(monkeypatch, _make_agent(valid_tool_names=["read_file"]))
+    assert "NOVARIANT" in parts["stable"]

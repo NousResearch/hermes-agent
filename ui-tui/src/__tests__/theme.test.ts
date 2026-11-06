@@ -571,7 +571,10 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(color.diffAdded).toBe('#0a0')
     expect(color.diffRemoved).toBe('#a00')
     expect(color.diffAddedWord).toBe('#0f0')
-    expect(color.diffRemovedWord).toBe('#f00')
+    // diffRemovedWord '#f00' on diffRemoved '#a00' has only ~1.9:1 pair
+    // contrast, so the diff-pair guard nudges it 15% toward white.
+    // A verbatim override is only kept when the pair already clears 2:1.
+    expect(color.diffRemovedWord).toBe('#ff2626')
   })
 
   it('maps the status bar from skin status_bar_* keys', async () => {

@@ -208,6 +208,10 @@ class WebhookAdapter(BasePlatformAdapter):
     # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
     # emitting an interactive acknowledgement that abandons the task (#57056).
     interactive_resume: bool = False
+    # The per-delivery session closes when its run finishes, so a delegation or background-process
+    # completion would wake a fresh session with no history: run that work inside the turn. The
+    # adapter stays push-capable (``supports_async_delivery``) for Kanban and process wakes.
+    session_ends_with_turn: bool = True
     # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
     serves_profile_prefix: bool = True
 

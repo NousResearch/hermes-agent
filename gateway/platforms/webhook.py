@@ -121,8 +121,12 @@ def _is_loopback_host(host: Optional[str]) -> bool:
 
 def _hmac_str_equal(provided: str, expected: str) -> bool:
     """Timing-safe str equality tolerant of non-ASCII: ``compare_digest`` raises TypeError on non-ASCII
-    str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed."""
-    return hmac.compare_digest(provided.encode(), expected.encode())
+    str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed.
+    ``surrogatepass`` also handles malformed header bytes decoded by aiohttp with surrogateescape."""
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def _hex_hmac(secret: str, data: bytes) -> str:
@@ -908,7 +912,18 @@ class WebhookAdapter(BasePlatformAdapter):
                                "to replay attacks. Add an 'X-Webhook-Timestamp' header and switch to "
                                "'X-Webhook-Signature-V2' (HMAC-SHA256 of '<timestamp>.<body>').", route_name)
             return _hmac_str_equal(generic_sig, _hex_hmac(secret, body))
-        logger.debug("[webhook] Secret configured but no signature header found")
+        # Preserve existing scheme handling, but never use Bearer to rescue an attempted signature.
+        signature_headers = {
+            "svix-signature", "webhook-signature", "linear-signature",
+            "x-hub-signature-256", "x-gitlab-token",
+            "x-webhook-signature-v2", "x-webhook-signature",
+        }
+        if signature_headers.intersection(name.lower() for name in headers):
+            return False
+        scheme, _, token = headers.get("Authorization", "").partition(" ")
+        if scheme.lower() == "bearer" and token:
+            return _hmac_str_equal(token.strip(), secret)
+        logger.debug("[webhook] Secret configured but no signature/auth header found")
         return False
 
     # --- Prompt rendering ---

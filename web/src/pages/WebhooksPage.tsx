@@ -356,6 +356,15 @@ export default function WebhooksPage() {
                   </div>
                 </div>
 
+                <div className="grid gap-2">
+                  <Label>Bearer auth header</Label>
+                  <p className="text-xs text-muted-foreground">Use when your provider cannot sign payloads with HMAC.</p>
+                  <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+                    <span className="flex-1 min-w-0 truncate font-mono text-xs">{"Authorization: Bearer " + created.secret}</span>
+                    <CopyButton value={"Authorization: Bearer " + created.secret} />
+                  </div>
+                </div>
+
                 <div className="flex justify-end">
                   <Button
                     className="uppercase"

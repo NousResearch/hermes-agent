@@ -147,6 +147,60 @@ def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
     assert _in_fresh_thread(call) is None
 
 
+def test_home_and_scope_are_restored_when_the_scope_build_fails(launch_home, monkeypatch):
+    from agent.secret_scope import current_secret_scope_home
+    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway import launch_profile_policy
+
+    secondary = _profile(launch_home / "profiles" / "work", OTHER)
+    set_multiplex_active(True)
+
+    def boom(_home):
+        raise RuntimeError("unreadable managed .env")
+
+    monkeypatch.setattr(launch_profile_policy, "owner_secret_scope", boom)
+    home_token = set_hermes_home_override(str(launch_home))
+    scope_token = set_secret_scope({}, profile_home=str(launch_home))
+    try:
+        with pytest.raises(credentials.PlaneCredentialError):
+            credentials.plane_token(secondary)
+        assert get_hermes_home_override() == str(launch_home)
+        assert current_secret_scope_home() == str(launch_home)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+
+
+def test_launch_profile_keeps_its_env_only_override_frozen_at_activation(tmp_path, monkeypatch, refreshes):
+    """A launch Portal override with no .env line (systemd / ``op run``) is the launch profile's
+    own: it survives later live-env mutation because the launch scope reads the frozen env."""
+    home = _profile(tmp_path / "hermes", STAGING)
+    (home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", STAGING)
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    activate_multi_profile_hosting()  # freezes the launch env
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", OTHER)  # poisoned afterwards
+
+    _in_fresh_thread(lambda: credentials.plane_token(home))
+
+    assert refreshes == [(STAGING, f"refresh-for-{STAGING}")]
+
+
+def test_secondary_never_borrows_the_launch_profiles_env_override(launch_home, monkeypatch, refreshes):
+    """A secondary with no Portal override of its own routes on its stored (allowlisted) URL, never
+    on the launch profile's process-env override."""
+    secondary = _profile(launch_home / "profiles" / "work", "https://portal.nousresearch.com")
+    (secondary / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", STAGING)
+    set_multiplex_active(True)
+
+    _in_fresh_thread(lambda: credentials.plane_token(secondary))
+
+    assert refreshes == [("https://portal.nousresearch.com", "refresh-for-https://portal.nousresearch.com")]
+
+
 def test_single_profile_binds_nothing(launch_home, refreshes, monkeypatch):
     """Not multiplexing: no scope is bound and the process env still routes (unchanged behaviour)."""
     from agent.secret_scope import current_secret_scope

@@ -28,10 +28,10 @@ async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monke
         alpha_home = homes[1][1]
         alpha = registry.for_home(alpha_home)
         launch = registry.launch
-        for authority in (alpha, launch):
-            authority.db.create_session('api-1', source='api_server')
+        alpha.db.create_session('api-alpha', source='api_server')
+        launch.db.create_session('api-launch', source='api_server')
 
-        ref = bind_api_session(alpha, 'api-1')
+        ref = bind_api_session(alpha, 'api-alpha')
         live = alpha.sessions[ref.session_id]
         identity = identity_of(live.source)
         assert live.source.profile == 'alpha'
@@ -42,8 +42,8 @@ async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monke
         assert runner._resolve_profile_home_for_source(live.source) == alpha_home.resolve()
         assert runner._profile_scope_key_for_source(live.source) == alpha_home.resolve()
         assert live.route.startswith('agent:alpha:')
-        # The same id bound by the launch authority stays in the launch profile (no cross-talk).
-        launch_ref = bind_api_session(launch, 'api-1')
+        # The launch authority's own session stays in the launch profile (no cross-talk).
+        launch_ref = bind_api_session(launch, 'api-launch')
         launch_source = launch.sessions[launch_ref.session_id].source
         assert launch_source.profile is None
         assert identity_of(launch_source).runtime_home == root.resolve()
@@ -51,14 +51,53 @@ async def test_api_binding_pins_runtime_to_the_admitting_profile(tmp_path, monke
 
         # A restart restores the same placement from the durable receipt.
         alpha.sessions.clear()
-        restored = restore_api_session(alpha, 'api-1')
+        restored = restore_api_session(alpha, 'api-alpha')
         assert restored == ref
-        restored_source = alpha.sessions['api-1'].source
+        restored_source = alpha.sessions['api-alpha'].source
         assert restored_source.profile == 'alpha'
         restored_identity = identity_of(restored_source)
         assert restored_identity.runtime_home == alpha_home.resolve()
         assert restored_identity.transport_profile == 'default'
         assert Path(runner._resolve_profile_home_for_source(restored_source)) == alpha_home.resolve()
+    finally:
+        for authority in list(getattr(runner, 'session_authorities', None) or []):
+            authority.db.close()
+        for _, home in homes:
+            process_ownership.release(home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_index", [0, 1])
+async def test_api_binding_refuses_legacy_duplicate_without_routing_writes(tmp_path, monkeypatch, profile_index):
+    from gateway.run_runtime import initialize_gateway_runtime
+    from gateway.runtime_ownership import process_ownership
+    from gateway.session_api import bind_api_session
+    from hermes_state_runtime import RuntimeStoreError
+
+    root, homes = _reserve_homes(tmp_path, monkeypatch)
+    process_ownership.reserve([home for _, home in homes])
+    runner = None
+    try:
+        runner = _runner(root, homes)
+        await initialize_gateway_runtime(runner)
+        registry = runner.session_authorities
+        owners = (registry.launch, registry.for_home(homes[1][1]))
+        # Model an existing poisoned install; guarded public creation correctly refuses it.
+        for authority in owners:
+            authority.db._conn.execute("INSERT INTO sessions(id,source,started_at) "
+                                       "VALUES ('shared-legacy','api_server',1)")
+            authority.db._conn.commit()
+
+        def snapshot():
+            return [{table: [tuple(row) for row in authority.db._conn.execute(
+                f"SELECT * FROM {table} ORDER BY 1")]
+                for table in ("sessions", "gateway_routing", "state_meta")} for authority in owners]
+
+        before = snapshot()
+        with pytest.raises(RuntimeStoreError) as refused:
+            bind_api_session(owners[profile_index], 'shared-legacy')
+        assert refused.value.reason == 'admission_conflict'
+        assert snapshot() == before
     finally:
         for authority in list(getattr(runner, 'session_authorities', None) or []):
             authority.db.close()

@@ -59,21 +59,21 @@ async def test_restart_recovery_keeps_every_profiles_held_images_and_collects_ea
     adapter.gateway_runner = runner
     runner._adapter_for_source = lambda source: adapter
 
-    def completed_image_turn(authority, data):
+    def completed_image_turn(authority, data, session_id):
         # The committed shape ``admit_api_turn`` writes (bytes captured under the active scope).
         content = _image(data)
-        authority.db.create_session('chat', source='api_server')
-        row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api', session_id='chat',
+        authority.db.create_session(session_id, source='api_server')
+        row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api', session_id=session_id,
             request_id='image', payload={'text': content, 'api_turn_v1': {
                 'history': [], 'settings': {}, 'media': commit_api_images(content)}})
-        started = claim_session_input(authority.db, epoch=authority.epoch, session_id='chat')
+        started = claim_session_input(authority.db, epoch=authority.epoch, session_id=session_id)
         settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'],
                              generation=started['generation'], outcome='completed')
         # A completed API turn's image stays as history context for later turns.
         return Path(row['payload']['api_turn_v1']['media'][0]['path'])
 
     try:
-        launch_held = completed_image_turn(authorities['default'], PNG + b'launch')
+        launch_held = completed_image_turn(authorities['default'], PNG + b'launch', 'launch-chat')
         launch_orphan = _orphan(PNG + b'launch-orphan')
         with _profile_runtime_scope(beta, hydrate_secrets=False):
             beta_orphan = _orphan(PNG + b'beta-orphan')
@@ -85,7 +85,7 @@ async def test_restart_recovery_keeps_every_profiles_held_images_and_collects_ea
         assert not launch_orphan.exists()
         assert not beta_orphan.exists(), "the secondary profile's own media root was never examined"
         with _profile_runtime_scope(beta, hydrate_secrets=False):
-            beta_held = completed_image_turn(authorities['beta'], PNG + b'beta')
+            beta_held = completed_image_turn(authorities['beta'], PNG + b'beta', 'beta-chat')
         recover_api_turns(adapter)
         assert beta_held.read_bytes() == PNG + b'beta'
         assert launch_held.read_bytes() == PNG + b'launch'

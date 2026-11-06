@@ -733,6 +733,54 @@ class TestWeixinPollLoopSyncBuf:
         assert [buf for buf, _ in saves] == ["buf-1", "buf-2"]
 
 
+class TestWeixinPollLoopSessionExpiredStatus:
+    """#140409: the health map must not keep saying "connected" while the long-poll parks on an
+    expired iLink session; it says ``retrying`` (NEEDS_ATTENTION) until getupdates answers again."""
+
+    def _run_polls(self, monkeypatch, responses):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = Mock()
+        queue = iter(responses)
+        published = []
+
+        async def _get_updates(*args, **kwargs):
+            try:
+                return next(queue)
+            except StopIteration:
+                adapter._running = False
+                raise asyncio.CancelledError  # end the loop without a verdict of its own
+
+        monkeypatch.setattr(weixin, "_get_updates", _get_updates)
+        monkeypatch.setattr(weixin, "_load_sync_buf", lambda *a: "buf-0")
+        monkeypatch.setattr(weixin, "SESSION_EXPIRED_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(adapter, "_write_runtime_status_safe",
+                            lambda context, **fields: published.append((context, fields)))
+        asyncio.run(adapter._poll_loop())
+        return published
+
+    def test_expired_session_publishes_retrying_once_then_connected(self, monkeypatch):
+        expired = {"ret": weixin.SESSION_EXPIRED_ERRCODE, "errmsg": "session expired"}
+        published = self._run_polls(monkeypatch, [expired, expired, {"ret": 0, "msgs": []}])
+        assert [context for context, _ in published] == ["session_expired", "connected"]
+        parked = published[0][1]
+        assert parked["platform_state"] == "retrying"
+        assert parked["needs_attention"] is True
+        assert parked["error_code"] == "weixin_session_expired"
+        assert parked["error_message"] == weixin.WeixinAdapter.SESSION_EXPIRED_STATUS_MESSAGE
+        assert parked["retrying_since"]
+        assert published[1][1]["platform_state"] == "connected"
+
+    def test_stale_session_minus_two_variant_parks_too(self, monkeypatch):
+        stale = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "unknown error"}
+        published = self._run_polls(monkeypatch, [stale])
+        assert [(context, fields["platform_state"]) for context, fields in published] == [("session_expired", "retrying")]
+
+    def test_healthy_polls_leave_the_health_map_alone(self, monkeypatch):
+        published = self._run_polls(monkeypatch, [{"ret": 0, "msgs": []}, {"ret": 0, "msgs": []}])
+        assert published == []
+
+
 class TestWeixinVoiceAlwaysDownloaded:
     """Regression tests for #27300: when WeChat (Weixin) returns a
     ``voice_item.text`` (Tencent Cloud's STT) we must still download

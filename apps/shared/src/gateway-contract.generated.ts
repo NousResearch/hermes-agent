@@ -5486,6 +5486,11 @@ export interface CanonicalBotCancelResult {
   status: 'cancelled' | 'stopping' | 'finished'
   receipt_status: string
 }
+/** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
+export interface PluginRpcParams {
+  session_id?: string | null
+  [key: string]: unknown
+}
 /** ``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped). */
 export interface ClarifyRequestParams {
   session_id: string
@@ -7116,6 +7121,13 @@ export const CANONICAL_RPC_METHODS = [
   'worker.persist',
   'worker.register'
 ] as const satisfies readonly CanonicalRpcMethod[]
+
+// ── Canonical method namespaces: member names exist only at runtime (gate on `capability`) ──
+export interface CanonicalRpcNamespaces {
+  /** A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. Call one only when runtime.describe lists plugin-rpc-v1: an owner without it serves no plugin methods, and with it -32601 means that plugin method is not loaded. */
+  'plugin.{plugin_id}.{name}': { method: `plugin.${string}`; capability: 'plugin-rpc-v1'; params: PluginRpcParams; result: unknown }
+}
+export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {

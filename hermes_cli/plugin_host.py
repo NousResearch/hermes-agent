@@ -395,6 +395,8 @@ class PluginHost:
             return self._serve_ctx(params)
         if method == "facade":
             return self._serve_facade(params)
+        if method == "session_event":
+            return self._serve_session_event(params)
         if method == "dispose":
             handle = self._handles.pop(int(params["handle"]), None)
             if handle is not None:
@@ -423,6 +425,18 @@ class PluginHost:
         kwargs = decode(params.get("kwargs") or {}, resolve)
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
+
+    def _serve_session_event(self, params: dict[str, Any]) -> bool:
+        """A hosted plugin's ``emit_plugin_session_event``: looked up in this host's profile, the one
+        every plugin it runs belongs to (a plugin thread's call has no caller scope of its own)."""
+        from hermes_cli.plugin_events import emit_plugin_session_event
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(self._home)
+        try:
+            return emit_plugin_session_event(str(params.get("plugin_id")), params.get("session_id"),
+                                             str(params.get("event")), params.get("payload"))
+        finally:
+            reset_hermes_home_override(token)
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES

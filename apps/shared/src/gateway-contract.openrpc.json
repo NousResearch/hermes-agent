@@ -28289,6 +28289,26 @@
         "title": "PluginRestartTarget",
         "type": "string"
       },
+      "PluginRpcParams": {
+        "additionalProperties": true,
+        "description": "Open: the plugin's handler owns every other key. ``session_id`` names the session the call\nacts in and passes that session's authorization first.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
+        "title": "PluginRpcParams",
+        "type": "object"
+      },
       "PluginScanFinding": {
         "additionalProperties": false,
         "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
@@ -49848,6 +49868,26 @@
         "schema": {
           "$ref": "#/components/schemas/WorkerExecution"
         }
+      }
+    }
+  ],
+  "x-canonical-namespaces": [
+    {
+      "name": "plugin.{plugin_id}.{name}",
+      "summary": "A method a loaded plugin registered with ctx.register_rpc; the result is its handler's JSON value. Call one only when runtime.describe lists plugin-rpc-v1: an owner without it serves no plugin methods, and with it -32601 means that plugin method is not loaded.",
+      "x-prefix": "plugin.",
+      "x-capability": "plugin-rpc-v1",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PluginRpcParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {}
       }
     }
   ],

@@ -145,3 +145,65 @@ async def test_plugin_session_event_reaches_only_that_sessions_viewers(tmp_path,
     authority.runner.session_authorities = Registry()
     assert ctx.emit_to_session('s', 'pane.changed', {'n': 2}) is True
     assert seen_elsewhere == [] and frames['s'][-1]['params']['payload'] == {'n': 2}
+
+
+def two_profile_runner(launch, secondary):
+    """A multiplexed gateway serving ``launch`` and ``secondary``, each with one live session whose
+    viewers record their frames: ``(runner, {home: frames})``."""
+    from gateway.config import Platform
+    from gateway.session_authorities import SessionAuthorities
+
+    registry, frames = SessionAuthorities(launch), {}
+    for home, session_id in ((launch, 'in-launch'), (secondary, 'in-secondary')):
+        live = _live(Platform.TELEGRAM, session_id)
+        frames[home] = []
+        live.event_stream.observers.add(frames[home].append)
+        registry.add(home, SimpleNamespace(profile_id=str(home), sessions={session_id: live}, agent=lambda ref: None))
+    return SimpleNamespace(session_authorities=registry), frames
+
+
+@pytest.mark.asyncio
+async def test_owner_advertises_plugin_rpc_and_the_contract_declares_its_namespace(tmp_path, monkeypatch):
+    """A client gates ``plugin.*`` on ``plugin-rpc-v1``: without it, -32601 cannot tell "no such
+    plugin method" from "this server has no plugin RPC"."""
+    from gateway.session_controls import AuthorityConnection
+
+    authority = await _authority(tmp_path, monkeypatch, _answer)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        described = await owner.dispatch({'id': 1, 'method': 'runtime.describe', 'params': {}})
+    finally:
+        await owner.close()
+    assert 'plugin-rpc-v1' in described['result']['capabilities']
+    from tui_gateway.contracts import registry
+    namespace = registry.CANONICAL_NAMESPACES['plugin.{plugin_id}.{name}']
+    assert (namespace.prefix, namespace.capability) == ('plugin.', 'plugin-rpc-v1')
+    assert not any(name.startswith(namespace.prefix) for name in registry.CANONICAL_METHODS)
+
+
+def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gateway(tmp_path, monkeypatch):
+    """A thread the plugin started carries no profile scope; ``ctx.emit_to_session`` still looks the
+    session up in the plugin's own profile, never the launch profile's."""
+    from gateway import run_api
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_constants import get_hermes_home_override
+
+    launch, secondary = tmp_path / 'launch', tmp_path / 'secondary'
+    runner, frames = two_profile_runner(launch, secondary)
+    monkeypatch.setattr(run_api, '_ACTIVE_RUNNER', runner)
+
+    def from_thread(ctx, session_id):
+        out = []
+        worker = threading.Thread(target=lambda: out.append(ctx.emit_to_session(session_id, 'pane.changed', {'n': 1})))
+        worker.start()
+        worker.join(10)
+        return out
+
+    hosted_by_secondary = PluginContext(PluginManifest(name='pane-demo'), PluginManager(str(secondary)))
+    assert from_thread(hosted_by_secondary, 'in-secondary') == [True]
+    assert [f['params']['type'] for f in frames[secondary]] == ['plugin.pane-demo.pane.changed']
+    assert from_thread(hosted_by_secondary, 'in-launch') == [False]  # ids are per profile
+    launch_ctx = PluginContext(PluginManifest(name='pane-demo'), PluginManager(str(launch)))
+    assert from_thread(launch_ctx, 'in-launch') == [True]
+    assert len(frames[launch]) == 1 and len(frames[secondary]) == 1
+    assert get_hermes_home_override() is None

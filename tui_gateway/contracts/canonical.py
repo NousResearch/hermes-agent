@@ -20,7 +20,7 @@ from .groups_bot_relay import (
     GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
 )
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method, method
+from .registry import canonical_method, canonical_namespace, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -358,6 +358,21 @@ class RuntimeDescribeResult(Result):
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,
                  doc="Owner identity and the canonical capabilities a client may rely on.")
+
+
+class PluginRpcParams(Params):
+    """Open: the plugin's handler owns every other key. ``session_id`` names the session the call
+    acts in and passes that session's authorization first."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+    session_id: str | None = None
+
+
+canonical_namespace("plugin.{plugin_id}.{name}", prefix="plugin.", capability="plugin-rpc-v1",
+                    params=PluginRpcParams,
+                    doc="A method a loaded plugin registered with ctx.register_rpc; the result is its handler's "
+                        "JSON value. Call one only when runtime.describe lists plugin-rpc-v1: an owner without "
+                        "it serves no plugin methods, and with it -32601 means that plugin method is not loaded.")
 
 
 class ClarifyRespondParams(Params):

@@ -5,7 +5,7 @@
    "undecided": 327
   },
   "rpc": {
-   "authority": 106,
+   "authority": 107,
    "keep-host-wide": 1,
    "undecided": 181
   },
@@ -506,6 +506,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pet.select", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "pet.thumb", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "ping", "kind": "rpc", "ref": ""},
+  {"current_path": "authority (after its own verbs); standalone: unknown method", "decision": "authority", "handler": "plugin.{plugin_id}.{name}", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "plugins.catalog.lookup", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "plugins.list", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "plugins.manage", "kind": "rpc", "ref": "D3"},

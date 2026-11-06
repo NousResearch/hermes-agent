@@ -255,8 +255,8 @@ class TestUnifiedCronjobTool:
             )
         )
         assert created["success"] is True
-        # Display keeps the user's natural phrasing.
-        assert created["schedule"] == "every monday 9am"
+        # Display is derived from the scheduling source of truth, not a stale natural-language snapshot.
+        assert created["schedule"] == "0 9 * * 1"
         # A recurring job must have a computed next run.
         assert created["next_run_at"]
 
@@ -275,7 +275,7 @@ class TestUnifiedCronjobTool:
             cronjob(action="update", job_id=job_id, schedule="every day at 9am")
         )
         assert updated["success"] is True
-        assert updated["job"]["schedule"] == "every day at 9am"
+        assert updated["job"]["schedule"] == "0 9 * * *"
 
         from cron.jobs import get_job
         assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"

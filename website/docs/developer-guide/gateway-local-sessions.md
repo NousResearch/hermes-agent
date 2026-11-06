@@ -32,6 +32,20 @@ admission, not inference completion. Closing every viewer leaves the execution a
 pending approval alive. A new viewer can resume the same identity and answer through
 `approval.respond({session_id, execution_generation, prompt_id, choice})`.
 
+## Bot Chat profile-following settings
+
+Bot Chat sessions created with `follow_profile_config: true` resolve the owning profile's
+current model/provider sections, toolsets, reasoning/service-tier defaults, and `compression`
+section once per turn. Editing `compression` in `config.yaml` applies on the next turn,
+including removal of overrides; there is no need to replace the canonical chat. Explicit
+session model, reasoning, service-tier and toolset choices retain their existing precedence.
+Sessions that do not follow their profile keep their frozen compression settings.
+
+`auxiliary` remains frozen, including the existing credential-change fallback to the primary
+route. Following `compression` does not change auxiliary model routing. Compression changes
+use the existing config-signature agent rebuild; the rebuilt agent retains the stored system
+prompt rather than refreshing it mid-conversation.
+
 ## Deliberate behavior change: shared operator access
 
 Verified operators of the same gateway profile may attach to canonical local sessions

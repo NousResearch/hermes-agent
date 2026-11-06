@@ -128,6 +128,8 @@ def handle_api_error(
         base_url=str(getattr(agent, "base_url", "") or ""),
         api_key=getattr(agent, "api_key", None),
     )
+    # Provider classifiers can refine cooldown scope/reset independently of the HTTP status.
+    error_context = {**(error_context or {}), **classified.error_context}
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
         classified.reason.value, classified.status_code,

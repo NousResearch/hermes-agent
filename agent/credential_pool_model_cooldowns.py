@@ -75,14 +75,20 @@ class CredentialPoolModelCooldownMixin:
 
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
+        error_context: Optional[dict[str, Any]] = None,
     ) -> bool:
-        """Anthropic per-model 429s, and a Codex ChatGPT-account model entitlement 400: the
-        account cannot use *model*, but the credential stays valid for every other model (#71970)."""
+        """Honor explicit provider model throttles, Anthropic 429s and model entitlement refusals.
+
+        A provider may wrap a model throttle in a different status, so its classified
+        rate-limit scope takes precedence over the raw HTTP code.
+        """
         from agent.credential_pool import FAILURE_REASON_BILLING, FAILURE_REASON_BILLING_UNVERIFIED
 
         if not model:
             return False
         if failure_reason in ("model_entitlement", FAILURE_REASON_USAGE_WINDOW):
+            return True
+        if failure_reason == "rate_limit" and (error_context or {}).get("rate_limit_scope") == "model":
             return True
         return (
             self.provider == "anthropic" and status_code == 429

@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: alwen
+description: Your rules, notes and decisions, shared with every AI tool you use.
+source: https://alwen.ai/docs
+
+# Alwen runs a remote MCP server with native OAuth 2.1 and Dynamic Client
+# Registration over Streamable HTTP (loopback redirects on any port are
+# accepted). Hermes's MCP client handles discovery, PKCE, token exchange and
+# refresh; nothing to install locally.
+transport:
+  type: http
+  url: https://api.alwen.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - alwen
+  hosts:
+    - alwen.ai
+
+post_install: |
+  On first connection, Hermes opens Alwen in your browser: sign in and click
+  Allow. You need an Alwen account (free at https://alwen.ai).
+  Restart your Hermes session so the Alwen tools are loaded.

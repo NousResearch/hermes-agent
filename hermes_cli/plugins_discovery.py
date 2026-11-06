@@ -219,6 +219,75 @@ def collect_directory_manifests() -> list[PluginManifest]:
     return manifests
 
 
+def discovery_inputs_signature(manifests: list[PluginManifest]) -> tuple:
+    """Identity of one sweep's inputs: the directory manifests plus the enabled/disabled gate. Any
+    difference means a plugin was added, removed, re-shadowed, bumped, enabled or disabled."""
+    sources = tuple(sorted(
+        (manifest_key(m), m.source, str(m.path or ""), str(m.version or "")) for m in manifests
+    ))
+    enabled = _get_enabled_plugins()
+    return (sources,
+            None if enabled is None else tuple(sorted(enabled)),
+            tuple(sorted(_get_disabled_plugins())))
+
+
+class PluginRediscoveryMixin:
+    """Discovery-input identity for ``PluginManager``: remember what a sweep saw so a hot re-serve can
+    re-scan only when a later operator change would make the sweep find something new (#144336)."""
+
+    # None until a sweep records it: a manager that has not discovered yet reads the current inputs
+    # anyway, so it has nothing to revalidate.
+    _inputs_signature: Optional[tuple] = None
+
+    def _collect_directory_manifests(self) -> list[PluginManifest]:
+        """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
+        return collect_directory_manifests()
+
+    def _collect_scan_manifests(self) -> list[PluginManifest]:
+        """Collect this sweep's directory manifests and record them as the inputs it saw."""
+        manifests = self._collect_directory_manifests()
+        self._inputs_signature = discovery_inputs_signature(manifests)
+        return manifests
+
+    def discovery_inputs_changed(self) -> bool:
+        """Whether the discovery inputs differ from what the last sweep saw.
+
+        A plugin added, removed, re-shadowed or version-bumped under any scanned directory, or an
+        ``plugins.enabled``/``plugins.disabled`` edit, changes the signature. False for a manager that
+        has not discovered yet (its pending sweep reads the current inputs anyway) and for one skipped by
+        ``HERMES_SAFE_MODE`` (no sweep to revalidate), so a caller can use this as a "re-scan only if it
+        would find something new" probe. Entry-point plugins are out of scope: their install/update path
+        reloads explicitly.
+        """
+        if not self._discovered or self._inputs_signature is None:
+            return False
+        from hermes_cli.plugins_loader import _plugin_home_scope  # the loader imports this module
+        with _plugin_home_scope(self.home_path):
+            current = discovery_inputs_signature(self._collect_directory_manifests())
+        return current != self._inputs_signature
+
+
+def rediscover_plugins_if_changed() -> bool:
+    """Discovery that re-runs only when the discovery inputs changed since the last sweep (see
+    :meth:`PluginRediscoveryMixin.discovery_inputs_changed`); returns True when it forced a rescan.
+
+    The profile hot-serve and reconnect paths use this before rebuilding a profile's adapters: a user
+    platform-plugin override placed (or removed) after the profile's first sweep has to be applied by
+    ``hermes -p <profile> gateway restart``, while a plain config/.env re-scan keeps the live plugin
+    registrations instead of tearing every one of them down (#144336).
+    """
+    from hermes_cli import plugins as _origin  # patched names resolve through the origin
+
+    manager = _origin.get_plugin_manager()
+    if not manager.discovery_inputs_changed():
+        # Exactly what the serve path called before: on a manager that has swept already this is a
+        # no-op, so an unchanged input set keeps every live registration (and re-imports nothing).
+        _origin.discover_plugins()
+        return False
+    _origin.discover_plugins(force=True)
+    return True
+
+
 def resolve_manifest_winners(manifests: list[PluginManifest]) -> dict[str, PluginManifest]:
     """Later sources win on key collision (project > user > bundled): a same-named copy under
     ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat

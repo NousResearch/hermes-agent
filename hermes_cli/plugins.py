@@ -40,7 +40,7 @@ from hermes_cli.plugins_manifest import (
     validate_config_schema,
 )
 from hermes_cli.plugins_discovery import (
-    ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
+    ENTRY_POINTS_GROUP, PluginRediscoveryMixin, _get_disabled_plugins, _get_enabled_plugins,
     discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
     scan_directory,
 )
@@ -256,7 +256,7 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
-class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+class PluginManager(PluginRediscoveryMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
@@ -505,7 +505,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
-        manifests: list[PluginManifest] = self._collect_directory_manifests()
+        manifests: list[PluginManifest] = self._collect_scan_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
         # An installed directory plugin keeps its identity when its own pip dependency also ships an
@@ -582,10 +582,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if registered is None or registered.profile_home != str(get_hermes_home().resolve()):
             return None
         return registered
-
-    def _collect_directory_manifests(self) -> list[PluginManifest]:
-        """Directory manifests in full-discovery order (see :func:`collect_directory_manifests`)."""
-        return collect_directory_manifests()
 
     def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
         """Probe enabled portable MCP packages without loading plugins (shares the full-discovery

@@ -102,6 +102,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
+from plugins.platforms.feishu.feishu_message_text import location_text_content
 
 
 logger = logging.getLogger(__name__)
@@ -704,6 +705,10 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
+    if normalized_type == "location":
+        return FeishuNormalizedMessage(
+            raw_type="location", text_content=location_text_content(payload),
+        )
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
 
 

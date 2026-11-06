@@ -5,7 +5,7 @@
 { pkgs }:
 pkgs.writeScript "hermes-config-merge" ''
   #!${pkgs.python3.withPackages (ps: [ ps.ruamel-yaml ])}/bin/python3
-  import json, sys
+  import json, os, shutil, sys, tempfile
   from pathlib import Path
   from ruamel.yaml import YAML
 
@@ -35,6 +35,29 @@ pkgs.writeScript "hermes-config-merge" ''
       return result
 
   merged = deep_merge(existing, nix)
-  with open(config_path, "w") as f:
-      yaml.dump(merged, f)
+
+  # Serialize to a sibling temporary file and replace the destination only
+  # after the write succeeded: opening the destination with mode "w" first
+  # would truncate the active config when a later dump/flush fails.
+  tmp_fd, tmp_name = tempfile.mkstemp(
+      dir=config_path.parent, prefix=config_path.name + ".", suffix=".tmp"
+  )
+  try:
+      with os.fdopen(tmp_fd, "w") as f:
+          yaml.dump(merged, f)
+          f.flush()
+          os.fsync(f.fileno())
+      if config_path.exists():
+          shutil.copymode(config_path, tmp_name)
+      else:
+          umask = os.umask(0)
+          os.umask(umask)
+          os.chmod(tmp_name, 0o666 & ~umask)
+      os.replace(tmp_name, config_path)
+  except BaseException:
+      try:
+          os.unlink(tmp_name)
+      except OSError:
+          pass
+      raise
 ''

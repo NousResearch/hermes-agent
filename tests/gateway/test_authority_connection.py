@@ -199,8 +199,6 @@ async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path
         assert 'sqlite3.OperationalError: database is locked' in caplog.text
     finally:
         db.close()
-
-
 @pytest.mark.asyncio
 async def test_a_retrying_client_cannot_flood_the_log_with_storage_failures(tmp_path, caplog):
     """Clients retry on ``storage_unavailable``: each failure keeps one short line, the traceback comes

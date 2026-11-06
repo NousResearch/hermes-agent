@@ -79,14 +79,15 @@ def _attempt_homes(conn, room_id, member_id, statuses=_LIVE_ATTEMPT):
 
 
 def record_attempt_home(db, room_id, member_id, task_id, generation, home):
-    """Remember the home that admitted one attempt (the first one wins), and drop the records of
-    this member's attempts that are over, so the store holds only its live ones."""
+    """Remember the home that took one attempt, and drop the records of this member's attempts that
+    are over, so the store holds only its live ones. The latest attested submit wins: the driver
+    resubmits a generation only after that home proved it never admitted it."""
     key = _HOMES + json.dumps([room_id, member_id, task_id, int(generation)], separators=(',', ':'))
     def write(conn):
         for old, (_home, live) in _attempt_homes(conn, room_id, member_id).items():
             if not live and old != key:
                 conn.execute('DELETE FROM state_meta WHERE key=?', (old,))
-        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (key, str(home)))
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, str(home)))
     db._execute_write(write)
 
 
@@ -143,6 +144,31 @@ def unknown_home_refusal(service, room_id, deferred):
     return None
 
 
+def moved_attempt_gone(service, room_id, task):
+    """True when *task*'s profile moved and the home that admitted its attempt has no gateway, so
+    nothing can still run it and Retry may start a new generation at the current home."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from tui_gateway.hosted_room_service import task_member_id
+    served = service.profile_homes().get(task['payload']['target_profile'])
+    admitted = stopping_attempt_home(service.authority.db, room_id, task_member_id(task), task)
+    return (admitted is not None and served is not None and Path(served) != admitted
+            and discover_gateway_endpoint(admitted).state == 'absent')
+
+
+def legacy_attempt_unproven(service, room_id, task):
+    """True for a turn admitted before attempt homes were recorded while another home its member
+    was served from is still up: the current home's answer says nothing about that one."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from tui_gateway.hosted_room_service import task_member_id
+    member = task_member_id(task)
+    if stopping_attempt_home(service.authority.db, room_id, member, task) is not None:
+        return False
+    served = service.profile_homes().get(task['payload']['target_profile'])
+    return any(discover_gateway_endpoint(home).state != 'absent'
+               for home in _recorded_homes(service.authority.db, room_id, member)
+               if served is None or home != Path(served))
+
+
 def unserved_member_stopped(service, room_id, task):
     """True when *task*'s member profile is no longer served on this host and no gateway owns any
     home it was served from (its conventional home, each recorded one, and the roster's)."""
@@ -152,9 +178,9 @@ def unserved_member_stopped(service, room_id, task):
     profile = task['payload']['target_profile']
     served = service.profile_homes().get(profile)
     admitted = stopping_attempt_home(service.authority.db, room_id, task_member_id(task), task)
-    if admitted is not None and served is not None and Path(served) != admitted:
-        # Moved to another home, whose daemon has no such session: only the home that admitted
-        # this attempt can hold it, and the new one being up must not hold Disband forever.
+    if admitted is not None and (served is None or Path(served) != admitted):
+        # Moved or removed: only the home that admitted this attempt can hold it, and another home
+        # the member was served from being up must not hold Disband forever.
         return discover_gateway_endpoint(admitted).state == 'absent'
     if served is not None and _served_here(Path(served)):
         return False

@@ -24,6 +24,7 @@ def test_refused_input_reports_a_failed_terminal_outcome():
         "threading": threading, "time": time, "logger": logging.getLogger(__name__),
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
+        # Bot-live dispatch may carry source identity (submitted_at/message_id, #63298).
         "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
         "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,

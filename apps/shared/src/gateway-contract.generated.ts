@@ -2819,6 +2819,8 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  message_id?: string | null
+  submitted_at?: number | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2845,7 +2847,7 @@ export interface PromptSubmitResult {
   admission_id?: string | null
   forwarded?: boolean | null
 }
-export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
+export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected' | 'duplicate'
 export interface ClipboardPasteParams {
   session_id: string
   profile?: string | null
@@ -4740,6 +4742,8 @@ export interface PromptReceiptResult {
   outcome: string | null
   authority_epoch: number
   execution_generation: number | null
+  message_id?: string | null
+  submitted_at?: number | null
   result?: unknown | null
   usage?: Record<string, unknown> | null
 }
@@ -4760,6 +4764,8 @@ export interface AdmissionStatus {
   outcome: string | null
   authority_epoch: number
   execution_generation: number | null
+  message_id?: string | null
+  submitted_at?: number | null
 }
 export interface PromptResolveUnknownParams {
   session_id: string
@@ -5015,6 +5021,8 @@ export interface A2aForwardResult {
   outcome: string | null
   authority_epoch: number
   execution_generation: number | null
+  message_id?: string | null
+  submitted_at?: number | null
   session_id: string
   result: unknown | null
 }
@@ -5147,6 +5155,8 @@ export interface CanonicalPendingAdmission {
   outcome: string | null
   authority_epoch: number
   execution_generation: number | null
+  message_id?: string | null
+  submitted_at?: number | null
   input_id: string
   text: string
   controls?: ('steer' | 'replace')[] | null
@@ -5308,6 +5318,8 @@ export interface CanonicalSubmitParams {
   text: string
   submission_id?: string | null
   input_id?: string | null
+  message_id?: string | null
+  submitted_at?: number | null
   queued?: boolean
   attachments?: CanonicalAttachment[] | null
   finite?: boolean

@@ -1051,26 +1051,10 @@ class SessionSessionsMixin:
                     return False
                 if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
                     return False
+                from hermes_state_recovery import unarchive_recoverable_on
                 needed = set()
                 def _recover(conn):
-                    needed.update(r[0] for r in conn.execute(
-                        _LINEAGE_CTE_SQL + " SELECT id FROM sessions WHERE id IN (SELECT id FROM lineage)",
-                        (session_id, session_id)))
-                    actual_tip = self._compression_tip_on(conn, session_id)
-                    needed.add(actual_tip)
-                    if needed - guarded_ids:
-                        return None
-                    current = conn.execute("SELECT archived FROM sessions WHERE id=?", (session_id,)).fetchone()
-                    end = conn.execute("SELECT end_reason FROM sessions WHERE id=?", (actual_tip,)).fetchone()
-                    if not current or not current[0] or not end or end[0] not in self.RECOVERABLE_END_REASONS:
-                        return False
-                    if not self._set_lineage_column_in_transaction(conn, "archived", session_id, 0):
-                        return False
-                    # A later deliberate archive must not inherit the accidental end stamp.
-                    conn.execute(
-                        "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (actual_tip,),
-                    )
-                    return True
+                    return unarchive_recoverable_on(self, conn, session_id, guarded_ids, needed)
                 result = self._execute_write(_recover, patience_s=max(0.0, deadline - time.monotonic()))
                 if result is not None:
                     return result

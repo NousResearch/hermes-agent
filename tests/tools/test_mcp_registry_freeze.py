@@ -251,3 +251,18 @@ def test_shared_adoption_still_works_unfrozen(core, monkeypatch):
     with patch("tools.registry.registry", ToolRegistry()):
         registration.register_connected_into_current_scope({"srv": {"command": "x"}})
     assert core._server_tool_scopes == {("/owner", "srv"): {"/adopter"}}
+
+
+def test_servers_with_new_inputs_is_a_read_only_detection(core, calls, monkeypatch):
+    """What a restart would reconnect, without reconnecting: the plugin-settings save asks this
+    after the freeze instead of launching a restart that must be refused."""
+    from tools import mcp_tool_discovery as discovery
+    core._servers["srv"] = SimpleNamespace(session=object(), _resolved_identity="connected-with")
+    core._server_scope_keys["srv"] = None
+    monkeypatch.setattr(discovery._config, "_load_mcp_config", lambda: {"srv": {"command": "srv"}})
+    monkeypatch.setattr(discovery._registration, "_adopter_identity_digest", lambda name, config: "new-inputs")
+    registry_freeze.freeze_registries()
+    assert discovery.mcp_servers_with_new_inputs({"srv", "absent"}) == ["srv"]
+    assert calls == {"shutdown": [], "discover": []} and "srv" in core._servers
+    monkeypatch.setattr(discovery._registration, "_adopter_identity_digest", lambda name, config: "connected-with")
+    assert discovery.mcp_servers_with_new_inputs({"srv"}) == []

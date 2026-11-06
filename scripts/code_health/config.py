@@ -162,7 +162,9 @@ RULES: tuple[Rule, ...] = (
          " identical for every tenant (a catalog, tool schemas), declare it with"
          " `tenant_neutral(value, reason=\"...\")` / `@tenant_neutral(reason=\"...\")`."
          " Registries are frozen after hosted boot (`registry_freeze`); a per-agent toggle is a"
-         " filter applied from the bound scope, never a registration", "ast", hosted=True),
+         " filter applied from the bound scope, never a registration", "ast", hosted=True,
+         # The freeze flag is process-wide by definition: one boot freezes every tenant's view.
+         exclude=TESTS + ("registry_freeze.py",)),
     # Process identity.
     Rule("HX003", "process identity from argv substrings", "use"
          " `gateway.status.looks_like_gateway_command_line` /"

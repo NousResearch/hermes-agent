@@ -3,18 +3,28 @@
 One hosted process serves many tenants' agents, so module state is shared by all of them. The
 rule flags, in a module reachable from ``config.HOSTED_ENTRY`` (``hosted_graph``):
 
-- a module-level ``dict``/``list``/``set`` (literal, comprehension or constructor) that starts
-  empty or that the module mutates (item store/delete, a mutating method, augmented assignment,
-  rebinding through ``global``). A non-empty table the module never changes is a constant;
+- a module-level ``dict``/``list``/``set`` (literal, comprehension or constructor) or
+  ``threading.local()`` that starts empty;
+- any module-level binding a function changes at runtime, whatever its initializer: rebinding it
+  (``global X; X = v``, ``setattr(sys.modules[__name__], "X", v)``, ``globals()["X"] = v``), or
+  changing the object in place, including through a nested item or attribute
+  (``X["seed"].append(v)``, ``X.value = v``). A non-empty table the module never changes is a
+  constant;
 - an ``lru_cache`` / ``cache`` on a module-level function or a method;
-- a class attribute changed at runtime: rebound through ``cls.x =`` / ``ClassName.x =``, or a
-  class-level container mutated through ``cls``, ``ClassName`` or an instance that never sets its
-  own copy.
+- a class attribute changed at runtime (``py_rules_ambient_classes``).
 
-Two declarations pass: a ``hermes_scope_cache.ScopedCache(...)`` (one slot per tenant and agent)
-and ``tenant_neutral(value, reason="...")`` / ``@tenant_neutral(reason="...")`` with a non-empty
-literal reason (state that is the same for every tenant). Hits are reported on the line that
-creates the state, so editing the code that mutates it is not new debt.
+Every write is resolved to its lexical binding first (``py_rules_ambient_bindings``): a
+parameter, local, nested-scope, comprehension or class-body name that shares a module name is
+not the module's state. Module statements count wherever they run at import, through ``if``,
+``for``, ``while``, ``try``, ``with`` and ``match`` blocks.
+
+Two declarations pass, recognised by API identity (the canonical import resolver's dotted
+target, never a leaf name): ``hermes_scope_cache.ScopedCache(...)`` (one slot per tenant and
+agent) and ``hermes_scope_cache.tenant_neutral(value, reason="...")`` /
+``@tenant_neutral(reason="...")`` with a non-empty literal reason (state that is the same for
+every tenant). A call that only shares a declaration's name (a local ``def tenant_neutral``,
+another module's) is flagged. Hits are reported on the line that creates the state, so editing
+the code that mutates it is not new debt.
 """
 
 from __future__ import annotations
@@ -23,22 +33,21 @@ import ast
 from collections.abc import Iterable, Iterator
 
 from scripts.code_health.py_ast import _FUNCS, Ctx, _call_name, _dotted
+from scripts.code_health.py_rules_ambient_bindings import Bindings, Write, runtime_writes
+from scripts.code_health.py_rules_ambient_classes import class_state
 
 _CONTAINER_CALLS = {
     "dict", "list", "set", "collections.defaultdict", "collections.OrderedDict",
     "collections.Counter", "collections.deque", "weakref.WeakKeyDictionary",
     "weakref.WeakValueDictionary", "weakref.WeakSet",
 }
+# Per thread, and every tenant's turns run on the same threads: state however it is created.
+_ALWAYS_STATE = {"threading.local", "_thread._local"}
 _CONTAINER_NODES = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)
-_MUTATORS = {
-    "append", "extend", "insert", "remove", "pop", "popitem", "clear", "update", "setdefault",
-    "add", "discard", "difference_update", "intersection_update", "symmetric_difference_update",
-    "appendleft", "extendleft", "popleft", "rotate", "sort", "reverse", "__setitem__",
-    "__delitem__", "move_to_end",
-}
 _CACHES = {"functools.lru_cache", "functools.cache", "lru_cache", "cache"}
-_NEUTRAL = "tenant_neutral"
-_SCOPED = "ScopedCache"
+_NEUTRAL = "hermes_scope_cache.tenant_neutral"
+_SCOPED = "hermes_scope_cache.ScopedCache"
+_DECLARATION_LEAVES = {"tenant_neutral", "ScopedCache"}
 _DUNDER_OK = {"__all__", "__slots__", "__path__", "__match_args__"}
 
 
@@ -46,28 +55,46 @@ def _leaf(name: str) -> str:
     return name.rsplit(".", 1)[-1]
 
 
+def _api(call: ast.Call) -> str:
+    """The call's canonical dotted name when its root is an import binding, else ``""``: a local
+    function or a parameter that shares a declaration's name is not the declaration."""
+    root = call.func
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    return _call_name(call) if getattr(root, "imported", False) else ""
+
+
 def _declared(value: ast.AST | None) -> bool:
-    """``ScopedCache(...)`` or ``tenant_neutral(..., reason="<non-empty literal>")``."""
+    """``hermes_scope_cache.ScopedCache(...)`` or
+    ``hermes_scope_cache.tenant_neutral(..., reason="<non-empty literal>")``."""
     if not isinstance(value, ast.Call):
         return False
-    leaf = _leaf(_call_name(value))
-    if leaf == _SCOPED:
+    api = _api(value)
+    if api == _SCOPED:
         return True
-    if leaf != _NEUTRAL:
+    if api != _NEUTRAL:
         return False
     reason = next((kw.value for kw in value.keywords if kw.arg == "reason"), None)
     return isinstance(reason, ast.Constant) and isinstance(reason.value, str) and bool(reason.value.strip())
 
 
 def _bad_declaration(value: ast.AST | None) -> bool:
-    """``tenant_neutral(...)`` without a literal, non-empty reason: it declares nothing."""
-    return isinstance(value, ast.Call) and _leaf(_call_name(value)) == _NEUTRAL and not _declared(value)
+    """Named like a declaration but not one: no literal reason, or not the
+    ``hermes_scope_cache`` API."""
+    return (isinstance(value, ast.Call) and _leaf(_call_name(value)) in _DECLARATION_LEAVES
+            and not _declared(value))
 
 
 def _is_container(value: ast.AST | None) -> bool:
     if isinstance(value, _CONTAINER_NODES):
         return True
-    return isinstance(value, ast.Call) and _call_name(value) in _CONTAINER_CALLS
+    return isinstance(value, ast.Call) and _call_name(value) in _CONTAINER_CALLS | _ALWAYS_STATE
+
+
+def _mutable(value: ast.AST | None) -> bool:
+    """A value that can change in place: a container, a tuple holding one, or an object a call
+    built (an instance, a ``threading.local``)."""
+    return _is_container(value) or isinstance(value, (ast.Call, ast.Tuple))
 
 
 def _is_empty(value: ast.AST | None) -> bool:
@@ -76,19 +103,26 @@ def _is_empty(value: ast.AST | None) -> bool:
     if isinstance(value, (ast.List, ast.Set)):
         return not value.elts
     if isinstance(value, ast.Call):
-        return not value.args and not value.keywords or _call_name(value) == "collections.defaultdict"
+        name = _call_name(value)
+        return (not value.args and not value.keywords or name == "collections.defaultdict"
+                or name in _ALWAYS_STATE)
     return False  # a comprehension is filled, not empty
 
 
-def _top_level(body: list[ast.stmt]) -> Iterator[ast.stmt]:
-    """Statements that run at import, through top-level ``if``/``try``/``with`` blocks."""
+def _import_time(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """*body* and every statement nested in its compound statements (``if``, ``for``,
+    ``while``, ``try``, ``with``, ``match``): what runs when *body* runs. Function and class
+    bodies are not entered."""
     for node in body:
         yield node
-        if isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith)):
-            for field in ("body", "orelse", "finalbody"):
-                yield from _top_level(getattr(node, field, []) or [])
-            for handler in getattr(node, "handlers", []):
-                yield from _top_level(handler.body)
+        if isinstance(node, (*_FUNCS, ast.ClassDef)):
+            continue
+        for _, value in ast.iter_fields(node):
+            for item in value if isinstance(value, list) else []:
+                if isinstance(item, ast.stmt):
+                    yield from _import_time([item])
+                elif isinstance(item, (ast.ExceptHandler, ast.match_case)):
+                    yield from _import_time(item.body)
 
 
 def _assigned(stmts: Iterable[ast.stmt]) -> Iterator[tuple[str, ast.AST | None, int]]:
@@ -99,6 +133,8 @@ def _assigned(stmts: Iterable[ast.stmt]) -> Iterator[tuple[str, ast.AST | None, 
             pairs = [(t, node.value) for t in node.targets]
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             pairs = [(node.target, node.value)]
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            pairs = [(node.target, None)]
         for target, value in pairs:
             if isinstance(target, ast.Name):
                 yield target.id, value, node.lineno
@@ -108,117 +144,109 @@ def _assigned(stmts: Iterable[ast.stmt]) -> Iterator[tuple[str, ast.AST | None, 
                         yield t.id, v, node.lineno
 
 
-def _mutated_base(node: ast.AST) -> ast.AST | None:
-    """The object *node* mutates in place, if it is a mutation: ``x[k] = v`` / ``del x[k]`` /
-    ``x[k] += v`` / ``x += y`` / ``x.append(...)``."""
-    if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
-        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
-        for target in targets:
-            if isinstance(target, ast.Subscript):
-                return target.value
-            if isinstance(node, ast.AugAssign):
-                return target
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATORS:
-        return node.func.value
-    return None
+def _module_self(node: ast.AST) -> bool:
+    """``sys.modules[__name__]`` / ``globals()``: this module's own namespace."""
+    if isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.modules":
+        return isinstance(node.slice, ast.Name) and node.slice.id == "__name__"
+    return isinstance(node, ast.Call) and _call_name(node) == "globals" and not node.args
 
 
-def _mutations(tree: ast.Module) -> list[ast.AST]:
-    out = []
+def _namespace_name(write: Write, keyed: dict[int, str]) -> str | None:
+    """The module name a write through the module's own namespace rebinds:
+    ``setattr(sys.modules[__name__], "X", v)``, ``sys.modules[__name__].X = v``,
+    ``globals()["X"] = v``."""
+    target = write.target
+    if write.attr is not None:
+        return (write.attr or None) if _module_self(target) else None
+    if isinstance(target, ast.Attribute) and write.store and _module_self(target.value):
+        return target.attr
+    return keyed.get(id(target))
+
+
+def _namespace_keys(tree: ast.Module) -> dict[int, str]:
+    """``globals()["X"] = v`` writes ``globals()`` in place; map that node to ``"X"``."""
+    out: dict[int, str] = {}
     for node in ast.walk(tree):
-        base = _mutated_base(node)
-        if base is not None:
-            out.append(base)
+        if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and _module_self(node.value) and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)):
+            out[id(node.value)] = node.slice.value
     return out
 
 
-def _global_rebinds(tree: ast.Module) -> set[str]:
-    """Module names a function rebinds through a ``global`` declaration."""
-    names: set[str] = set()
-    for func in ast.walk(tree):
-        if not isinstance(func, _FUNCS):
+def _module_changes(tree: ast.Module, writes: list[Write],
+                    bindings: Bindings) -> tuple[dict[str, int], set[str]]:
+    """Module names functions rebind (with the first line) and names they change in place. A
+    function can only rebind a module name it declares ``global`` (or through the module's
+    namespace), so a resolved plain-name store, ``+=`` included, is a rebind."""
+    keyed = _namespace_keys(tree)
+    rebound: dict[str, int] = {}
+    mutated: set[str] = set()
+    for write in writes:
+        name = _namespace_name(write, keyed)
+        if name:
+            rebound.setdefault(name, write.line)
             continue
-        declared = {n for s in ast.walk(func) if isinstance(s, ast.Global) for n in s.names}
-        for node in ast.walk(func):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in declared:
-                names.add(node.id)
-    return names
+        root = write.target
+        while isinstance(root, (ast.Attribute, ast.Subscript)):
+            root = root.value
+        # An imported module's attribute (``os.environ[k] = v``) is that module's state, judged there.
+        name = None if getattr(root, "imported", False) else bindings.module_name(root)
+        if name is None:
+            continue
+        if root is write.target and write.store and write.attr is None:
+            rebound.setdefault(name, write.line)
+        else:
+            mutated.add(name)
+    return rebound, mutated
 
 
-def _module_containers(tree: ast.Module, mutated: list[ast.AST]) -> Iterator[int]:
-    mutated_names = {m.id for m in mutated if isinstance(m, ast.Name)} | _global_rebinds(tree)
-    for name, value, line in _assigned(_top_level(tree.body)):
+def _module_state(tree: ast.Module, writes: list[Write], bindings: Bindings) -> Iterator[int]:
+    rebound, mutated = _module_changes(tree, writes, bindings)
+    bound: set[str] = set()
+    for name, value, line in _assigned(_import_time(tree.body)):
+        bound.add(name)
         if _bad_declaration(value):
             yield line
-        elif name in _DUNDER_OK or _declared(value) or not _is_container(value):
+        elif name in _DUNDER_OK or _declared(value):
             continue
-        elif _is_empty(value) or name in mutated_names:
+        elif (name in rebound or (_is_container(value) and _is_empty(value))
+              or (name in mutated and _mutable(value))):
             yield line
+    for name, line in rebound.items():
+        if name not in bound and name not in _DUNDER_OK:
+            yield line  # created at runtime only, by the rebinding itself
 
 
 def _decorated_cache(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    names = [_call_name(d) if isinstance(d, ast.Call) else _dotted(d) for d in func.decorator_list]
-    if any(_leaf(n) == _NEUTRAL for n in names) and any(
-            isinstance(d, ast.Call) and _declared(d) for d in func.decorator_list):
+    if any(isinstance(d, ast.Call) and _declared(d) for d in func.decorator_list):
         return False
+    names = [_call_name(d) if isinstance(d, ast.Call) else _dotted(d) for d in func.decorator_list]
     return any(n in _CACHES for n in names)
 
 
+def _classes(tree: ast.Module) -> Iterator[ast.ClassDef]:
+    """Classes defined while the module imports, nested classes included."""
+    stack = [n for n in _import_time(tree.body) if isinstance(n, ast.ClassDef)]
+    while stack:
+        cls = stack.pop(0)
+        yield cls
+        stack.extend(n for n in _import_time(cls.body) if isinstance(n, ast.ClassDef))
+
+
 def _cached_functions(tree: ast.Module) -> Iterator[int]:
-    for node in _top_level(tree.body):
-        if isinstance(node, _FUNCS) and _decorated_cache(node):
-            yield node.lineno
-        elif isinstance(node, ast.ClassDef):
-            for item in node.body:
-                if isinstance(item, _FUNCS) and _decorated_cache(item):
-                    yield item.lineno
-
-
-def _attr_target(node: ast.AST, cls: str) -> str | None:
-    """``x`` for ``cls.x`` / ``ClassName.x``."""
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("cls", cls):
-        return node.attr
-    return None
-
-
-def _self_attr(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
-        return node.attr
-    return None
-
-
-def _class_attributes(tree: ast.Module, mutated: list[ast.AST]) -> Iterator[int]:
-    for cls in _top_level(tree.body):
-        if not isinstance(cls, ast.ClassDef):
-            continue
-        attrs = {name: (value, line) for name, value, line in _assigned(cls.body)}
-        stores: dict[str, int] = {}
-        for func in (n for n in ast.walk(cls) if isinstance(n, _FUNCS)):
-            for node in ast.walk(func):
-                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
-                    name = _attr_target(node, cls.name)
-                    if name is not None:
-                        stores.setdefault(name, node.lineno)
-        own = {_self_attr(n) for n in ast.walk(cls) if isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store)}
-        yield from _rebound_attrs(attrs, stores)
-        for name, (value, line) in attrs.items():
-            if not _is_container(value) or _declared(value) or name in stores:
-                continue
-            via_class = any(_attr_target(m, cls.name) == name for m in mutated)
-            via_self = name not in own and any(_self_attr(m) == name for m in mutated)
-            if via_class or via_self:
-                yield line
-
-
-def _rebound_attrs(attrs: dict[str, tuple[ast.AST, int]], stores: dict[str, int]) -> Iterator[int]:
-    for name, line in stores.items():
-        value = attrs.get(name, (None, None))[0]
-        if not _declared(value):
-            yield attrs[name][1] if name in attrs else line
+    bodies = [tree.body, *(cls.body for cls in _classes(tree))]
+    for body in bodies:
+        for node in _import_time(body):
+            if isinstance(node, _FUNCS) and _decorated_cache(node):
+                yield node.lineno
 
 
 def ambient_state(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    mutated = _mutations(tree)
-    yield from _module_containers(tree, mutated)
+    bindings = Bindings(tree)
+    writes = runtime_writes(tree, bindings)
+    yield from _module_state(tree, writes, bindings)
     yield from _cached_functions(tree)
-    yield from _class_attributes(tree, mutated)
+    for cls in _classes(tree):
+        attrs = {name: (value, line) for name, value, line in _assigned(_import_time(cls.body))}
+        yield from class_state(cls, attrs, writes, bindings, _is_container, _mutable, _declared)

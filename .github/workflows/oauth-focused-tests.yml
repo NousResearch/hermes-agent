@@ -42,7 +42,8 @@ jobs:
           prune-python-cache: "true"
 
       - name: Run OAuth tests
-        run: "$HERMES_PYTHON" -m pytest -q tests/hermes_cli/test_plugin_oauth.py
+        run: |
+          "$HERMES_PYTHON" -m pytest -q tests/hermes_cli/test_plugin_oauth.py
         env:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

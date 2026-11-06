@@ -1,9 +1,10 @@
-"""Reads of a stored conversation that never attach the caller (#150091): ``session.transcript``
-pages its display rows, ``session.compactions`` lists the handoff summaries its compactions wrote.
+"""``session.transcript``: a stored conversation's display rows, read without attaching (#150091), paged
+both ways, polled forward from a cursor, with its compaction handoffs as rows; with ``subagent_id``, the
+same read of a delegated child of the session (``gateway/session_transcript_subagent.py``).
 
 A picker previews a conversation before it opens it. ``session.resume`` would subscribe the caller,
-and ``session.history`` / ``session.events.since`` serve an attached session. Neither read builds an
-agent, subscribes a viewer or writes a row.
+and ``session.history`` / ``session.events.since`` serve an attached session. This read builds no
+agent, subscribes no viewer and writes no row.
 
 A page is bounded three ways: ``limit`` display rows (plus at most ``_TOOL_RUN`` tool results kept
 with the call that made them), ``PAGE_BYTES`` of projected JSON, and the store work behind it. A
@@ -11,6 +12,12 @@ single-segment conversation (every in-place compaction) is paged in SQL on its d
 index, so only the page's bodies are read. A rotated lineage needs the one display dedupe over every
 segment; it is read whole only while it is under ``sessions.max_resume_messages`` (the resume's own
 guard), and past that only its current segment is paged, as a resume past it shows only live rows.
+
+Forward polling (``order: 'oldest'``): the cursor also holds the segment it read and
+``transcript_cursor_state`` of the rows it covered. While both still hold, only appends happened and the
+read continues after the cursor; otherwise (an in-place compaction, a rotation, a rewind, a rewrite or
+deletion of a covered row) the reply is ``reset`` and starts again from the first page. An oldest-order
+cursor is never null, so a caught-up reader keeps it and polls; an empty page means caught up.
 """
 import asyncio
 import base64
@@ -19,6 +26,7 @@ import json
 from functools import partial
 
 from gateway.session_busy_controls import authorize
+from gateway.session_transcript_rows import project_with_handoffs
 from hermes_state_runtime import RuntimeStoreError
 
 MAX_PAGE_ROWS = 500
@@ -27,13 +35,16 @@ MAX_PAGE_ROWS = 500
 PAGE_BYTES = 2 * 1024 * 1024
 # Tool results kept on their call's page beyond ``limit`` (a tool row is labelled from its call).
 _TOOL_RUN = 64
-_CURSOR_TAG = 't2'
+_CURSOR_TAG = 't3'
 _CURSOR_MAX_CHARS = 1024
+_INT_MAX = 2 ** 63
+# Reads retried while a non-append change lands during one (each attempt is one bounded page).
+_STABLE_READS = 4
+TRANSCRIPT_FIELDS = frozenset({'session_id', 'profile', 'subagent_id', 'cursor', 'limit', 'order', 'inline_images'})
 
 
 def handlers(connection):
-    return {'session.transcript': partial(transcript, connection),
-            'session.compactions': partial(compactions, connection)}
+    return {'session.transcript': partial(transcript, connection)}
 
 
 def _readable_target(connection, ref, params):
@@ -62,29 +73,39 @@ def _readable_target(connection, ref, params):
     return transcript_target(authority, ref)
 
 
-def _check_params(params, fields):
-    if set(params) - fields or not isinstance(params.get('session_id'), str) or not params['session_id']:
-        raise RuntimeStoreError('invalid_params')
+def _uint(value):
+    return type(value) is int and 0 <= value < _INT_MAX
 
 
-def _encode_cursor(session_id, order, key):
-    if key is None:
-        return None
-    return base64.urlsafe_b64encode(json.dumps([_CURSOR_TAG, session_id, order, list(key)]).encode()).decode().rstrip('=')
+def _encode_cursor(binding, key, poll):
+    """*binding*: ``(session_id, subagent_id, order)``. *key*: the page edge ``(position, durable)``, None
+    for the start (an oldest-order read of an empty transcript). *poll*: ``(segment, through, state)`` of an
+    oldest-order read, else None."""
+    segment, through, state = poll if poll is not None else (None, None, None)
+    payload = [_CURSOR_TAG, *binding, list(key) if key is not None else [], segment, through,
+               list(state) if state is not None else None]
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
 
 
-def _decode_cursor(cursor, session_id, order):
-    """The key a cursor this read issued for *session_id* in *order*; anything else is ``invalid_params``."""
+def _decode_cursor(cursor, binding):
+    """``{key, segment, through, state}`` of a cursor this read issued for *binding*; anything else is
+    ``invalid_params``."""
     try:
         if len(cursor) > _CURSOR_MAX_CHARS:
             raise ValueError('cursor too long')
-        tag, owner, issued_order, key = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
+        tag, session_id, subagent_id, order, key, segment, through, state = json.loads(
+            base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
     except (TypeError, ValueError, binascii.Error):
         raise RuntimeStoreError('invalid_params', field='cursor') from None
-    if ((tag, owner, issued_order) != (_CURSOR_TAG, session_id, order) or not isinstance(key, list) or len(key) != 2
-            or any(type(part) is not int or not 0 <= part < 2 ** 63 for part in key)):
+    oldest = binding[2] == 'oldest'
+    if ((tag, session_id, subagent_id, order) != (_CURSOR_TAG, *binding) or not isinstance(key, list)
+            or len(key) not in ((0, 2) if oldest else (2,)) or not all(_uint(part) for part in key)
+            or (oldest and not (isinstance(segment, str) and segment and _uint(through) and isinstance(state, list)
+                                and len(state) == 3 and all(_uint(part) for part in state)))
+            or (not oldest and (segment, through, state) != (None, None, None))):
         raise RuntimeStoreError('invalid_params', field='cursor')
-    return tuple(key)
+    return {'key': tuple(key) or None, 'segment': segment, 'through': through,
+            'state': tuple(state) if state is not None else None}
 
 
 # A row's key is ``(position, durable)``: where the read orders it, and the id of its message's first durable
@@ -92,13 +113,13 @@ def _decode_cursor(cursor, session_id, order):
 # marks the originals removed). A later compaction never changes ``durable``, so a page boundary holds.
 
 
-def _lineage_window(db, target, latest, after, count):
+def _lineage_window(db, target, latest, after, count, lineage):
     """A rotated lineage: the one display dedupe over every segment (``get_messages_as_conversation
     (include_ancestors=True, include_compacted=True)``), keyed by first durable id. The page starts
     next to the row the cursor names, wherever a compaction since moved it."""
     first_ids = {}
     rows = db._dedupe_display_generations(db._fetch_conversation_rows(
-        db._resume_lineage_ids(target), '', with_session_id=False, with_compacted=True),
+        lineage, '', with_session_id=False, with_compacted=True),
         drop_removed=True, first_ids=first_ids)
     rows = db._rows_to_conversation(rows, session_id=target, include_ancestors=True,
                                     repair_alternation=False, include_row_ids=True)
@@ -205,7 +226,10 @@ def _segment_window(db, segment, latest, after, count):
                 conn.execute('ROLLBACK')
     raw, firsts, before = db._read_retrying_ioerr(read)
     keys = {row['id']: (row['display_order'], firsts[row['id']]) for row in raw}
-    kept = [row for row in raw if after is None or latest or keys[row['id']][1] > after[1]]
+    # Oldest order continues only from a cursor whose rows did not change shape (``_poll``), so the page
+    # is every slot past it: a durable id is not monotonic in display order (a handoff's new row sits
+    # before the carried copies of older messages).
+    kept = raw
     context = {row['id'] for row in before}
     rows = [message for message in db._rows_to_conversation(
         [*before, *kept], session_id=segment, include_ancestors=False, repair_alternation=False, include_row_ids=True)
@@ -214,18 +238,18 @@ def _segment_window(db, segment, latest, after, count):
     return rows, [keys[message['_row_id']] for message in rows], len(raw) == count, edge
 
 
-def _window(db, target, latest, after, count):
+def _window(db, target, latest, after, count, lineage):
     """``(rows, keys, more beyond, edge key, segments read)``: up to *count* display rows past *after* in
-    reading order, in display order (see ``_segment_window`` for the edge key)."""
+    reading order, in display order (see ``_segment_window`` for the edge key). *lineage*: the segments
+    the transcript displays (a conversation's resume lineage, a delegated child's own)."""
     from hermes_state import SessionResumeTooLargeError
-    lineage = db._resume_lineage_ids(target)
     if len(lineage) > 1:
         try:
             db.assert_resume_safe(target)
         except SessionResumeTooLargeError:
             pass  # past the resume's guard: the current segment only
         else:
-            return (*_lineage_window(db, target, latest, after, count), lineage)
+            return (*_lineage_window(db, target, latest, after, count, lineage), lineage)
     if not db._ensure_display_order(target):
         raise RuntimeStoreError('storage_unavailable', detail='the transcript has no display index')
     return (*_segment_window(db, target, latest, after, count), [target])
@@ -260,7 +284,7 @@ def _cut(rows, latest, taken):
 
 
 # What survives of a row too large for a page on its own: who said it, when, and as much text as fits.
-_BOUNDED_KEYS = ('role', 'timestamp', 'row_id', 'display_kind', 'name', 'tool_call_id')
+_BOUNDED_KEYS = ('row_kind', 'role', 'timestamp', 'row_id', 'display_kind', 'name', 'tool_call_id', 'compacted_messages')
 
 
 def _size(value):
@@ -353,80 +377,93 @@ def _fit(project, rows, latest, taken):
         taken = _cut(rows, latest, taken)
 
 
-def read_page(db, target, order, after, limit, *, profile_home, inline_images=False):
-    """``(projected rows, next key)`` of one page; the rows in display order either way."""
+def read_page(db, target, order, after, limit, *, profile_home, inline_images=False, lineage=None):
+    """``(projected rows, next key, through)`` of one page, the rows in display order either way;
+    *through* is the highest stored row id the page read. A window whose rows all project to nothing
+    (hidden scaffolding) is read past, so an empty page is the end."""
     from gateway.session_controls import display_projection
     latest = order == 'latest'
     count = limit + _TOOL_RUN
-    rows, keys, beyond, edge, segments = _window(db, target, latest, after, count)
+    lineage = lineage or db._resume_lineage_ids(target)
+    through = 0
+    while True:
+        rows, keys, beyond, edge, segments = _window(db, target, latest, after, count, lineage)
 
-    def project(page):
-        return display_projection(_call_context(db, page, segments) + page, profile_home, image_urls=inline_images)
-    projected, taken = _fit(project, rows, latest, _take(rows, latest, limit))
-    if taken < len(rows):
-        return projected, keys[-taken] if latest else keys[taken - 1]
-    return projected, edge if beyond else None
+        def project(page):
+            return project_with_handoffs(db, page, segments, lambda shown: display_projection(
+                _call_context(db, page, segments) + shown, profile_home, image_urls=inline_images))
+        projected, taken = _fit(project, rows, latest, _take(rows, latest, limit))
+        page = rows[len(rows) - taken:] if latest else rows[:taken]
+        through = max([through, *(row['_row_id'] for row in page if isinstance(row.get('_row_id'), int))])
+        if taken < len(rows):
+            next_key, more = keys[-taken] if latest else keys[taken - 1], True
+        else:
+            # Latest order: null past the oldest page. Oldest order: the edge, or where the read started,
+            # so a caught-up reader keeps a cursor to poll from.
+            next_key = (edge if beyond else None) if latest else (edge if edge is not None else after)
+            more = beyond
+        if projected or not more:
+            return projected, next_key, through
+        after = next_key
+
+
+def _poll(db, target, lineage, order, held, limit, **page):
+    """``(rows, next key, poll state, reset)``. Latest order pages back from the cursor's message wherever
+    a compaction moved it. Oldest order continues after the cursor only while its segment and
+    ``transcript_cursor_state`` still hold, else starts again (``reset``). The state stored for the next
+    poll is read between two snapshots of the rows that existed before the page read; a non-append change
+    landing in between reads the page again, so a cursor never vouches for rows it did not see."""
+    if order == 'latest':
+        rows, key, _ = read_page(db, target, order, held and held['key'], limit, lineage=lineage, **page)
+        return rows, key, None, held is None
+    for _ in range(_STABLE_READS):
+        mark = db.get_active_message_watermark(target)
+        before = db.transcript_cursor_state(target, mark, lineage)
+        holds = (held is not None and held['segment'] == target
+                 and db.transcript_cursor_state(target, held['through'], lineage) == held['state'])
+        after = held['key'] if holds else None
+        rows, key, through = read_page(db, target, order, after, limit, lineage=lineage, **page)
+        through = max(through, held['through'] if holds else 0)
+        state = db.transcript_cursor_state(target, through, lineage)
+        if db.transcript_cursor_state(target, mark, lineage) == before:
+            return rows, key if key is not None else after, (target, through, state), not holds
+    raise RuntimeStoreError('storage_unavailable', detail='the transcript kept changing during the read')
+
+
+def read_transcript(db, target, lineage, binding, held, limit, *, profile_home, inline_images):
+    """The reply fields ``rows``, ``next_cursor`` and ``reset`` of one page of physical *target*."""
+    rows, key, poll, reset = _poll(db, target, lineage, binding[2], held, limit,
+                                   profile_home=profile_home, inline_images=inline_images)
+    next_cursor = _encode_cursor(binding, key, poll) if key is not None or poll is not None else None
+    return {'rows': rows, 'next_cursor': next_cursor, 'reset': reset}
+
+
+def _transcript_params(params):
+    """``(limit, order, inline_images, subagent_id, cursor)`` of a valid request."""
+    if set(params) - TRANSCRIPT_FIELDS or not isinstance(params.get('session_id'), str) or not params['session_id']:
+        raise RuntimeStoreError('invalid_params')
+    limit, cursor, subagent_id = params.get('limit', 100), params.get('cursor'), params.get('subagent_id')
+    order, inline_images = params.get('order', 'oldest'), params.get('inline_images', False)
+    if (type(limit) is not int or not 1 <= limit <= MAX_PAGE_ROWS or not isinstance(cursor, (str, type(None)))
+            or order not in ('oldest', 'latest') or type(inline_images) is not bool
+            or not (subagent_id is None or (isinstance(subagent_id, str) and subagent_id))):
+        raise RuntimeStoreError('invalid_params')
+    return limit, order, inline_images, subagent_id, cursor
 
 
 async def transcript(connection, ref, params):
-    _check_params(params, {'session_id', 'profile', 'cursor', 'limit', 'order', 'inline_images'})
-    limit, cursor = params.get('limit', 100), params.get('cursor')
-    order, inline_images = params.get('order', 'oldest'), params.get('inline_images', False)
-    if (type(limit) is not int or not 1 <= limit <= MAX_PAGE_ROWS or not isinstance(cursor, (str, type(None)))
-            or order not in ('oldest', 'latest') or type(inline_images) is not bool):
-        raise RuntimeStoreError('invalid_params')
-    after = None if cursor is None else _decode_cursor(cursor, ref.session_id, order)
+    limit, order, inline_images, subagent_id, cursor = _transcript_params(params)
+    binding = (ref.session_id, subagent_id, order)
+    held = None if cursor is None else _decode_cursor(cursor, binding)
+    if subagent_id is not None:
+        from gateway.session_transcript_subagent import subagent_transcript
+        return await subagent_transcript(connection, ref, params, binding, held, limit, inline_images)
     target = _readable_target(connection, ref, params)
     authority = connection.authority
 
     def read():
-        rows, next_key = read_page(authority.db, target, order, after, limit,
-                                   profile_home=authority.profile_id, inline_images=inline_images)
-        return {'session_id': ref.session_id, 'rows': rows,
-                'next_cursor': _encode_cursor(ref.session_id, order, next_key)}
+        db = authority.db
+        return {'session_id': ref.session_id, **read_transcript(
+            db, target, db._resume_lineage_ids(target), binding, held, limit,
+            profile_home=authority.profile_id, inline_images=inline_images)}
     return await asyncio.to_thread(read)
-
-
-# Rows that can hold a handoff (``ContextCompressor.classify_summary_content``'s prefixes, the merged
-# delimiter, or the stored flag): live, archived, or superseded by a later compaction that carried or
-# unwrapped them (a removed row whose ``message_uid`` a later row still has; a rewound row has none).
-# ``compaction_summary`` confirms each in Python.
-_HANDOFF_CANDIDATES_SQL = (
-    "SELECT * FROM messages m WHERE m.session_id IN (SELECT value FROM json_each(:ids))"
-    " AND m.role IN ('user', 'assistant') AND (m._compressed_summary = 1"
-    " OR instr(m.content, '[CONTEXT COMPACTION') > 0 OR instr(m.content, '[CONTEXT SUMMARY]') > 0)"
-    " AND (m.active = 1 OR m.compacted = 1 OR EXISTS (SELECT 1 FROM messages later"
-    " WHERE later.session_id IN (SELECT value FROM json_each(:ids)) AND later.message_uid = m.message_uid"
-    " AND later.id > m.id)) ORDER BY m.id")
-
-
-def stored_compactions(db, target):
-    """The lineage's compactions, oldest first. Not the display dedupe: a later compaction that reuses or
-    unwraps a summary-bearing carrier keeps the human message's identity, so the display read shows one
-    copy and an older handoff would be lost. Here a handoff's copies (a later generation or a rotated
-    segment carrying it) are clones of its stored row, same ``message_uid`` and same stored content, and
-    collapse into its first row; two compactions never share both, even with the same prose. Reads only
-    the rows that can hold a handoff."""
-    from agent.compaction_display import compaction_summary
-    lineage = json.dumps(db._resume_lineage_ids(target))  # its own read: never inside the one below
-    with db._read_ctx() as conn:
-        rows = conn.execute(_HANDOFF_CANDIDATES_SQL, {'ids': lineage}).fetchall()
-    found, seen = [], set()
-    for row in rows:
-        occurrence = (row['message_uid'], row['content'])
-        if occurrence in seen:
-            continue
-        message = db._row_to_message_dict(row, warn_context='session.compactions', summary_flag=True)
-        summary = compaction_summary(message)
-        if summary is not None:
-            seen.add(occurrence)
-            found.append({'timestamp': message.get('timestamp'), **summary})
-    return found
-
-
-async def compactions(connection, ref, params):
-    _check_params(params, {'session_id', 'profile'})
-    target = _readable_target(connection, ref, params)
-    db = connection.authority.db
-    return {'session_id': ref.session_id,
-            'compactions': await asyncio.to_thread(stored_compactions, db, target)}

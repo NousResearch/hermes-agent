@@ -54,6 +54,7 @@ import {
 } from './canonical-group-registry'
 import { GatewayGroupUpgrade } from './canonical-group-upgrade'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import type { GroupCreationIntent } from './canonical-groups'
 import { canonicalGroupCreateError, canonicalGroupRequest, canonicalGroupRoster, createCanonicalGroup, onCanonicalConnection } from './canonical-groups'
 import {
   $botMeta,
@@ -712,6 +713,7 @@ function GateEarlierMessages({ room, labels }: { room: GroupChatRoom | undefined
 }
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  const intent = useRef<GroupCreationIntent>({})
   const b = useBots()
   const { t } = useI18n()
   const foreground = useValue(host.state.connectionId)
@@ -805,7 +807,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
       }
 
       setBusy(true)
-      void createCanonicalGroup(route, props.group, props.members)
+      void createCanonicalGroup(route, props.group, props.members, intent.current)
         .then(({ room }) => {
           refreshGatewayGroupRooms()
 

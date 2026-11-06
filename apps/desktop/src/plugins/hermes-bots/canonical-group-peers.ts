@@ -3,8 +3,10 @@ import { useEffect, useState } from 'react'
 
 import type { CanonicalGroupMessages } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupRequest, canonicalGroupRoster, disbandCanonicalGroup } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import { canonicalGroupRequest, canonicalGroupRoster, createRoomWithIntent, disbandCanonicalGroup } from './canonical-groups'
+import type {
+  CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember, GroupCreationIntent
+} from './canonical-groups'
 import { uniqueGroupChatName } from './group-chat'
 import { liveGroupChatNames } from './group-membership'
 import { resolveBotConnectionRoute } from './routing'
@@ -231,27 +233,11 @@ async function seatPeers(home: CanonicalGroupBinding, room: RoomAuthority, seats
 }
 
 /** One creation attempt keeps its wire payload while the reply is uncertain. */
-export interface GroupCreationIntent {
-  key?: string
-  payload?: { room_id: string; name: string; members: CanonicalRoomMember[] }
-}
-
-async function createGroupWithIntent(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[],
+function createGroupWithIntent(route: CanonicalGroupRoute, name: string, members: CanonicalRoomMember[],
   intent: GroupCreationIntent, key: string): Promise<CanonicalRoom> {
-  if (intent.key !== key || !intent.payload) {
-    intent.key = key
-    intent.payload = { room_id: randomUuid(), name: uniqueGroupChatName(name, new Set(liveGroupChatNames())), members }
-  }
-
-  const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', intent.payload).catch(error => {
-    // A coded refusal ends this attempt; a lost reply keeps the exact request for Retry.
-    if (typeof error?.code === 'number') {delete intent.payload}
-    throw error
-  })
-
-  delete intent.payload
-
-  return room
+  return createRoomWithIntent(route, intent, key, () => ({
+    room_id: randomUuid(), name: uniqueGroupChatName(name, new Set(liveGroupChatNames())), members
+  }))
 }
 
 /** Create a gateway room on `route` with Bots from other connections, then seat each of those.

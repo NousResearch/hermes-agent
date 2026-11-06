@@ -112,6 +112,8 @@ export interface CanonicalGroupMessages extends GroupReasonMessages {
   createGroupSize: string
   createOtherConnection: string
   createDuplicateMember: string
+  createUncertain: string
+  createEnded: string
   legacyRoomElsewhere: string
   otherConnections: string
   legacyRoomBlocked: string
@@ -269,6 +271,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'A group chat hosted on this gateway needs two to six bots.',
     createOtherConnection: 'A group chat hosted on this gateway can only seat bots on this connection.',
     createDuplicateMember: 'A group chat hosted on this gateway needs bots with different profiles and handles; @all and @everyone are reserved.',
+    createUncertain: 'The gateway didn’t answer, so this group chat may already exist. Try again to open it. It won’t be created twice.',
+    createEnded: 'The gateway refused this group chat, so it may have been changed or removed somewhere else. Try again to start a new one.',
     legacyRoomElsewhere: 'This group chat can’t continue here: it has bots on other computers, and a group chat hosted on this gateway seats bots from one connection only. Switch to the connection where those bots run and start a group there, or start a new group chat with bots from this connection. Earlier messages aren’t copied into a new group.',
     otherConnections: 'Bots on other connections: {connections}',
     legacyRoomBlocked: 'Desktop ran this group chat itself, so it can’t continue on this gateway, and these bots can’t form a group chat hosted on this gateway as they are (the reason is below). Start a new group chat and choose its bots. Earlier messages aren’t copied into it.',
@@ -424,6 +428,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'このゲートウェイで運用されるグループチャットには 2〜6 体のボットが必要です。',
     createOtherConnection: 'このゲートウェイで運用されるグループチャットには、この接続上のボットだけを参加させられます。',
     createDuplicateMember: 'このゲートウェイで運用されるグループチャットには、プロファイルとハンドルが異なるボットが必要です。@all と @everyone は予約済みです。',
+    createUncertain: 'ゲートウェイから応答がなかったため、このグループチャットはすでに作成されている可能性があります。もう一度試すと開きます。二重に作成されることはありません。',
+    createEnded: 'ゲートウェイがこのグループチャットを拒否しました。別の場所で変更または削除された可能性があります。もう一度試すと新しく作成します。',
     legacyRoomElsewhere: 'このグループチャットはここでは続けられません。ほかのコンピューター上のボットが含まれていて、このゲートウェイで運用されるグループチャットには 1 つの接続のボットしか参加させられないためです。それらのボットが動いている接続に切り替えてそこでグループを始めるか、この接続のボットで新しいグループチャットを始めてください。以前のメッセージは新しいグループにコピーされません。',
     otherConnections: 'ほかの接続上のボット: {connections}',
     legacyRoomBlocked: 'このグループチャットは Desktop 自身が動かしていたため、このゲートウェイでは続けられません。また、これらのボットはこのままではこのゲートウェイで運用されるグループチャットを作れません（理由は下記）。新しいグループチャットを始めてボットを選んでください。以前のメッセージはコピーされません。',
@@ -579,6 +585,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: '在此网关上托管的群聊需要 2 到 6 个机器人。',
     createOtherConnection: '在此网关上托管的群聊只能加入此连接上的机器人。',
     createDuplicateMember: '在此网关上托管的群聊中的机器人需要使用不同的配置文件和名称标识；@all 和 @everyone 为保留名称。',
+    createUncertain: '网关没有响应，此群聊可能已经创建。请重试以打开它，不会重复创建。',
+    createEnded: '网关拒绝了此群聊，它可能已在其他地方被更改或移除。请重试以新建一个。',
     legacyRoomElsewhere: '这个群聊无法在此继续：它包含其他电脑上的机器人，而在此网关上托管的群聊只能加入同一个连接上的机器人。请切换到这些机器人所在的连接并在那里开始群组，或者用此连接上的机器人开始一个新群聊。之前的消息不会复制到新群组。',
     otherConnections: '其他连接上的机器人：{connections}',
     legacyRoomBlocked: '这个群聊由 Desktop 自己运行，因此无法在此网关上继续，而且这些机器人目前无法组成在此网关上托管的群聊（原因见下方）。请开始一个新群聊并选择它的机器人。之前的消息不会复制到新群组。',
@@ -734,6 +742,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: '在此閘道上託管的群組聊天需要 2 到 6 個機器人。',
     createOtherConnection: '在此閘道上託管的群組聊天只能加入此連線上的機器人。',
     createDuplicateMember: '在此閘道上託管的群組聊天中的機器人需要使用不同的設定檔和代稱；@all 與 @everyone 為保留名稱。',
+    createUncertain: '閘道沒有回應，此群組聊天可能已經建立。請再試一次以開啟它，不會重複建立。',
+    createEnded: '閘道拒絕了此群組聊天，它可能已在其他地方被變更或移除。請再試一次以建立新的群組聊天。',
     legacyRoomElsewhere: '這個群組聊天無法在此繼續：它包含其他電腦上的機器人，而在此閘道上託管的群組聊天只能加入同一個連線上的機器人。請切換到這些機器人所在的連線並在那裡開始群組，或用此連線上的機器人開始新的群組聊天。先前的訊息不會複製到新群組。',
     otherConnections: '其他連線上的機器人：{connections}',
     legacyRoomBlocked: '這個群組聊天由 Desktop 自行執行，因此無法在此閘道上繼續，而且這些機器人目前無法組成在此閘道上託管的群組聊天（原因見下方）。請開始新的群組聊天並選擇它的機器人。先前的訊息不會複製到新群組。',
@@ -889,6 +899,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'تحتاج محادثة المجموعة المستضافة على هذه البوابة إلى ما بين اثنين وستة روبوتات.',
     createOtherConnection: 'لا يمكن لمحادثة المجموعة المستضافة على هذه البوابة أن تضم إلا الروبوتات الموجودة على هذا الاتصال.',
     createDuplicateMember: 'تحتاج محادثة المجموعة المستضافة على هذه البوابة إلى روبوتات بملفات تعريف ومعرّفات مختلفة؛ ‎@all و‎@everyone محجوزان.',
+    createUncertain: 'لم تستجب البوابة، لذا ربما تكون محادثة المجموعة هذه قد أُنشئت بالفعل. أعد المحاولة لفتحها، ولن تُنشأ مرتين.',
+    createEnded: 'رفضت البوابة محادثة المجموعة هذه، فربما تم تغييرها أو إزالتها في مكان آخر. أعد المحاولة لبدء محادثة جديدة.',
     legacyRoomElsewhere: 'لا يمكن متابعة محادثة المجموعة هذه هنا: فيها روبوتات تعمل على أجهزة كمبيوتر أخرى، ولا تضم محادثة المجموعة المستضافة على هذه البوابة إلا روبوتات من اتصال واحد. انتقل إلى الاتصال الذي تعمل عليه تلك الروبوتات وابدأ مجموعة هناك، أو ابدأ محادثة مجموعة جديدة بروبوتات من هذا الاتصال. لن تُنسخ الرسائل السابقة إلى مجموعة جديدة.',
     otherConnections: 'روبوتات على اتصالات أخرى: {connections}',
     legacyRoomBlocked: 'شغّل Desktop محادثة المجموعة هذه بنفسه، لذا لا يمكنها المتابعة على هذه البوابة، ولا تستطيع هذه الروبوتات بدء محادثة مجموعة مستضافة على هذه البوابة كما هي (السبب أدناه). ابدأ محادثة مجموعة جديدة واختر روبوتاتها. لن تُنسخ الرسائل السابقة إليها.',
@@ -1047,6 +1059,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'В групповом чате, размещённом на этом шлюзе, должно быть от двух до шести ботов.',
     createOtherConnection: 'В групповой чат, размещённый на этом шлюзе, можно добавить только ботов этого подключения.',
     createDuplicateMember: 'Для группового чата, размещённого на этом шлюзе, нужны боты с разными профилями и именами; @all и @everyone зарезервированы.',
+    createUncertain: 'Шлюз не ответил, поэтому этот групповой чат, возможно, уже создан. Повторите попытку, чтобы открыть его. Второй чат создан не будет.',
+    createEnded: 'Шлюз отклонил этот групповой чат: возможно, он был изменён или удалён в другом месте. Повторите попытку, чтобы создать новый.',
     legacyRoomElsewhere: 'Этот групповой чат не может продолжиться здесь: в нём есть боты на других компьютерах, а в групповой чат, размещённый на этом шлюзе, можно добавить ботов только одного подключения. Переключитесь на подключение, где работают эти боты, и начните группу там или начните новый групповой чат с ботами этого подключения. Прежние сообщения в новую группу не копируются.',
     otherConnections: 'Боты на других подключениях: {connections}',
     legacyRoomBlocked: 'Этим групповым чатом управлял сам Desktop, поэтому он не может продолжиться на этом шлюзе, а из этих ботов в нынешнем составе нельзя создать групповой чат, размещённый на этом шлюзе (причина ниже). Начните новый групповой чат и выберите для него ботов. Прежние сообщения в него не копируются.',
@@ -1204,6 +1218,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'Une discussion de groupe hébergée sur cette passerelle nécessite de deux à six bots.',
     createOtherConnection: 'Une discussion de groupe hébergée sur cette passerelle ne peut accueillir que des bots de cette connexion.',
     createDuplicateMember: 'Une discussion de groupe hébergée sur cette passerelle nécessite des bots aux profils et identifiants distincts ; @all et @everyone sont réservés.',
+    createUncertain: 'La passerelle n’a pas répondu : cette discussion de groupe existe peut-être déjà. Réessayez pour l’ouvrir. Elle ne sera pas créée deux fois.',
+    createEnded: 'La passerelle a refusé cette discussion de groupe : elle a peut-être été modifiée ou supprimée ailleurs. Réessayez pour en créer une nouvelle.',
     legacyRoomElsewhere: 'Cette discussion de groupe ne peut pas continuer ici : elle comprend des bots sur d’autres ordinateurs, et une discussion de groupe hébergée sur cette passerelle n’accueille que les bots d’une seule connexion. Passez à la connexion où ces bots fonctionnent et démarrez-y un groupe, ou démarrez une nouvelle discussion de groupe avec des bots de cette connexion. Les messages précédents ne sont pas copiés dans un nouveau groupe.',
     otherConnections: 'Bots sur d’autres connexions : {connections}',
     legacyRoomBlocked: 'Desktop gérait lui-même cette discussion de groupe, elle ne peut donc pas continuer sur cette passerelle, et ces bots ne peuvent pas former une discussion de groupe hébergée sur cette passerelle tels quels (la raison figure ci-dessous). Démarrez une nouvelle discussion de groupe et choisissez ses bots. Les messages précédents n’y sont pas copiés.',
@@ -1362,6 +1378,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'Ein auf diesem Gateway gehosteter Gruppenchat braucht zwei bis sechs Bots.',
     createOtherConnection: 'Ein auf diesem Gateway gehosteter Gruppenchat kann nur Bots dieser Verbindung aufnehmen.',
     createDuplicateMember: 'Ein auf diesem Gateway gehosteter Gruppenchat braucht Bots mit unterschiedlichen Profilen und Handles; @all und @everyone sind reserviert.',
+    createUncertain: 'Das Gateway hat nicht geantwortet, daher gibt es diesen Gruppenchat möglicherweise schon. Versuchen Sie es erneut, um ihn zu öffnen. Er wird nicht doppelt erstellt.',
+    createEnded: 'Das Gateway hat diesen Gruppenchat abgelehnt. Er wurde möglicherweise an anderer Stelle geändert oder entfernt. Versuchen Sie es erneut, um einen neuen zu erstellen.',
     legacyRoomElsewhere: 'Dieser Gruppenchat kann hier nicht weiterlaufen: Er enthält Bots auf anderen Computern, und ein auf diesem Gateway gehosteter Gruppenchat nimmt nur Bots einer einzigen Verbindung auf. Wechseln Sie zu der Verbindung, auf der diese Bots laufen, und starten Sie dort eine Gruppe, oder starten Sie einen neuen Gruppenchat mit Bots dieser Verbindung. Frühere Nachrichten werden nicht in eine neue Gruppe kopiert.',
     otherConnections: 'Bots auf anderen Verbindungen: {connections}',
     legacyRoomBlocked: 'Desktop hat diesen Gruppenchat selbst ausgeführt, daher kann er auf diesem Gateway nicht weiterlaufen, und diese Bots können so keinen auf diesem Gateway gehosteten Gruppenchat bilden (den Grund finden Sie unten). Starten Sie einen neuen Gruppenchat und wählen Sie seine Bots. Frühere Nachrichten werden nicht in ihn kopiert.',
@@ -1519,6 +1537,8 @@ export const CANONICAL_GROUP_LOCALES = {
     createGroupSize: 'Un chat de grupo alojado en esta pasarela necesita de dos a seis bots.',
     createOtherConnection: 'Un chat de grupo alojado en esta pasarela solo puede incluir bots de esta conexión.',
     createDuplicateMember: 'Un chat de grupo alojado en esta pasarela necesita bots con perfiles e identificadores distintos; @all y @everyone están reservados.',
+    createUncertain: 'La pasarela no respondió, así que este chat de grupo puede que ya exista. Inténtalo de nuevo para abrirlo. No se creará dos veces.',
+    createEnded: 'La pasarela rechazó este chat de grupo; puede que se haya cambiado o eliminado en otro lugar. Inténtalo de nuevo para crear uno nuevo.',
     legacyRoomElsewhere: 'Este chat de grupo no puede continuar aquí: tiene bots en otros equipos, y un chat de grupo alojado en esta pasarela solo incluye bots de una conexión. Cambia a la conexión donde funcionan esos bots e inicia un grupo allí, o inicia un chat de grupo nuevo con bots de esta conexión. Los mensajes anteriores no se copian en un grupo nuevo.',
     otherConnections: 'Bots en otras conexiones: {connections}',
     legacyRoomBlocked: 'Desktop ejecutaba este chat de grupo por sí mismo, así que no puede continuar en esta pasarela, y estos bots no pueden formar un chat de grupo alojado en esta pasarela tal como están (el motivo está abajo). Inicia un chat de grupo nuevo y elige sus bots. Los mensajes anteriores no se copian en él.',

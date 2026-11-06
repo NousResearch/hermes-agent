@@ -54,10 +54,11 @@ import {
   useGroupCapability
 } from './canonical-group-capabilities'
 import type { GroupCreationEngine } from './canonical-group-capabilities'
-import { createGroupAcrossConnections, type GroupCreationIntent, peerSetupText, usePeerTargets } from './canonical-group-peers'
+import { createGroupAcrossConnections, peerSetupText, usePeerTargets } from './canonical-group-peers'
 import { refreshGatewayGroupRooms, registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
-import { canonicalGroupCreateError, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupCreateError, canonicalGroupCreateNotice, createCanonicalGroup } from './canonical-groups'
+import type { GroupCreationIntent } from './canonical-groups'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1387,14 +1388,23 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const [notice, setNotice] = useState('')
+  // A notice speaks for the draft that asked; a late answer must not land on a newer one.
+  const draft = useRef(0)
+
+  const newDraft = () => {
+    draft.current += 1
+    setNotice('')
+  }
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   // eslint-disable-next-line no-restricted-syntax -- Clears a dialog-owned request intent; no reactive state is copied.
   useEffect(() => {
     if (open) {
+      intent.current = {}
+      newDraft()
       setQuery('')
       setChecked({})
-      intent.current = {}
       setName('')
       setImage(null)
     }
@@ -1426,11 +1436,18 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
     ['gateway', 'gateway-peer', 'desktop'].includes(engine)
 
+  const select = (bot: RosterRow, value: boolean) => {
+    newDraft()
+    setChecked(prev => ({ ...prev, [botRosterKey(bot)]: value }))
+  }
+
   const creating = useRef(false)
 
   const create = async () => {
     if (creating.current) {return}
     creating.current = true
+    const submitted = draft.current
+    setNotice('')
 
     try {
     const base = (name.trim() || placeholder).slice(0, 64)
@@ -1459,7 +1476,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
       const created = fresh.engine === 'gateway-peer'
         ? await createGroupAcrossConnections(route, base, members, freshTargets, intent.current)
-        : { ...await createCanonicalGroup(route, groupName, members), unjoined: [] }
+        : { ...await createCanonicalGroup(route, groupName, members, intent.current), unjoined: [] }
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}
@@ -1481,7 +1498,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     onClose()
     onCreated?.(groupName, 'name')
     } catch (error) {
-      host.notify({ kind: 'error', message: canonicalGroupCreateError(error, b.canonical) })
+      const next = canonicalGroupCreateNotice(error, b.canonical)
+
+      if (!next) {
+        host.notify({ kind: 'error', message: canonicalGroupCreateError(error, b.canonical) })
+      } else if (draft.current === submitted) {
+        setNotice(next)
+      }
     } finally { creating.current = false }
   }
 
@@ -1527,12 +1550,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
               >
                 <Tip label={b.group.removeFromSelection}>
                   <RowButton
-                    onClick={() =>
-                      setChecked(prev => ({
-                        ...prev,
-                        [botRosterKey(bot)]: false
-                      }))
-                    }
+                    onClick={() => select(bot, false)}
                   >
                     {displayName(bot, botRosterMeta(bot, allMeta))}
                     <Codicon className="text-[0.6rem]" name="close" />
@@ -1583,12 +1601,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                     <Checkbox
                       checked={isChecked}
                       disabled={disabled}
-                      onCheckedChange={value =>
-                        setChecked(prev => ({
-                          ...prev,
-                          [botRosterKey(bot)]: Boolean(value)
-                        }))
-                      }
+                      onCheckedChange={value => select(bot, Boolean(value))}
                     />
                   </label>
                 )
@@ -1616,12 +1629,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             <Input
               aria-label={b.group.nameLabel}
               maxLength={64}
-              onChange={event => setName(event.target.value)}
+              onChange={event => {
+                setName(event.target.value)
+                newDraft()
+              }}
               placeholder={placeholder}
               value={name}
             />
           </form>
         </div>
+        {notice && <p className="text-xs text-(--ui-text-secondary)" role="status">{notice}</p>}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}

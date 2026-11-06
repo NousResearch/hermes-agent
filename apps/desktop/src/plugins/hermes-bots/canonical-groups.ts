@@ -268,10 +268,77 @@ export function canonicalGroupRoster(
   return { roster, peers }
 }
 
+/** One open dialog keeps the exact request while its creation is uncertain. */
+export interface GroupCreationIntent {
+  key?: string
+  payload?: { room_id: string; name: string; members: CanonicalRoomMember[] }
+  uncertain?: boolean
+}
+
+/** Send `groups.create` for this dialog's intent: a lost reply keeps the exact request (same
+ *  room id) so a retry opens the group it may already have made instead of a second one. */
+export async function createRoomWithIntent(
+  route: CanonicalGroupRoute,
+  intent: GroupCreationIntent,
+  key: string,
+  makePayload: () => NonNullable<GroupCreationIntent['payload']>
+): Promise<CanonicalRoom> {
+  if (intent.key !== key || !intent.payload) {
+    intent.key = key
+    intent.payload = makePayload()
+    delete intent.uncertain
+  }
+
+  const payload = intent.payload
+  let room: CanonicalRoom
+
+  try {
+    ;({ room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', payload))
+  } catch (error) {
+    const refusal = error as { code?: unknown; data?: { detail?: unknown }; message?: unknown } | null
+    const reason = String(refusal?.data?.detail ?? refusal?.message ?? error)
+    const current = intent.payload === payload
+
+    // No answer: this id may have created the group, and retrying it is safe.
+    if (typeof refusal?.code !== 'number') {
+      if (current) {intent.uncertain = true}
+
+      throw Object.assign(new Error(reason, { cause: error }), { canonicalGroupCreate: 'uncertain' })
+    }
+
+    // Only a conflict refuses this valid request in these words, and a canonical gateway
+    // says just invalid_params: this id can never create the requested group.
+    if (current && [
+      'room_id belongs to a disbanded room', 'room_id already exists with different state',
+      'room_id already belongs to a different authority', 'invalid_params'
+    ].includes(reason)) {
+      const retried = intent.uncertain
+      delete intent.key
+      delete intent.payload
+      delete intent.uncertain
+
+      if (retried) {
+        throw Object.assign(new Error(reason, { cause: error }), { canonicalGroupCreate: 'ended' })
+      }
+    }
+
+    throw error
+  }
+
+  if (intent.payload === payload) {
+    delete intent.key
+    delete intent.payload
+    delete intent.uncertain
+  }
+
+  return room
+}
+
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
-  members: GroupMember[]
+  members: GroupMember[],
+  intent: GroupCreationIntent = {}
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
   const checked = canonicalGroupRoster(route, members)
@@ -285,15 +352,16 @@ export async function createCanonicalGroup(
       { canonicalGroupProblem: checked.problem })
   }
 
-  const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: randomUuid(), name, members: checked.roster
-  })
+  const key = JSON.stringify([route.connectionId, route.profile, name, checked.roster])
+  const room = await createRoomWithIntent(route, intent, key, () => ({ room_id: randomUuid(), name, members: checked.roster }))
 
   return { binding: { ...route, roomId: room.room_id }, room }
 }
 
 interface CreateErrorLabels {
   createRefused: string
+  createUncertain: string
+  createEnded: string
   createGroupSize: string
   createOtherConnection: string
   createDuplicateMember: string
@@ -304,7 +372,20 @@ interface CreateErrorLabels {
  *  member in `data.detail` (4001); `hermes serve`, which Desktop's own backend and SSH, URL and
  *  Cloud connections reach, puts the reason in the message (4110, or 4123/5111 for a missing worker
  *  or a failure). Rejections arrive as Errors or, across the IPC bridge, as plain objects. */
+/** What a person can do next after a create that didn't finish, when a retry settles it. */
+export function canonicalGroupCreateNotice(error: unknown, labels: CreateErrorLabels): null | string {
+  const state = (error as { canonicalGroupCreate?: unknown } | null)?.canonicalGroupCreate
+
+  return state === 'uncertain' ? labels.createUncertain : state === 'ended' ? labels.createEnded : null
+}
+
 export function canonicalGroupCreateError(error: unknown, labels: CreateErrorLabels): string {
+  const notice = canonicalGroupCreateNotice(error, labels)
+
+  if (notice) {
+    return notice
+  }
+
   const problem = (error as { canonicalGroupProblem?: unknown } | null)?.canonicalGroupProblem
 
   const problems: Record<CanonicalRosterProblem, string> = {

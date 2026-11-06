@@ -125,6 +125,44 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   expect(host.request).not.toHaveBeenCalled()
 })
 
+it('retries a lost create reply with the same room id, scoped to the exact create intent', async () => {
+  const route = { connectionId: 'source-a', profile: 'default' }
+  const members = [{ name: 'alice' }, { name: 'bob' }]
+  const intent = {}
+  const stored = new Map<string, { room_id: string; name: string; members: unknown }>()
+  let loseReply = true
+  host.requestProfile.mockImplementation(async (_route, _method, params) => {
+    const previous = stored.get(params.room_id)
+
+    if (previous && (previous.name !== params.name || JSON.stringify(previous.members) !== JSON.stringify(params.members))) {
+      throw Object.assign(new Error('room_id already exists with different state'), { code: 4110 })
+    }
+
+    stored.set(params.room_id, previous ?? { room_id: params.room_id, name: params.name, members: params.members })
+
+    if (loseReply) {loseReply = false; throw new Error('request timed out')}
+
+    return { room: stored.get(params.room_id) }
+  })
+
+  await expect(createCanonicalGroup(route, 'Retry', members, intent)).rejects.toThrow('request timed out')
+  const firstId = [...stored.keys()][0]
+
+  // An intervening create on another authority or with different inputs must not take this id.
+  for (const [authority, name, roster] of [
+    [{ ...route, connectionId: 'source-b' }, 'Retry', members],
+    [{ ...route, profile: 'other' }, 'Retry', members],
+    [route, 'Renamed', members], [route, 'Retry', [{ name: 'alice' }, { name: 'carol' }]]
+  ] as [typeof route, string, typeof members][]) {
+    await createCanonicalGroup(authority, name, roster)
+  }
+
+  expect((await createCanonicalGroup(route, 'Retry', members, intent)).binding.roomId).toBe(firstId)
+  expect(stored.size).toBe(5)
+  expect((await createCanonicalGroup(route, 'Retry', members, intent)).room.room_id).not.toBe(firstId)
+  expect(stored.size).toBe(6)
+})
+
 // Both Python surfaces answer groups.capabilities; the standalone server (what SSH, URL and Cloud
 // reach) runs its own driver and supports files, but offers Discard only when forwarding to a gateway.
 it('classifies both gateway surfaces by their driver and offers only the methods each lists', () => {

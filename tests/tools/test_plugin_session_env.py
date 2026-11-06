@@ -231,6 +231,8 @@ def test_a_profiles_names_never_reach_another_profiles_shells(tmp_path, monkeypa
     finally:
         shell.cleanup()
 
-    plugins_session_env.register_session_env(hermes_home_key(home_b), ["PANE"], lambda sid: {"PANE": "b-" + sid})
+    # A different plugin from A's: only the scope check lets B declare PANE too.
+    plugins_session_env.register_session_env(hermes_home_key(home_b), ["PANE"], lambda sid: {"PANE": "b-" + sid},
+                                             owner="b_plugin")
     assert as_profile(home_a, lambda: plugins_session_env.resolve_session_env("s")) == {"PANE": "a-s"}
     assert as_profile(home_b, lambda: plugins_session_env.resolve_session_env("s")) == {"PANE": "b-s"}

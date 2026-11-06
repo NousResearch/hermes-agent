@@ -480,7 +480,7 @@ export function openWindowsSync() {
 function resolveGetWindowsRoot(appRoot = projectRoot) {
   // get-windows is an optionalDependency (its node-pre-gyp install script has
   // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
-  // `npm ci` can skip it entirely on those targets). Return null when it is
+  // the install can skip it entirely on those targets). Return null when it is
   // absent; the caller decides whether that is fatal per platform and arch.
   try {
     // get-windows' exports map doesn't expose ./package.json; resolve the entry
@@ -576,12 +576,12 @@ export function stageGetWindowsInto(
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
     if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
-      // A plain `npm install` won't re-run an install script for a package
+      // An incremental install won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while
-      // get-windows was missing from allowScripts stays bricked even after
-      // the allowlist is fixed. Invoke node-pre-gyp directly: npm treats this
-      // optional dependency's failed lifecycle as non-fatal and can report a
-      // successful rebuild without producing the Windows binding.
+      // get-windows was missing from the build allowlist stays bricked even
+      // after the allowlist is fixed. Invoke node-pre-gyp directly: an optional
+      // dependency's failed lifecycle is non-fatal, so an install can report
+      // success without producing the Windows binding.
       console.log(
         '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
@@ -662,12 +662,12 @@ export function installGetWindowsNativeBinding(
 
 /**
  * A get-windows directory that exists but does not resolve as a package: an
- * `npm install` interrupted by a running Desktop/gateway holding files open
+ * install interrupted by a running Desktop/gateway holding files open
  * (TAR_ENTRY_ERROR on Windows) leaves the binding on disk without
- * package.json, and npm never revisits a directory that already exists, so the
- * tree stays broken across every later update. Walks the same
- * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
- * the app-local copy).
+ * package.json, and the package manager trusts a directory that already
+ * exists, so the tree stays broken until it is reinstalled. Walks the same
+ * `node_modules` ancestors `require.resolve` does (the app-local link into
+ * pnpm's store, then the repo root).
  */
 export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
   for (let dir = startDir; ; dir = dirname(dir)) {
@@ -686,9 +686,9 @@ export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
   if (halfInstalledDir) {
     lines.push(
       `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
-        'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
+        'interrupted install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
         'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
-        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
+        'interrupted again, then run `hermes desktop --force-build` — it reinstalls the dependency tree.'
     )
   }
   return lines.join('\n')
@@ -708,7 +708,7 @@ export function stageGetWindows(
   const destRoot = join(out, 'get-windows')
 
   if (!srcRoot) {
-    // npm may omit an optional dependency whose install script fails, or an in-place
+    // The install may omit an optional dependency whose install script fails, or an in-place
     // update may fail to extract it due to file locks (#90829). The runtime import
     // already fails soft, so we disable only window enumeration instead of failing
     // the entire Desktop build (which would strand users on an old version).

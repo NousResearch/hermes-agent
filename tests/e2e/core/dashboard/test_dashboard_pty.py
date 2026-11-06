@@ -53,7 +53,7 @@ def _require_tui() -> None:
         return
     if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
         pytest.fail("ui-tui/dist/entry.js or node missing but HERMES_E2E_REQUIRE_TUI=1")
-    pytest.skip("Ink TUI not built (cd ui-tui && npm run build) or node missing")
+    pytest.skip("Ink TUI not built (cd ui-tui && pnpm run build) or node missing")
 
 
 def _text_of(content: Any) -> str:
@@ -152,7 +152,7 @@ class Chat:
 def _private_tui(tmp_path: Path) -> Path:
     """A private, syntax-checked copy of the prebuilt bundle, handed to the dashboard as
     ``HERMES_TUI_DIR`` (the prebuilt-install path of ``_make_tui_argv``). On a source checkout every
-    PTY spawn otherwise re-runs ``npm run build``, rewriting ``ui-tui/dist/entry.js`` in place, and a
+    PTY spawn otherwise re-runs ``pnpm run build``, rewriting ``ui-tui/dist/entry.js`` in place, and a
     TUI starting during a concurrent build (another worker, another dashboard) crashes on the
     truncated file (#121286). The bundle is self-contained (node builtins only)."""
     src = H.REPO_ROOT / "ui-tui" / "dist" / "entry.js"

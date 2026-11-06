@@ -21,7 +21,7 @@ const resolvePython = () => {
     return configured
   }
 
-  // The one case with no launcher above it: `npm run dev` / `npm start`
+  // The one case with no launcher above it: `pnpm run dev` / `pnpm start`
   // straight out of ui-tui/. A developer doing that runs inside their own
   // activated environment, so PATH is the right question there.
   return process.platform === 'win32' ? 'python' : 'python3'

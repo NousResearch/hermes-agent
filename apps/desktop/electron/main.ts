@@ -794,7 +794,7 @@ let f12Blocked = false
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
-// Dev (`npm run dev`) and prod both load the esbuild output from dist/.
+// Dev (`pnpm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-preload.js')
 
@@ -867,7 +867,7 @@ if (IS_WINDOWS) {
   }
 }
 
-// Renderer debugging port. On for dev-server runs (`hgui` / `npm run dev`) so
+// Renderer debugging port. On for dev-server runs (`hgui` / `pnpm run dev`) so
 // the CDP tooling in scripts/ can attach; never for a packaged build — see
 // electron/dev-cdp.ts. Must run before app `ready` like the switches above;
 // Chromium binds it at launch.
@@ -4853,7 +4853,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 2. Development source -- when running `npm run dev` from a checkout, the
+  // 2. Development source -- when running `pnpm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
@@ -17135,7 +17135,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // True when the bundle on disk is not the one this process loaded — a
     // plain app restart (no rebuild, no installer) clears the skew above.
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
-    // under a running `npm start`, which is a rebuild the developer asked for,
+    // under a running `pnpm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
     bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, readBundleSwapStamp(process.resourcesPath))
   }
